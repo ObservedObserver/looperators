@@ -1,11 +1,17 @@
-import { BrowserWindow } from 'electron'
+import electron from 'electron'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import path from 'node:path'
-import { createEmptyGraphState } from '../../shared/graph-state.js'
+import { createEmptyGraphState, graphStateVersion } from '../../shared/graph-state.js'
 import { runClaudeCli } from './claudeCliAdapter.js'
 
+const { BrowserWindow } =
+  electron && typeof electron === 'object' && 'BrowserWindow' in electron
+    ? electron
+    : { BrowserWindow: undefined }
+
 const defaultPrompt =
-  'You are running under Orrery P0 runtime verification. Reply with one short sentence confirming stream-json is working, then stop.'
+  'You are running under Orrery P1 live session verification. Reply with one short sentence confirming stream-json is working, then stop.'
 
 function now() {
   return new Date().toISOString()
@@ -23,9 +29,33 @@ function safeCwd(cwd) {
   return path.resolve(cwd)
 }
 
+function truncateChunks(chunks) {
+  if (chunks.length > 1000) {
+    chunks.splice(0, chunks.length - 1000)
+  }
+}
+
+function messageContent(message, context) {
+  if (typeof context === 'string' && context.trim().length > 0) {
+    return `${message}\n\nContext:\n${context}`
+  }
+
+  return message
+}
+
 export class RuntimeSessionManager {
   #state = createEmptyGraphState()
   #runs = new Map()
+  #runContext = new Map()
+  #storageFile
+
+  constructor({ storageFile } = {}) {
+    this.#storageFile =
+      typeof storageFile === 'string' && storageFile.length > 0
+        ? storageFile
+        : undefined
+    this.#state = this.#loadState()
+  }
 
   getState() {
     return clone(this.#state)
@@ -48,6 +78,7 @@ export class RuntimeSessionManager {
       sessionId,
       nodeId: sessionId,
       backend: 'claude-cli',
+      backendSessionId: sessionId,
       agent: 'claude-code',
       label,
       prompt,
@@ -57,6 +88,17 @@ export class RuntimeSessionManager {
       createdAt: ts,
       updatedAt: ts,
       chunks: [],
+      messages: [
+        {
+          id: randomUUID(),
+          sessionId,
+          role: 'user',
+          content: prompt,
+          ts,
+          runId: undefined,
+          status: 'complete',
+        },
+      ],
     }
 
     this.#state.nodes.push({
@@ -74,9 +116,67 @@ export class RuntimeSessionManager {
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
-    this.#startRun(sessionId)
+    this.#startRun(sessionId, {
+      prompt,
+      runKind: 'create',
+      userMessageId: this.#state.sessions[sessionId].messages[0].id,
+    })
 
     return { sessionId, state: this.getState() }
+  }
+
+  resumeSession(input = {}) {
+    const sessionId = input.sessionId
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId}`)
+    }
+
+    if (this.#runs.has(sessionId)) {
+      throw new Error(`Session is already running: ${sessionId}`)
+    }
+
+    if (session.status === 'killed') {
+      throw new Error(`Killed session cannot be resumed: ${sessionId}`)
+    }
+
+    const message =
+      typeof input.message === 'string' && input.message.trim().length > 0
+        ? input.message.trim()
+        : undefined
+    if (!message) {
+      throw new Error('Resume message is required')
+    }
+
+    const content = messageContent(message, input.context)
+    const ts = now()
+    const userMessage = {
+      id: randomUUID(),
+      sessionId,
+      role: 'user',
+      content,
+      ts,
+      runId: undefined,
+      status: 'complete',
+    }
+    session.messages.push(userMessage)
+    session.prompt = content
+    session.status = 'pending'
+    session.error = undefined
+    session.exitCode = undefined
+    session.signal = undefined
+    session.updatedAt = ts
+    this.#updateNodeStatus(sessionId, 'pending')
+    this.#touch()
+    this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
+
+    this.#startRun(sessionId, {
+      prompt: content,
+      runKind: 'resume',
+      userMessageId: userMessage.id,
+    })
+
+    return { ok: true, state: this.getState() }
   }
 
   killSession(sessionId) {
@@ -95,6 +195,7 @@ export class RuntimeSessionManager {
     if (ok) {
       session.status = 'killed'
       session.updatedAt = now()
+      this.#markActiveAssistant(sessionId, 'failed')
       this.#updateNodeStatus(sessionId, 'killed')
       this.#touch()
       this.#broadcast({ type: 'session.killed', sessionId, state: this.getState() })
@@ -109,18 +210,32 @@ export class RuntimeSessionManager {
     }
   }
 
-  #startRun(sessionId) {
+  #startRun(sessionId, { prompt, runKind, userMessageId }) {
     const session = this.#state.sessions[sessionId]
+    const runId = randomUUID()
     session.status = 'running'
     session.startedAt = now()
+    session.finishedAt = undefined
     session.updatedAt = session.startedAt
+    this.#updateMessageRunId(session, userMessageId, runId)
     this.#updateNodeStatus(sessionId, 'running')
+    this.#runContext.set(sessionId, {
+      runId,
+      runKind,
+      assistantMessageId: undefined,
+      sawTextDelta: false,
+    })
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
 
     let run
     try {
-      run = runClaudeCli({ prompt: session.prompt, cwd: session.cwd })
+      run = runClaudeCli({
+        prompt,
+        cwd: session.cwd,
+        backendSessionId: runKind === 'resume' ? session.backendSessionId : undefined,
+        sessionId: runKind === 'create' ? sessionId : undefined,
+      })
     } catch (error) {
       this.#failSession(sessionId, error.message)
       return
@@ -146,7 +261,9 @@ export class RuntimeSessionManager {
 
       if (killed || current.status === 'killed') {
         current.status = 'killed'
+        this.#markActiveAssistant(sessionId, 'failed')
         this.#updateNodeStatus(sessionId, 'killed')
+        this.#runContext.delete(sessionId)
         this.#touch()
         this.#broadcast({
           type: 'session.killed',
@@ -157,8 +274,10 @@ export class RuntimeSessionManager {
       }
 
       if (code === 0 && current.status !== 'failed') {
-        current.status = 'finished'
-        this.#updateNodeStatus(sessionId, 'finished')
+        current.status = 'idle'
+        this.#markActiveAssistant(sessionId, 'complete')
+        this.#updateNodeStatus(sessionId, 'idle')
+        this.#runContext.delete(sessionId)
         this.#touch()
         this.#broadcast({
           type: 'session.finished',
@@ -181,8 +300,9 @@ export class RuntimeSessionManager {
       return
     }
 
-    if (chunk.event?.type === 'system' && chunk.event?.session_id) {
-      session.backendSessionId = chunk.event.session_id
+    const backendSessionId = chunk.event?.session_id ?? chunk.event?.event?.session_id
+    if (typeof backendSessionId === 'string') {
+      session.backendSessionId = backendSessionId
     }
 
     const streamChunk = {
@@ -196,10 +316,9 @@ export class RuntimeSessionManager {
     }
 
     session.chunks.push(streamChunk)
-    if (session.chunks.length > 500) {
-      session.chunks.splice(0, session.chunks.length - 500)
-    }
+    truncateChunks(session.chunks)
 
+    this.#appendAssistantMessage(sessionId, chunk)
     session.updatedAt = streamChunk.ts
     this.#touch()
     this.#broadcast({
@@ -210,6 +329,56 @@ export class RuntimeSessionManager {
     })
   }
 
+  #appendAssistantMessage(sessionId, chunk) {
+    const session = this.#state.sessions[sessionId]
+    const context = this.#runContext.get(sessionId)
+    if (!session || !context || chunk.stream !== 'stdout') {
+      return
+    }
+
+    if (
+      chunk.event?.type === 'stream_event' &&
+      chunk.event.event?.type === 'content_block_delta' &&
+      typeof chunk.text === 'string'
+    ) {
+      const message = this.#ensureAssistantMessage(session, context)
+      message.content += chunk.text
+      message.status = 'streaming'
+      context.sawTextDelta = true
+      return
+    }
+
+    if (chunk.event?.type === 'assistant' && typeof chunk.text === 'string') {
+      const message = this.#ensureAssistantMessage(session, context)
+      if (!context.sawTextDelta || message.content.trim().length === 0) {
+        message.content = chunk.text
+      }
+      message.status = 'streaming'
+    }
+  }
+
+  #ensureAssistantMessage(session, context) {
+    let message = context.assistantMessageId
+      ? session.messages.find((item) => item.id === context.assistantMessageId)
+      : undefined
+
+    if (!message) {
+      message = {
+        id: randomUUID(),
+        sessionId: session.sessionId,
+        role: 'assistant',
+        content: '',
+        ts: now(),
+        runId: context.runId,
+        status: 'streaming',
+      }
+      session.messages.push(message)
+      context.assistantMessageId = message.id
+    }
+
+    return message
+  }
+
   #recordResult(sessionId, event) {
     const session = this.#state.sessions[sessionId]
     if (!session) {
@@ -218,6 +387,15 @@ export class RuntimeSessionManager {
 
     session.backendSessionId = event.session_id ?? session.backendSessionId
     session.result = typeof event.result === 'string' ? event.result : undefined
+    if (session.result) {
+      const context = this.#runContext.get(sessionId)
+      if (context) {
+        const message = this.#ensureAssistantMessage(session, context)
+        if (!context.sawTextDelta || message.content.trim().length === 0) {
+          message.content = session.result
+        }
+      }
+    }
     session.updatedAt = now()
     this.#touch()
   }
@@ -232,9 +410,33 @@ export class RuntimeSessionManager {
     session.error = error
     session.finishedAt = now()
     session.updatedAt = session.finishedAt
+    this.#markActiveAssistant(sessionId, 'failed')
     this.#updateNodeStatus(sessionId, 'failed')
+    this.#runContext.delete(sessionId)
     this.#touch()
     this.#broadcast({ type: 'session.failed', sessionId, error, state: this.getState() })
+  }
+
+  #markActiveAssistant(sessionId, status) {
+    const session = this.#state.sessions[sessionId]
+    const context = this.#runContext.get(sessionId)
+    if (!session || !context?.assistantMessageId) {
+      return
+    }
+
+    const message = session.messages.find(
+      (item) => item.id === context.assistantMessageId
+    )
+    if (message) {
+      message.status = status
+    }
+  }
+
+  #updateMessageRunId(session, messageId, runId) {
+    const message = session.messages.find((item) => item.id === messageId)
+    if (message) {
+      message.runId = runId
+    }
   }
 
   #updateNodeStatus(sessionId, status) {
@@ -246,11 +448,105 @@ export class RuntimeSessionManager {
 
   #touch() {
     this.#state.updatedAt = now()
+    this.#persistState()
   }
 
   #broadcast(event) {
+    if (!BrowserWindow) {
+      return
+    }
+
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send('orrery:runtime-event', event)
     }
+  }
+
+  #persistState() {
+    if (!this.#storageFile) {
+      return
+    }
+
+    fs.mkdirSync(path.dirname(this.#storageFile), { recursive: true })
+    fs.writeFileSync(this.#storageFile, JSON.stringify(this.#state, null, 2))
+  }
+
+  #loadState() {
+    if (!this.#storageFile || !fs.existsSync(this.#storageFile)) {
+      return createEmptyGraphState()
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.#storageFile, 'utf8'))
+      return this.#normalizeState(parsed)
+    } catch (error) {
+      console.error(`Failed to load Orrery runtime state: ${error.message}`)
+      return createEmptyGraphState()
+    }
+  }
+
+  #normalizeState(value) {
+    const fallback = createEmptyGraphState()
+    const state = {
+      ...fallback,
+      ...value,
+      version: graphStateVersion,
+      nodes: Array.isArray(value?.nodes) ? value.nodes : [],
+      edges: Array.isArray(value?.edges) ? value.edges : [],
+      sessions:
+        value?.sessions && typeof value.sessions === 'object' ? value.sessions : {},
+      clusters:
+        value?.clusters && typeof value.clusters === 'object' ? value.clusters : {},
+      reports: Array.isArray(value?.reports) ? value.reports : [],
+    }
+
+    for (const session of Object.values(state.sessions)) {
+      session.chunks = Array.isArray(session.chunks) ? session.chunks : []
+      session.messages = Array.isArray(session.messages)
+        ? session.messages
+        : this.#messagesFromLegacySession(session)
+      session.backendSessionId = session.backendSessionId ?? session.sessionId
+      if (session.status === 'running' || session.status === 'pending') {
+        session.status = 'idle'
+      }
+      if (session.status === 'finished') {
+        session.status = 'idle'
+      }
+    }
+
+    for (const node of state.nodes) {
+      const session = state.sessions[node.sessionId]
+      if (session) {
+        node.nodeId = session.sessionId
+        node.sessionId = session.sessionId
+        node.status = session.status
+      }
+    }
+
+    return state
+  }
+
+  #messagesFromLegacySession(session) {
+    const messages = []
+    if (typeof session.prompt === 'string' && session.prompt.length > 0) {
+      messages.push({
+        id: randomUUID(),
+        sessionId: session.sessionId,
+        role: 'user',
+        content: session.prompt,
+        ts: session.createdAt ?? now(),
+        status: 'complete',
+      })
+    }
+    if (typeof session.result === 'string' && session.result.length > 0) {
+      messages.push({
+        id: randomUUID(),
+        sessionId: session.sessionId,
+        role: 'assistant',
+        content: session.result,
+        ts: session.finishedAt ?? session.updatedAt ?? now(),
+        status: 'complete',
+      })
+    }
+    return messages
   }
 }
