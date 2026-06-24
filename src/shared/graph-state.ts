@@ -29,9 +29,15 @@ export const graphStateSchema = {
     nodes: 'GraphNode[]',
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
-    clusters: 'Record<ClusterId, Cluster>',
+    clusters:
+      'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
     diagnostics: 'RuntimeStateDiagnostic[]?',
+  },
+  loopPolicy: {
+    until: { whenReport: { verdict: 'string' } },
+    onStop: 'freeze',
+    maxIterations: 'number?',
   },
   membraneSkills: {
     create_session: {
@@ -139,6 +145,12 @@ export type FreezeState = {
   masterReason?: string
 }
 
+export type LoopPolicy = {
+  until?: { whenReport: { verdict: string } }
+  onStop: 'freeze'
+  maxIterations?: number
+}
+
 export type GraphNode = FreezeState & {
   nodeId: NodeId
   sessionId: SessionId
@@ -216,6 +228,7 @@ export type Cluster = {
   label: string
   nodeIds: NodeId[]
   masterSessionId?: SessionId
+  loopPolicy?: LoopPolicy
   frozen?: boolean
   freezeReason?: string
 }
@@ -244,6 +257,8 @@ export type CreateRuntimeSessionInput = {
   cwd?: string
   agent?: 'claude-code'
   label?: string
+  cluster?: ClusterId
+  role?: SessionRole
 }
 
 export type CreateRuntimeSessionResult = {
@@ -255,6 +270,30 @@ export type ResumeRuntimeSessionInput = {
   sessionId: SessionId
   message: string
   context?: string
+}
+
+export type UpsertClusterInput = {
+  clusterId?: ClusterId
+  label?: string
+  nodeIds: NodeId[]
+  loopPolicy?: LoopPolicy
+}
+
+export type CreateMasterForClusterInput = {
+  clusterId: ClusterId
+  prompt?: string
+  label?: string
+  loopPolicy?: LoopPolicy
+}
+
+export type AssignMasterToClusterInput = {
+  clusterId: ClusterId
+  sessionId: SessionId
+}
+
+export type SetClusterLoopPolicyInput = {
+  clusterId: ClusterId
+  loopPolicy: LoopPolicy
 }
 
 export type RuntimeEvent =

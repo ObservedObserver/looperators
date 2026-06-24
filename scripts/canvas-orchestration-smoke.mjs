@@ -1,0 +1,192 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+import { RuntimeSessionManager } from '../electron/runtime/sessionManager.js'
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-canvas-smoke-'))
+const fakeClaude = path.join(tempRoot, 'claude')
+const storageFile = path.join(tempRoot, 'orrery-runtime-state.json')
+const managers = new Set()
+
+const fakeClaudeSource = `#!/usr/bin/env node
+const args = process.argv.slice(2)
+const readArg = (name) => {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] : undefined
+}
+const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
+function emit(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+emit({
+  type: 'assistant',
+  session_id: backendSessionId,
+  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
+})
+emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
+`
+
+function installFakeClaude() {
+  fs.writeFileSync(fakeClaude, fakeClaudeSource)
+  fs.chmodSync(fakeClaude, 0o755)
+  process.env.ORRERY_CLAUDE_BIN = fakeClaude
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitFor(label, predicate, timeoutMs = 5000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return
+    }
+    await delay(25)
+  }
+  throw new Error(`Timed out waiting for ${label}`)
+}
+
+function manager(input) {
+  const runtime = new RuntimeSessionManager(input)
+  managers.add(runtime)
+  return runtime
+}
+
+function clusterMasterNodes(state, clusterId) {
+  return state.nodes.filter(
+    (node) => node.clusterId === clusterId && node.role === 'master'
+  )
+}
+
+try {
+  installFakeClaude()
+
+  const runtime = manager({ storageFile })
+  const worker = await runtime.createSession({
+    prompt: 'worker session for canvas orchestration smoke',
+    label: 'Coder',
+    cwd: process.cwd(),
+  })
+  await waitFor(
+    'worker to finish',
+    () => runtime.getState().sessions[worker.sessionId]?.status === 'idle'
+  )
+
+  const policy = {
+    until: { whenReport: { verdict: 'clean' } },
+    onStop: 'freeze',
+    maxIterations: 6,
+  }
+  const cluster = runtime.upsertCluster({
+    label: 'Review loop',
+    nodeIds: [worker.sessionId],
+    loopPolicy: policy,
+  })
+
+  const master = await runtime.createMasterForCluster({
+    clusterId: cluster.clusterId,
+    label: 'Review loop Master',
+    prompt: 'master session for canvas orchestration smoke',
+    loopPolicy: policy,
+  })
+  await waitFor(
+    'master to finish',
+    () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
+  )
+
+  const repeatedMaster = await runtime.createMasterForCluster({
+    clusterId: cluster.clusterId,
+    label: 'Duplicate Review loop Master',
+    prompt: 'second master start should reuse the existing master',
+    loopPolicy: policy,
+  })
+  assert.equal(
+    repeatedMaster.sessionId,
+    master.sessionId,
+    'repeated Start Master should reuse the existing cluster master'
+  )
+
+  const replacement = await runtime.createSession({
+    prompt: 'replacement master session for canvas orchestration smoke',
+    label: 'Replacement Master',
+    cwd: process.cwd(),
+  })
+  await waitFor(
+    'replacement master candidate to finish',
+    () => runtime.getState().sessions[replacement.sessionId]?.status === 'idle'
+  )
+
+  runtime.assignMasterToCluster({
+    clusterId: cluster.clusterId,
+    sessionId: replacement.sessionId,
+  })
+
+  runtime.setClusterLoopPolicy({
+    clusterId: cluster.clusterId,
+    loopPolicy: policy,
+  })
+
+  const state = runtime.getState()
+  assert.equal(state.clusters[cluster.clusterId].nodeIds.length, 1)
+  assert.equal(state.clusters[cluster.clusterId].nodeIds[0], worker.sessionId)
+  assert.equal(
+    state.clusters[cluster.clusterId].masterSessionId,
+    replacement.sessionId
+  )
+  assert.equal(state.clusters[cluster.clusterId].loopPolicy.until.whenReport.verdict, 'clean')
+  assert.equal(state.clusters[cluster.clusterId].loopPolicy.onStop, 'freeze')
+  assert.equal(state.clusters[cluster.clusterId].loopPolicy.maxIterations, 6)
+  assert.equal(state.sessions[master.sessionId].role, 'worker')
+  assert.equal(state.sessions[replacement.sessionId].role, 'master')
+  assert.equal(
+    state.nodes.find((node) => node.sessionId === replacement.sessionId)?.role,
+    'master'
+  )
+  assert.equal(
+    state.nodes.find((node) => node.sessionId === master.sessionId)?.role,
+    'worker',
+    'replaced master node should be demoted'
+  )
+  assert.equal(
+    state.clusters[cluster.clusterId].nodeIds.includes(replacement.sessionId),
+    false,
+    'master should not be counted as a managed worker node'
+  )
+  assert.equal(
+    clusterMasterNodes(state, cluster.clusterId).length,
+    1,
+    'cluster should expose exactly one master node'
+  )
+
+  const restored = manager({ storageFile })
+  const restoredState = restored.getState()
+  assert.equal(
+    restoredState.clusters[cluster.clusterId].masterSessionId,
+    replacement.sessionId
+  )
+  assert.equal(restoredState.sessions[replacement.sessionId].role, 'master')
+  assert.equal(restoredState.sessions[master.sessionId].role, 'worker')
+  assert.equal(restoredState.clusters[cluster.clusterId].loopPolicy.maxIterations, 6)
+  assert.equal(clusterMasterNodes(restoredState, cluster.clusterId).length, 1)
+  assert.ok(
+    restoredState.sessions[replacement.sessionId].messages.length >= 2,
+    'restored master chat session should be openable in the left chat view'
+  )
+
+  console.log(
+    '[canvas:orchestration] worker -> cluster -> master reuse/replace -> LoopPolicy -> restore passed'
+  )
+} finally {
+  for (const runtime of managers) {
+    try {
+      runtime.killAll()
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+  delete process.env.ORRERY_CLAUDE_BIN
+  fs.rmSync(tempRoot, { recursive: true, force: true })
+}
