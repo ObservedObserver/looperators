@@ -5,11 +5,14 @@ import type {
   CreateMasterForClusterInput,
   CreateRuntimeSessionInput,
   CreateRuntimeSessionResult,
+  FreezeInput,
   GraphState,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
   SetClusterLoopPolicyInput,
   SessionId,
+  StartMasterLoopInput,
+  StopMasterLoopInput,
   UpsertClusterInput,
 } from './shared/graph-state'
 
@@ -40,6 +43,13 @@ declare global {
         setClusterLoopPolicy: (
           input: SetClusterLoopPolicyInput
         ) => Promise<{ state: GraphState }>
+        startMasterLoop: (
+          input: StartMasterLoopInput
+        ) => Promise<{ state: GraphState }>
+        stopMasterLoop: (
+          input: StopMasterLoopInput
+        ) => Promise<{ state: GraphState }>
+        freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>
         onEvent: (listener: (event: RuntimeEvent) => void) => () => void
       }
     }

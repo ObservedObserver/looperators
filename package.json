@@ -14,6 +14,7 @@
     "runtime:membrane:smoke": "node scripts/membrane-smoke.mjs",
     "runtime:membrane:validation": "node scripts/membrane-validation.mjs",
     "runtime:canvas:orchestration": "node scripts/canvas-orchestration-smoke.mjs",
+    "runtime:master-loop": "node scripts/master-loop-smoke.mjs",
     "runtime:persistence": "node scripts/runtime-persistence-recovery.mjs",
     "preview": "vite preview",
     "start": "electron ."

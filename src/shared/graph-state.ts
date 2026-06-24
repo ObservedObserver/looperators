@@ -1,4 +1,4 @@
-export const graphStateVersion = 3
+export const graphStateVersion = 4
 
 export const sessionStatuses = [
   'pending',
@@ -39,6 +39,17 @@ export const graphStateSchema = {
     onStop: 'freeze',
     maxIterations: 'number?',
   },
+  loopState: {
+    status: '"running" | "stopped"',
+    iterations: 'number',
+    coderSessionId: 'SessionId?',
+    reviewerSessionId: 'SessionId?',
+    lastEvent: 'LoopEvent?',
+    lastProcessedEventKey: 'string?',
+    reason: 'string?',
+    startedAt: 'ISO-8601 string?',
+    stoppedAt: 'ISO-8601 string?',
+  },
   membraneSkills: {
     create_session: {
       input: {
@@ -74,6 +85,8 @@ export const graphStateSchema = {
     'session.killed',
     'report.received',
     'freeze.applied',
+    'loop.started',
+    'loop.stopped',
   ],
   readabilityFields: {
     GraphNode: {
@@ -94,6 +107,7 @@ export const graphStateSchema = {
     Cluster: {
       frozen: 'boolean?',
       freezeReason: 'string?',
+      loopState: 'LoopState?',
     },
   },
 } as const
@@ -149,6 +163,30 @@ export type LoopPolicy = {
   until?: { whenReport: { verdict: string } }
   onStop: 'freeze'
   maxIterations?: number
+}
+
+export type LoopStatus = 'running' | 'stopped'
+
+export type LoopEvent = {
+  type: string
+  ts: string
+  sessionId?: SessionId
+  from?: SessionId
+  reportId?: string
+  targetId?: string
+  error?: string
+}
+
+export type LoopState = {
+  status: LoopStatus
+  iterations: number
+  coderSessionId?: SessionId
+  reviewerSessionId?: SessionId
+  lastEvent?: LoopEvent
+  lastProcessedEventKey?: string
+  reason?: string
+  startedAt?: string
+  stoppedAt?: string
 }
 
 export type GraphNode = FreezeState & {
@@ -229,6 +267,7 @@ export type Cluster = {
   nodeIds: NodeId[]
   masterSessionId?: SessionId
   loopPolicy?: LoopPolicy
+  loopState?: LoopState
   frozen?: boolean
   freezeReason?: string
 }
@@ -296,6 +335,22 @@ export type SetClusterLoopPolicyInput = {
   loopPolicy: LoopPolicy
 }
 
+export type StartMasterLoopInput = {
+  clusterId: ClusterId
+  reason?: string
+}
+
+export type StopMasterLoopInput = {
+  clusterId: ClusterId
+  reason?: string
+  killRunning?: boolean
+}
+
+export type FreezeInput = {
+  target: SessionId | ClusterId
+  reason?: string
+}
+
 export type RuntimeEvent =
   | { type: 'runtime.state'; state: GraphState }
   | { type: 'session.created'; sessionId: SessionId; state: GraphState }
@@ -316,6 +371,13 @@ export type RuntimeEvent =
   | { type: 'session.killed'; sessionId: SessionId; state: GraphState }
   | { type: 'report.received'; from: SessionId; report: Report; state: GraphState }
   | { type: 'freeze.applied'; targetId: string; reason?: string; state: GraphState }
+  | { type: 'loop.started'; clusterId: ClusterId; state: GraphState }
+  | {
+      type: 'loop.stopped'
+      clusterId: ClusterId
+      reason?: string
+      state: GraphState
+    }
 
 export function createEmptyGraphState(): GraphState {
   return {

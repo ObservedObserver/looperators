@@ -1,4 +1,5 @@
 import electron from 'electron'
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -23,6 +24,7 @@ const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
 const validGraphEdgeKinds = new Set(graphEdgeKinds)
+const validLoopStatuses = new Set(['running', 'stopped'])
 
 function now() {
   return new Date().toISOString()
@@ -52,6 +54,18 @@ function isObject(value) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function boundedText(value, maxLength = 50000) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  if (value.length <= maxLength) {
+    return value
+  }
+
+  return `${value.slice(0, maxLength)}\n\n[truncated by Orrery]`
 }
 
 function diagnostic(type, message, details = {}) {
@@ -127,6 +141,7 @@ export class RuntimeSessionManager {
   #state = createEmptyGraphState()
   #runs = new Map()
   #runContext = new Map()
+  #loopTasks = new Map()
   #storageFile
   #bridge
 
@@ -140,6 +155,7 @@ export class RuntimeSessionManager {
       handler: (request) => this.handleMembraneRequest(request),
     })
     this.#persistState()
+    this.#recoverRunningLoops()
   }
 
   getState() {
@@ -153,6 +169,10 @@ export class RuntimeSessionManager {
       typeof input.cluster === 'string' && input.cluster.trim().length > 0
         ? input.cluster.trim()
         : undefined
+    if (cluster && this.#state.clusters[cluster]?.frozen) {
+      throw new Error(`Frozen cluster cannot create new sessions: ${cluster}`)
+    }
+
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
@@ -238,6 +258,10 @@ export class RuntimeSessionManager {
       throw new Error(`Killed session cannot be resumed: ${sessionId}`)
     }
 
+    if (this.#isSessionFrozen(sessionId)) {
+      throw new Error(`Frozen session cannot be resumed: ${sessionId}`)
+    }
+
     const message =
       typeof input.message === 'string' && input.message.trim().length > 0
         ? input.message.trim()
@@ -296,7 +320,11 @@ export class RuntimeSessionManager {
       this.#markActiveAssistant(sessionId, 'failed')
       this.#updateNodeStatus(sessionId, 'killed')
       this.#touch()
-      this.#broadcast({ type: 'session.killed', sessionId, state: this.getState() })
+      this.#emitRuntimeEvent({
+        type: 'session.killed',
+        sessionId,
+        state: this.getState(),
+      })
     }
 
     return { ok, state: this.getState() }
@@ -449,6 +477,115 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
+  startMasterLoop(input = {}) {
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : undefined
+    if (!clusterId || !this.#state.clusters[clusterId]) {
+      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
+    }
+
+    const cluster = this.#state.clusters[clusterId]
+    if (cluster.frozen) {
+      throw new Error(`Frozen cluster cannot run a loop: ${clusterId}`)
+    }
+
+    if (!cluster.loopPolicy) {
+      throw new Error(`Cluster has no LoopPolicy: ${clusterId}`)
+    }
+
+    if (!cluster.masterSessionId || !this.#state.sessions[cluster.masterSessionId]) {
+      throw new Error(`Cluster has no master session: ${clusterId}`)
+    }
+
+    const coderSessionId = this.#loopCoderSessionId(cluster)
+    if (!coderSessionId) {
+      throw new Error(`Cluster has no managed worker session: ${clusterId}`)
+    }
+
+    const ts = now()
+    cluster.loopState = {
+      ...(cluster.loopState ?? {}),
+      status: 'running',
+      iterations: 0,
+      coderSessionId,
+      reviewerSessionId: this.#loopReviewerSessionId(cluster, coderSessionId),
+      lastEvent: { type: 'loop.started', ts },
+      lastProcessedEventKey: undefined,
+      reason:
+        typeof input.reason === 'string' && input.reason.trim().length > 0
+          ? input.reason.trim()
+          : 'Loop started by user.',
+      startedAt: ts,
+      stoppedAt: undefined,
+    }
+
+    this.#touch()
+    this.#broadcast({
+      type: 'loop.started',
+      clusterId,
+      state: this.getState(),
+    })
+    this.#queueLoopWakeup(clusterId, { type: 'loop.started', ts })
+    return { state: this.getState() }
+  }
+
+  stopMasterLoop(input = {}) {
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : undefined
+    if (!clusterId || !this.#state.clusters[clusterId]) {
+      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
+    }
+
+    const reason =
+      typeof input.reason === 'string' && input.reason.trim().length > 0
+        ? input.reason.trim()
+        : 'Loop stopped by user.'
+    this.#stopLoop(clusterId, reason, {
+      event: { type: 'loop.stopped', ts: now() },
+      broadcast: true,
+    })
+
+    if (input.killRunning === true) {
+      const cluster = this.#state.clusters[clusterId]
+      const runningIds = [
+        ...cluster.nodeIds,
+        cluster.masterSessionId,
+      ].filter((sessionId) => this.#runs.has(sessionId))
+      for (const sessionId of runningIds) {
+        this.killSession(sessionId)
+      }
+    }
+
+    return { state: this.getState() }
+  }
+
+  freeze(input = {}) {
+    const target =
+      typeof input.target === 'string' && input.target.trim().length > 0
+        ? input.target.trim()
+        : typeof input.targetId === 'string' && input.targetId.trim().length > 0
+          ? input.targetId.trim()
+          : undefined
+    if (!target) {
+      throw new Error('freeze target is required')
+    }
+
+    const reason =
+      typeof input.reason === 'string' && input.reason.trim().length > 0
+        ? input.reason.trim()
+        : 'Frozen by user.'
+    return this.#applyFreeze({
+      targetId: target,
+      reason,
+      source: input.source,
+      masterReason: input.masterReason,
+    })
+  }
+
   async handleMembraneRequest({ tool, source, input }) {
     if (!this.#state.sessions[source]) {
       throw new Error(`Unknown membrane source session: ${source}`)
@@ -532,7 +669,7 @@ export class RuntimeSessionManager {
         this.#updateNodeStatus(sessionId, 'killed')
         this.#runContext.delete(sessionId)
         this.#touch()
-        this.#broadcast({
+        this.#emitRuntimeEvent({
           type: 'session.killed',
           sessionId,
           state: this.getState(),
@@ -546,7 +683,7 @@ export class RuntimeSessionManager {
         this.#updateNodeStatus(sessionId, 'idle')
         this.#runContext.delete(sessionId)
         this.#touch()
-        this.#broadcast({
+        this.#emitRuntimeEvent({
           type: 'session.finished',
           sessionId,
           state: this.getState(),
@@ -681,7 +818,12 @@ export class RuntimeSessionManager {
     this.#updateNodeStatus(sessionId, 'failed')
     this.#runContext.delete(sessionId)
     this.#touch()
-    this.#broadcast({ type: 'session.failed', sessionId, error, state: this.getState() })
+    this.#emitRuntimeEvent({
+      type: 'session.failed',
+      sessionId,
+      error,
+      state: this.getState(),
+    })
   }
 
   #markActiveAssistant(sessionId, status) {
@@ -756,6 +898,52 @@ export class RuntimeSessionManager {
     return Object.values(this.#state.clusters).find((cluster) =>
       cluster.nodeIds.includes(sessionId)
     )?.clusterId
+  }
+
+  #managingMasterSessionId(sessionId) {
+    const clusterId = this.#managedClusterId(sessionId)
+    if (!clusterId) {
+      return undefined
+    }
+
+    const masterSessionId = this.#state.clusters[clusterId]?.masterSessionId
+    return masterSessionId && this.#state.sessions[masterSessionId]
+      ? masterSessionId
+      : undefined
+  }
+
+  #isSessionFrozen(sessionId) {
+    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
+    const clusterId = this.#managedClusterId(sessionId) ?? this.#masterClusterId(sessionId)
+    return node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
+  }
+
+  #reportSummary(payload) {
+    if (payload.type === 'verdict') {
+      if (typeof payload.summary === 'string' && payload.summary.trim().length > 0) {
+        return payload.summary.trim()
+      }
+
+      if (Array.isArray(payload.issues) && payload.issues.length > 0) {
+        return payload.issues
+          .map((issue) =>
+            issue.file ? `${issue.message} (${issue.file})` : issue.message
+          )
+          .join('\n')
+      }
+
+      return payload.verdict
+    }
+
+    if (payload.type === 'relationship') {
+      return payload.nature ?? payload.target
+    }
+
+    try {
+      return boundedText(JSON.stringify(payload.payload), 500)
+    } catch {
+      return 'info'
+    }
   }
 
   #syncSessionRoleAndCluster(sessionId) {
@@ -891,6 +1079,40 @@ export class RuntimeSessionManager {
     }
   }
 
+  #normalizeLoopState(loopState) {
+    if (!isObject(loopState)) {
+      return undefined
+    }
+
+    return {
+      status: validLoopStatuses.has(loopState.status)
+        ? loopState.status
+        : 'stopped',
+      iterations: Number.isInteger(loopState.iterations)
+        ? Math.max(0, loopState.iterations)
+        : 0,
+      coderSessionId: nonEmptyString(loopState.coderSessionId)
+        ? loopState.coderSessionId
+        : undefined,
+      reviewerSessionId: nonEmptyString(loopState.reviewerSessionId)
+        ? loopState.reviewerSessionId
+        : undefined,
+      lastEvent: isObject(loopState.lastEvent)
+        ? this.#serializeLoopEvent(loopState.lastEvent)
+        : undefined,
+      lastProcessedEventKey: nonEmptyString(loopState.lastProcessedEventKey)
+        ? loopState.lastProcessedEventKey
+        : undefined,
+      reason: nonEmptyString(loopState.reason) ? loopState.reason : undefined,
+      startedAt: nonEmptyString(loopState.startedAt)
+        ? loopState.startedAt
+        : undefined,
+      stoppedAt: nonEmptyString(loopState.stoppedAt)
+        ? loopState.stoppedAt
+        : undefined,
+    }
+  }
+
   #defaultMasterPrompt(clusterId) {
     const cluster = this.#state.clusters[clusterId]
     const policy = cluster.loopPolicy
@@ -907,6 +1129,693 @@ export class RuntimeSessionManager {
       `The current LoopPolicy is: ${until}; onStop=freeze. ${maxIterations}`,
       'Do not execute an autonomous loop yet. Discuss the plan with the user and use Orrery membrane tools when asked to create, resume, or report agent work.',
     ].join('\n')
+  }
+
+  #recoverRunningLoops() {
+    for (const cluster of Object.values(this.#state.clusters)) {
+      if (cluster.loopState?.status === 'running' && !cluster.frozen) {
+        this.#queueLoopWakeup(cluster.clusterId, {
+          type: 'runtime.recovered',
+          ts: now(),
+        })
+      }
+    }
+  }
+
+  #emitRuntimeEvent(event) {
+    this.#broadcast(event)
+    this.#queueLoopWakeupsForRuntimeEvent(event)
+  }
+
+  #queueLoopWakeupsForRuntimeEvent(event) {
+    const clusterIds = this.#clusterIdsForRuntimeEvent(event)
+    for (const clusterId of clusterIds) {
+      this.#queueLoopWakeup(clusterId, this.#loopEventFromRuntimeEvent(event))
+    }
+  }
+
+  #clusterIdsForRuntimeEvent(event) {
+    if (
+      event.type === 'session.finished' ||
+      event.type === 'session.failed' ||
+      event.type === 'session.killed'
+    ) {
+      const clusterId =
+        this.#managedClusterId(event.sessionId) ??
+        (event.type === 'session.failed' || event.type === 'session.killed'
+          ? this.#masterClusterId(event.sessionId)
+          : undefined)
+      return clusterId ? [clusterId] : []
+    }
+
+    if (event.type === 'report.received') {
+      const clusterId = this.#managedClusterId(event.from)
+      return clusterId ? [clusterId] : []
+    }
+
+    return []
+  }
+
+  #loopEventFromRuntimeEvent(event) {
+    if (event.type === 'report.received') {
+      return {
+        type: event.type,
+        ts: event.report.envelope.ts,
+        from: event.from,
+        reportId: event.report.id,
+        report: event.report,
+      }
+    }
+
+    return {
+      type: event.type,
+      ts: now(),
+      sessionId: event.sessionId,
+      error: event.error,
+    }
+  }
+
+  #queueLoopWakeup(clusterId, event) {
+    const previous = this.#loopTasks.get(clusterId) ?? Promise.resolve()
+    const task = previous
+      .catch(() => undefined)
+      .then(() => this.#runLoopWakeup(clusterId, event))
+      .catch((error) => this.#recordLoopError(clusterId, event, error))
+
+    this.#loopTasks.set(clusterId, task)
+    void task.finally(() => {
+      if (this.#loopTasks.get(clusterId) === task) {
+        this.#loopTasks.delete(clusterId)
+      }
+    })
+  }
+
+  async #runLoopWakeup(clusterId, event) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster) {
+      return
+    }
+
+    const loopState = this.#ensureLoopState(cluster)
+    if (loopState.status !== 'running') {
+      return
+    }
+
+    const eventKey = this.#loopEventKey(event)
+    if (eventKey && loopState.lastProcessedEventKey === eventKey) {
+      return
+    }
+
+    loopState.lastEvent = this.#serializeLoopEvent(event)
+    loopState.lastProcessedEventKey = eventKey
+    loopState.reason = `Woke on ${event.type}.`
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+
+    if (cluster.frozen) {
+      this.#stopLoop(clusterId, 'Cluster is frozen; loop stopped.', {
+        event,
+        broadcast: true,
+      })
+      return
+    }
+
+    if (!cluster.loopPolicy) {
+      this.#stopLoop(clusterId, 'Cluster has no LoopPolicy.', {
+        event,
+        broadcast: true,
+      })
+      return
+    }
+
+    const masterSessionId = cluster.masterSessionId
+    const masterSession = masterSessionId
+      ? this.#state.sessions[masterSessionId]
+      : undefined
+    if (!masterSessionId || !masterSession) {
+      this.#stopLoop(clusterId, 'Cluster has no master session.', {
+        event,
+        broadcast: true,
+      })
+      return
+    }
+
+    if (
+      masterSession.status === 'killed' ||
+      masterSession.status === 'failed' ||
+      this.#isSessionFrozen(masterSessionId)
+    ) {
+      this.#stopLoop(
+        clusterId,
+        `Master session cannot continue: ${masterSession.status}.`,
+        { event, broadcast: true }
+      )
+      return
+    }
+
+    if (event.type === 'session.failed' || event.type === 'session.killed') {
+      const killed = event.type === 'session.killed'
+      this.#stopLoop(
+        clusterId,
+        killed
+          ? 'Managed session was killed; loop stopped.'
+          : event.error
+            ? `Managed session failed: ${event.error}`
+            : 'Managed session failed.',
+        { event, broadcast: true }
+      )
+      return
+    }
+
+    if (event.type === 'report.received') {
+      await this.#handleLoopReport(clusterId, event.report)
+      return
+    }
+
+    if (
+      event.type === 'session.finished' ||
+      event.type === 'loop.started' ||
+      event.type === 'runtime.recovered'
+    ) {
+      await this.#handleLoopSessionFinished(clusterId, event.sessionId)
+    }
+  }
+
+  #recordLoopError(clusterId, event, error) {
+    const message = error instanceof Error ? error.message : String(error)
+    this.#stopLoop(clusterId, `Loop error: ${message}`, {
+      event,
+      broadcast: true,
+    })
+  }
+
+  async #handleLoopSessionFinished(clusterId, finishedSessionId) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster || cluster.loopState?.status !== 'running') {
+      return
+    }
+
+    const coderSessionId = this.#loopCoderSessionId(cluster)
+    if (!coderSessionId) {
+      this.#stopLoop(clusterId, 'Cluster has no coder session.', {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    const reviewerSessionId = this.#loopReviewerSessionId(cluster, coderSessionId)
+    if (finishedSessionId && reviewerSessionId === finishedSessionId) {
+      this.#setLoopReason(
+        clusterId,
+        'Reviewer finished; waiting for typed report.'
+      )
+      return
+    }
+
+    if (finishedSessionId && finishedSessionId !== coderSessionId) {
+      this.#setLoopReason(clusterId, 'Finished session is outside the hero loop.')
+      return
+    }
+
+    const coder = this.#state.sessions[coderSessionId]
+    if (!coder) {
+      this.#stopLoop(clusterId, 'Coder session is missing.', {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    if (coder.status === 'running' || coder.status === 'pending') {
+      this.#setLoopReason(clusterId, 'Waiting for coder to finish.')
+      return
+    }
+
+    if (
+      coder.status === 'failed' ||
+      coder.status === 'killed' ||
+      this.#isSessionFrozen(coderSessionId)
+    ) {
+      this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    if (!reviewerSessionId) {
+      await this.#createLoopReviewer(clusterId, coderSessionId)
+      return
+    }
+
+    await this.#resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId)
+  }
+
+  async #handleLoopReport(clusterId, report) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster || cluster.loopState?.status !== 'running') {
+      return
+    }
+
+    if (!report || report.payload?.type !== 'verdict') {
+      this.#setLoopReason(clusterId, 'Report is not a verdict; loop is waiting.')
+      return
+    }
+
+    const coderSessionId = this.#loopCoderSessionId(cluster)
+    if (!coderSessionId) {
+      this.#stopLoop(clusterId, 'Cluster has no coder session.', {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    if (report.from === coderSessionId) {
+      this.#setLoopReason(clusterId, 'Coder report ignored for review loop.')
+      return
+    }
+
+    cluster.loopState.reviewerSessionId =
+      cluster.loopState.reviewerSessionId ?? report.from
+
+    const stopVerdict = cluster.loopPolicy?.until?.whenReport?.verdict
+    if (stopVerdict && report.payload.verdict === stopVerdict) {
+      const reason = `Review verdict ${stopVerdict}; freezing loop scope.`
+      this.#stopLoop(clusterId, reason, {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      this.#applyFreeze({
+        targetId: clusterId,
+        source: cluster.masterSessionId,
+        reason,
+        masterReason: reason,
+      })
+      return
+    }
+
+    const maxIterations = cluster.loopPolicy?.maxIterations
+    const iterations = cluster.loopState.iterations ?? 0
+    if (maxIterations && iterations >= maxIterations) {
+      const reason = `maxIterations=${maxIterations} reached after verdict ${report.payload.verdict}.`
+      this.#stopLoop(clusterId, reason, {
+        event: cluster.loopState.lastEvent,
+        broadcast: true,
+      })
+      this.#applyFreeze({
+        targetId: clusterId,
+        source: cluster.masterSessionId,
+        reason,
+        masterReason: reason,
+      })
+      return
+    }
+
+    await this.#resumeCoderFromReport(clusterId, coderSessionId, report)
+  }
+
+  async #createLoopReviewer(clusterId, coderSessionId) {
+    const cluster = this.#state.clusters[clusterId]
+    const masterSessionId = cluster?.masterSessionId
+    if (!cluster || !masterSessionId) {
+      return
+    }
+
+    const coder = this.#state.sessions[coderSessionId]
+    const reason = `Coder ${coder?.label ?? coderSessionId} finished; create reviewer.`
+    const result = await this.#membraneCreateSession(masterSessionId, {
+      agent: 'claude-code',
+      label: 'Reviewer',
+      cluster: clusterId,
+      prompt: this.#reviewerCreatePrompt(),
+      context: this.#gitDiffForSession(coderSessionId),
+      masterReason: reason,
+    })
+
+    cluster.loopState = {
+      ...this.#ensureLoopState(cluster),
+      reviewerSessionId: result.sessionId,
+      reason,
+    }
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+  }
+
+  async #resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId) {
+    const cluster = this.#state.clusters[clusterId]
+    const masterSessionId = cluster?.masterSessionId
+    const reviewer = this.#state.sessions[reviewerSessionId]
+    if (!cluster || !masterSessionId || !reviewer) {
+      return
+    }
+
+    if (reviewer.status === 'running' || reviewer.status === 'pending') {
+      this.#setLoopReason(clusterId, 'Waiting for reviewer to finish.')
+      return
+    }
+
+    if (
+      reviewer.status === 'failed' ||
+      reviewer.status === 'killed' ||
+      this.#isSessionFrozen(reviewerSessionId)
+    ) {
+      this.#stopLoop(clusterId, 'Reviewer cannot be resumed by the loop.', {
+        event: cluster.loopState?.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    const reason = `Coder finished fixes; resume reviewer ${reviewer.label}.`
+    await this.#membraneResumeSession(masterSessionId, {
+      sessionId: reviewerSessionId,
+      message: this.#reviewerResumeMessage(),
+      context: this.#gitDiffForSession(coderSessionId),
+      masterReason: reason,
+    })
+    this.#setLoopReason(clusterId, reason)
+  }
+
+  async #resumeCoderFromReport(clusterId, coderSessionId, report) {
+    const cluster = this.#state.clusters[clusterId]
+    const masterSessionId = cluster?.masterSessionId
+    const coder = this.#state.sessions[coderSessionId]
+    if (!cluster || !masterSessionId || !coder) {
+      return
+    }
+
+    if (coder.status === 'running' || coder.status === 'pending') {
+      this.#setLoopReason(clusterId, 'Coder is already running; waiting.')
+      return
+    }
+
+    if (
+      coder.status === 'failed' ||
+      coder.status === 'killed' ||
+      this.#isSessionFrozen(coderSessionId)
+    ) {
+      this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
+        event: cluster.loopState?.lastEvent,
+        broadcast: true,
+      })
+      return
+    }
+
+    const nextIteration = (cluster.loopState?.iterations ?? 0) + 1
+    const reason = `Reviewer reported ${report.payload.verdict}; resume coder for iteration ${nextIteration}.`
+    cluster.loopState = {
+      ...this.#ensureLoopState(cluster),
+      iterations: nextIteration,
+      reason,
+    }
+    this.#touch()
+
+    await this.#membraneResumeSession(masterSessionId, {
+      sessionId: coderSessionId,
+      message: this.#coderIssueMessage(report, nextIteration),
+      masterReason: reason,
+    })
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+  }
+
+  #reviewerCreatePrompt() {
+    return [
+      'Review the latest diff for this Orrery hero review loop.',
+      'Do not edit files.',
+      'When finished, call mcp__orrery_membrane__report exactly once with type "verdict".',
+      'Use verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain.',
+    ].join('\n')
+  }
+
+  #reviewerResumeMessage() {
+    return [
+      'The coder has finished another turn.',
+      'Review the latest diff again, preserving context from earlier findings.',
+      'Call mcp__orrery_membrane__report exactly once with verdict "issues" or "clean".',
+    ].join('\n')
+  }
+
+  #coderIssueMessage(report, iteration) {
+    const issues = Array.isArray(report.payload.issues)
+      ? report.payload.issues
+      : []
+    const issueText =
+      issues.length > 0
+        ? issues
+            .map((issue) => {
+              const location = [
+                issue.file,
+                Number.isFinite(issue.line) ? issue.line : undefined,
+              ]
+                .filter(Boolean)
+                .join(':')
+              return location
+                ? `- ${issue.message} (${location})`
+                : `- ${issue.message}`
+            })
+            .join('\n')
+        : `- ${report.payload.summary ?? report.payload.verdict}`
+
+    return [
+      `Reviewer found issues for loop iteration ${iteration}.`,
+      'Please fix them, then stop so the master loop can run the reviewer again.',
+      '',
+      issueText,
+    ].join('\n')
+  }
+
+  #gitDiffForSession(sessionId) {
+    const cwd = this.#state.sessions[sessionId]?.cwd ?? process.cwd()
+    try {
+      const stat = execFileSync('git', ['diff', '--stat'], {
+        cwd,
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+      }).trim()
+      const diff = execFileSync('git', ['diff', '--'], {
+        cwd,
+        encoding: 'utf8',
+        maxBuffer: 5 * 1024 * 1024,
+      }).trim()
+      const content = [
+        stat ? `Diff stat:\n${stat}` : undefined,
+        diff ? `Patch:\n${diff}` : 'No current git diff.',
+      ].filter(Boolean)
+
+      return boundedText(content.join('\n\n'))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return `Unable to read git diff for ${cwd}: ${message}`
+    }
+  }
+
+  #loopCoderSessionId(cluster) {
+    const existing = cluster.loopState?.coderSessionId
+    if (existing && cluster.nodeIds.includes(existing) && this.#state.sessions[existing]) {
+      return existing
+    }
+
+    return cluster.nodeIds.find((sessionId) => {
+      const session = this.#state.sessions[sessionId]
+      return session && session.role !== 'master'
+    })
+  }
+
+  #loopReviewerSessionId(cluster, coderSessionId) {
+    const existing = cluster.loopState?.reviewerSessionId
+    if (
+      existing &&
+      existing !== coderSessionId &&
+      cluster.nodeIds.includes(existing) &&
+      this.#state.sessions[existing]
+    ) {
+      return existing
+    }
+
+    return cluster.nodeIds.find((sessionId) => {
+      if (sessionId === coderSessionId) {
+        return false
+      }
+
+      const session = this.#state.sessions[sessionId]
+      return session && session.role !== 'master'
+    })
+  }
+
+  #ensureLoopState(cluster) {
+    const loopState = cluster.loopState ?? {}
+    const iterations = Number.isInteger(loopState.iterations)
+      ? Math.max(0, loopState.iterations)
+      : 0
+    cluster.loopState = {
+      status: loopState.status === 'running' ? 'running' : 'stopped',
+      iterations,
+      coderSessionId: nonEmptyString(loopState.coderSessionId)
+        ? loopState.coderSessionId
+        : undefined,
+      reviewerSessionId: nonEmptyString(loopState.reviewerSessionId)
+        ? loopState.reviewerSessionId
+        : undefined,
+      lastEvent: isObject(loopState.lastEvent)
+        ? this.#serializeLoopEvent(loopState.lastEvent)
+        : undefined,
+      lastProcessedEventKey: nonEmptyString(loopState.lastProcessedEventKey)
+        ? loopState.lastProcessedEventKey
+        : undefined,
+      reason: nonEmptyString(loopState.reason) ? loopState.reason : undefined,
+      startedAt: nonEmptyString(loopState.startedAt)
+        ? loopState.startedAt
+        : undefined,
+      stoppedAt: nonEmptyString(loopState.stoppedAt)
+        ? loopState.stoppedAt
+        : undefined,
+    }
+
+    return cluster.loopState
+  }
+
+  #setLoopReason(clusterId, reason) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster) {
+      return
+    }
+
+    cluster.loopState = {
+      ...this.#ensureLoopState(cluster),
+      reason,
+    }
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+  }
+
+  #stopLoop(clusterId, reason, { event, broadcast = false } = {}) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster) {
+      return
+    }
+
+    const ts = now()
+    cluster.loopState = {
+      ...this.#ensureLoopState(cluster),
+      status: 'stopped',
+      reason,
+      stoppedAt: ts,
+      lastEvent: this.#serializeLoopEvent(event ?? { type: 'loop.stopped', ts }),
+    }
+    this.#touch()
+
+    if (broadcast) {
+      this.#broadcast({
+        type: 'loop.stopped',
+        clusterId,
+        reason,
+        state: this.getState(),
+      })
+    }
+  }
+
+  #applyFreeze({ targetId, reason, source, masterReason }) {
+    const cluster = this.#state.clusters[targetId]
+    const session = this.#state.sessions[targetId]
+    const sourceSessionId =
+      typeof source === 'string' && this.#state.sessions[source] ? source : undefined
+    const finalReason = reason ?? masterReason ?? 'Frozen.'
+
+    let targetSessionIds = []
+    if (cluster) {
+      cluster.frozen = true
+      cluster.freezeReason = finalReason
+      this.#stopLoop(cluster.clusterId, finalReason, {
+        event: { type: 'freeze.applied', targetId, ts: now() },
+      })
+      targetSessionIds = [...cluster.nodeIds]
+    } else if (session) {
+      targetSessionIds = [session.sessionId]
+      const clusterId =
+        this.#managedClusterId(session.sessionId) ??
+        this.#masterClusterId(session.sessionId)
+      if (clusterId) {
+        this.#stopLoop(clusterId, finalReason, {
+          event: { type: 'freeze.applied', targetId, ts: now() },
+        })
+      }
+    } else {
+      throw new Error(`Unknown freeze target: ${targetId}`)
+    }
+
+    const envelope = sourceSessionId ? this.#createEnvelope(sourceSessionId) : undefined
+    for (const targetSessionId of targetSessionIds) {
+      const node = this.#state.nodes.find(
+        (item) => item.sessionId === targetSessionId
+      )
+      if (node) {
+        node.frozen = true
+        node.freezeReason = finalReason
+        node.masterReason =
+          typeof masterReason === 'string' && masterReason.trim().length > 0
+            ? masterReason.trim()
+            : node.masterReason
+      }
+
+      if (envelope && this.#state.sessions[targetSessionId]) {
+        this.#addEdge({
+          source: sourceSessionId,
+          target: targetSessionId,
+          kind: 'freeze',
+          envelope: { ...envelope, callId: randomUUID() },
+          label: 'freeze',
+          frozen: true,
+          freezeReason: finalReason,
+          masterReason,
+        })
+      }
+    }
+
+    this.#touch()
+    this.#broadcast({
+      type: 'freeze.applied',
+      targetId,
+      reason: finalReason,
+      state: this.getState(),
+    })
+    return { ok: true, state: this.getState() }
+  }
+
+  #loopEventKey(event) {
+    if (!event) {
+      return undefined
+    }
+
+    if (event.type === 'report.received' && event.reportId) {
+      return `${event.type}:${event.reportId}`
+    }
+
+    if (event.sessionId) {
+      const session = this.#state.sessions[event.sessionId]
+      return `${event.type}:${event.sessionId}:${
+        session?.finishedAt ?? session?.updatedAt ?? event.ts ?? ''
+      }`
+    }
+
+    return event.ts ? `${event.type}:${event.ts}` : undefined
+  }
+
+  #serializeLoopEvent(event) {
+    if (!event || typeof event !== 'object') {
+      return undefined
+    }
+
+    return {
+      type: typeof event.type === 'string' ? event.type : 'unknown',
+      ts: nonEmptyString(event.ts) ? event.ts : now(),
+      sessionId: nonEmptyString(event.sessionId) ? event.sessionId : undefined,
+      from: nonEmptyString(event.from) ? event.from : undefined,
+      reportId: nonEmptyString(event.reportId) ? event.reportId : undefined,
+      targetId: nonEmptyString(event.targetId) ? event.targetId : undefined,
+      error: nonEmptyString(event.error) ? event.error : undefined,
+    }
   }
 
   async #membraneCreateSession(source, input = {}) {
@@ -1014,8 +1923,24 @@ export class RuntimeSessionManager {
       })
     }
 
+    const masterSessionId = this.#managingMasterSessionId(source)
+    if (masterSessionId && masterSessionId !== source) {
+      this.#addEdge({
+        source,
+        target: masterSessionId,
+        kind: 'report',
+        envelope,
+        label: payload.type,
+        reportId: report.id,
+        verdict: payload.type === 'verdict' ? payload.verdict : undefined,
+        issueCount:
+          payload.type === 'verdict' ? (payload.issues?.length ?? 0) : undefined,
+        summary: this.#reportSummary(payload),
+      })
+    }
+
     this.#touch()
-    this.#broadcast({
+    this.#emitRuntimeEvent({
       type: 'report.received',
       from: source,
       report,
@@ -1054,8 +1979,13 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown edge target session: ${target}`)
     }
 
+    const baseEdgeId = `${kind}:${envelope.callId}`
+    const edgeId = this.#state.edges.some((edge) => edge.edgeId === baseEdgeId)
+      ? `${baseEdgeId}:${randomUUID().slice(0, 8)}`
+      : baseEdgeId
+
     this.#state.edges.push({
-      edgeId: `${kind}:${envelope.callId}`,
+      edgeId,
       source,
       target,
       kind,
@@ -1664,6 +2594,8 @@ export class RuntimeSessionManager {
             loopPolicy = undefined
           }
 
+          const loopState = this.#normalizeLoopState(cluster.loopState)
+
           return [
             clusterId,
             {
@@ -1681,6 +2613,7 @@ export class RuntimeSessionManager {
                 ? { masterSessionId: cluster.masterSessionId }
                 : {}),
               ...(loopPolicy ? { loopPolicy } : {}),
+              ...(loopState ? { loopState } : {}),
             },
           ]
         })
