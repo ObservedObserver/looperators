@@ -151,3 +151,6 @@ release
 *.njsproj
 *.sln
 *.sw?
+
+# Local project vision and design notes
+design-docs/
