@@ -1,9 +1,11 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { RuntimeSessionManager } from './runtime/sessionManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
+const runtime = new RuntimeSessionManager()
 
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
@@ -35,6 +37,14 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  ipcMain.handle('orrery:runtime-state', () => runtime.getState())
+  ipcMain.handle('orrery:create-session', (_event, input) =>
+    runtime.createSession(input)
+  )
+  ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
+    runtime.killSession(sessionId)
+  )
+
   createMainWindow()
 
   app.on('activate', () => {
@@ -45,6 +55,8 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  runtime.killAll()
+
   if (process.platform !== 'darwin') {
     app.quit()
   }
