@@ -29,9 +29,15 @@ export const graphStateSchema = {
     nodes: 'GraphNode[]',
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
-    clusters: 'Record<ClusterId, Cluster>',
+    clusters:
+      'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
     diagnostics: 'RuntimeStateDiagnostic[]?',
+  },
+  loopPolicy: {
+    until: { whenReport: { verdict: 'string' } },
+    onStop: 'freeze',
+    maxIterations: 'number?',
   },
   membraneSkills: {
     create_session: {
