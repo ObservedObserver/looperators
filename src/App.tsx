@@ -16,8 +16,10 @@ import {
   Activity,
   Bot,
   Braces,
+  ClipboardCheck,
   CirclePlay,
   Clock,
+  GitBranch,
   MessageSquarePlus,
   Moon,
   PanelsTopLeft,
@@ -44,6 +46,7 @@ import {
   type AgentMessage,
   type AgentSession,
   type GraphState,
+  type Report,
   type SessionStatus,
 } from '@/shared/graph-state'
 
@@ -55,6 +58,8 @@ type AgentNodeData = {
   agent: string
   status: SessionStatus
   messageCount: number
+  latestVerdict?: string
+  latestReportSummary?: string
 }
 
 const statusLabels: Record<SessionStatus, string> = {
@@ -74,7 +79,7 @@ const statusClassNames: Record<SessionStatus, string> = {
 }
 
 const defaultPrompt =
-  'You are running under Orrery P1 live session verification. Reply with one short sentence confirming this node is a resumable Claude session.'
+  'You are running under Orrery P2 membrane verification. Reply with one short sentence confirming this node is a resumable Claude session.'
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   return (
@@ -107,6 +112,19 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
         {data.description}
       </p>
+      {data.latestVerdict ? (
+        <div className="mt-3 rounded-md border border-border bg-background/70 px-2 py-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
+            <ClipboardCheck className="size-3" />
+            verdict: {data.latestVerdict}
+          </div>
+          {data.latestReportSummary ? (
+            <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+              {data.latestReportSummary}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <Activity className="size-3" />
         {data.messageCount} messages
@@ -131,6 +149,46 @@ function lastMessagePreview(session: AgentSession | undefined) {
   }
 
   return session?.prompt ?? 'Runtime session'
+}
+
+function latestReportForSession(reports: Report[], sessionId: string) {
+  return reports
+    .filter((report) => report.from === sessionId)
+    .sort((left, right) => right.envelope.ts.localeCompare(left.envelope.ts))[0]
+}
+
+function reportTitle(report: Report) {
+  if (report.payload.type === 'verdict') {
+    return `verdict: ${report.payload.verdict}`
+  }
+
+  if (report.payload.type === 'relationship') {
+    return `relationship: ${report.payload.target}`
+  }
+
+  return 'info'
+}
+
+function reportBody(report: Report) {
+  if (report.payload.type === 'verdict') {
+    if (report.payload.summary) {
+      return report.payload.summary
+    }
+
+    if (report.payload.issues?.length) {
+      return report.payload.issues
+        .map((issue) => issue.file ? `${issue.message} (${issue.file})` : issue.message)
+        .join('\n')
+    }
+
+    return 'No issues listed.'
+  }
+
+  if (report.payload.type === 'relationship') {
+    return report.payload.nature ?? report.payload.sessionRef ?? 'relationship'
+  }
+
+  return JSON.stringify(report.payload.payload)
 }
 
 function sessionSort(left: AgentSession, right: AgentSession) {
@@ -186,6 +244,11 @@ function App() {
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
+  const selectedReports = selectedSessionId
+    ? runtimeState.reports
+        .filter((report) => report.from === selectedSessionId)
+        .sort((left, right) => right.envelope.ts.localeCompare(left.envelope.ts))
+    : []
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
@@ -202,6 +265,14 @@ function App() {
     () =>
       runtimeState.nodes.map((node) => {
         const session = runtimeState.sessions[node.sessionId]
+        const latestReport = latestReportForSession(
+          runtimeState.reports,
+          node.sessionId
+        )
+        const latestVerdict =
+          latestReport?.payload.type === 'verdict'
+            ? latestReport.payload.verdict
+            : undefined
         return {
           id: node.nodeId,
           type: 'agent',
@@ -212,6 +283,10 @@ function App() {
             agent: node.agent,
             status: node.status,
             messageCount: session?.messages.length ?? 0,
+            latestVerdict,
+            latestReportSummary: latestReport
+              ? reportBody(latestReport)
+              : undefined,
           },
         }
       }),
@@ -226,6 +301,10 @@ function App() {
         target: edge.target,
         animated: edge.kind === 'create-session' || edge.kind === 'resume-session',
         label: edge.label ?? edge.kind,
+        style:
+          edge.kind === 'resume-session'
+            ? { strokeDasharray: '6 4' }
+            : undefined,
       })),
     [runtimeState]
   )
@@ -351,7 +430,7 @@ function App() {
                     Orrery
                   </h1>
                   <p className="text-xs text-muted-foreground">
-                    P1 live sessions
+                    P2 membrane sessions
                   </p>
                 </div>
               </div>
@@ -409,32 +488,49 @@ function App() {
                 </div>
               ) : null}
 
-              {sessions.map((session) => (
-                <button
-                  key={session.sessionId}
-                  type="button"
-                  className={cn(
-                    'app-region-no-drag w-full rounded-lg border border-border bg-background/60 p-3 text-left transition hover:bg-accent',
-                    selectedSessionId === session.sessionId && 'border-primary'
-                  )}
-                  onClick={() => setSelectedSessionId(session.sessionId)}
-                >
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <Terminal className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="truncate text-sm font-medium">
-                        {session.label}
-                      </span>
+              {sessions.map((session) => {
+                const latestReport = latestReportForSession(
+                  runtimeState.reports,
+                  session.sessionId
+                )
+                const latestVerdict =
+                  latestReport?.payload.type === 'verdict'
+                    ? latestReport.payload.verdict
+                    : undefined
+
+                return (
+                  <button
+                    key={session.sessionId}
+                    type="button"
+                    className={cn(
+                      'app-region-no-drag w-full rounded-lg border border-border bg-background/60 p-3 text-left transition hover:bg-accent',
+                      selectedSessionId === session.sessionId && 'border-primary'
+                    )}
+                    onClick={() => setSelectedSessionId(session.sessionId)}
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <Terminal className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate text-sm font-medium">
+                          {session.label}
+                        </span>
+                      </div>
+                      <Badge variant="secondary" className="shrink-0">
+                        {statusLabels[session.status]}
+                      </Badge>
                     </div>
-                    <Badge variant="secondary" className="shrink-0">
-                      {statusLabels[session.status]}
-                    </Badge>
-                  </div>
-                  <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-                    {lastMessagePreview(session)}
-                  </p>
-                </button>
-              ))}
+                    <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
+                      {lastMessagePreview(session)}
+                    </p>
+                    {latestVerdict ? (
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <ClipboardCheck className="size-3" />
+                        {latestVerdict}
+                      </div>
+                    ) : null}
+                  </button>
+                )
+              })}
             </div>
           </section>
 
@@ -460,6 +556,24 @@ function App() {
                   selectedSession?.sessionId ??
                   'Select a graph node.'}
               </p>
+              {selectedReports.length ? (
+                <div className="mt-3 space-y-2">
+                  {selectedReports.slice(0, 3).map((report) => (
+                    <div
+                      key={report.id}
+                      className="rounded-md border border-border bg-background/70 p-2"
+                    >
+                      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
+                        <ClipboardCheck className="size-3" />
+                        {reportTitle(report)}
+                      </div>
+                      <p className="whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                        {reportBody(report)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -517,7 +631,7 @@ function App() {
 
           <Separator />
 
-          <footer className="grid grid-cols-4 gap-2 p-3">
+          <footer className="grid grid-cols-5 gap-2 p-3">
             {[
               {
                 icon: Activity,
@@ -532,8 +646,12 @@ function App() {
                 label: `updated ${runtimeState.updatedAt.slice(11, 19)}`,
               },
               {
+                icon: GitBranch,
+                label: `${runtimeState.edges.length} edges`,
+              },
+              {
                 icon: Clock,
-                label: `${runtimeState.nodes.length} nodes`,
+                label: `${runtimeState.reports.length} reports`,
               },
             ].map((item) => (
               <Tooltip key={item.label}>
