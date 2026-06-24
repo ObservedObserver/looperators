@@ -139,6 +139,10 @@ function buildClaudeArgs({ prompt, backendSessionId, sessionId, mcpConfigPath })
   return args
 }
 
+function claudeCommand() {
+  return process.env.ORRERY_CLAUDE_BIN || 'claude'
+}
+
 export class ClaudeCliRun extends EventEmitter {
   #child
   #stdoutBuffer = ''
@@ -155,7 +159,7 @@ export class ClaudeCliRun extends EventEmitter {
 
     try {
       this.#child = spawn(
-        'claude',
+        claudeCommand(),
         buildClaudeArgs({
           prompt,
           backendSessionId,
