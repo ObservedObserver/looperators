@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -23,17 +23,19 @@ import {
   Braces,
   ClipboardCheck,
   CirclePlay,
-  Clock,
+  FileText,
   GitBranch,
   MessageSquarePlus,
+  MessagesSquare,
   Moon,
-  PanelsTopLeft,
+  Orbit,
   RefreshCw,
   Send,
   Snowflake,
   Square,
   Sun,
   Terminal,
+  type LucideIcon,
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
@@ -59,6 +61,8 @@ import {
 } from '@/shared/graph-state'
 
 type ColorScheme = 'dark' | 'light'
+
+type RailTab = 'orchestrate' | 'sessions' | 'chat'
 
 type AgentNodeData = {
   label: string
@@ -123,6 +127,14 @@ const statusClassNames: Record<SessionStatus, string> = {
   idle: 'border-zinc-500/70 bg-zinc-500/10',
   failed: 'border-red-500/70 bg-red-500/10',
   killed: 'border-amber-500/70 bg-amber-500/10',
+}
+
+const statusDotClassNames: Record<SessionStatus, string> = {
+  pending: 'bg-sky-500',
+  running: 'bg-emerald-500',
+  idle: 'bg-zinc-400',
+  failed: 'bg-red-500',
+  killed: 'bg-amber-500',
 }
 
 const edgeKindLabels: Record<GraphEdgeKind, string> = {
@@ -614,10 +626,67 @@ function ChatMessage({ message }: { message: AgentMessage }) {
   )
 }
 
+const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
+  { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
+  { id: 'sessions', label: 'Sessions', icon: Terminal },
+  { id: 'chat', label: 'Chat', icon: MessagesSquare },
+]
+
+function OrreryMark({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-background text-primary',
+        className
+      )}
+    >
+      <svg viewBox="0 0 32 32" className="size-6" fill="none" aria-hidden="true">
+        <circle cx="16" cy="16" r="9" stroke="currentColor" strokeOpacity="0.22" />
+        <circle cx="16" cy="16" r="5.3" stroke="currentColor" strokeOpacity="0.16" />
+        <circle cx="16" cy="16" r="2.4" fill="currentColor" />
+        <g className="orrery-orbit">
+          <circle cx="25" cy="16" r="1.8" fill="currentColor" />
+        </g>
+        <g className="orrery-orbit-rev">
+          <circle cx="10.7" cy="16" r="1.3" fill="currentColor" fillOpacity="0.75" />
+        </g>
+      </svg>
+    </span>
+  )
+}
+
+function TabHeading({
+  icon: Icon,
+  title,
+  hint,
+  action,
+}: {
+  icon: LucideIcon
+  title: string
+  hint?: string
+  action?: ReactNode
+}) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <h3 className="truncate text-sm font-semibold tracking-tight">{title}</h3>
+        {hint ? (
+          <span className="shrink-0 text-[11px] font-normal text-muted-foreground">
+            {hint}
+          </span>
+        ) : null}
+      </div>
+      {action ?? null}
+    </div>
+  )
+}
+
 function App() {
   const [runtimeState, setRuntimeState] =
     useState<GraphState>(createEmptyGraphState)
   const [selectedSessionId, setSelectedSessionId] = useState<string>()
+  const [activeTab, setActiveTab] = useState<RailTab>('orchestrate')
   const [newPrompt, setNewPrompt] = useState(defaultPrompt)
   const [message, setMessage] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -857,6 +926,7 @@ function App() {
       })
       setRuntimeState(result.state)
       setSelectedSessionId(result.sessionId)
+      setActiveTab('chat')
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1094,444 +1164,538 @@ function App() {
 
   return (
     <TooltipProvider>
-      <main className="flex h-screen min-h-[720px] overflow-hidden bg-background text-foreground">
-        <aside className="flex w-[440px] shrink-0 flex-col border-r border-border bg-sidebar">
+      <main className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+        <aside className="orrery-sidebar flex h-dvh min-h-0 w-[min(440px,100vw)] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar">
           <header
             className={cn(
-              'app-region-drag space-y-4 px-5 pb-4 pt-5',
-              isElectron && 'pt-16'
+              'app-region-drag flex shrink-0 items-center justify-between gap-3 px-4 py-3',
+              isElectron && 'pt-9'
             )}
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="flex size-9 items-center justify-center rounded-lg border border-border bg-background">
-                  <PanelsTopLeft className="size-4" />
-                </div>
-                <div>
-                  <h1 className="text-base font-semibold tracking-normal">
-                    Orrery
-                  </h1>
-                  <p className="text-xs text-muted-foreground">
-                    P3 master loops
-                  </p>
-                </div>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <OrreryMark />
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-semibold leading-tight">
+                  Orrery
+                </h1>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  P3 master loops
+                </p>
               </div>
-              <Badge variant={isElectron ? 'outline' : 'destructive'}>
-                {isElectron ? 'electron' : 'web only'}
-              </Badge>
             </div>
-
-            <div className="space-y-2">
-              <label
-                htmlFor="new-session-prompt"
-                className="text-xs font-medium uppercase tracking-normal text-muted-foreground"
-              >
-                New session
-              </label>
-              <textarea
-                id="new-session-prompt"
-                className="app-region-no-drag min-h-24 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
-                value={newPrompt}
-                onChange={(event) => setNewPrompt(event.target.value)}
-              />
-              <Button
-                className="app-region-no-drag w-full justify-start"
-                disabled={
-                  !isElectron || isCreating || newPrompt.trim().length === 0
-                }
-                onClick={createSession}
-              >
-                <CirclePlay className="size-4" />
-                Start Claude Session
-              </Button>
-            </div>
-
-            {runtimeError ? (
-              <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-xs text-destructive">
-                {runtimeError}
-              </div>
-            ) : null}
-
-            <div className="app-region-no-drag space-y-3 rounded-lg border border-border bg-background/70 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
-                    Canvas orchestration
-                  </h2>
-                  <p className="text-xs text-muted-foreground">
-                    {selectedManagedNodeIds.length} managed selected
-                  </p>
-                </div>
-                <Badge variant="outline">{clusters.length} clusters</Badge>
-              </div>
-
-              <div className="grid grid-cols-[1fr_84px] gap-2">
-                <label className="space-y-1">
-                  <span className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
-                    Cluster
-                  </span>
-                  <input
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
-                    value={clusterLabel}
-                    onChange={(event) => setClusterLabel(event.target.value)}
-                  />
-                </label>
-                <label className="space-y-1">
-                  <span className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
-                    Max iter
-                  </span>
-                  <input
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
-                    inputMode="numeric"
-                    min={1}
-                    max={100}
-                    type="number"
-                    value={maxIterations}
-                    onChange={(event) => setMaxIterations(event.target.value)}
-                  />
-                </label>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="secondary">until verdict=clean</Badge>
-                <Badge variant="secondary">onStop freeze</Badge>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  className="justify-start"
-                  variant="outline"
-                  disabled={
-                    !isElectron ||
-                    isUpdatingCluster ||
-                    selectedManagedNodeIds.length === 0
-                  }
-                  onClick={upsertManagedCluster}
-                >
-                  <GitBranch className="size-4" />
-                  Save Cluster
-                </Button>
-                <Button
-                  className="justify-start"
-                  variant="outline"
-                  disabled={!isElectron || isUpdatingCluster || !activeClusterId}
-                  onClick={saveLoopPolicy}
-                >
-                  <ClipboardCheck className="size-4" />
-                  Save Policy
-                </Button>
-              </div>
-
-              <textarea
-                className="min-h-16 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-xs outline-none transition focus:ring-2 focus:ring-ring"
-                value={masterPrompt}
-                onChange={(event) => setMasterPrompt(event.target.value)}
-              />
-
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  className="justify-start"
-                  disabled={!isElectron || isCreatingMaster || !activeClusterId}
-                  onClick={createMasterForCluster}
-                >
-                  <Bot className="size-4" />
-                  {activeCluster?.masterSessionId ? 'Open Master' : 'Start Master'}
-                </Button>
-                <Button
-                  className="justify-start"
-                  variant="outline"
-                  disabled={
-                    !isElectron ||
-                    isCreatingMaster ||
-                    !activeClusterId ||
-                    !selectedSession ||
-                    selectedSessionIsMaster
-                  }
-                  onClick={assignSelectedAsMaster}
-                >
-                  <MessageSquarePlus className="size-4" />
-                  Assign Master
-                </Button>
-              </div>
-
-              <div className="rounded-md border border-border bg-background/70 p-2">
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  <Badge
-                    variant={activeLoopStatus === 'running' ? 'default' : 'secondary'}
-                  >
-                    {activeLoopStatus}
-                  </Badge>
-                  <Badge variant="outline">
-                    iter {activeLoopIterations}/{activeLoopMaxIterations}
-                  </Badge>
-                  {activeCluster?.frozen ? (
-                    <Badge variant="secondary">
-                      <Snowflake className="size-3" />
-                      frozen
-                    </Badge>
-                  ) : null}
-                </div>
-                <div className="mb-2 grid grid-cols-2 gap-2">
-                  <Button
-                    className="justify-start"
-                    disabled={!isElectron || isStartingLoop || !canStartLoop}
-                    onClick={startMasterLoop}
-                  >
-                    <CirclePlay className="size-4" />
-                    Run Loop
-                  </Button>
-                  <Button
-                    className="justify-start"
-                    variant="outline"
-                    disabled={!isElectron || isStoppingLoop || !canStopLoop}
-                    onClick={stopMasterLoop}
-                  >
-                    <Square className="size-4" />
-                    Stop Loop
-                  </Button>
-                </div>
-                <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
-                  <div className="truncate">last: {activeLoopLastEvent}</div>
-                  {activeLoopReason ? (
-                    <div className="line-clamp-2">reason: {activeLoopReason}</div>
-                  ) : null}
-                  {activeCluster?.freezeReason ? (
-                    <div className="line-clamp-2">
-                      freeze: {activeCluster.freezeReason}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              {clusters.length ? (
-                <div className="max-h-28 space-y-1 overflow-y-auto">
-                  {clusters.map((cluster) => (
-                    <button
-                      key={cluster.clusterId}
-                      type="button"
-                      className={cn(
-                        'w-full rounded-md border border-border bg-background/60 px-2 py-1.5 text-left transition hover:bg-accent',
-                        activeClusterId === cluster.clusterId && 'border-primary'
-                      )}
-                      onClick={() => {
-                        setActiveClusterId(cluster.clusterId)
-                        if (cluster.masterSessionId) {
-                          setSelectedSessionId(cluster.masterSessionId)
-                        }
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate text-xs font-medium">
-                          {cluster.label}
-                        </span>
-                        <Badge variant="secondary">
-                          {cluster.nodeIds.length}
-                        </Badge>
-                      </div>
-                      <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                        {loopPolicySummary(cluster) ?? 'No policy'}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+            <Badge
+              variant={isElectron ? 'outline' : 'destructive'}
+              className="shrink-0"
+            >
+              {isElectron ? 'electron' : 'web only'}
+            </Badge>
           </header>
 
-          <Separator />
-
-          <section className="max-h-52 shrink-0 overflow-y-auto px-3 py-4">
-            <div className="mb-3 flex items-center justify-between px-2">
-              <h2 className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
-                Sessions
-              </h2>
-              <Badge variant="secondary">{sessions.length}</Badge>
-            </div>
-
-            <div className="space-y-2">
-              {sessions.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                  No sessions yet.
-                </div>
-              ) : null}
-
-              {sessions.map((session) => {
-                const latestReport = latestReportForSession(
-                  runtimeState.reports,
-                  session.sessionId
-                )
-                const latestVerdict =
-                  latestReport?.payload.type === 'verdict'
-                    ? latestReport.payload.verdict
-                    : undefined
-
+          <div className="app-region-no-drag shrink-0 px-3 pb-3 pt-1">
+            <div
+              className="grid grid-cols-3 gap-1 rounded-xl border border-border bg-background/60 p-1"
+            >
+              {railTabs.map((tab) => {
+                const isActive = activeTab === tab.id
+                const TabIcon = tab.icon
                 return (
                   <button
-                    key={session.sessionId}
+                    key={tab.id}
                     type="button"
+                    aria-pressed={isActive}
+                    onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      'app-region-no-drag w-full rounded-lg border border-border bg-background/60 p-3 text-left transition hover:bg-accent',
-                      selectedSessionId === session.sessionId && 'border-primary'
+                      'relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors',
+                      isActive
+                        ? 'bg-primary/12 text-primary ring-1 ring-inset ring-primary/25'
+                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
                     )}
-                    onClick={() => setSelectedSessionId(session.sessionId)}
                   >
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <Terminal className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="truncate text-sm font-medium">
-                          {session.label}
-                        </span>
-                      </div>
-                      <Badge variant="secondary" className="shrink-0">
-                        {session.role === 'master'
-                          ? 'Master'
-                          : statusLabels[session.status]}
-                      </Badge>
-                    </div>
-                    <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-                      {lastMessagePreview(session)}
-                    </p>
-                    {latestVerdict ? (
-                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <ClipboardCheck className="size-3" />
-                        {latestVerdict}
-                      </div>
+                    <TabIcon className="size-3.5 shrink-0" />
+                    <span className="truncate">{tab.label}</span>
+                    {tab.id === 'sessions' && sessions.length ? (
+                      <span className="tabular-nums text-[10px] opacity-70">
+                        {sessions.length}
+                      </span>
                     ) : null}
                   </button>
                 )
               })}
             </div>
-          </section>
+          </div>
 
-          <Separator />
+          {runtimeError ? (
+            <div className="app-region-no-drag mx-3 mb-2 shrink-0 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
+              {runtimeError}
+            </div>
+          ) : null}
 
-          <section className="flex min-h-0 flex-1 flex-col">
-            <div className="border-b border-border p-4">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <MessageSquarePlus className="size-4 shrink-0 text-muted-foreground" />
-                  <h2 className="truncate text-sm font-semibold">
-                    {selectedSession?.label ?? 'Agent Chat Session'}
-                  </h2>
-                </div>
-                {selectedSession ? (
-                  <Badge variant="secondary">
-                    {statusLabels[selectedSession.status]}
-                  </Badge>
+          <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
+            {activeTab === 'orchestrate' ? (
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4">
+                <section className="space-y-2.5">
+                  <TabHeading icon={CirclePlay} title="New session" />
+                  <textarea
+                    id="new-session-prompt"
+                    className="min-h-20 max-h-40 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                    value={newPrompt}
+                    onChange={(event) => setNewPrompt(event.target.value)}
+                  />
+                  <Button
+                    className="w-full justify-center"
+                    disabled={
+                      !isElectron || isCreating || newPrompt.trim().length === 0
+                    }
+                    onClick={createSession}
+                  >
+                    <CirclePlay className="size-4" />
+                    Start Claude Session
+                  </Button>
+                </section>
+
+                <Separator />
+
+                <section className="space-y-3">
+                  <TabHeading
+                    icon={Orbit}
+                    title="Cluster"
+                    hint={`${selectedManagedNodeIds.length} ${
+                      selectedManagedNodeIds.length === 1 ? 'node' : 'nodes'
+                    } selected`}
+                    action={
+                      <Badge variant="outline" className="shrink-0">
+                        {clusters.length}{' '}
+                        {clusters.length === 1 ? 'cluster' : 'clusters'}
+                      </Badge>
+                    }
+                  />
+
+                  <div className="grid grid-cols-[minmax(0,1fr)_84px] gap-2">
+                    <label className="min-w-0 space-y-1">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Cluster
+                      </span>
+                      <input
+                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                        value={clusterLabel}
+                        onChange={(event) => setClusterLabel(event.target.value)}
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Max iter
+                      </span>
+                      <input
+                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                        inputMode="numeric"
+                        min={1}
+                        max={100}
+                        type="number"
+                        value={maxIterations}
+                        onChange={(event) => setMaxIterations(event.target.value)}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge variant="secondary">until verdict=clean</Badge>
+                    <Badge variant="secondary">onStop freeze</Badge>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      className="min-w-0 justify-start"
+                      variant="outline"
+                      disabled={
+                        !isElectron ||
+                        isUpdatingCluster ||
+                        selectedManagedNodeIds.length === 0
+                      }
+                      onClick={upsertManagedCluster}
+                    >
+                      <GitBranch className="size-4 shrink-0" />
+                      <span className="truncate">Save Cluster</span>
+                    </Button>
+                    <Button
+                      className="min-w-0 justify-start"
+                      variant="outline"
+                      disabled={
+                        !isElectron || isUpdatingCluster || !activeClusterId
+                      }
+                      onClick={saveLoopPolicy}
+                    >
+                      <ClipboardCheck className="size-4 shrink-0" />
+                      <span className="truncate">Save Policy</span>
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="space-y-2.5">
+                  <TabHeading icon={Bot} title="Master" />
+                  <textarea
+                    className="min-h-16 max-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 outline-none transition focus:ring-2 focus:ring-ring"
+                    value={masterPrompt}
+                    onChange={(event) => setMasterPrompt(event.target.value)}
+                  />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      className="min-w-0 justify-start"
+                      disabled={
+                        !isElectron || isCreatingMaster || !activeClusterId
+                      }
+                      onClick={createMasterForCluster}
+                    >
+                      <Bot className="size-4 shrink-0" />
+                      <span className="truncate">
+                        {activeCluster?.masterSessionId
+                          ? 'Open Master'
+                          : 'Start Master'}
+                      </span>
+                    </Button>
+                    <Button
+                      className="min-w-0 justify-start"
+                      variant="outline"
+                      disabled={
+                        !isElectron ||
+                        isCreatingMaster ||
+                        !activeClusterId ||
+                        !selectedSession ||
+                        selectedSessionIsMaster
+                      }
+                      onClick={assignSelectedAsMaster}
+                    >
+                      <MessageSquarePlus className="size-4 shrink-0" />
+                      <span className="truncate">Assign Master</span>
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="space-y-2.5">
+                  <TabHeading
+                    icon={Activity}
+                    title="Loop"
+                    action={
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <Badge
+                          variant={
+                            activeLoopStatus === 'running'
+                              ? 'default'
+                              : 'secondary'
+                          }
+                        >
+                          {activeLoopStatus}
+                        </Badge>
+                        <Badge variant="outline">
+                          iter {activeLoopIterations}/{activeLoopMaxIterations}
+                        </Badge>
+                        {activeCluster?.frozen ? (
+                          <Badge variant="secondary">
+                            <Snowflake className="size-3" />
+                            frozen
+                          </Badge>
+                        ) : null}
+                      </div>
+                    }
+                  />
+                  <div className="space-y-2.5 rounded-lg border border-border bg-background/60 p-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        className="min-w-0 justify-start"
+                        disabled={!isElectron || isStartingLoop || !canStartLoop}
+                        onClick={startMasterLoop}
+                      >
+                        <CirclePlay className="size-4 shrink-0" />
+                        <span className="truncate">Run Loop</span>
+                      </Button>
+                      <Button
+                        className="min-w-0 justify-start"
+                        variant="outline"
+                        disabled={!isElectron || isStoppingLoop || !canStopLoop}
+                        onClick={stopMasterLoop}
+                      >
+                        <Square className="size-4 shrink-0" />
+                        <span className="truncate">Stop Loop</span>
+                      </Button>
+                    </div>
+                    <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
+                      <div className="truncate">last: {activeLoopLastEvent}</div>
+                      {activeLoopReason ? (
+                        <div className="line-clamp-2 break-words">
+                          reason: {activeLoopReason}
+                        </div>
+                      ) : null}
+                      {activeCluster?.freezeReason ? (
+                        <div className="line-clamp-2 break-words">
+                          freeze: {activeCluster.freezeReason}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </section>
+
+                {clusters.length ? (
+                  <section className="space-y-2">
+                    <TabHeading icon={GitBranch} title="Clusters" />
+                    <div className="space-y-1.5">
+                      {clusters.map((cluster) => (
+                        <button
+                          key={cluster.clusterId}
+                          type="button"
+                          className={cn(
+                            'w-full rounded-md border border-border bg-background/60 px-2.5 py-2 text-left transition hover:bg-accent',
+                            activeClusterId === cluster.clusterId &&
+                              'border-primary/70 bg-primary/5'
+                          )}
+                          onClick={() => {
+                            setActiveClusterId(cluster.clusterId)
+                            if (cluster.masterSessionId) {
+                              setSelectedSessionId(cluster.masterSessionId)
+                            }
+                          }}
+                        >
+                          <div className="flex min-w-0 items-center justify-between gap-2">
+                            <span className="truncate text-xs font-medium">
+                              {cluster.label}
+                            </span>
+                            <Badge variant="secondary" className="shrink-0">
+                              {cluster.nodeIds.length}
+                            </Badge>
+                          </div>
+                          <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                            {loopPolicySummary(cluster) ?? 'No policy'}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 ) : null}
               </div>
-              <p className="break-all text-xs leading-5 text-muted-foreground">
-                {selectedSession?.backendSessionId ??
-                  selectedSession?.sessionId ??
-                  'Select a graph node.'}
-              </p>
-              {selectedReports.length ? (
-                <div className="mt-3 space-y-2">
-                  {selectedReports.slice(0, 3).map((report) => (
-                    <div
-                      key={report.id}
-                      className="rounded-md border border-border bg-background/70 p-2"
-                    >
-                      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
-                        <ClipboardCheck className="size-3" />
-                        {reportTitle(report)}
-                      </div>
-                      <p className="whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
-                        {reportBody(report)}
-                      </p>
+            ) : null}
+
+            {activeTab === 'sessions' ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 px-4 pb-2 pt-3">
+                  <TabHeading
+                    icon={Terminal}
+                    title="Sessions"
+                    hint={`${runningSessions.length} running`}
+                    action={
+                      <Badge variant="secondary" className="shrink-0">
+                        {sessions.length}
+                      </Badge>
+                    }
+                  />
+                </div>
+
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
+                  {sessions.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                      No sessions yet. Start one from the Orchestrate tab.
                     </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+                  ) : null}
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-              {selectedSession?.messages.length ? (
-                selectedSession.messages.map((item) => (
-                  <ChatMessage key={item.id} message={item} />
-                ))
-              ) : (
-                <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                  No chat history.
-                </div>
-              )}
-            </div>
+                  {sessions.map((session) => {
+                    const latestReport = latestReportForSession(
+                      runtimeState.reports,
+                      session.sessionId
+                    )
+                    const latestVerdict =
+                      latestReport?.payload.type === 'verdict'
+                        ? latestReport.payload.verdict
+                        : undefined
 
-            <div className="border-t border-border p-3">
-              <textarea
-                className="app-region-no-drag mb-2 min-h-20 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
-                placeholder="Message selected session"
-                value={message}
-                disabled={!selectedSession || !canResume || isResuming}
-                onChange={(event) => setMessage(event.target.value)}
-              />
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <Button
-                  className="app-region-no-drag justify-start"
-                  disabled={
-                    !selectedSession ||
-                    !canResume ||
-                    isResuming ||
-                    message.trim().length === 0
-                  }
-                  onClick={resumeSelectedSession}
-                >
-                  <Send className="size-4" />
-                  Resume Session
-                </Button>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className="app-region-no-drag"
-                      variant="outline"
-                      size="icon"
-                      disabled={!selectedSession || !canKill}
-                      aria-label="Kill selected session"
-                      onClick={killSelectedSession}
-                    >
-                      <Square className="size-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Kill selected session</TooltipContent>
-                </Tooltip>
+                    return (
+                      <button
+                        key={session.sessionId}
+                        type="button"
+                        className={cn(
+                          'w-full rounded-lg border border-border bg-background/60 p-3 text-left transition hover:bg-accent',
+                          selectedSessionId === session.sessionId &&
+                            'border-primary/70 bg-primary/5 ring-1 ring-primary/20'
+                        )}
+                        onClick={() => {
+                          setSelectedSessionId(session.sessionId)
+                          setActiveTab('chat')
+                        }}
+                      >
+                        <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span
+                              className={cn(
+                                'size-2 shrink-0 rounded-full',
+                                session.role === 'master'
+                                  ? 'bg-amber-500'
+                                  : statusDotClassNames[session.status]
+                              )}
+                            />
+                            <span className="truncate text-sm font-medium">
+                              {session.label}
+                            </span>
+                          </div>
+                          <Badge variant="secondary" className="shrink-0">
+                            {session.role === 'master'
+                              ? 'Master'
+                              : statusLabels[session.status]}
+                          </Badge>
+                        </div>
+                        <p className="line-clamp-2 break-words text-xs leading-5 text-muted-foreground">
+                          {lastMessagePreview(session)}
+                        </p>
+                        {latestVerdict ? (
+                          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <ClipboardCheck className="size-3 shrink-0" />
+                            <span className="truncate">{latestVerdict}</span>
+                          </div>
+                        ) : null}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-          </section>
+            ) : null}
 
-          <Separator />
+            {activeTab === 'chat' ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="shrink-0 border-b border-border px-4 py-3">
+                  <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <MessagesSquare className="size-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                          Selected session
+                        </div>
+                        <h2 className="truncate text-sm font-semibold">
+                          {selectedSession?.label ?? 'No session selected'}
+                        </h2>
+                      </div>
+                    </div>
+                    {selectedSession ? (
+                      <Badge variant="secondary" className="shrink-0">
+                        {statusLabels[selectedSession.status]}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="truncate font-mono text-[11px] leading-5 text-muted-foreground">
+                    {selectedSession?.backendSessionId ??
+                      selectedSession?.sessionId ??
+                      'Select a node on the graph or a session.'}
+                  </p>
+                  {selectedReports.length ? (
+                    <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1">
+                      {selectedReports.slice(0, 3).map((report) => (
+                        <div
+                          key={report.id}
+                          className="rounded-md border border-border bg-background/70 p-2"
+                        >
+                          <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide">
+                            <ClipboardCheck className="size-3 shrink-0" />
+                            <span className="truncate">
+                              {reportTitle(report)}
+                            </span>
+                          </div>
+                          <p className="whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                            {reportBody(report)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
 
-          <footer className="grid grid-cols-5 gap-2 p-3">
-            {[
-              {
-                icon: Activity,
-                label: `${runningSessions.length} running`,
-              },
-              {
-                icon: Braces,
-                label: `schema v${graphStateSchema.version}`,
-              },
-              {
-                icon: RefreshCw,
-                label: `updated ${runtimeState.updatedAt.slice(11, 19)}`,
-              },
-              {
-                icon: GitBranch,
-                label: `${runtimeState.edges.length} edges`,
-              },
-              {
-                icon: Clock,
-                label: `${runtimeState.reports.length} reports`,
-              },
-            ].map((item) => (
-              <Tooltip key={item.label}>
-                <TooltipTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label={item.label}>
-                    <item.icon className="size-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>{item.label}</TooltipContent>
-              </Tooltip>
-            ))}
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5">
+                  {selectedSession?.messages.length ? (
+                    selectedSession.messages.map((item) => (
+                      <ChatMessage key={item.id} message={item} />
+                    ))
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                      No chat history.
+                    </div>
+                  )}
+                </div>
+
+                <div className="shrink-0 border-t border-border p-2.5">
+                  <textarea
+                    className="app-region-no-drag mb-2 min-h-11 max-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring disabled:opacity-60"
+                    placeholder="Message selected session"
+                    value={message}
+                    disabled={!selectedSession || !canResume || isResuming}
+                    onChange={(event) => setMessage(event.target.value)}
+                  />
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                    <Button
+                      className="app-region-no-drag min-w-0 justify-center"
+                      disabled={
+                        !selectedSession ||
+                        !canResume ||
+                        isResuming ||
+                        message.trim().length === 0
+                      }
+                      onClick={resumeSelectedSession}
+                    >
+                      <Send className="size-4 shrink-0" />
+                      <span className="truncate">Resume Session</span>
+                    </Button>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          className="app-region-no-drag"
+                          variant="destructive"
+                          size="icon"
+                          disabled={!selectedSession || !canKill}
+                          aria-label="Kill selected session"
+                          onClick={killSelectedSession}
+                        >
+                          <Square className="size-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Kill selected session</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+            <span className="flex items-center gap-1.5" title="Running sessions">
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  runningSessions.length
+                    ? 'bg-emerald-500'
+                    : 'bg-muted-foreground/40'
+                )}
+              />
+              <span className="tabular-nums text-foreground/80">
+                {runningSessions.length}
+              </span>
+              running
+            </span>
+            <Separator orientation="vertical" className="h-3" />
+            <span className="flex items-center gap-1" title="Graph edges">
+              <GitBranch className="size-3" />
+              <span className="tabular-nums">{runtimeState.edges.length}</span>
+            </span>
+            <span className="flex items-center gap-1" title="Reports">
+              <FileText className="size-3" />
+              <span className="tabular-nums">{runtimeState.reports.length}</span>
+            </span>
+            <span className="ml-auto flex items-center gap-2.5">
+              <span
+                className="flex items-center gap-1"
+                title={`Graph schema v${graphStateSchema.version}`}
+              >
+                <Braces className="size-3" />v{graphStateSchema.version}
+              </span>
+              <span
+                className="flex items-center gap-1 tabular-nums"
+                title="Last updated"
+              >
+                <RefreshCw className="size-3" />
+                {runtimeState.updatedAt.slice(11, 19)}
+              </span>
+            </span>
           </footer>
         </aside>
 
@@ -1646,6 +1810,7 @@ function App() {
               onNodeClick={(_event, node) => {
                 if (!node.id.startsWith('cluster:')) {
                   setSelectedSessionId(node.id)
+                  setActiveTab('chat')
                 }
               }}
               onSelectionChange={updateCanvasSelection}
