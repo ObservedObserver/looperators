@@ -1066,7 +1066,8 @@ function App() {
     try {
       const result = await window.orrery.runtime.stopMasterLoop({
         clusterId: activeClusterId,
-        reason: 'Loop stopped from Orrery controls.',
+        reason: 'Loop killed from Orrery controls.',
+        killRunning: true,
       })
       setRuntimeState(result.state)
     } catch (error) {

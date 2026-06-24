@@ -25,7 +25,11 @@ emit({
   session_id: backendSessionId,
   message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
 })
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
+if ((readArg('-p') ?? '').trimStart().startsWith('ORRERY_DELAY')) {
+  setInterval(() => {}, 1000)
+} else {
+  emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
+}
 `
 
 function installFakeClaude() {
@@ -59,6 +63,12 @@ function manager(input) {
 async function waitIdle(runtime, sessionId, label = sessionId) {
   await waitFor(`${label} idle`, () =>
     runtime.getState().sessions[sessionId]?.status === 'idle'
+  )
+}
+
+async function waitStatus(runtime, sessionId, status, label = sessionId) {
+  await waitFor(`${label} ${status}`, () =>
+    runtime.getState().sessions[sessionId]?.status === status
   )
 }
 
@@ -256,6 +266,98 @@ try {
     0,
     'stopped loop must not resume coder after later reports'
   )
+
+  const killedCoder = await runtime.createSession({
+    prompt: 'ORRERY_DELAY running coder killed while loop waits',
+    label: 'Killed Coder',
+    cwd: process.cwd(),
+  })
+  await waitStatus(runtime, killedCoder.sessionId, 'running', 'killed coder')
+  const killPolicy = {
+    until: { whenReport: { verdict: 'clean' } },
+    onStop: 'freeze',
+    maxIterations: 3,
+  }
+  const killCluster = runtime.upsertCluster({
+    label: 'Kill guard loop',
+    nodeIds: [killedCoder.sessionId],
+    loopPolicy: killPolicy,
+  })
+  const killMaster = await runtime.createMasterForCluster({
+    clusterId: killCluster.clusterId,
+    label: 'Kill guard Master',
+    prompt: 'kill guard master',
+    loopPolicy: killPolicy,
+  })
+  await waitIdle(runtime, killMaster.sessionId, 'kill guard master')
+  runtime.startMasterLoop({
+    clusterId: killCluster.clusterId,
+    reason: 'smoke kill guard start',
+  })
+  await waitFor('kill guard loop waiting for coder', () => {
+    const cluster = runtime.getState().clusters[killCluster.clusterId]
+    return (
+      cluster?.loopState?.status === 'running' &&
+      cluster.loopState.reason === 'Waiting for coder to finish.'
+    )
+  })
+  runtime.killSession(killedCoder.sessionId)
+  await waitFor('kill guard loop stopped after coder kill', () => {
+    const state = runtime.getState()
+    const cluster = state.clusters[killCluster.clusterId]
+    return (
+      state.sessions[killedCoder.sessionId]?.status === 'killed' &&
+      cluster?.loopState?.status === 'stopped' &&
+      cluster.loopState.reason?.includes('killed') &&
+      edges(state, 'create-session', killMaster.sessionId).length === 0 &&
+      edges(state, 'resume-session', killMaster.sessionId).length === 0
+    )
+  })
+
+  const stoppedRunningCoder = await runtime.createSession({
+    prompt: 'ORRERY_DELAY running coder killed by stopMasterLoop',
+    label: 'Stop Kill Coder',
+    cwd: process.cwd(),
+  })
+  await waitStatus(
+    runtime,
+    stoppedRunningCoder.sessionId,
+    'running',
+    'stop kill coder'
+  )
+  const stopKillCluster = runtime.upsertCluster({
+    label: 'Stop kill loop',
+    nodeIds: [stoppedRunningCoder.sessionId],
+    loopPolicy: killPolicy,
+  })
+  const stopKillMaster = await runtime.createMasterForCluster({
+    clusterId: stopKillCluster.clusterId,
+    label: 'Stop kill Master',
+    prompt: 'stop kill master',
+    loopPolicy: killPolicy,
+  })
+  await waitIdle(runtime, stopKillMaster.sessionId, 'stop kill master')
+  runtime.startMasterLoop({
+    clusterId: stopKillCluster.clusterId,
+    reason: 'smoke stop kill start',
+  })
+  await waitFor('stop kill loop running', () =>
+    runtime.getState().clusters[stopKillCluster.clusterId]?.loopState?.status ===
+    'running'
+  )
+  runtime.stopMasterLoop({
+    clusterId: stopKillCluster.clusterId,
+    reason: 'smoke stop kill',
+    killRunning: true,
+  })
+  await waitFor('stop kill loop killed running coder', () => {
+    const state = runtime.getState()
+    const cluster = state.clusters[stopKillCluster.clusterId]
+    return (
+      cluster?.loopState?.status === 'stopped' &&
+      state.sessions[stoppedRunningCoder.sessionId]?.status === 'killed'
+    )
+  })
 
   const finalState = runtime.getState()
   console.log(

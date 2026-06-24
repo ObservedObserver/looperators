@@ -320,7 +320,11 @@ export class RuntimeSessionManager {
       this.#markActiveAssistant(sessionId, 'failed')
       this.#updateNodeStatus(sessionId, 'killed')
       this.#touch()
-      this.#broadcast({ type: 'session.killed', sessionId, state: this.getState() })
+      this.#emitRuntimeEvent({
+        type: 'session.killed',
+        sessionId,
+        state: this.getState(),
+      })
     }
 
     return { ok, state: this.getState() }
@@ -665,7 +669,7 @@ export class RuntimeSessionManager {
         this.#updateNodeStatus(sessionId, 'killed')
         this.#runContext.delete(sessionId)
         this.#touch()
-        this.#broadcast({
+        this.#emitRuntimeEvent({
           type: 'session.killed',
           sessionId,
           state: this.getState(),
@@ -1153,11 +1157,12 @@ export class RuntimeSessionManager {
   #clusterIdsForRuntimeEvent(event) {
     if (
       event.type === 'session.finished' ||
-      event.type === 'session.failed'
+      event.type === 'session.failed' ||
+      event.type === 'session.killed'
     ) {
       const clusterId =
         this.#managedClusterId(event.sessionId) ??
-        (event.type === 'session.failed'
+        (event.type === 'session.failed' || event.type === 'session.killed'
           ? this.#masterClusterId(event.sessionId)
           : undefined)
       return clusterId ? [clusterId] : []
@@ -1268,12 +1273,15 @@ export class RuntimeSessionManager {
       return
     }
 
-    if (event.type === 'session.failed') {
+    if (event.type === 'session.failed' || event.type === 'session.killed') {
+      const killed = event.type === 'session.killed'
       this.#stopLoop(
         clusterId,
-        event.error
-          ? `Managed session failed: ${event.error}`
-          : 'Managed session failed.',
+        killed
+          ? 'Managed session was killed; loop stopped.'
+          : event.error
+            ? `Managed session failed: ${event.error}`
+            : 'Managed session failed.',
         { event, broadcast: true }
       )
       return
