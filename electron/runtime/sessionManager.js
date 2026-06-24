@@ -2,7 +2,11 @@ import electron from 'electron'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { createEmptyGraphState, graphStateVersion } from '../../shared/graph-state.js'
+import {
+  createEmptyGraphState,
+  graphEdgeKinds,
+  graphStateVersion,
+} from '../../shared/graph-state.js'
 import { runClaudeCli } from './claudeCliAdapter.js'
 import { MembraneBridge } from './membraneBridge.js'
 
@@ -18,6 +22,7 @@ const storageBackupSuffix = '.bak'
 const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
+const validGraphEdgeKinds = new Set(graphEdgeKinds)
 
 function now() {
   return new Date().toISOString()
@@ -613,6 +618,7 @@ export class RuntimeSessionManager {
       kind: 'create-session',
       envelope,
       label: input.label ? `create: ${input.label}` : 'create_session',
+      masterReason: this.#masterReasonFromInput(source, input),
     })
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
@@ -646,6 +652,7 @@ export class RuntimeSessionManager {
       kind: 'resume-session',
       envelope,
       label: 'resume_session',
+      masterReason: this.#masterReasonFromInput(source, input),
     })
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
@@ -679,6 +686,8 @@ export class RuntimeSessionManager {
         kind: 'report',
         envelope,
         label: payload.nature ?? 'relationship',
+        reportId: report.id,
+        summary: payload.target,
       })
     }
 
@@ -700,7 +709,20 @@ export class RuntimeSessionManager {
     }
   }
 
-  #addEdge({ source, target, kind, envelope, label }) {
+  #addEdge({
+    source,
+    target,
+    kind,
+    envelope,
+    label,
+    reportId,
+    verdict,
+    issueCount,
+    summary,
+    masterReason,
+    frozen,
+    freezeReason,
+  }) {
     if (!this.#state.sessions[source]) {
       throw new Error(`Unknown edge source session: ${source}`)
     }
@@ -717,7 +739,25 @@ export class RuntimeSessionManager {
       call: envelope,
       label,
       ts: envelope.ts,
+      reportId,
+      verdict,
+      issueCount,
+      summary,
+      masterReason,
+      frozen,
+      freezeReason,
     })
+  }
+
+  #masterReasonFromInput(source, input) {
+    if (this.#state.sessions[source]?.role !== 'master') {
+      return undefined
+    }
+
+    const reason = input?.masterReason ?? input?.reason
+    return typeof reason === 'string' && reason.trim().length > 0
+      ? reason.trim()
+      : undefined
   }
 
   #normalizeReportPayload(input) {
@@ -1192,6 +1232,9 @@ export class RuntimeSessionManager {
             y: Number.isFinite(node.position.y) ? node.position.y : 96,
           }
         : { x: 96, y: 96 },
+      frozen: node.frozen === true,
+      freezeReason: nonEmptyString(node.freezeReason) ? node.freezeReason : undefined,
+      masterReason: nonEmptyString(node.masterReason) ? node.masterReason : undefined,
     }
   }
 
@@ -1207,6 +1250,7 @@ export class RuntimeSessionManager {
         x: 96,
         y: 96,
       },
+      frozen: false,
     }
   }
 
@@ -1243,13 +1287,28 @@ export class RuntimeSessionManager {
       }
     }
 
+    const kind = validGraphEdgeKinds.has(value.kind) ? value.kind : 'create-session'
+
     return {
       ...value,
       edgeId: nonEmptyString(value.edgeId) ? value.edgeId : randomUUID(),
       source: nonEmptyString(value.source) ? value.source : '',
       target: nonEmptyString(value.target) ? value.target : '',
-      kind: nonEmptyString(value.kind) ? value.kind : 'create-session',
+      kind,
       ts: nonEmptyString(value.ts) ? value.ts : now(),
+      reportId: nonEmptyString(value.reportId) ? value.reportId : undefined,
+      verdict: nonEmptyString(value.verdict) ? value.verdict : undefined,
+      issueCount: Number.isFinite(value.issueCount) ? value.issueCount : undefined,
+      summary: nonEmptyString(value.summary) ? value.summary : undefined,
+      masterReason: nonEmptyString(value.masterReason)
+        ? value.masterReason
+        : nonEmptyString(value.reason)
+          ? value.reason
+          : undefined,
+      frozen: value.frozen === true,
+      freezeReason: nonEmptyString(value.freezeReason)
+        ? value.freezeReason
+        : undefined,
     }
   }
 
@@ -1281,6 +1340,10 @@ export class RuntimeSessionManager {
             nodeIds: Array.isArray(cluster.nodeIds)
               ? cluster.nodeIds.filter(nonEmptyString)
               : [],
+            frozen: cluster.frozen === true,
+            freezeReason: nonEmptyString(cluster.freezeReason)
+              ? cluster.freezeReason
+              : undefined,
           },
         ])
     )
