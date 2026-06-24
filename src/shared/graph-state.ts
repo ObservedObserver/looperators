@@ -1,9 +1,9 @@
-export const graphStateVersion = 1
+export const graphStateVersion = 2
 
 export const sessionStatuses = [
   'pending',
   'running',
-  'finished',
+  'idle',
   'failed',
   'killed',
 ] as const
@@ -53,6 +53,7 @@ export const graphStateSchema = {
   runtimeEvents: [
     'runtime.state',
     'session.created',
+    'session.resumed',
     'session.stream',
     'session.finished',
     'session.failed',
@@ -134,6 +135,18 @@ export type AgentStreamChunk = {
   text?: string
 }
 
+export type AgentMessageRole = 'user' | 'assistant' | 'system'
+
+export type AgentMessage = {
+  id: string
+  sessionId: SessionId
+  role: AgentMessageRole
+  content: string
+  ts: string
+  runId?: string
+  status?: 'streaming' | 'complete' | 'failed'
+}
+
 export type AgentSession = {
   sessionId: SessionId
   nodeId: NodeId
@@ -154,6 +167,7 @@ export type AgentSession = {
   error?: string
   result?: string
   chunks: AgentStreamChunk[]
+  messages: AgentMessage[]
 }
 
 export type Cluster = {
@@ -186,9 +200,16 @@ export type CreateRuntimeSessionResult = {
   state: GraphState
 }
 
+export type ResumeRuntimeSessionInput = {
+  sessionId: SessionId
+  message: string
+  context?: string
+}
+
 export type RuntimeEvent =
   | { type: 'runtime.state'; state: GraphState }
   | { type: 'session.created'; sessionId: SessionId; state: GraphState }
+  | { type: 'session.resumed'; sessionId: SessionId; state: GraphState }
   | {
       type: 'session.stream'
       sessionId: SessionId

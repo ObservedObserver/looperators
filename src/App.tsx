@@ -18,9 +18,11 @@ import {
   Braces,
   CirclePlay,
   Clock,
+  MessageSquarePlus,
   Moon,
   PanelsTopLeft,
   RefreshCw,
+  Send,
   Square,
   Sun,
   Terminal,
@@ -39,6 +41,7 @@ import { cn } from '@/lib/utils'
 import {
   createEmptyGraphState,
   graphStateSchema,
+  type AgentMessage,
   type AgentSession,
   type GraphState,
   type SessionStatus,
@@ -51,13 +54,13 @@ type AgentNodeData = {
   description: string
   agent: string
   status: SessionStatus
-  chunkCount: number
+  messageCount: number
 }
 
 const statusLabels: Record<SessionStatus, string> = {
   pending: 'Pending',
   running: 'Running',
-  finished: 'Finished',
+  idle: 'Idle',
   failed: 'Failed',
   killed: 'Killed',
 }
@@ -65,13 +68,13 @@ const statusLabels: Record<SessionStatus, string> = {
 const statusClassNames: Record<SessionStatus, string> = {
   pending: 'border-sky-500/70 bg-sky-500/10',
   running: 'border-emerald-500/70 bg-emerald-500/10',
-  finished: 'border-zinc-500/70 bg-zinc-500/10',
+  idle: 'border-zinc-500/70 bg-zinc-500/10',
   failed: 'border-red-500/70 bg-red-500/10',
   killed: 'border-amber-500/70 bg-amber-500/10',
 }
 
 const defaultPrompt =
-  'You are running under Orrery P0 runtime verification. Reply with one short sentence confirming stream-json is working, then stop.'
+  'You are running under Orrery P1 live session verification. Reply with one short sentence confirming this node is a resumable Claude session.'
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   return (
@@ -106,7 +109,7 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
       </p>
       <div className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
         <Activity className="size-3" />
-        {data.chunkCount} stream chunks
+        {data.messageCount} messages
       </div>
       <Handle
         type="source"
@@ -121,26 +124,52 @@ const nodeTypes = {
   agent: AgentNode,
 }
 
-function sessionText(session: AgentSession | undefined) {
-  if (!session) {
-    return ''
+function lastMessagePreview(session: AgentSession | undefined) {
+  const message = session?.messages.at(-1)
+  if (message?.content) {
+    return message.content
   }
 
-  return session.chunks
-    .map((chunk) => {
-      const prefix = chunk.eventType ?? chunk.stream
-      const body = chunk.text ?? chunk.raw
-      return `[${prefix}] ${body}`
-    })
-    .join('\n')
+  return session?.prompt ?? 'Runtime session'
+}
+
+function sessionSort(left: AgentSession, right: AgentSession) {
+  return right.updatedAt.localeCompare(left.updatedAt)
+}
+
+function ChatMessage({ message }: { message: AgentMessage }) {
+  const isUser = message.role === 'user'
+
+  return (
+    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
+      <div
+        className={cn(
+          'max-w-[88%] rounded-lg border px-3 py-2 text-sm leading-6',
+          isUser
+            ? 'border-primary/30 bg-primary text-primary-foreground'
+            : 'border-border bg-background'
+        )}
+      >
+        <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-normal opacity-70">
+          {isUser ? 'You' : 'Claude'}
+          {message.status === 'streaming' ? (
+            <span className="normal-case">streaming</span>
+          ) : null}
+        </div>
+        <div className="whitespace-pre-wrap break-words">{message.content}</div>
+      </div>
+    </div>
+  )
 }
 
 function App() {
   const [runtimeState, setRuntimeState] =
     useState<GraphState>(createEmptyGraphState)
   const [selectedSessionId, setSelectedSessionId] = useState<string>()
-  const [prompt, setPrompt] = useState(defaultPrompt)
-  const [isSpawning, setIsSpawning] = useState(false)
+  const [newPrompt, setNewPrompt] = useState(defaultPrompt)
+  const [message, setMessage] = useState('')
+  const [isCreating, setIsCreating] = useState(false)
+  const [isResuming, setIsResuming] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string>()
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
     if (typeof window === 'undefined') {
@@ -157,12 +186,17 @@ function App() {
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
-  const sessions = Object.values(runtimeState.sessions).sort((left, right) =>
-    right.createdAt.localeCompare(left.createdAt)
-  )
+  const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
   )
+  const canResume =
+    Boolean(selectedSession) &&
+    selectedSession?.status !== 'running' &&
+    selectedSession?.status !== 'pending' &&
+    selectedSession?.status !== 'killed'
+  const canKill =
+    selectedSession?.status === 'running' || selectedSession?.status === 'pending'
 
   const nodes: Node<AgentNodeData>[] = useMemo(
     () =>
@@ -174,10 +208,10 @@ function App() {
           position: node.position,
           data: {
             label: node.label,
-            description: session?.prompt ?? 'Runtime session',
+            description: lastMessagePreview(session),
             agent: node.agent,
             status: node.status,
-            chunkCount: session?.chunks.length ?? 0,
+            messageCount: session?.messages.length ?? 0,
           },
         }
       }),
@@ -211,6 +245,7 @@ function App() {
       .then((state) => {
         if (isMounted) {
           setRuntimeState(state)
+          setSelectedSessionId((current) => current ?? state.nodes[0]?.sessionId)
         }
       })
       .catch((error: unknown) => {
@@ -221,7 +256,7 @@ function App() {
 
     const unsubscribe = window.orrery.runtime.onEvent((event) => {
       setRuntimeState(event.state)
-      if ('sessionId' in event) {
+      if (event.type === 'session.created' || event.type === 'session.resumed') {
         setSelectedSessionId(event.sessionId)
       }
     })
@@ -232,18 +267,18 @@ function App() {
     }
   }, [])
 
-  const spawnSession = useCallback(async () => {
+  const createSession = useCallback(async () => {
     if (!window.orrery?.runtime) {
-      setRuntimeError('P0 runtime is available only inside Electron.')
+      setRuntimeError('Runtime is available only inside Electron.')
       return
     }
 
-    setIsSpawning(true)
+    setIsCreating(true)
     setRuntimeError(undefined)
 
     try {
       const result = await window.orrery.runtime.createSession({
-        prompt,
+        prompt: newPrompt,
         agent: 'claude-code',
         label: `Claude ${sessions.length + 1}`,
       })
@@ -252,9 +287,36 @@ function App() {
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     } finally {
-      setIsSpawning(false)
+      setIsCreating(false)
     }
-  }, [prompt, sessions.length])
+  }, [newPrompt, sessions.length])
+
+  const resumeSelectedSession = useCallback(async () => {
+    if (!window.orrery?.runtime || !selectedSessionId) {
+      return
+    }
+
+    const trimmed = message.trim()
+    if (trimmed.length === 0) {
+      return
+    }
+
+    setIsResuming(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.resumeSession({
+        sessionId: selectedSessionId,
+        message: trimmed,
+      })
+      setRuntimeState(result.state)
+      setMessage('')
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsResuming(false)
+    }
+  }, [message, selectedSessionId])
 
   const killSelectedSession = useCallback(async () => {
     if (!window.orrery?.runtime || !selectedSessionId) {
@@ -272,7 +334,7 @@ function App() {
   return (
     <TooltipProvider>
       <main className="flex h-screen min-h-[720px] overflow-hidden bg-background text-foreground">
-        <aside className="flex w-[380px] shrink-0 flex-col border-r border-border bg-sidebar">
+        <aside className="flex w-[440px] shrink-0 flex-col border-r border-border bg-sidebar">
           <header
             className={cn(
               'app-region-drag space-y-4 px-5 pb-4 pt-5',
@@ -289,7 +351,7 @@ function App() {
                     Orrery
                   </h1>
                   <p className="text-xs text-muted-foreground">
-                    P0 runtime control
+                    P1 live sessions
                   </p>
                 </div>
               </div>
@@ -300,46 +362,27 @@ function App() {
 
             <div className="space-y-2">
               <label
-                htmlFor="p0-prompt"
+                htmlFor="new-session-prompt"
                 className="text-xs font-medium uppercase tracking-normal text-muted-foreground"
               >
-                Claude prompt
+                New session
               </label>
               <textarea
-                id="p0-prompt"
-                className="app-region-no-drag min-h-28 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
+                id="new-session-prompt"
+                className="app-region-no-drag min-h-24 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                value={newPrompt}
+                onChange={(event) => setNewPrompt(event.target.value)}
               />
-            </div>
-
-            <div className="grid grid-cols-[1fr_auto] gap-2">
               <Button
-                className="app-region-no-drag justify-start"
-                disabled={!isElectron || isSpawning || prompt.trim().length === 0}
-                onClick={spawnSession}
+                className="app-region-no-drag w-full justify-start"
+                disabled={
+                  !isElectron || isCreating || newPrompt.trim().length === 0
+                }
+                onClick={createSession}
               >
                 <CirclePlay className="size-4" />
-                Spawn Claude
+                Start Claude Session
               </Button>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    className="app-region-no-drag"
-                    variant="outline"
-                    size="icon"
-                    disabled={
-                      !selectedSession ||
-                      !['pending', 'running'].includes(selectedSession.status)
-                    }
-                    aria-label="Kill selected session"
-                    onClick={killSelectedSession}
-                  >
-                    <Square className="size-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Kill selected session</TooltipContent>
-              </Tooltip>
             </div>
 
             {runtimeError ? (
@@ -351,10 +394,10 @@ function App() {
 
           <Separator />
 
-          <section className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          <section className="max-h-52 shrink-0 overflow-y-auto px-3 py-4">
             <div className="mb-3 flex items-center justify-between px-2">
               <h2 className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
-                Runtime sessions
+                Sessions
               </h2>
               <Badge variant="secondary">{sessions.length}</Badge>
             </div>
@@ -362,7 +405,7 @@ function App() {
             <div className="space-y-2">
               {sessions.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
-                  Spawn a Claude session to populate the P0 graph state.
+                  No sessions yet.
                 </div>
               ) : null}
 
@@ -387,18 +430,88 @@ function App() {
                       {statusLabels[session.status]}
                     </Badge>
                   </div>
-                  <p className="mb-2 line-clamp-2 text-xs leading-5 text-muted-foreground">
-                    {session.prompt}
+                  <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
+                    {lastMessagePreview(session)}
                   </p>
-                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <Clock className="size-3" />
-                    {session.chunks.length} chunks
-                    {session.backendSessionId
-                      ? ` · claude ${session.backendSessionId.slice(0, 8)}`
-                      : ''}
-                  </div>
                 </button>
               ))}
+            </div>
+          </section>
+
+          <Separator />
+
+          <section className="flex min-h-0 flex-1 flex-col">
+            <div className="border-b border-border p-4">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <MessageSquarePlus className="size-4 shrink-0 text-muted-foreground" />
+                  <h2 className="truncate text-sm font-semibold">
+                    {selectedSession?.label ?? 'Agent Chat Session'}
+                  </h2>
+                </div>
+                {selectedSession ? (
+                  <Badge variant="secondary">
+                    {statusLabels[selectedSession.status]}
+                  </Badge>
+                ) : null}
+              </div>
+              <p className="break-all text-xs leading-5 text-muted-foreground">
+                {selectedSession?.backendSessionId ??
+                  selectedSession?.sessionId ??
+                  'Select a graph node.'}
+              </p>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              {selectedSession?.messages.length ? (
+                selectedSession.messages.map((item) => (
+                  <ChatMessage key={item.id} message={item} />
+                ))
+              ) : (
+                <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted-foreground">
+                  No chat history.
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-border p-3">
+              <textarea
+                className="app-region-no-drag mb-2 min-h-20 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                placeholder="Message selected session"
+                value={message}
+                disabled={!selectedSession || !canResume || isResuming}
+                onChange={(event) => setMessage(event.target.value)}
+              />
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <Button
+                  className="app-region-no-drag justify-start"
+                  disabled={
+                    !selectedSession ||
+                    !canResume ||
+                    isResuming ||
+                    message.trim().length === 0
+                  }
+                  onClick={resumeSelectedSession}
+                >
+                  <Send className="size-4" />
+                  Resume Session
+                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="app-region-no-drag"
+                      variant="outline"
+                      size="icon"
+                      disabled={!selectedSession || !canKill}
+                      aria-label="Kill selected session"
+                      onClick={killSelectedSession}
+                    >
+                      <Square className="size-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Kill selected session</TooltipContent>
+                </Tooltip>
+              </div>
             </div>
           </section>
 
@@ -417,6 +530,10 @@ function App() {
               {
                 icon: RefreshCw,
                 label: `updated ${runtimeState.updatedAt.slice(11, 19)}`,
+              },
+              {
+                icon: Clock,
+                label: `${runtimeState.nodes.length} nodes`,
               },
             ].map((item) => (
               <Tooltip key={item.label}>
@@ -439,8 +556,7 @@ function App() {
                 Runtime graph
               </Badge>
               <p className="truncate text-sm text-muted-foreground">
-                P0 contract: nodeId equals sessionId; stream events come from
-                real Claude CLI subprocesses.
+                nodeId === sessionId
               </p>
             </div>
 
@@ -471,58 +587,20 @@ function App() {
             </Tooltip>
           </header>
 
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_420px]">
-            <div className="relative min-h-0">
-              <ReactFlow
-                colorMode={colorScheme}
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={nodeTypes}
-                onNodeClick={(_event, node) => setSelectedSessionId(node.id)}
-                fitView
-                fitViewOptions={{ padding: 0.24 }}
-              >
-                <Background
-                  variant={BackgroundVariant.Dots}
-                  gap={24}
-                  size={1.2}
-                />
-                <Controls />
-                <MiniMap pannable zoomable />
-              </ReactFlow>
-            </div>
-
-            <aside className="min-h-0 border-l border-border bg-card/40">
-              <div className="flex h-full flex-col">
-                <div className="border-b border-border p-4">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <h2 className="text-sm font-semibold">Stream inspector</h2>
-                    {selectedSession ? (
-                      <Badge variant="secondary">
-                        {statusLabels[selectedSession.status]}
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="break-all text-xs leading-5 text-muted-foreground">
-                    {selectedSession?.sessionId ??
-                      'Select or spawn a session to inspect raw stream chunks.'}
-                  </p>
-                </div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-4 text-xs leading-5 text-foreground">
-                  {selectedSession
-                    ? sessionText(selectedSession)
-                    : JSON.stringify(graphStateSchema, null, 2)}
-                </pre>
-                {selectedSession?.result ? (
-                  <div className="border-t border-border p-4">
-                    <div className="mb-2 text-xs font-medium uppercase tracking-normal text-muted-foreground">
-                      Result
-                    </div>
-                    <p className="text-sm leading-6">{selectedSession.result}</p>
-                  </div>
-                ) : null}
-              </div>
-            </aside>
+          <div className="relative min-h-0 flex-1">
+            <ReactFlow
+              colorMode={colorScheme}
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodeClick={(_event, node) => setSelectedSessionId(node.id)}
+              fitView
+              fitViewOptions={{ padding: 0.24 }}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
+              <Controls />
+              <MiniMap pannable zoomable />
+            </ReactFlow>
           </div>
         </section>
       </main>

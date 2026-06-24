@@ -27,6 +27,47 @@ function extractAssistantText(event) {
   return text.length > 0 ? text : undefined
 }
 
+function extractStreamText(event) {
+  if (
+    event?.type === 'stream_event' &&
+    event.event?.type === 'content_block_delta' &&
+    event.event?.delta?.type === 'text_delta' &&
+    typeof event.event.delta.text === 'string'
+  ) {
+    return event.event.delta.text
+  }
+
+  return extractAssistantText(event)
+}
+
+function getEventType(event) {
+  if (event?.type === 'stream_event' && typeof event.event?.type === 'string') {
+    return `${event.type}:${event.event.type}`
+  }
+
+  return event?.type
+}
+
+function buildClaudeArgs({ prompt, backendSessionId, sessionId }) {
+  const args = []
+
+  if (backendSessionId) {
+    args.push('--resume', backendSessionId)
+  } else if (sessionId) {
+    args.push('--session-id', sessionId)
+  }
+
+  args.push(
+    '-p',
+    prompt,
+    '--output-format=stream-json',
+    '--verbose',
+    '--include-partial-messages'
+  )
+
+  return args
+}
+
 export class ClaudeCliRun extends EventEmitter {
   #child
   #stdoutBuffer = ''
@@ -35,22 +76,18 @@ export class ClaudeCliRun extends EventEmitter {
   #closed = false
   #killTimer
 
-  constructor({ prompt, cwd }) {
+  constructor({ prompt, cwd, backendSessionId, sessionId }) {
     super()
 
-    this.#child = spawn(
-      'claude',
-      ['-p', prompt, '--output-format=stream-json', '--verbose'],
-      {
-        cwd,
-        env: {
-          ...process.env,
-          PATH: buildPath(),
-          NO_COLOR: '1',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }
-    )
+    this.#child = spawn('claude', buildClaudeArgs({ prompt, backendSessionId, sessionId }), {
+      cwd,
+      env: {
+        ...process.env,
+        PATH: buildPath(),
+        NO_COLOR: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
 
     this.#child.stdout.setEncoding('utf8')
     this.#child.stderr.setEncoding('utf8')
@@ -152,8 +189,8 @@ export class ClaudeCliRun extends EventEmitter {
       stream: 'stdout',
       raw: line,
       event,
-      eventType: event.type,
-      text: extractAssistantText(event),
+      eventType: getEventType(event),
+      text: extractStreamText(event),
     })
 
     if (event.type === 'result') {
