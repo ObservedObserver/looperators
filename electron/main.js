@@ -53,6 +53,18 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
     runtime.killSession(sessionId)
   )
+  ipcMain.handle('orrery:upsert-cluster', (_event, input) =>
+    runtime.upsertCluster(input)
+  )
+  ipcMain.handle('orrery:create-master-for-cluster', (_event, input) =>
+    runtime.createMasterForCluster(input)
+  )
+  ipcMain.handle('orrery:assign-master-to-cluster', (_event, input) =>
+    runtime.assignMasterToCluster(input)
+  )
+  ipcMain.handle('orrery:set-cluster-loop-policy', (_event, input) =>
+    runtime.setClusterLoopPolicy(input)
+  )
 
   createMainWindow()
 

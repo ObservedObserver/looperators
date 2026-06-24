@@ -148,6 +148,11 @@ export class RuntimeSessionManager {
 
   async createSession(input = {}) {
     const sessionId = randomUUID()
+    const role = input.role === 'master' ? 'master' : 'worker'
+    const cluster =
+      typeof input.cluster === 'string' && input.cluster.trim().length > 0
+        ? input.cluster.trim()
+        : undefined
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
@@ -169,7 +174,7 @@ export class RuntimeSessionManager {
       label,
       prompt: initialContent,
       cwd,
-      role: 'worker',
+      role,
       status: 'pending',
       createdAt: ts,
       updatedAt: ts,
@@ -191,19 +196,21 @@ export class RuntimeSessionManager {
       nodeId: sessionId,
       sessionId,
       label,
-      role: 'worker',
+      role,
       agent: 'claude-code',
-      clusterId:
-        typeof input.cluster === 'string' && input.cluster.trim().length > 0
-          ? input.cluster.trim()
-          : undefined,
+      clusterId: cluster,
       status: 'pending',
       position: {
         x: 96 + (this.#state.nodes.length % 4) * 280,
         y: 96 + Math.floor(this.#state.nodes.length / 4) * 180,
       },
     })
-    this.#addNodeToCluster(sessionId, input.cluster)
+    if (cluster) {
+      this.#ensureCluster(cluster)
+      if (role !== 'master') {
+        this.#addNodeToCluster(sessionId, cluster)
+      }
+    }
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
@@ -300,6 +307,136 @@ export class RuntimeSessionManager {
       this.killSession(sessionId)
     }
     this.#bridge?.close()
+  }
+
+  upsertCluster(input = {}) {
+    const nodeIds = this.#normalizeClusterNodeIds(input.nodeIds)
+    if (nodeIds.length === 0) {
+      throw new Error('Cluster requires at least one managed session node')
+    }
+
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : `cluster-${randomUUID().slice(0, 8)}`
+    const label =
+      typeof input.label === 'string' && input.label.trim().length > 0
+        ? input.label.trim()
+        : clusterId
+    const existing = this.#state.clusters[clusterId]
+
+    this.#state.clusters[clusterId] = {
+      ...(existing ?? {}),
+      clusterId,
+      label,
+      nodeIds,
+      loopPolicy:
+        input.loopPolicy !== undefined
+          ? this.#normalizeLoopPolicy(input.loopPolicy)
+          : existing?.loopPolicy,
+    }
+
+    const masterSessionId = this.#state.clusters[clusterId].masterSessionId
+    for (const node of this.#state.nodes) {
+      if (
+        node.clusterId === clusterId &&
+        !nodeIds.includes(node.sessionId) &&
+        node.sessionId !== masterSessionId
+      ) {
+        node.clusterId = undefined
+      }
+      if (nodeIds.includes(node.sessionId)) {
+        node.clusterId = clusterId
+      }
+      if (node.sessionId === masterSessionId) {
+        node.clusterId = clusterId
+      }
+    }
+
+    for (const sessionId of nodeIds) {
+      this.#removeNodeFromOtherClusters(sessionId, clusterId)
+    }
+
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { clusterId, state: this.getState() }
+  }
+
+  async createMasterForCluster(input = {}) {
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : undefined
+    if (!clusterId || !this.#state.clusters[clusterId]) {
+      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
+    }
+
+    if (input.loopPolicy !== undefined) {
+      this.#state.clusters[clusterId].loopPolicy = this.#normalizeLoopPolicy(
+        input.loopPolicy
+      )
+    }
+
+    const prompt =
+      typeof input.prompt === 'string' && input.prompt.trim().length > 0
+        ? input.prompt.trim()
+        : this.#defaultMasterPrompt(clusterId)
+    const label =
+      typeof input.label === 'string' && input.label.trim().length > 0
+        ? input.label.trim()
+        : `${this.#state.clusters[clusterId].label} Master`
+
+    const result = await this.createSession({
+      agent: 'claude-code',
+      prompt,
+      label,
+      cluster: clusterId,
+      role: 'master',
+    })
+    this.#assignMaster(clusterId, result.sessionId)
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { sessionId: result.sessionId, state: this.getState() }
+  }
+
+  assignMasterToCluster(input = {}) {
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : undefined
+    const sessionId =
+      typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+        ? input.sessionId.trim()
+        : undefined
+
+    if (!clusterId || !this.#state.clusters[clusterId]) {
+      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
+    }
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    this.#assignMaster(clusterId, sessionId)
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { state: this.getState() }
+  }
+
+  setClusterLoopPolicy(input = {}) {
+    const clusterId =
+      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
+        ? input.clusterId.trim()
+        : undefined
+    if (!clusterId || !this.#state.clusters[clusterId]) {
+      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
+    }
+
+    this.#state.clusters[clusterId].loopPolicy = this.#normalizeLoopPolicy(
+      input.loopPolicy
+    )
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { state: this.getState() }
   }
 
   async handleMembraneRequest({ tool, source, input }) {
@@ -566,24 +703,132 @@ export class RuntimeSessionManager {
     }
   }
 
+  #ensureCluster(clusterId) {
+    if (!this.#state.clusters[clusterId]) {
+      this.#state.clusters[clusterId] = {
+        clusterId,
+        label: clusterId,
+        nodeIds: [],
+      }
+    }
+
+    return this.#state.clusters[clusterId]
+  }
+
   #addNodeToCluster(sessionId, clusterId) {
     if (typeof clusterId !== 'string' || clusterId.trim().length === 0) {
       return
     }
 
     const normalizedClusterId = clusterId.trim()
-    if (!this.#state.clusters[normalizedClusterId]) {
-      this.#state.clusters[normalizedClusterId] = {
-        clusterId: normalizedClusterId,
-        label: normalizedClusterId,
-        nodeIds: [],
-      }
-    }
-
-    const cluster = this.#state.clusters[normalizedClusterId]
+    const cluster = this.#ensureCluster(normalizedClusterId)
     if (!cluster.nodeIds.includes(sessionId)) {
       cluster.nodeIds.push(sessionId)
     }
+  }
+
+  #removeNodeFromOtherClusters(sessionId, clusterId) {
+    for (const [candidateId, cluster] of Object.entries(this.#state.clusters)) {
+      if (candidateId === clusterId) {
+        continue
+      }
+      cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
+    }
+  }
+
+  #normalizeClusterNodeIds(nodeIds) {
+    if (!Array.isArray(nodeIds)) {
+      return []
+    }
+
+    const seen = new Set()
+    const normalized = []
+    for (const nodeId of nodeIds) {
+      if (typeof nodeId !== 'string' || nodeId.trim().length === 0) {
+        continue
+      }
+
+      const sessionId = nodeId.trim()
+      if (seen.has(sessionId)) {
+        continue
+      }
+
+      const session = this.#state.sessions[sessionId]
+      if (!session || session.role === 'master') {
+        continue
+      }
+
+      seen.add(sessionId)
+      normalized.push(sessionId)
+    }
+
+    return normalized
+  }
+
+  #assignMaster(clusterId, sessionId) {
+    const cluster = this.#ensureCluster(clusterId)
+    const session = this.#state.sessions[sessionId]
+    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
+
+    if (!session || !node) {
+      throw new Error(`Unknown master session: ${sessionId}`)
+    }
+
+    session.role = 'master'
+    session.updatedAt = now()
+    node.role = 'master'
+    node.clusterId = clusterId
+    cluster.masterSessionId = sessionId
+    cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
+  }
+
+  #normalizeLoopPolicy(policy) {
+    if (!isObject(policy)) {
+      throw new Error('LoopPolicy must be an object')
+    }
+
+    if (policy.onStop !== 'freeze') {
+      throw new Error('LoopPolicy onStop must be freeze')
+    }
+
+    let until
+    const verdict = policy.until?.whenReport?.verdict
+    if (typeof verdict === 'string' && verdict.trim().length > 0) {
+      until = { whenReport: { verdict: verdict.trim() } }
+    }
+
+    let maxIterations
+    if (policy.maxIterations !== undefined) {
+      const value = Number(policy.maxIterations)
+      if (!Number.isInteger(value) || value < 1 || value > 100) {
+        throw new Error('LoopPolicy maxIterations must be an integer from 1 to 100')
+      }
+      maxIterations = value
+    }
+
+    return {
+      ...(until ? { until } : {}),
+      onStop: 'freeze',
+      ...(maxIterations ? { maxIterations } : {}),
+    }
+  }
+
+  #defaultMasterPrompt(clusterId) {
+    const cluster = this.#state.clusters[clusterId]
+    const policy = cluster.loopPolicy
+    const until = policy?.until?.whenReport?.verdict
+      ? `until a report verdict is "${policy.until.whenReport.verdict}"`
+      : 'until the authored stop condition is met'
+    const maxIterations = policy?.maxIterations
+      ? `Respect maxIterations=${policy.maxIterations}.`
+      : 'Ask before continuing if the loop looks unbounded.'
+
+    return [
+      `You are the Orrery master session for cluster ${cluster.label}.`,
+      'Read the graph as a blackboard and coordinate only the sessions in your cluster scope.',
+      `The current LoopPolicy is: ${until}; onStop=freeze. ${maxIterations}`,
+      'Do not execute an autonomous loop yet. Discuss the plan with the user and use Orrery membrane tools when asked to create, resume, or report agent work.',
+    ].join('\n')
   }
 
   async #membraneCreateSession(source, input = {}) {
@@ -1331,21 +1576,36 @@ export class RuntimeSessionManager {
     return Object.fromEntries(
       Object.entries(clusters)
         .filter(([, cluster]) => isObject(cluster))
-        .map(([clusterId, cluster]) => [
-          clusterId,
-          {
-            ...cluster,
-            clusterId: nonEmptyString(cluster.clusterId) ? cluster.clusterId : clusterId,
-            label: nonEmptyString(cluster.label) ? cluster.label : clusterId,
-            nodeIds: Array.isArray(cluster.nodeIds)
-              ? cluster.nodeIds.filter(nonEmptyString)
-              : [],
-            frozen: cluster.frozen === true,
-            freezeReason: nonEmptyString(cluster.freezeReason)
-              ? cluster.freezeReason
-              : undefined,
-          },
-        ])
+        .map(([clusterId, cluster]) => {
+          let loopPolicy
+          try {
+            loopPolicy = cluster.loopPolicy
+              ? this.#normalizeLoopPolicy(cluster.loopPolicy)
+              : undefined
+          } catch {
+            loopPolicy = undefined
+          }
+
+          return [
+            clusterId,
+            {
+              ...cluster,
+              clusterId: nonEmptyString(cluster.clusterId) ? cluster.clusterId : clusterId,
+              label: nonEmptyString(cluster.label) ? cluster.label : clusterId,
+              nodeIds: Array.isArray(cluster.nodeIds)
+                ? cluster.nodeIds.filter(nonEmptyString)
+                : [],
+              frozen: cluster.frozen === true,
+              freezeReason: nonEmptyString(cluster.freezeReason)
+                ? cluster.freezeReason
+                : undefined,
+              ...(nonEmptyString(cluster.masterSessionId)
+                ? { masterSessionId: cluster.masterSessionId }
+                : {}),
+              ...(loopPolicy ? { loopPolicy } : {}),
+            },
+          ]
+        })
     )
   }
 

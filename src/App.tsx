@@ -64,6 +64,7 @@ type AgentNodeData = {
   label: string
   description: string
   agent: string
+  role: 'worker' | 'master'
   status: SessionStatus
   messageCount: number
   latestVerdict?: string
@@ -72,6 +73,8 @@ type AgentNodeData = {
   frozen?: boolean
   freezeReason?: string
   masterReason?: string
+  clusterLabel?: string
+  isManaged?: boolean
 }
 
 type GraphEdgeData = {
@@ -95,6 +98,13 @@ type ActivityEvent = {
   title: string
   detail?: string
   reason?: string
+}
+
+type ClusterNodeData = {
+  label: string
+  nodeCount: number
+  masterLabel?: string
+  policySummary?: string
 }
 
 const statusLabels: Record<SessionStatus, string> = {
@@ -140,6 +150,7 @@ const defaultPrompt =
   'You are running under Orrery P2 membrane verification. Reply with one short sentence confirming this node is a resumable Claude session.'
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
+  const isMaster = data.role === 'master'
   return (
     <div
       className={cn(
@@ -147,6 +158,8 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
         data.frozen
           ? 'border-zinc-500/60 bg-muted/60 opacity-70 grayscale'
           : statusClassNames[data.status],
+        data.isManaged && 'border-cyan-500/70 bg-cyan-500/10',
+        isMaster && 'border-amber-500/80 bg-amber-500/10 shadow-amber-500/10',
         selected && 'ring-2 ring-ring ring-offset-2 ring-offset-background'
       )}
     >
@@ -166,9 +179,23 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
           </div>
         </div>
         <Badge variant="secondary" className="h-5 shrink-0">
-          {data.frozen ? 'Frozen' : statusLabels[data.status]}
+          {data.frozen ? 'Frozen' : isMaster ? 'Master' : statusLabels[data.status]}
         </Badge>
       </div>
+      {data.clusterLabel || data.isManaged ? (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {data.clusterLabel ? (
+            <Badge variant="outline" className="h-5">
+              {data.clusterLabel}
+            </Badge>
+          ) : null}
+          {data.isManaged ? (
+            <Badge variant="secondary" className="h-5">
+              Managed
+            </Badge>
+          ) : null}
+        </div>
+      ) : null}
       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
         {data.description}
       </p>
@@ -218,8 +245,36 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   )
 }
 
+function ClusterBoundaryNode({
+  data,
+}: NodeProps<Node<ClusterNodeData>>) {
+  return (
+    <div className="h-full w-full rounded-lg border border-dashed border-cyan-500/70 bg-cyan-500/5 px-3 py-2 text-cyan-950 shadow-sm dark:text-cyan-100">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge variant="outline" className="border-cyan-500/50 bg-background/80">
+          {data.label}
+        </Badge>
+        <Badge variant="secondary" className="bg-background/80">
+          {data.nodeCount} managed
+        </Badge>
+        {data.masterLabel ? (
+          <Badge variant="secondary" className="bg-amber-500/15 text-amber-950 dark:text-amber-100">
+            {data.masterLabel}
+          </Badge>
+        ) : null}
+      </div>
+      {data.policySummary ? (
+        <div className="mt-1 text-[11px] text-cyan-900/80 dark:text-cyan-100/80">
+          {data.policySummary}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 const nodeTypes = {
   agent: AgentNode,
+  cluster: ClusterBoundaryNode,
 }
 
 function ReadabilityEdge({
@@ -310,6 +365,67 @@ function latestReportForSession(reports: Report[], sessionId: string) {
   return reports
     .filter((report) => report.from === sessionId)
     .sort((left, right) => right.envelope.ts.localeCompare(left.envelope.ts))[0]
+}
+
+function loopPolicySummary(cluster: GraphState['clusters'][string]) {
+  const verdict = cluster.loopPolicy?.until?.whenReport.verdict
+  const maxIterations = cluster.loopPolicy?.maxIterations
+  const parts = [
+    verdict ? `until verdict=${verdict}` : undefined,
+    cluster.loopPolicy?.onStop ? `then ${cluster.loopPolicy.onStop}` : undefined,
+    maxIterations ? `max ${maxIterations}` : undefined,
+  ].filter(Boolean)
+
+  return parts.length ? parts.join(' · ') : undefined
+}
+
+function clusterBoundaryNodes(state: GraphState): Node<ClusterNodeData>[] {
+  return Object.values(state.clusters).flatMap((cluster) => {
+    const managedNodes = cluster.nodeIds
+      .map((nodeId) => state.nodes.find((node) => node.nodeId === nodeId))
+      .filter((node): node is GraphState['nodes'][number] => Boolean(node))
+
+    if (managedNodes.length === 0) {
+      return []
+    }
+
+    const nodeWidth = 280
+    const nodeHeight = 176
+    const padding = 36
+    const minX = Math.min(...managedNodes.map((node) => node.position.x)) - padding
+    const minY = Math.min(...managedNodes.map((node) => node.position.y)) - padding
+    const maxX =
+      Math.max(...managedNodes.map((node) => node.position.x + nodeWidth)) +
+      padding
+    const maxY =
+      Math.max(...managedNodes.map((node) => node.position.y + nodeHeight)) +
+      padding
+    const master = cluster.masterSessionId
+      ? state.sessions[cluster.masterSessionId]
+      : undefined
+
+    return [
+      {
+        id: `cluster:${cluster.clusterId}`,
+        type: 'cluster',
+        position: { x: minX, y: minY },
+        selectable: false,
+        draggable: false,
+        zIndex: -10,
+        style: {
+          width: maxX - minX,
+          height: maxY - minY,
+          pointerEvents: 'none',
+        },
+        data: {
+          label: cluster.label,
+          nodeCount: managedNodes.length,
+          masterLabel: master?.label,
+          policySummary: loopPolicySummary(cluster),
+        },
+      },
+    ]
+  })
 }
 
 function reportTitle(report: Report) {
@@ -430,6 +546,13 @@ function sessionSort(left: AgentSession, right: AgentSession) {
   return right.updatedAt.localeCompare(left.updatedAt)
 }
 
+function sameStringList(left: string[], right: string[]) {
+  return (
+    left.length === right.length &&
+    left.every((item, index) => item === right[index])
+  )
+}
+
 function ChatMessage({ message }: { message: AgentMessage }) {
   const isUser = message.role === 'user'
 
@@ -463,7 +586,16 @@ function App() {
   const [message, setMessage] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
+  const [isUpdatingCluster, setIsUpdatingCluster] = useState(false)
+  const [isCreatingMaster, setIsCreatingMaster] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string>()
+  const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
+  const [activeClusterId, setActiveClusterId] = useState<string>()
+  const [clusterLabel, setClusterLabel] = useState('Review loop')
+  const [maxIterations, setMaxIterations] = useState('6')
+  const [masterPrompt, setMasterPrompt] = useState(
+    'You are the Orrery master for this cluster. Help author and later run a review loop: create or resume worker sessions through the Orrery membrane, read verdict reports, and stop when verdict=clean then freeze.'
+  )
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
     if (typeof window === 'undefined') {
       return 'dark'
@@ -496,6 +628,13 @@ function App() {
     () => activityEvents(runtimeState),
     [runtimeState]
   )
+  const clusters = Object.values(runtimeState.clusters).sort((left, right) =>
+    left.label.localeCompare(right.label)
+  )
+  const activeCluster = activeClusterId
+    ? runtimeState.clusters[activeClusterId]
+    : undefined
+  const selectedSessionIsMaster = selectedSession?.role === 'master'
   const canResume =
     Boolean(selectedSession) &&
     selectedSession?.status !== 'running' &&
@@ -504,10 +643,14 @@ function App() {
   const canKill =
     selectedSession?.status === 'running' || selectedSession?.status === 'pending'
 
-  const nodes: Node<AgentNodeData>[] = useMemo(
-    () =>
-      runtimeState.nodes.map((node) => {
+  const nodes: Node[] = useMemo(
+    () => [
+      ...clusterBoundaryNodes(runtimeState),
+      ...runtimeState.nodes.map((node) => {
         const session = runtimeState.sessions[node.sessionId]
+        const cluster = node.clusterId
+          ? runtimeState.clusters[node.clusterId]
+          : undefined
         const latestReport = latestReportForSession(
           runtimeState.reports,
           node.sessionId
@@ -523,10 +666,12 @@ function App() {
           id: node.nodeId,
           type: 'agent',
           position: node.position,
+          zIndex: node.role === 'master' ? 20 : 10,
           data: {
             label: node.label,
             description: lastMessagePreview(session),
             agent: node.agent,
+            role: node.role,
             status: node.status,
             messageCount: session?.messages.length ?? 0,
             latestVerdict,
@@ -537,9 +682,12 @@ function App() {
             frozen: node.frozen,
             freezeReason: node.freezeReason,
             masterReason: node.masterReason,
+            clusterLabel: cluster?.label,
+            isManaged: Boolean(cluster?.nodeIds.includes(node.nodeId)),
           },
         }
       }),
+    ],
     [runtimeState]
   )
 
@@ -590,6 +738,15 @@ function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', colorScheme === 'dark')
   }, [colorScheme])
+
+  useEffect(() => {
+    if (!activeCluster) {
+      return
+    }
+
+    setClusterLabel(activeCluster.label)
+    setMaxIterations(String(activeCluster.loopPolicy?.maxIterations ?? 6))
+  }, [activeCluster])
 
   useEffect(() => {
     if (!window.orrery?.runtime) {
@@ -688,6 +845,151 @@ function App() {
     }
   }, [selectedSessionId])
 
+  const currentLoopPolicy = useCallback(() => {
+    const parsedMaxIterations = Number(maxIterations)
+    return {
+      until: { whenReport: { verdict: 'clean' } },
+      onStop: 'freeze' as const,
+      maxIterations:
+        Number.isInteger(parsedMaxIterations) && parsedMaxIterations > 0
+          ? parsedMaxIterations
+          : 6,
+    }
+  }, [maxIterations])
+
+  const selectedManagedNodeIds = useMemo(() => {
+    const canvasSelection = selectedCanvasNodeIds.filter((nodeId) => {
+      const session = runtimeState.sessions[nodeId]
+      return session && session.role !== 'master'
+    })
+
+    if (canvasSelection.length > 0) {
+      return canvasSelection
+    }
+
+    if (selectedSession && selectedSession.role !== 'master') {
+      return [selectedSession.sessionId]
+    }
+
+    return []
+  }, [runtimeState.sessions, selectedCanvasNodeIds, selectedSession])
+
+  const upsertManagedCluster = useCallback(async () => {
+    if (!window.orrery?.runtime) {
+      setRuntimeError('Runtime is available only inside Electron.')
+      return
+    }
+
+    if (selectedManagedNodeIds.length === 0) {
+      setRuntimeError('Select at least one worker node for the cluster.')
+      return
+    }
+
+    setIsUpdatingCluster(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.upsertCluster({
+        clusterId: activeClusterId,
+        label: clusterLabel,
+        nodeIds: selectedManagedNodeIds,
+        loopPolicy: currentLoopPolicy(),
+      })
+      setRuntimeState(result.state)
+      setActiveClusterId(result.clusterId)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsUpdatingCluster(false)
+    }
+  }, [
+    activeClusterId,
+    clusterLabel,
+    currentLoopPolicy,
+    selectedManagedNodeIds,
+  ])
+
+  const saveLoopPolicy = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId) {
+      return
+    }
+
+    setIsUpdatingCluster(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.setClusterLoopPolicy({
+        clusterId: activeClusterId,
+        loopPolicy: currentLoopPolicy(),
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsUpdatingCluster(false)
+    }
+  }, [activeClusterId, currentLoopPolicy])
+
+  const createMasterForCluster = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId) {
+      return
+    }
+
+    setIsCreatingMaster(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.createMasterForCluster({
+        clusterId: activeClusterId,
+        prompt: masterPrompt,
+        label: `${runtimeState.clusters[activeClusterId]?.label ?? 'Cluster'} Master`,
+        loopPolicy: currentLoopPolicy(),
+      })
+      setRuntimeState(result.state)
+      setSelectedSessionId(result.sessionId)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsCreatingMaster(false)
+    }
+  }, [activeClusterId, currentLoopPolicy, masterPrompt, runtimeState.clusters])
+
+  const assignSelectedAsMaster = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId || !selectedSessionId) {
+      return
+    }
+
+    setIsCreatingMaster(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.assignMasterToCluster({
+        clusterId: activeClusterId,
+        sessionId: selectedSessionId,
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsCreatingMaster(false)
+    }
+  }, [activeClusterId, selectedSessionId])
+
+  const updateCanvasSelection = useCallback(
+    ({ nodes: selectedNodes }: { nodes: Node[] }) => {
+      const nextSelection = selectedNodes
+        .map((node) => node.id)
+        .filter((nodeId) => !nodeId.startsWith('cluster:'))
+
+      setSelectedCanvasNodeIds((previousSelection) =>
+        sameStringList(previousSelection, nextSelection)
+          ? previousSelection
+          : nextSelection
+      )
+    },
+    []
+  )
+
   return (
     <TooltipProvider>
       <main className="flex h-screen min-h-[720px] overflow-hidden bg-background text-foreground">
@@ -747,6 +1049,142 @@ function App() {
                 {runtimeError}
               </div>
             ) : null}
+
+            <div className="app-region-no-drag space-y-3 rounded-lg border border-border bg-background/70 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+                    Canvas orchestration
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedManagedNodeIds.length} managed selected
+                  </p>
+                </div>
+                <Badge variant="outline">{clusters.length} clusters</Badge>
+              </div>
+
+              <div className="grid grid-cols-[1fr_84px] gap-2">
+                <label className="space-y-1">
+                  <span className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
+                    Cluster
+                  </span>
+                  <input
+                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                    value={clusterLabel}
+                    onChange={(event) => setClusterLabel(event.target.value)}
+                  />
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[11px] font-medium uppercase tracking-normal text-muted-foreground">
+                    Max iter
+                  </span>
+                  <input
+                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                    inputMode="numeric"
+                    min={1}
+                    max={100}
+                    type="number"
+                    value={maxIterations}
+                    onChange={(event) => setMaxIterations(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="secondary">until verdict=clean</Badge>
+                <Badge variant="secondary">onStop freeze</Badge>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  className="justify-start"
+                  variant="outline"
+                  disabled={
+                    !isElectron ||
+                    isUpdatingCluster ||
+                    selectedManagedNodeIds.length === 0
+                  }
+                  onClick={upsertManagedCluster}
+                >
+                  <GitBranch className="size-4" />
+                  Save Cluster
+                </Button>
+                <Button
+                  className="justify-start"
+                  variant="outline"
+                  disabled={!isElectron || isUpdatingCluster || !activeClusterId}
+                  onClick={saveLoopPolicy}
+                >
+                  <ClipboardCheck className="size-4" />
+                  Save Policy
+                </Button>
+              </div>
+
+              <textarea
+                className="min-h-16 w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-xs outline-none transition focus:ring-2 focus:ring-ring"
+                value={masterPrompt}
+                onChange={(event) => setMasterPrompt(event.target.value)}
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  className="justify-start"
+                  disabled={!isElectron || isCreatingMaster || !activeClusterId}
+                  onClick={createMasterForCluster}
+                >
+                  <Bot className="size-4" />
+                  Start Master
+                </Button>
+                <Button
+                  className="justify-start"
+                  variant="outline"
+                  disabled={
+                    !isElectron ||
+                    isCreatingMaster ||
+                    !activeClusterId ||
+                    !selectedSession ||
+                    selectedSessionIsMaster
+                  }
+                  onClick={assignSelectedAsMaster}
+                >
+                  <MessageSquarePlus className="size-4" />
+                  Assign Master
+                </Button>
+              </div>
+
+              {clusters.length ? (
+                <div className="max-h-28 space-y-1 overflow-y-auto">
+                  {clusters.map((cluster) => (
+                    <button
+                      key={cluster.clusterId}
+                      type="button"
+                      className={cn(
+                        'w-full rounded-md border border-border bg-background/60 px-2 py-1.5 text-left transition hover:bg-accent',
+                        activeClusterId === cluster.clusterId && 'border-primary'
+                      )}
+                      onClick={() => {
+                        setActiveClusterId(cluster.clusterId)
+                        if (cluster.masterSessionId) {
+                          setSelectedSessionId(cluster.masterSessionId)
+                        }
+                      }}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-xs font-medium">
+                          {cluster.label}
+                        </span>
+                        <Badge variant="secondary">
+                          {cluster.nodeIds.length}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 truncate text-[11px] text-muted-foreground">
+                        {loopPolicySummary(cluster) ?? 'No policy'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </header>
 
           <Separator />
@@ -794,7 +1232,9 @@ function App() {
                         </span>
                       </div>
                       <Badge variant="secondary" className="shrink-0">
-                        {statusLabels[session.status]}
+                        {session.role === 'master'
+                          ? 'Master'
+                          : statusLabels[session.status]}
                       </Badge>
                     </div>
                     <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
@@ -1052,7 +1492,13 @@ function App() {
               edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
-              onNodeClick={(_event, node) => setSelectedSessionId(node.id)}
+              onNodeClick={(_event, node) => {
+                if (!node.id.startsWith('cluster:')) {
+                  setSelectedSessionId(node.id)
+                }
+              }}
+              onSelectionChange={updateCanvasSelection}
+              selectionOnDrag
               fitView
               fitViewOptions={{ padding: 0.24 }}
             >
