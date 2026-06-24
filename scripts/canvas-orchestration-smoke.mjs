@@ -55,6 +55,12 @@ function manager(input) {
   return runtime
 }
 
+function clusterMasterNodes(state, clusterId) {
+  return state.nodes.filter(
+    (node) => node.clusterId === clusterId && node.role === 'master'
+  )
+}
+
 try {
   installFakeClaude()
 
@@ -91,6 +97,33 @@ try {
     () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
   )
 
+  const repeatedMaster = await runtime.createMasterForCluster({
+    clusterId: cluster.clusterId,
+    label: 'Duplicate Review loop Master',
+    prompt: 'second master start should reuse the existing master',
+    loopPolicy: policy,
+  })
+  assert.equal(
+    repeatedMaster.sessionId,
+    master.sessionId,
+    'repeated Start Master should reuse the existing cluster master'
+  )
+
+  const replacement = await runtime.createSession({
+    prompt: 'replacement master session for canvas orchestration smoke',
+    label: 'Replacement Master',
+    cwd: process.cwd(),
+  })
+  await waitFor(
+    'replacement master candidate to finish',
+    () => runtime.getState().sessions[replacement.sessionId]?.status === 'idle'
+  )
+
+  runtime.assignMasterToCluster({
+    clusterId: cluster.clusterId,
+    sessionId: replacement.sessionId,
+  })
+
   runtime.setClusterLoopPolicy({
     clusterId: cluster.clusterId,
     loopPolicy: policy,
@@ -99,33 +132,52 @@ try {
   const state = runtime.getState()
   assert.equal(state.clusters[cluster.clusterId].nodeIds.length, 1)
   assert.equal(state.clusters[cluster.clusterId].nodeIds[0], worker.sessionId)
-  assert.equal(state.clusters[cluster.clusterId].masterSessionId, master.sessionId)
+  assert.equal(
+    state.clusters[cluster.clusterId].masterSessionId,
+    replacement.sessionId
+  )
   assert.equal(state.clusters[cluster.clusterId].loopPolicy.until.whenReport.verdict, 'clean')
   assert.equal(state.clusters[cluster.clusterId].loopPolicy.onStop, 'freeze')
   assert.equal(state.clusters[cluster.clusterId].loopPolicy.maxIterations, 6)
-  assert.equal(state.sessions[master.sessionId].role, 'master')
+  assert.equal(state.sessions[master.sessionId].role, 'worker')
+  assert.equal(state.sessions[replacement.sessionId].role, 'master')
   assert.equal(
-    state.nodes.find((node) => node.sessionId === master.sessionId)?.role,
+    state.nodes.find((node) => node.sessionId === replacement.sessionId)?.role,
     'master'
   )
   assert.equal(
-    state.clusters[cluster.clusterId].nodeIds.includes(master.sessionId),
+    state.nodes.find((node) => node.sessionId === master.sessionId)?.role,
+    'worker',
+    'replaced master node should be demoted'
+  )
+  assert.equal(
+    state.clusters[cluster.clusterId].nodeIds.includes(replacement.sessionId),
     false,
     'master should not be counted as a managed worker node'
+  )
+  assert.equal(
+    clusterMasterNodes(state, cluster.clusterId).length,
+    1,
+    'cluster should expose exactly one master node'
   )
 
   const restored = manager({ storageFile })
   const restoredState = restored.getState()
-  assert.equal(restoredState.clusters[cluster.clusterId].masterSessionId, master.sessionId)
-  assert.equal(restoredState.sessions[master.sessionId].role, 'master')
+  assert.equal(
+    restoredState.clusters[cluster.clusterId].masterSessionId,
+    replacement.sessionId
+  )
+  assert.equal(restoredState.sessions[replacement.sessionId].role, 'master')
+  assert.equal(restoredState.sessions[master.sessionId].role, 'worker')
   assert.equal(restoredState.clusters[cluster.clusterId].loopPolicy.maxIterations, 6)
+  assert.equal(clusterMasterNodes(restoredState, cluster.clusterId).length, 1)
   assert.ok(
-    restoredState.sessions[master.sessionId].messages.length >= 2,
+    restoredState.sessions[replacement.sessionId].messages.length >= 2,
     'restored master chat session should be openable in the left chat view'
   )
 
   console.log(
-    '[canvas:orchestration] worker -> cluster -> real master session -> LoopPolicy -> restore passed'
+    '[canvas:orchestration] worker -> cluster -> master reuse/replace -> LoopPolicy -> restore passed'
   )
 } finally {
   for (const runtime of managers) {

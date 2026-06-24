@@ -1133,7 +1133,7 @@ function App() {
                   onClick={createMasterForCluster}
                 >
                   <Bot className="size-4" />
-                  Start Master
+                  {activeCluster?.masterSessionId ? 'Open Master' : 'Start Master'}
                 </Button>
                 <Button
                   className="justify-start"

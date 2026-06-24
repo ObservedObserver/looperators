@@ -371,10 +371,20 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
     }
 
+    const cluster = this.#state.clusters[clusterId]
     if (input.loopPolicy !== undefined) {
-      this.#state.clusters[clusterId].loopPolicy = this.#normalizeLoopPolicy(
-        input.loopPolicy
-      )
+      cluster.loopPolicy = this.#normalizeLoopPolicy(input.loopPolicy)
+    }
+
+    if (cluster.masterSessionId) {
+      if (this.#state.sessions[cluster.masterSessionId]) {
+        this.#assignMaster(clusterId, cluster.masterSessionId)
+        this.#touch()
+        this.#broadcast({ type: 'runtime.state', state: this.getState() })
+        return { sessionId: cluster.masterSessionId, state: this.getState() }
+      }
+
+      delete cluster.masterSessionId
     }
 
     const prompt =
@@ -384,7 +394,7 @@ export class RuntimeSessionManager {
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
         ? input.label.trim()
-        : `${this.#state.clusters[clusterId].label} Master`
+        : `${cluster.label} Master`
 
     const result = await this.createSession({
       agent: 'claude-code',
@@ -736,6 +746,40 @@ export class RuntimeSessionManager {
     }
   }
 
+  #masterClusterId(sessionId) {
+    return Object.values(this.#state.clusters).find(
+      (cluster) => cluster.masterSessionId === sessionId
+    )?.clusterId
+  }
+
+  #managedClusterId(sessionId) {
+    return Object.values(this.#state.clusters).find((cluster) =>
+      cluster.nodeIds.includes(sessionId)
+    )?.clusterId
+  }
+
+  #syncSessionRoleAndCluster(sessionId) {
+    const session = this.#state.sessions[sessionId]
+    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
+    if (!session || !node) {
+      return
+    }
+
+    const masterClusterId = this.#masterClusterId(sessionId)
+    if (masterClusterId) {
+      session.role = 'master'
+      node.role = 'master'
+      node.clusterId = masterClusterId
+      session.updatedAt = now()
+      return
+    }
+
+    session.role = 'worker'
+    node.role = 'worker'
+    node.clusterId = this.#managedClusterId(sessionId)
+    session.updatedAt = now()
+  }
+
   #normalizeClusterNodeIds(nodeIds) {
     if (!Array.isArray(nodeIds)) {
       return []
@@ -774,12 +818,46 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown master session: ${sessionId}`)
     }
 
+    const staleMasterIds = new Set()
+    if (cluster.masterSessionId && cluster.masterSessionId !== sessionId) {
+      staleMasterIds.add(cluster.masterSessionId)
+    }
+
+    for (const [candidateClusterId, candidateCluster] of Object.entries(
+      this.#state.clusters
+    )) {
+      candidateCluster.nodeIds = candidateCluster.nodeIds.filter(
+        (nodeId) => nodeId !== sessionId
+      )
+
+      if (
+        candidateClusterId !== clusterId &&
+        candidateCluster.masterSessionId === sessionId
+      ) {
+        delete candidateCluster.masterSessionId
+      }
+    }
+
+    for (const candidateNode of this.#state.nodes) {
+      if (
+        candidateNode.clusterId === clusterId &&
+        candidateNode.role === 'master' &&
+        candidateNode.sessionId !== sessionId
+      ) {
+        staleMasterIds.add(candidateNode.sessionId)
+      }
+    }
+
+    cluster.masterSessionId = sessionId
+    cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
     session.role = 'master'
     session.updatedAt = now()
     node.role = 'master'
     node.clusterId = clusterId
-    cluster.masterSessionId = sessionId
-    cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
+
+    for (const staleMasterId of staleMasterIds) {
+      this.#syncSessionRoleAndCluster(staleMasterId)
+    }
   }
 
   #normalizeLoopPolicy(policy) {
