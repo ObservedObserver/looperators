@@ -24,6 +24,7 @@ export const graphStateSchema = {
     sessions: 'Record<SessionId, AgentSession>',
     clusters: 'Record<ClusterId, Cluster>',
     reports: 'Report[]',
+    diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   membraneSkills: {
     create_session: {
@@ -179,6 +180,14 @@ export type Cluster = {
   frozen?: boolean
 }
 
+export type RuntimeStateDiagnostic = {
+  id: string
+  type: string
+  message: string
+  ts: string
+  details?: Record<string, unknown>
+}
+
 export type GraphState = {
   version: number
   updatedAt: string
@@ -187,6 +196,7 @@ export type GraphState = {
   sessions: Record<SessionId, AgentSession>
   clusters: Record<ClusterId, Cluster>
   reports: Report[]
+  diagnostics?: RuntimeStateDiagnostic[]
 }
 
 export type CreateRuntimeSessionInput = {

@@ -14,6 +14,11 @@ const { BrowserWindow } =
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming stream-json is working, then stop.'
 
+const storageBackupSuffix = '.bak'
+const recoverableActiveStatuses = new Set(['pending', 'running'])
+const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
+const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
+
 function now() {
   return new Date().toISOString()
 }
@@ -33,6 +38,75 @@ function safeCwd(cwd) {
 function truncateChunks(chunks) {
   if (chunks.length > 1000) {
     chunks.splice(0, chunks.length - 1000)
+  }
+}
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function diagnostic(type, message, details = {}) {
+  return {
+    id: randomUUID(),
+    type,
+    message,
+    details,
+    ts: now(),
+  }
+}
+
+function backupFileFor(storageFile) {
+  return `${storageFile}${storageBackupSuffix}`
+}
+
+function readJsonFile(file) {
+  try {
+    return { ok: true, value: JSON.parse(fs.readFileSync(file, 'utf8')) }
+  } catch (error) {
+    return { ok: false, error }
+  }
+}
+
+function preserveCorruptFile(storageFile) {
+  if (!fs.existsSync(storageFile)) {
+    return undefined
+  }
+
+  const corruptFile = `${storageFile}.corrupt.${Date.now()}`
+  try {
+    fs.copyFileSync(storageFile, corruptFile)
+    return corruptFile
+  } catch {
+    return undefined
+  }
+}
+
+function writeJsonAtomically(storageFile, value) {
+  fs.mkdirSync(path.dirname(storageFile), { recursive: true })
+
+  if (fs.existsSync(storageFile)) {
+    if (readJsonFile(storageFile).ok) {
+      fs.copyFileSync(storageFile, backupFileFor(storageFile))
+    } else {
+      preserveCorruptFile(storageFile)
+    }
+  }
+
+  const tempFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`
+  try {
+    fs.writeFileSync(tempFile, `${JSON.stringify(value, null, 2)}\n`)
+    fs.renameSync(tempFile, storageFile)
+  } catch (error) {
+    try {
+      fs.rmSync(tempFile, { force: true })
+    } catch {
+      // Best-effort cleanup only; the next load ignores orphan temp files.
+    }
+    throw error
   }
 }
 
@@ -60,6 +134,7 @@ export class RuntimeSessionManager {
     this.#bridge = new MembraneBridge({
       handler: (request) => this.handleMembraneRequest(request),
     })
+    this.#persistState()
   }
 
   getState() {
@@ -776,8 +851,7 @@ export class RuntimeSessionManager {
       return
     }
 
-    fs.mkdirSync(path.dirname(this.#storageFile), { recursive: true })
-    fs.writeFileSync(this.#storageFile, JSON.stringify(this.#state, null, 2))
+    writeJsonAtomically(this.#storageFile, this.#state)
   }
 
   #loadState() {
@@ -785,54 +859,431 @@ export class RuntimeSessionManager {
       return createEmptyGraphState()
     }
 
-    try {
-      const parsed = JSON.parse(fs.readFileSync(this.#storageFile, 'utf8'))
-      return this.#normalizeState(parsed)
-    } catch (error) {
-      console.error(`Failed to load Orrery runtime state: ${error.message}`)
-      return createEmptyGraphState()
+    const primary = readJsonFile(this.#storageFile)
+    if (primary.ok) {
+      return this.#normalizeState(primary.value)
     }
+
+    const diagnostics = [
+      diagnostic(
+        'storage.primary_parse_failed',
+        'Primary Orrery runtime state could not be parsed.',
+        {
+          storageFile: this.#storageFile,
+          error: primary.error.message,
+          preservedFile: preserveCorruptFile(this.#storageFile),
+        }
+      ),
+    ]
+
+    const backupFile = backupFileFor(this.#storageFile)
+    if (fs.existsSync(backupFile)) {
+      const backup = readJsonFile(backupFile)
+      if (backup.ok) {
+        diagnostics.push(
+          diagnostic(
+            'storage.recovered_from_backup',
+            'Recovered Orrery runtime state from the last valid backup.',
+            { backupFile }
+          )
+        )
+        return this.#normalizeState(backup.value, diagnostics)
+      }
+
+      diagnostics.push(
+        diagnostic(
+          'storage.backup_parse_failed',
+          'Backup Orrery runtime state could not be parsed.',
+          { backupFile, error: backup.error.message }
+        )
+      )
+    }
+
+    console.error(
+      `Failed to load Orrery runtime state: ${primary.error.message}; starting with an empty recoverable state.`
+    )
+    return this.#withDiagnostics(createEmptyGraphState(), diagnostics)
   }
 
-  #normalizeState(value) {
+  #normalizeState(value, diagnostics = []) {
     const fallback = createEmptyGraphState()
+    const source = isObject(value) ? value : {}
     const state = {
       ...fallback,
-      ...value,
+      ...source,
       version: graphStateVersion,
-      nodes: Array.isArray(value?.nodes) ? value.nodes : [],
-      edges: Array.isArray(value?.edges) ? value.edges : [],
-      sessions:
-        value?.sessions && typeof value.sessions === 'object' ? value.sessions : {},
-      clusters:
-        value?.clusters && typeof value.clusters === 'object' ? value.clusters : {},
-      reports: Array.isArray(value?.reports) ? value.reports : [],
+      updatedAt: nonEmptyString(source.updatedAt) ? source.updatedAt : fallback.updatedAt,
+      nodes: [],
+      edges: Array.isArray(source.edges)
+        ? source.edges.map((edge) => this.#normalizeEdge(edge))
+        : [],
+      sessions: {},
+      clusters: isObject(source.clusters) ? this.#normalizeClusters(source.clusters) : {},
+      reports: Array.isArray(source.reports)
+        ? source.reports.map((report) => this.#normalizeReport(report))
+        : [],
+    }
+
+    const sourceSessions = isObject(source.sessions) ? source.sessions : {}
+    for (const [storageKey, sessionValue] of Object.entries(sourceSessions)) {
+      if (!isObject(sessionValue)) {
+        diagnostics.push(
+          diagnostic('storage.session_skipped', 'Skipped an invalid session record.', {
+            storageKey,
+          })
+        )
+        continue
+      }
+      const session = this.#normalizeSession(storageKey, sessionValue, diagnostics)
+      state.sessions[session.sessionId] = session
+    }
+
+    const seenNodeSessionIds = new Set()
+    const sourceNodes = Array.isArray(source.nodes) ? source.nodes : []
+    for (const nodeValue of sourceNodes) {
+      if (!isObject(nodeValue)) {
+        diagnostics.push(
+          diagnostic('storage.node_skipped', 'Skipped an invalid graph node record.')
+        )
+        continue
+      }
+
+      const nodeSessionId = this.#nodeSessionId(nodeValue)
+      if (!nodeSessionId || seenNodeSessionIds.has(nodeSessionId)) {
+        diagnostics.push(
+          diagnostic('storage.node_skipped', 'Skipped a duplicate or unidentified graph node.', {
+            nodeId: nodeValue.nodeId,
+            sessionId: nodeValue.sessionId,
+          })
+        )
+        continue
+      }
+
+      if (!state.sessions[nodeSessionId]) {
+        diagnostics.push(
+          diagnostic(
+            'storage.placeholder_session_created',
+            'Created a failed placeholder session for a graph node without a session record.',
+            { sessionId: nodeSessionId }
+          )
+        )
+        state.sessions[nodeSessionId] = this.#placeholderSessionFromNode(
+          nodeSessionId,
+          nodeValue
+        )
+      }
+
+      const session = state.sessions[nodeSessionId]
+      state.nodes.push(this.#normalizeNode(nodeValue, session, diagnostics))
+      seenNodeSessionIds.add(nodeSessionId)
     }
 
     for (const session of Object.values(state.sessions)) {
-      session.chunks = Array.isArray(session.chunks) ? session.chunks : []
-      session.messages = Array.isArray(session.messages)
-        ? session.messages
-        : this.#messagesFromLegacySession(session)
-      session.backendSessionId = session.backendSessionId ?? session.sessionId
-      if (session.status === 'running' || session.status === 'pending') {
-        session.status = 'idle'
+      if (seenNodeSessionIds.has(session.sessionId)) {
+        continue
       }
-      if (session.status === 'finished') {
-        session.status = 'idle'
+
+      diagnostics.push(
+        diagnostic(
+          'storage.node_created',
+          'Created a graph node for a session without a node record.',
+          { sessionId: session.sessionId }
+        )
+      )
+      state.nodes.push(this.#nodeFromSession(session))
+    }
+
+    return this.#withDiagnostics(state, diagnostics)
+  }
+
+  #withDiagnostics(state, diagnostics) {
+    if (diagnostics.length === 0) {
+      return state
+    }
+
+    return {
+      ...state,
+      diagnostics: [
+        ...(Array.isArray(state.diagnostics) ? state.diagnostics : []),
+        ...diagnostics,
+      ].slice(-50),
+    }
+  }
+
+  #normalizeSession(storageKey, value, diagnostics) {
+    const sessionId = nonEmptyString(value.sessionId)
+      ? value.sessionId
+      : nonEmptyString(storageKey)
+        ? storageKey
+        : randomUUID()
+    const ts = now()
+    const status = this.#normalizeSessionStatus(sessionId, value, diagnostics)
+    const session = {
+      ...value,
+      sessionId,
+      nodeId: sessionId,
+      backend: nonEmptyString(value.backend) ? value.backend : 'claude-cli',
+      backendSessionId: nonEmptyString(value.backendSessionId)
+        ? value.backendSessionId
+        : sessionId,
+      agent: nonEmptyString(value.agent) ? value.agent : 'claude-code',
+      label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
+      prompt: typeof value.prompt === 'string' ? value.prompt : '',
+      cwd: safeCwd(value.cwd),
+      role: value.role === 'master' ? 'master' : 'worker',
+      status,
+      createdAt: nonEmptyString(value.createdAt) ? value.createdAt : ts,
+      updatedAt: nonEmptyString(value.updatedAt) ? value.updatedAt : ts,
+      chunks: Array.isArray(value.chunks)
+        ? value.chunks.map((chunk) => this.#normalizeChunk(sessionId, chunk))
+        : [],
+      messages: Array.isArray(value.messages)
+        ? value.messages.map((message) =>
+            this.#normalizeMessage(sessionId, message, status, diagnostics)
+          )
+        : this.#messagesFromLegacySession({ ...value, sessionId }),
+    }
+
+    if (value.nodeId !== sessionId) {
+      diagnostics.push(
+        diagnostic(
+          'storage.session_identity_repaired',
+          'Repaired a session whose nodeId did not match sessionId.',
+          { sessionId, previousNodeId: value.nodeId }
+        )
+      )
+    }
+
+    return session
+  }
+
+  #normalizeSessionStatus(sessionId, session, diagnostics) {
+    if (recoverableActiveStatuses.has(session.status)) {
+      diagnostics.push(
+        diagnostic(
+          'runtime.active_session_recovered',
+          'Recovered a session that was active when the previous runtime stopped.',
+          { sessionId, previousStatus: session.status }
+        )
+      )
+      session.error =
+        session.error ??
+        `Interrupted by runtime restart while ${session.status}; review the last messages and resume when ready.`
+      session.finishedAt = session.finishedAt ?? now()
+      return 'failed'
+    }
+
+    if (session.status === 'finished') {
+      diagnostics.push(
+        diagnostic(
+          'storage.legacy_status_migrated',
+          'Migrated legacy finished status to idle.',
+          { sessionId }
+        )
+      )
+      return 'idle'
+    }
+
+    if (validSessionStatuses.has(session.status)) {
+      return session.status
+    }
+
+    diagnostics.push(
+      diagnostic(
+        'storage.invalid_status_repaired',
+        'Repaired a session with an unknown status.',
+        { sessionId, previousStatus: session.status }
+      )
+    )
+    session.error =
+      session.error ?? `Recovered unknown persisted status: ${String(session.status)}`
+    return 'failed'
+  }
+
+  #normalizeChunk(sessionId, value) {
+    if (!isObject(value)) {
+      return {
+        id: randomUUID(),
+        sessionId,
+        ts: now(),
+        stream: 'stderr',
+        raw: String(value ?? ''),
       }
     }
 
-    for (const node of state.nodes) {
-      const session = state.sessions[node.sessionId]
-      if (session) {
-        node.nodeId = session.sessionId
-        node.sessionId = session.sessionId
-        node.status = session.status
+    return {
+      ...value,
+      id: nonEmptyString(value.id) ? value.id : randomUUID(),
+      sessionId,
+      ts: nonEmptyString(value.ts) ? value.ts : now(),
+      stream: value.stream === 'stderr' ? 'stderr' : 'stdout',
+      raw: typeof value.raw === 'string' ? value.raw : '',
+    }
+  }
+
+  #normalizeMessage(sessionId, value, sessionStatus, diagnostics) {
+    const message = isObject(value) ? value : { content: String(value ?? '') }
+    const status = validMessageStatuses.has(message.status)
+      ? message.status
+      : message.status === undefined
+        ? undefined
+        : 'failed'
+    const normalized = {
+      ...message,
+      id: nonEmptyString(message.id) ? message.id : randomUUID(),
+      sessionId,
+      role:
+        message.role === 'assistant' || message.role === 'system' ? message.role : 'user',
+      content: typeof message.content === 'string' ? message.content : '',
+      ts: nonEmptyString(message.ts) ? message.ts : now(),
+      status,
+    }
+
+    if (message.status === 'streaming' && sessionStatus === 'failed') {
+      normalized.status = 'failed'
+      diagnostics.push(
+        diagnostic(
+          'runtime.streaming_message_recovered',
+          'Marked an interrupted streaming assistant message as failed.',
+          { sessionId, messageId: normalized.id }
+        )
+      )
+    }
+
+    return normalized
+  }
+
+  #nodeSessionId(node) {
+    if (nonEmptyString(node.sessionId)) {
+      return node.sessionId
+    }
+    if (nonEmptyString(node.nodeId)) {
+      return node.nodeId
+    }
+    return undefined
+  }
+
+  #normalizeNode(node, session, diagnostics) {
+    if (node.nodeId !== session.sessionId || node.sessionId !== session.sessionId) {
+      diagnostics.push(
+        diagnostic(
+          'storage.node_identity_repaired',
+          'Repaired a graph node so nodeId equals sessionId.',
+          {
+            sessionId: session.sessionId,
+            previousNodeId: node.nodeId,
+            previousSessionId: node.sessionId,
+          }
+        )
+      )
+    }
+
+    return {
+      ...node,
+      nodeId: session.sessionId,
+      sessionId: session.sessionId,
+      label: nonEmptyString(node.label) ? node.label : session.label,
+      role: session.role,
+      agent: nonEmptyString(node.agent) ? node.agent : session.agent,
+      status: session.status,
+      position: isObject(node.position)
+        ? {
+            x: Number.isFinite(node.position.x) ? node.position.x : 96,
+            y: Number.isFinite(node.position.y) ? node.position.y : 96,
+          }
+        : { x: 96, y: 96 },
+    }
+  }
+
+  #nodeFromSession(session) {
+    return {
+      nodeId: session.sessionId,
+      sessionId: session.sessionId,
+      label: session.label,
+      role: session.role,
+      agent: session.agent,
+      status: session.status,
+      position: {
+        x: 96,
+        y: 96,
+      },
+    }
+  }
+
+  #placeholderSessionFromNode(sessionId, node) {
+    const ts = now()
+    return {
+      sessionId,
+      nodeId: sessionId,
+      backend: 'claude-cli',
+      backendSessionId: sessionId,
+      agent: nonEmptyString(node.agent) ? node.agent : 'claude-code',
+      label: nonEmptyString(node.label) ? node.label : `Recovered ${sessionId.slice(0, 8)}`,
+      prompt: '',
+      cwd: process.cwd(),
+      role: node.role === 'master' ? 'master' : 'worker',
+      status: 'failed',
+      createdAt: ts,
+      updatedAt: ts,
+      finishedAt: ts,
+      error: 'Recovered graph node without a persisted session record.',
+      chunks: [],
+      messages: [],
+    }
+  }
+
+  #normalizeEdge(value) {
+    if (!isObject(value)) {
+      return {
+        edgeId: randomUUID(),
+        source: '',
+        target: '',
+        kind: 'create-session',
+        ts: now(),
       }
     }
 
-    return state
+    return {
+      ...value,
+      edgeId: nonEmptyString(value.edgeId) ? value.edgeId : randomUUID(),
+      source: nonEmptyString(value.source) ? value.source : '',
+      target: nonEmptyString(value.target) ? value.target : '',
+      kind: nonEmptyString(value.kind) ? value.kind : 'create-session',
+      ts: nonEmptyString(value.ts) ? value.ts : now(),
+    }
+  }
+
+  #normalizeReport(value) {
+    if (!isObject(value)) {
+      return {
+        id: randomUUID(),
+        from: '',
+        payload: { type: 'info', payload: value },
+      }
+    }
+
+    return {
+      ...value,
+      id: nonEmptyString(value.id) ? value.id : randomUUID(),
+    }
+  }
+
+  #normalizeClusters(clusters) {
+    return Object.fromEntries(
+      Object.entries(clusters)
+        .filter(([, cluster]) => isObject(cluster))
+        .map(([clusterId, cluster]) => [
+          clusterId,
+          {
+            ...cluster,
+            clusterId: nonEmptyString(cluster.clusterId) ? cluster.clusterId : clusterId,
+            label: nonEmptyString(cluster.label) ? cluster.label : clusterId,
+            nodeIds: Array.isArray(cluster.nodeIds)
+              ? cluster.nodeIds.filter(nonEmptyString)
+              : [],
+          },
+        ])
+    )
   }
 
   #messagesFromLegacySession(session) {

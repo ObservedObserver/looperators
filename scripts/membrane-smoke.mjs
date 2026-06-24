@@ -1,7 +1,7 @@
-import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { RuntimeSessionManager } from '../electron/runtime/sessionManager.js'
+import { cleanupRuntimeStorage } from './runtime-storage-cleanup.mjs'
 
 const storageFile = path.join(
   os.tmpdir(),
@@ -112,10 +112,5 @@ try {
     `[smoke] ok nodes=${state.nodes.length} edges=${state.edges.length} reports=${state.reports.length}`
   )
 } finally {
-  runtime.killAll()
-  try {
-    fs.rmSync(storageFile, { force: true })
-  } catch {
-    // Best effort cleanup only.
-  }
+  await cleanupRuntimeStorage(runtime, storageFile)
 }
