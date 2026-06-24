@@ -1,25 +1,36 @@
-import { useRef } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  addEdge,
+  applyEdgeChanges,
+  applyNodeChanges,
+  Background,
+  BackgroundVariant,
+  Controls,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type Node,
+  type NodeChange,
+  type NodeProps,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
 import {
   Bot,
   Braces,
   CirclePlay,
   GitBranch,
+  Moon,
   PanelsTopLeft,
   Plus,
   Route,
   Settings2,
   Sparkles,
+  Sun,
 } from 'lucide-react'
-import {
-  Tldraw,
-  createShapeId,
-  toRichText,
-  type Editor,
-  type TLGeoShape,
-  type TLShapeId,
-  type TLShapePartial,
-} from 'tldraw'
-import 'tldraw/tldraw.css'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,112 +41,206 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { cn } from '@/lib/utils'
+
+type ColorScheme = 'dark' | 'light'
+
+type AgentNodeData = {
+  label: string
+  description: string
+  kind: 'planner' | 'executor' | 'reviewer' | 'custom'
+  status: 'ready' | 'running' | 'review'
+}
 
 const starterAgents = [
   {
     id: 'planner',
     label: 'Planner Agent',
     description: 'Break goals into executable work plans.',
-    color: 'blue',
-    x: 120,
-    y: 120,
+    kind: 'planner',
+    status: 'ready',
+    x: 80,
+    y: 80,
   },
   {
     id: 'executor',
     label: 'Executor Agent',
     description: 'Run tasks and report structured results.',
-    color: 'green',
+    kind: 'executor',
+    status: 'running',
     x: 440,
-    y: 120,
+    y: 80,
   },
   {
     id: 'reviewer',
     label: 'Reviewer Agent',
     description: 'Check outputs, risks, and missing context.',
-    color: 'violet',
-    x: 280,
-    y: 320,
+    kind: 'reviewer',
+    status: 'review',
+    x: 260,
+    y: 280,
   },
-] as const
-
-function buildAgentShape(
-  id: string,
-  label: string,
-  x: number,
-  y: number,
-  color: TLGeoShape['props']['color']
-): TLShapePartial<TLGeoShape> & { id: TLShapeId } {
-  return {
-    id: createShapeId(id),
-    type: 'geo',
-    x,
-    y,
-    props: {
-      geo: 'rectangle',
-      w: 220,
-      h: 88,
-      dash: 'solid',
-      url: '',
-      growY: 0,
-      scale: 1,
-      labelColor: 'black',
-      color,
-      fill: 'semi',
-      size: 'm',
-      font: 'sans',
-      align: 'middle',
-      verticalAlign: 'middle',
-      richText: toRichText(label),
-    },
-    meta: {
-      kind: 'agent',
-    },
+] as const satisfies Array<
+  AgentNodeData & {
+    id: string
+    x: number
+    y: number
   }
+>
+
+const initialNodes: Node<AgentNodeData>[] = starterAgents.map((agent) => ({
+  id: agent.id,
+  type: 'agent',
+  position: { x: agent.x, y: agent.y },
+  data: {
+    label: agent.label,
+    description: agent.description,
+    kind: agent.kind,
+    status: agent.status,
+  },
+}))
+
+const initialEdges: Edge[] = [
+  {
+    id: 'planner-to-executor',
+    source: 'planner',
+    target: 'executor',
+    animated: true,
+    label: 'plan',
+  },
+  {
+    id: 'executor-to-reviewer',
+    source: 'executor',
+    target: 'reviewer',
+    label: 'result',
+  },
+]
+
+const statusLabels: Record<AgentNodeData['status'], string> = {
+  ready: 'Ready',
+  running: 'Running',
+  review: 'Review',
 }
 
-function seedCanvas(editor: Editor) {
-  if (editor.getCurrentPageShapes().length > 0) {
-    return
-  }
+const kindClassNames: Record<AgentNodeData['kind'], string> = {
+  planner: 'border-blue-500/70 bg-blue-500/10',
+  executor: 'border-emerald-500/70 bg-emerald-500/10',
+  reviewer: 'border-violet-500/70 bg-violet-500/10',
+  custom: 'border-orange-500/70 bg-orange-500/10',
+}
 
-  const shapes = starterAgents.map((agent) =>
-    buildAgentShape(agent.id, agent.label, agent.x, agent.y, agent.color)
+function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
+  return (
+    <div
+      className={cn(
+        'min-w-[240px] rounded-lg border bg-card px-4 py-3 shadow-sm transition',
+        kindClassNames[data.kind],
+        selected && 'ring-2 ring-ring ring-offset-2 ring-offset-background'
+      )}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!size-2.5 !border-background !bg-muted-foreground"
+      />
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Bot className="size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold">{data.label}</div>
+            <div className="text-[11px] uppercase tracking-normal text-muted-foreground">
+              {data.kind}
+            </div>
+          </div>
+        </div>
+        <Badge variant="secondary" className="h-5 shrink-0">
+          {statusLabels[data.status]}
+        </Badge>
+      </div>
+      <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
+        {data.description}
+      </p>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!size-2.5 !border-background !bg-primary"
+      />
+    </div>
   )
+}
 
-  editor.createShapes(shapes)
-  editor.select(...shapes.map((shape) => shape.id))
-  editor.zoomToSelection({ animation: { duration: 220 } })
+const nodeTypes = {
+  agent: AgentNode,
 }
 
 function App() {
-  const editorRef = useRef<Editor | null>(null)
-  const nextNodeIndex = useRef(1)
-
-  function addAgentNode() {
-    const editor = editorRef.current
-
-    if (!editor) {
-      return
+  const [nodes, setNodes] = useState<Node<AgentNodeData>[]>(initialNodes)
+  const [edges, setEdges] = useState<Edge[]>(initialEdges)
+  const [nextNodeIndex, setNextNodeIndex] = useState(1)
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
+    if (typeof window === 'undefined') {
+      return 'dark'
     }
 
-    const index = nextNodeIndex.current++
-    const shape = buildAgentShape(
-      `agent-${Date.now()}`,
-      `New Agent ${index}`,
-      180 + index * 32,
-      180 + index * 24,
-      'orange'
-    )
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light'
+  })
+  const isElectron = useMemo(() => Boolean(window.orrery), [])
 
-    editor.createShapes([shape])
-    editor.select(shape.id)
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', colorScheme === 'dark')
+  }, [colorScheme])
+
+  const onConnect = useCallback(
+    (connection: Connection) =>
+      setEdges((currentEdges) =>
+        addEdge({ ...connection, animated: true }, currentEdges)
+      ),
+    []
+  )
+  const onNodesChange = useCallback(
+    (changes: NodeChange<Node<AgentNodeData>>[]) =>
+      setNodes((currentNodes) => applyNodeChanges(changes, currentNodes)),
+    []
+  )
+  const onEdgesChange = useCallback(
+    (changes: EdgeChange<Edge>[]) =>
+      setEdges((currentEdges) => applyEdgeChanges(changes, currentEdges)),
+    []
+  )
+
+  function addAgentNode() {
+    const id = `agent-${Date.now()}`
+    const index = nextNodeIndex
+
+    setNextNodeIndex((current) => current + 1)
+    setNodes((currentNodes) => [
+      ...currentNodes,
+      {
+        id,
+        type: 'agent',
+        position: { x: 180 + index * 36, y: 180 + index * 28 },
+        data: {
+          label: `New Agent ${index}`,
+          description: 'Configure role, tools, inputs, and outputs.',
+          kind: 'custom',
+          status: 'ready',
+        },
+      },
+    ])
   }
 
   return (
     <TooltipProvider>
-      <main className="dark flex h-screen min-h-[720px] overflow-hidden bg-background text-foreground">
+      <main className="flex h-screen min-h-[720px] overflow-hidden bg-background text-foreground">
         <aside className="flex w-[320px] shrink-0 flex-col border-r border-border bg-sidebar">
-          <header className="space-y-4 px-5 pb-4 pt-5">
+          <header
+            className={cn(
+              'app-region-drag space-y-4 px-5 pb-4 pt-5',
+              isElectron && 'pt-16'
+            )}
+          >
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="flex size-9 items-center justify-center rounded-lg border border-border bg-background">
@@ -155,7 +260,10 @@ function App() {
               </Badge>
             </div>
 
-            <Button className="w-full justify-start" onClick={addAgentNode}>
+            <Button
+              className="app-region-no-drag w-full justify-start"
+              onClick={addAgentNode}
+            >
               <Plus className="size-4" />
               Add agent node
             </Button>
@@ -216,27 +324,67 @@ function App() {
             <div className="flex items-center gap-3">
               <Badge variant="outline" className="gap-1.5">
                 <Sparkles className="size-3" />
-                Local canvas
+                Agent graph
               </Badge>
               <p className="text-sm text-muted-foreground">
-                Drag, zoom, select, and compose agent nodes.
+                Connect agents, move nodes, and model execution paths.
               </p>
             </div>
 
-            <Button variant="outline" size="sm">
-              <CirclePlay className="size-4" />
-              Run graph
-            </Button>
+            <div className="flex items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Switch to ${
+                      colorScheme === 'dark' ? 'light' : 'dark'
+                    } mode`}
+                    onClick={() =>
+                      setColorScheme((current) =>
+                        current === 'dark' ? 'light' : 'dark'
+                      )
+                    }
+                  >
+                    {colorScheme === 'dark' ? (
+                      <Sun className="size-4" />
+                    ) : (
+                      <Moon className="size-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {colorScheme === 'dark' ? 'Light mode' : 'Dark mode'}
+                </TooltipContent>
+              </Tooltip>
+
+              <Button variant="outline" size="sm">
+                <CirclePlay className="size-4" />
+                Run graph
+              </Button>
+            </div>
           </header>
 
           <div className="relative min-h-0 flex-1">
-            <Tldraw
-              persistenceKey="orrery-agent-canvas"
-              onMount={(editor) => {
-                editorRef.current = editor
-                seedCanvas(editor)
-              }}
-            />
+            <ReactFlow
+              colorMode={colorScheme}
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              fitView
+              fitViewOptions={{ padding: 0.24 }}
+            >
+              <Background
+                variant={BackgroundVariant.Dots}
+                gap={24}
+                size={1.2}
+              />
+              <Controls />
+              <MiniMap pannable zoomable />
+            </ReactFlow>
           </div>
         </section>
       </main>

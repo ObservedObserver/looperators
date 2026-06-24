@@ -133,3 +133,15 @@
     @apply font-sans;
     }
 }
+
+@layer utilities {
+  .app-region-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-region-no-drag,
+  button,
+  a {
+    -webkit-app-region: no-drag;
+  }
+}
