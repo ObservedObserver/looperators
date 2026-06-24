@@ -58,6 +58,7 @@ export const graphStateSchema = {
     'session.finished',
     'session.failed',
     'session.killed',
+    'report.received',
   ],
 } as const
 
@@ -224,6 +225,7 @@ export type RuntimeEvent =
       state: GraphState
     }
   | { type: 'session.killed'; sessionId: SessionId; state: GraphState }
+  | { type: 'report.received'; from: SessionId; report: Report; state: GraphState }
 
 export function createEmptyGraphState(): GraphState {
   return {

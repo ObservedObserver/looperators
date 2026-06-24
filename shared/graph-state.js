@@ -58,6 +58,7 @@ export const graphStateSchema = {
     'session.finished',
     'session.failed',
     'session.killed',
+    'report.received',
   ],
 }
 

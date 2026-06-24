@@ -1,5 +1,12 @@
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const membraneServerPath = path.join(__dirname, 'membraneMcpServer.js')
 
 const commonCliPaths = [
   '/opt/homebrew/bin',
@@ -48,7 +55,61 @@ function getEventType(event) {
   return event?.type
 }
 
-function buildClaudeArgs({ prompt, backendSessionId, sessionId }) {
+function membraneSystemPrompt() {
+  return [
+    'You are running inside Orrery.',
+    'Use the orrery_membrane MCP tools when you need to affect the agent graph:',
+    '- mcp__orrery_membrane__create_session creates a real downstream session/node.',
+    '- mcp__orrery_membrane__resume_session appends a user message to an existing session/node and resumes it.',
+    '- mcp__orrery_membrane__report submits typed verdict, relationship, or info data to the graph blackboard.',
+    'Do not invent session ids. Use ids returned by create_session or provided in the user prompt.',
+  ].join('\n')
+}
+
+function writeJson0600(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value), {
+    encoding: 'utf8',
+    mode: 0o600,
+  })
+  fs.chmodSync(filePath, 0o600)
+}
+
+function createMcpHandoff(membrane) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-membrane-'))
+  fs.chmodSync(dir, 0o700)
+
+  const bootstrapPath = path.join(dir, 'bootstrap.json')
+  const configPath = path.join(dir, 'mcp-config.json')
+
+  writeJson0600(bootstrapPath, {
+    bridgeUrl: membrane.bridgeUrl,
+    token: membrane.token,
+  })
+
+  writeJson0600(configPath, {
+    mcpServers: {
+      orrery_membrane: {
+        command: process.execPath,
+        args: [membraneServerPath],
+        env: {
+          ORRERY_MEMBRANE_BOOTSTRAP_FILE: bootstrapPath,
+        },
+      },
+    },
+  })
+
+  return { dir, configPath }
+}
+
+function cleanupMcpHandoff(handoff) {
+  if (!handoff) {
+    return
+  }
+
+  fs.rmSync(handoff.dir, { recursive: true, force: true })
+}
+
+function buildClaudeArgs({ prompt, backendSessionId, sessionId, mcpConfigPath }) {
   const args = []
 
   if (backendSessionId) {
@@ -65,6 +126,16 @@ function buildClaudeArgs({ prompt, backendSessionId, sessionId }) {
     '--include-partial-messages'
   )
 
+  if (mcpConfigPath) {
+    args.push(
+      '--mcp-config',
+      mcpConfigPath,
+      '--strict-mcp-config',
+      '--append-system-prompt',
+      membraneSystemPrompt()
+    )
+  }
+
   return args
 }
 
@@ -75,26 +146,46 @@ export class ClaudeCliRun extends EventEmitter {
   #killRequested = false
   #closed = false
   #killTimer
+  #mcpHandoff
 
-  constructor({ prompt, cwd, backendSessionId, sessionId }) {
+  constructor({ prompt, cwd, backendSessionId, sessionId, membrane }) {
     super()
 
-    this.#child = spawn('claude', buildClaudeArgs({ prompt, backendSessionId, sessionId }), {
-      cwd,
-      env: {
-        ...process.env,
-        PATH: buildPath(),
-        NO_COLOR: '1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    this.#mcpHandoff = membrane ? createMcpHandoff(membrane) : undefined
+
+    try {
+      this.#child = spawn(
+        'claude',
+        buildClaudeArgs({
+          prompt,
+          backendSessionId,
+          sessionId,
+          mcpConfigPath: this.#mcpHandoff?.configPath,
+        }),
+        {
+          cwd,
+          env: {
+            ...process.env,
+            PATH: buildPath(),
+            NO_COLOR: '1',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }
+      )
+    } catch (error) {
+      cleanupMcpHandoff(this.#mcpHandoff)
+      throw error
+    }
 
     this.#child.stdout.setEncoding('utf8')
     this.#child.stderr.setEncoding('utf8')
 
     this.#child.stdout.on('data', (data) => this.#handleStdout(data))
     this.#child.stderr.on('data', (data) => this.#handleStderr(data))
-    this.#child.on('error', (error) => this.emit('error', error))
+    this.#child.on('error', (error) => {
+      cleanupMcpHandoff(this.#mcpHandoff)
+      this.emit('error', error)
+    })
     this.#child.on('close', (code, signal) => {
       this.#closed = true
       if (this.#killTimer) {
@@ -102,6 +193,7 @@ export class ClaudeCliRun extends EventEmitter {
       }
       this.#flushStdout()
       this.#flushStderr()
+      cleanupMcpHandoff(this.#mcpHandoff)
       this.emit('close', {
         code,
         signal,
