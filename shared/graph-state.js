@@ -1,4 +1,4 @@
-export const graphStateVersion = 3
+export const graphStateVersion = 4
 
 export const sessionStatuses = [
   'pending',
@@ -39,6 +39,17 @@ export const graphStateSchema = {
     onStop: 'freeze',
     maxIterations: 'number?',
   },
+  loopState: {
+    status: '"running" | "stopped"',
+    iterations: 'number',
+    coderSessionId: 'SessionId?',
+    reviewerSessionId: 'SessionId?',
+    lastEvent: 'LoopEvent?',
+    lastProcessedEventKey: 'string?',
+    reason: 'string?',
+    startedAt: 'ISO-8601 string?',
+    stoppedAt: 'ISO-8601 string?',
+  },
   membraneSkills: {
     create_session: {
       input: {
@@ -74,6 +85,8 @@ export const graphStateSchema = {
     'session.killed',
     'report.received',
     'freeze.applied',
+    'loop.started',
+    'loop.stopped',
   ],
   readabilityFields: {
     GraphNode: {
@@ -94,6 +107,7 @@ export const graphStateSchema = {
     Cluster: {
       frozen: 'boolean?',
       freezeReason: 'string?',
+      loopState: 'LoopState?',
     },
   },
 }

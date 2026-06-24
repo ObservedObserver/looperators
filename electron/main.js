@@ -65,6 +65,13 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:set-cluster-loop-policy', (_event, input) =>
     runtime.setClusterLoopPolicy(input)
   )
+  ipcMain.handle('orrery:start-master-loop', (_event, input) =>
+    runtime.startMasterLoop(input)
+  )
+  ipcMain.handle('orrery:stop-master-loop', (_event, input) =>
+    runtime.stopMasterLoop(input)
+  )
+  ipcMain.handle('orrery:freeze', (_event, input) => runtime.freeze(input))
 
   createMainWindow()
 
