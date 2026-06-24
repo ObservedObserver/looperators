@@ -5,7 +5,7 @@ import { RuntimeSessionManager } from './runtime/sessionManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
-const runtime = new RuntimeSessionManager()
+let runtime
 
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
@@ -37,9 +37,16 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  runtime = new RuntimeSessionManager({
+    storageFile: path.join(app.getPath('userData'), 'orrery-runtime-state.json'),
+  })
+
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())
   ipcMain.handle('orrery:create-session', (_event, input) =>
     runtime.createSession(input)
+  )
+  ipcMain.handle('orrery:resume-session', (_event, input) =>
+    runtime.resumeSession(input)
   )
   ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
     runtime.killSession(sessionId)
@@ -55,7 +62,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  runtime.killAll()
+  runtime?.killAll()
 
   if (process.platform !== 'darwin') {
     app.quit()

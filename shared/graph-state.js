@@ -1,9 +1,9 @@
-export const graphStateVersion = 1
+export const graphStateVersion = 2
 
 export const sessionStatuses = [
   'pending',
   'running',
-  'finished',
+  'idle',
   'failed',
   'killed',
 ]
@@ -53,6 +53,7 @@ export const graphStateSchema = {
   runtimeEvents: [
     'runtime.state',
     'session.created',
+    'session.resumed',
     'session.stream',
     'session.finished',
     'session.failed',
