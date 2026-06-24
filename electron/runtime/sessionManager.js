@@ -58,7 +58,7 @@ export class RuntimeSessionManager {
         : undefined
     this.#state = this.#loadState()
     this.#bridge = new MembraneBridge({
-      handler: (request) => this.#handleMembraneRequest(request),
+      handler: (request) => this.handleMembraneRequest(request),
     })
   }
 
@@ -220,6 +220,26 @@ export class RuntimeSessionManager {
       this.killSession(sessionId)
     }
     this.#bridge?.close()
+  }
+
+  async handleMembraneRequest({ tool, source, input }) {
+    if (!this.#state.sessions[source]) {
+      throw new Error(`Unknown membrane source session: ${source}`)
+    }
+
+    if (tool === 'create_session') {
+      return this.#membraneCreateSession(source, input)
+    }
+
+    if (tool === 'resume_session') {
+      return this.#membraneResumeSession(source, input)
+    }
+
+    if (tool === 'report') {
+      return this.#membraneReport(source, input)
+    }
+
+    throw new Error(`Unknown membrane tool: ${tool}`)
   }
 
   async #startRun(sessionId, { prompt, runKind, userMessageId }) {
@@ -486,26 +506,6 @@ export class RuntimeSessionManager {
     }
   }
 
-  async #handleMembraneRequest({ tool, source, input }) {
-    if (!this.#state.sessions[source]) {
-      throw new Error(`Unknown membrane source session: ${source}`)
-    }
-
-    if (tool === 'create_session') {
-      return this.#membraneCreateSession(source, input)
-    }
-
-    if (tool === 'resume_session') {
-      return this.#membraneResumeSession(source, input)
-    }
-
-    if (tool === 'report') {
-      return this.#membraneReport(source, input)
-    }
-
-    throw new Error(`Unknown membrane tool: ${tool}`)
-  }
-
   async #membraneCreateSession(source, input = {}) {
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
@@ -655,21 +655,62 @@ export class RuntimeSessionManager {
         throw new Error('report verdict is required')
       }
 
+      let issues
+      if (input.issues !== undefined) {
+        if (!Array.isArray(input.issues)) {
+          throw new Error('verdict report issues must be an array')
+        }
+
+        issues = input.issues.map((issue, index) => {
+          if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
+            throw new Error(`verdict issue ${index} must be an object`)
+          }
+
+          if (
+            typeof issue.message !== 'string' ||
+            issue.message.trim().length === 0
+          ) {
+            throw new Error(`verdict issue ${index} message is required`)
+          }
+
+          if (issue.file !== undefined && typeof issue.file !== 'string') {
+            throw new Error(`verdict issue ${index} file must be a string`)
+          }
+
+          if (
+            issue.line !== undefined &&
+            (typeof issue.line !== 'number' || !Number.isFinite(issue.line))
+          ) {
+            throw new Error(`verdict issue ${index} line must be a finite number`)
+          }
+
+          if (
+            issue.severity !== undefined &&
+            !['info', 'warn', 'error'].includes(issue.severity)
+          ) {
+            throw new Error(
+              `verdict issue ${index} severity must be info, warn, or error`
+            )
+          }
+
+          return {
+            message: issue.message.trim(),
+            file: issue.file,
+            line: issue.line,
+            severity: issue.severity,
+          }
+        })
+      }
+
+      if (input.summary !== undefined && typeof input.summary !== 'string') {
+        throw new Error('verdict report summary must be a string')
+      }
+
       return {
         type: 'verdict',
         verdict: input.verdict.trim(),
-        issues: Array.isArray(input.issues)
-          ? input.issues.map((issue) => ({
-              message:
-                typeof issue?.message === 'string' ? issue.message : String(issue),
-              file: typeof issue?.file === 'string' ? issue.file : undefined,
-              line: typeof issue?.line === 'number' ? issue.line : undefined,
-              severity: ['info', 'warn', 'error'].includes(issue?.severity)
-                ? issue.severity
-                : undefined,
-            }))
-          : undefined,
-        summary: typeof input.summary === 'string' ? input.summary : undefined,
+        issues,
+        summary: input.summary,
       }
     }
 
@@ -681,13 +722,19 @@ export class RuntimeSessionManager {
       return {
         type: 'relationship',
         target: input.target.trim(),
-        nature: typeof input.nature === 'string' ? input.nature : undefined,
-        sessionRef:
-          typeof input.sessionRef === 'string' ? input.sessionRef : undefined,
+        nature: this.#optionalString(input.nature, 'relationship nature'),
+        sessionRef: this.#optionalString(
+          input.sessionRef,
+          'relationship sessionRef'
+        ),
       }
     }
 
     if (input.type === 'info') {
+      if (!Object.hasOwn(input, 'payload')) {
+        throw new Error('info report payload is required')
+      }
+
       return {
         type: 'info',
         payload: input.payload,
@@ -695,6 +742,18 @@ export class RuntimeSessionManager {
     }
 
     throw new Error(`Unknown report type: ${input.type}`)
+  }
+
+  #optionalString(value, label) {
+    if (value === undefined) {
+      return undefined
+    }
+
+    if (typeof value !== 'string') {
+      throw new Error(`${label} must be a string`)
+    }
+
+    return value
   }
 
   #touch() {

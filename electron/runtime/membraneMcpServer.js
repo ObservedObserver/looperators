@@ -1,7 +1,23 @@
 #!/usr/bin/env node
 
-const bridgeUrl = process.env.ORRERY_MEMBRANE_BRIDGE_URL
-const bearerToken = process.env.ORRERY_MEMBRANE_TOKEN
+import fs from 'node:fs'
+
+function loadBridgeCredentials() {
+  const bootstrapFile = process.env.ORRERY_MEMBRANE_BOOTSTRAP_FILE
+  if (typeof bootstrapFile === 'string' && bootstrapFile.length > 0) {
+    const raw = fs.readFileSync(bootstrapFile, 'utf8')
+    fs.rmSync(bootstrapFile, { force: true })
+    const parsed = JSON.parse(raw)
+    return {
+      bridgeUrl: parsed.bridgeUrl,
+      bearerToken: parsed.token,
+    }
+  }
+
+  return { bridgeUrl: undefined, bearerToken: undefined }
+}
+
+const { bridgeUrl, bearerToken } = loadBridgeCredentials()
 
 const tools = [
   {
