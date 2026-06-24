@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createEmptyGraphState, graphStateVersion } from '../../shared/graph-state.js'
 import { runClaudeCli } from './claudeCliAdapter.js'
+import { MembraneBridge } from './membraneBridge.js'
 
 const { BrowserWindow } =
   electron && typeof electron === 'object' && 'BrowserWindow' in electron
@@ -48,6 +49,7 @@ export class RuntimeSessionManager {
   #runs = new Map()
   #runContext = new Map()
   #storageFile
+  #bridge
 
   constructor({ storageFile } = {}) {
     this.#storageFile =
@@ -55,18 +57,22 @@ export class RuntimeSessionManager {
         ? storageFile
         : undefined
     this.#state = this.#loadState()
+    this.#bridge = new MembraneBridge({
+      handler: (request) => this.#handleMembraneRequest(request),
+    })
   }
 
   getState() {
     return clone(this.#state)
   }
 
-  createSession(input = {}) {
+  async createSession(input = {}) {
     const sessionId = randomUUID()
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
         : defaultPrompt
+    const initialContent = messageContent(prompt, input.context)
     const cwd = safeCwd(input.cwd)
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
@@ -81,7 +87,7 @@ export class RuntimeSessionManager {
       backendSessionId: sessionId,
       agent: 'claude-code',
       label,
-      prompt,
+      prompt: initialContent,
       cwd,
       role: 'worker',
       status: 'pending',
@@ -93,7 +99,7 @@ export class RuntimeSessionManager {
           id: randomUUID(),
           sessionId,
           role: 'user',
-          content: prompt,
+          content: initialContent,
           ts,
           runId: undefined,
           status: 'complete',
@@ -107,17 +113,22 @@ export class RuntimeSessionManager {
       label,
       role: 'worker',
       agent: 'claude-code',
+      clusterId:
+        typeof input.cluster === 'string' && input.cluster.trim().length > 0
+          ? input.cluster.trim()
+          : undefined,
       status: 'pending',
       position: {
         x: 96 + (this.#state.nodes.length % 4) * 280,
         y: 96 + Math.floor(this.#state.nodes.length / 4) * 180,
       },
     })
+    this.#addNodeToCluster(sessionId, input.cluster)
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
-    this.#startRun(sessionId, {
-      prompt,
+    await this.#startRun(sessionId, {
+      prompt: initialContent,
       runKind: 'create',
       userMessageId: this.#state.sessions[sessionId].messages[0].id,
     })
@@ -125,7 +136,7 @@ export class RuntimeSessionManager {
     return { sessionId, state: this.getState() }
   }
 
-  resumeSession(input = {}) {
+  async resumeSession(input = {}) {
     const sessionId = input.sessionId
     const session = this.#state.sessions[sessionId]
     if (!session) {
@@ -170,7 +181,7 @@ export class RuntimeSessionManager {
     this.#touch()
     this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
 
-    this.#startRun(sessionId, {
+    await this.#startRun(sessionId, {
       prompt: content,
       runKind: 'resume',
       userMessageId: userMessage.id,
@@ -208,11 +219,14 @@ export class RuntimeSessionManager {
     for (const sessionId of this.#runs.keys()) {
       this.killSession(sessionId)
     }
+    this.#bridge?.close()
   }
 
-  #startRun(sessionId, { prompt, runKind, userMessageId }) {
+  async #startRun(sessionId, { prompt, runKind, userMessageId }) {
     const session = this.#state.sessions[sessionId]
     const runId = randomUUID()
+    const bridgeUrl = await this.#bridge.start()
+    const membraneToken = this.#bridge.createRunToken(sessionId)
     session.status = 'running'
     session.startedAt = now()
     session.finishedAt = undefined
@@ -235,8 +249,13 @@ export class RuntimeSessionManager {
         cwd: session.cwd,
         backendSessionId: runKind === 'resume' ? session.backendSessionId : undefined,
         sessionId: runKind === 'create' ? sessionId : undefined,
+        membrane: {
+          bridgeUrl,
+          token: membraneToken,
+        },
       })
     } catch (error) {
+      this.#bridge.revokeRunToken(membraneToken)
       this.#failSession(sessionId, error.message)
       return
     }
@@ -248,6 +267,7 @@ export class RuntimeSessionManager {
     run.on('error', (error) => this.#failSession(sessionId, error.message))
     run.on('close', ({ code, signal, killed }) => {
       this.#runs.delete(sessionId)
+      this.#bridge.revokeRunToken(membraneToken)
 
       const current = this.#state.sessions[sessionId]
       if (!current) {
@@ -444,6 +464,237 @@ export class RuntimeSessionManager {
     if (node) {
       node.status = status
     }
+  }
+
+  #addNodeToCluster(sessionId, clusterId) {
+    if (typeof clusterId !== 'string' || clusterId.trim().length === 0) {
+      return
+    }
+
+    const normalizedClusterId = clusterId.trim()
+    if (!this.#state.clusters[normalizedClusterId]) {
+      this.#state.clusters[normalizedClusterId] = {
+        clusterId: normalizedClusterId,
+        label: normalizedClusterId,
+        nodeIds: [],
+      }
+    }
+
+    const cluster = this.#state.clusters[normalizedClusterId]
+    if (!cluster.nodeIds.includes(sessionId)) {
+      cluster.nodeIds.push(sessionId)
+    }
+  }
+
+  async #handleMembraneRequest({ tool, source, input }) {
+    if (!this.#state.sessions[source]) {
+      throw new Error(`Unknown membrane source session: ${source}`)
+    }
+
+    if (tool === 'create_session') {
+      return this.#membraneCreateSession(source, input)
+    }
+
+    if (tool === 'resume_session') {
+      return this.#membraneResumeSession(source, input)
+    }
+
+    if (tool === 'report') {
+      return this.#membraneReport(source, input)
+    }
+
+    throw new Error(`Unknown membrane tool: ${tool}`)
+  }
+
+  async #membraneCreateSession(source, input = {}) {
+    const prompt =
+      typeof input.prompt === 'string' && input.prompt.trim().length > 0
+        ? input.prompt.trim()
+        : undefined
+    if (!prompt) {
+      throw new Error('create_session prompt is required')
+    }
+
+    if (input.agent && input.agent !== 'claude-code') {
+      throw new Error(`Unsupported agent for P2 membrane: ${input.agent}`)
+    }
+
+    const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
+    const cluster =
+      typeof input.cluster === 'string' && input.cluster.trim().length > 0
+        ? input.cluster.trim()
+        : sourceNode?.clusterId
+    const envelope = this.#createEnvelope(source)
+    const result = await this.createSession({
+      agent: 'claude-code',
+      prompt,
+      context: input.context,
+      cluster,
+      label: input.label,
+    })
+    this.#addEdge({
+      source,
+      target: result.sessionId,
+      kind: 'create-session',
+      envelope,
+      label: input.label ? `create: ${input.label}` : 'create_session',
+    })
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { sessionId: result.sessionId }
+  }
+
+  async #membraneResumeSession(source, input = {}) {
+    const target = input.sessionId
+    if (typeof target !== 'string' || target.trim().length === 0) {
+      throw new Error('resume_session sessionId is required')
+    }
+
+    const message =
+      typeof input.message === 'string' && input.message.trim().length > 0
+        ? input.message.trim()
+        : undefined
+    if (!message) {
+      throw new Error('resume_session message is required')
+    }
+
+    const envelope = this.#createEnvelope(source)
+    await this.resumeSession({
+      sessionId: target,
+      message,
+      context: input.context,
+    })
+
+    this.#addEdge({
+      source,
+      target,
+      kind: 'resume-session',
+      envelope,
+      label: 'resume_session',
+    })
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+
+    return { ok: true }
+  }
+
+  #membraneReport(source, input = {}) {
+    const payload = this.#normalizeReportPayload(input)
+    const envelope = this.#createEnvelope(source)
+    const report = {
+      id: randomUUID(),
+      from: source,
+      envelope,
+      payload,
+    }
+
+    this.#state.reports.push(report)
+    if (this.#state.reports.length > 250) {
+      this.#state.reports.splice(0, this.#state.reports.length - 250)
+    }
+
+    if (
+      payload.type === 'relationship' &&
+      typeof payload.sessionRef === 'string' &&
+      this.#state.sessions[payload.sessionRef]
+    ) {
+      this.#addEdge({
+        source,
+        target: payload.sessionRef,
+        kind: 'report',
+        envelope,
+        label: payload.nature ?? 'relationship',
+      })
+    }
+
+    this.#touch()
+    this.#broadcast({
+      type: 'report.received',
+      from: source,
+      report,
+      state: this.getState(),
+    })
+    return { ok: true }
+  }
+
+  #createEnvelope(source) {
+    return {
+      callId: randomUUID(),
+      source,
+      ts: now(),
+    }
+  }
+
+  #addEdge({ source, target, kind, envelope, label }) {
+    if (!this.#state.sessions[source]) {
+      throw new Error(`Unknown edge source session: ${source}`)
+    }
+
+    if (!this.#state.sessions[target]) {
+      throw new Error(`Unknown edge target session: ${target}`)
+    }
+
+    this.#state.edges.push({
+      edgeId: `${kind}:${envelope.callId}`,
+      source,
+      target,
+      kind,
+      call: envelope,
+      label,
+      ts: envelope.ts,
+    })
+  }
+
+  #normalizeReportPayload(input) {
+    if (!input || typeof input !== 'object') {
+      throw new Error('report payload is required')
+    }
+
+    if (input.type === 'verdict') {
+      if (typeof input.verdict !== 'string' || input.verdict.trim().length === 0) {
+        throw new Error('report verdict is required')
+      }
+
+      return {
+        type: 'verdict',
+        verdict: input.verdict.trim(),
+        issues: Array.isArray(input.issues)
+          ? input.issues.map((issue) => ({
+              message:
+                typeof issue?.message === 'string' ? issue.message : String(issue),
+              file: typeof issue?.file === 'string' ? issue.file : undefined,
+              line: typeof issue?.line === 'number' ? issue.line : undefined,
+              severity: ['info', 'warn', 'error'].includes(issue?.severity)
+                ? issue.severity
+                : undefined,
+            }))
+          : undefined,
+        summary: typeof input.summary === 'string' ? input.summary : undefined,
+      }
+    }
+
+    if (input.type === 'relationship') {
+      if (typeof input.target !== 'string' || input.target.trim().length === 0) {
+        throw new Error('relationship report target is required')
+      }
+
+      return {
+        type: 'relationship',
+        target: input.target.trim(),
+        nature: typeof input.nature === 'string' ? input.nature : undefined,
+        sessionRef:
+          typeof input.sessionRef === 'string' ? input.sessionRef : undefined,
+      }
+    }
+
+    if (input.type === 'info') {
+      return {
+        type: 'info',
+        payload: input.payload,
+      }
+    }
+
+    throw new Error(`Unknown report type: ${input.type}`)
   }
 
   #touch() {

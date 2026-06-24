@@ -1,5 +1,10 @@
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const membraneServerPath = path.join(__dirname, 'membraneMcpServer.js')
 
 const commonCliPaths = [
   '/opt/homebrew/bin',
@@ -48,7 +53,33 @@ function getEventType(event) {
   return event?.type
 }
 
-function buildClaudeArgs({ prompt, backendSessionId, sessionId }) {
+function membraneSystemPrompt() {
+  return [
+    'You are running inside Orrery.',
+    'Use the orrery_membrane MCP tools when you need to affect the agent graph:',
+    '- mcp__orrery_membrane__create_session creates a real downstream session/node.',
+    '- mcp__orrery_membrane__resume_session appends a user message to an existing session/node and resumes it.',
+    '- mcp__orrery_membrane__report submits typed verdict, relationship, or info data to the graph blackboard.',
+    'Do not invent session ids. Use ids returned by create_session or provided in the user prompt.',
+  ].join('\n')
+}
+
+function buildMcpConfig(membrane) {
+  return JSON.stringify({
+    mcpServers: {
+      orrery_membrane: {
+        command: process.execPath,
+        args: [membraneServerPath],
+        env: {
+          ORRERY_MEMBRANE_BRIDGE_URL: membrane.bridgeUrl,
+          ORRERY_MEMBRANE_TOKEN: membrane.token,
+        },
+      },
+    },
+  })
+}
+
+function buildClaudeArgs({ prompt, backendSessionId, sessionId, membrane }) {
   const args = []
 
   if (backendSessionId) {
@@ -65,6 +96,16 @@ function buildClaudeArgs({ prompt, backendSessionId, sessionId }) {
     '--include-partial-messages'
   )
 
+  if (membrane) {
+    args.push(
+      '--mcp-config',
+      buildMcpConfig(membrane),
+      '--strict-mcp-config',
+      '--append-system-prompt',
+      membraneSystemPrompt()
+    )
+  }
+
   return args
 }
 
@@ -76,10 +117,10 @@ export class ClaudeCliRun extends EventEmitter {
   #closed = false
   #killTimer
 
-  constructor({ prompt, cwd, backendSessionId, sessionId }) {
+  constructor({ prompt, cwd, backendSessionId, sessionId, membrane }) {
     super()
 
-    this.#child = spawn('claude', buildClaudeArgs({ prompt, backendSessionId, sessionId }), {
+    this.#child = spawn('claude', buildClaudeArgs({ prompt, backendSessionId, sessionId, membrane }), {
       cwd,
       env: {
         ...process.env,

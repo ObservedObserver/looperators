@@ -11,6 +11,7 @@
     "lint": "oxlint",
     "runtime:spike": "node scripts/claude-stream-json-spike.mjs finish",
     "runtime:spike:kill": "node scripts/claude-stream-json-spike.mjs kill",
+    "runtime:membrane:smoke": "node scripts/membrane-smoke.mjs",
     "preview": "vite preview",
     "start": "electron ."
   },
