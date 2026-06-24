@@ -24,6 +24,7 @@ export const graphStateSchema = {
     sessions: 'Record<SessionId, AgentSession>',
     clusters: 'Record<ClusterId, Cluster>',
     reports: 'Report[]',
+    diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   membraneSkills: {
     create_session: {

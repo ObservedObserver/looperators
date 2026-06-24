@@ -13,6 +13,7 @@
     "runtime:spike:kill": "node scripts/claude-stream-json-spike.mjs kill",
     "runtime:membrane:smoke": "node scripts/membrane-smoke.mjs",
     "runtime:membrane:validation": "node scripts/membrane-validation.mjs",
+    "runtime:persistence": "node scripts/runtime-persistence-recovery.mjs",
     "preview": "vite preview",
     "start": "electron ."
   },
