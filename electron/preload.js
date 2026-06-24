@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:assign-master-to-cluster', input),
     setClusterLoopPolicy: (input) =>
       ipcRenderer.invoke('orrery:set-cluster-loop-policy', input),
+    startMasterLoop: (input) =>
+      ipcRenderer.invoke('orrery:start-master-loop', input),
+    stopMasterLoop: (input) =>
+      ipcRenderer.invoke('orrery:stop-master-loop', input),
+    freeze: (input) => ipcRenderer.invoke('orrery:freeze', input),
     onEvent: (listener) => {
       const wrappedListener = (_event, payload) => listener(payload)
       ipcRenderer.on('orrery:runtime-event', wrappedListener)

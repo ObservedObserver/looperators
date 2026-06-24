@@ -105,6 +105,8 @@ type ClusterNodeData = {
   nodeCount: number
   masterLabel?: string
   policySummary?: string
+  frozen?: boolean
+  freezeReason?: string
 }
 
 const statusLabels: Record<SessionStatus, string> = {
@@ -147,7 +149,7 @@ const edgeKindStrokes: Record<GraphEdgeKind, string> = {
 }
 
 const defaultPrompt =
-  'You are running under Orrery P2 membrane verification. Reply with one short sentence confirming this node is a resumable Claude session.'
+  'You are running under Orrery live session verification. Reply with one short sentence confirming this node is a resumable Claude session.'
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master'
@@ -249,7 +251,12 @@ function ClusterBoundaryNode({
   data,
 }: NodeProps<Node<ClusterNodeData>>) {
   return (
-    <div className="h-full w-full rounded-lg border border-dashed border-cyan-500/70 bg-cyan-500/5 px-3 py-2 text-cyan-950 shadow-sm dark:text-cyan-100">
+    <div
+      className={cn(
+        'h-full w-full rounded-lg border border-dashed border-cyan-500/70 bg-cyan-500/5 px-3 py-2 text-cyan-950 shadow-sm dark:text-cyan-100',
+        data.frozen && 'border-zinc-500/60 bg-zinc-500/10 opacity-70 grayscale'
+      )}
+    >
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge variant="outline" className="border-cyan-500/50 bg-background/80">
           {data.label}
@@ -262,10 +269,20 @@ function ClusterBoundaryNode({
             {data.masterLabel}
           </Badge>
         ) : null}
+        {data.frozen ? (
+          <Badge variant="secondary" className="bg-background/80">
+            Frozen
+          </Badge>
+        ) : null}
       </div>
       {data.policySummary ? (
         <div className="mt-1 text-[11px] text-cyan-900/80 dark:text-cyan-100/80">
           {data.policySummary}
+        </div>
+      ) : null}
+      {data.freezeReason ? (
+        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+          {data.freezeReason}
         </div>
       ) : null}
     </div>
@@ -379,6 +396,23 @@ function loopPolicySummary(cluster: GraphState['clusters'][string]) {
   return parts.length ? parts.join(' · ') : undefined
 }
 
+function loopStateStatus(cluster: GraphState['clusters'][string] | undefined) {
+  return cluster?.loopState?.status ?? 'stopped'
+}
+
+function loopLastEvent(cluster: GraphState['clusters'][string] | undefined) {
+  const event = cluster?.loopState?.lastEvent
+  if (!event) {
+    return 'none'
+  }
+
+  return event.sessionId
+    ? `${event.type} ${event.sessionId.slice(0, 8)}`
+    : event.reportId
+      ? `${event.type} ${event.reportId.slice(0, 8)}`
+      : event.type
+}
+
 function clusterBoundaryNodes(state: GraphState): Node<ClusterNodeData>[] {
   return Object.values(state.clusters).flatMap((cluster) => {
     const managedNodes = cluster.nodeIds
@@ -422,6 +456,8 @@ function clusterBoundaryNodes(state: GraphState): Node<ClusterNodeData>[] {
           nodeCount: managedNodes.length,
           masterLabel: master?.label,
           policySummary: loopPolicySummary(cluster),
+          frozen: cluster.frozen,
+          freezeReason: cluster.freezeReason,
         },
       },
     ]
@@ -588,6 +624,8 @@ function App() {
   const [isResuming, setIsResuming] = useState(false)
   const [isUpdatingCluster, setIsUpdatingCluster] = useState(false)
   const [isCreatingMaster, setIsCreatingMaster] = useState(false)
+  const [isStartingLoop, setIsStartingLoop] = useState(false)
+  const [isStoppingLoop, setIsStoppingLoop] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string>()
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
   const [activeClusterId, setActiveClusterId] = useState<string>()
@@ -611,6 +649,14 @@ function App() {
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
+  const selectedNode = selectedSessionId
+    ? runtimeState.nodes.find((node) => node.sessionId === selectedSessionId)
+    : undefined
+  const selectedSessionFrozen =
+    selectedNode?.frozen === true ||
+    (selectedNode?.clusterId
+      ? runtimeState.clusters[selectedNode.clusterId]?.frozen === true
+      : false)
   const selectedReports = selectedSessionId
     ? runtimeState.reports
         .filter((report) => report.from === selectedSessionId)
@@ -634,14 +680,27 @@ function App() {
   const activeCluster = activeClusterId
     ? runtimeState.clusters[activeClusterId]
     : undefined
+  const activeLoopStatus = loopStateStatus(activeCluster)
+  const activeLoopIterations = activeCluster?.loopState?.iterations ?? 0
+  const activeLoopMaxIterations = activeCluster?.loopPolicy?.maxIterations ?? 6
+  const activeLoopReason = activeCluster?.loopState?.reason
+  const activeLoopLastEvent = loopLastEvent(activeCluster)
   const selectedSessionIsMaster = selectedSession?.role === 'master'
   const canResume =
     Boolean(selectedSession) &&
     selectedSession?.status !== 'running' &&
     selectedSession?.status !== 'pending' &&
-    selectedSession?.status !== 'killed'
+    selectedSession?.status !== 'killed' &&
+    !selectedSessionFrozen
   const canKill =
     selectedSession?.status === 'running' || selectedSession?.status === 'pending'
+  const canStartLoop =
+    Boolean(activeCluster) &&
+    Boolean(activeCluster?.masterSessionId) &&
+    Boolean(activeCluster?.loopPolicy) &&
+    activeLoopStatus !== 'running' &&
+    activeCluster?.frozen !== true
+  const canStopLoop = Boolean(activeCluster) && activeLoopStatus === 'running'
 
   const nodes: Node[] = useMemo(
     () => [
@@ -975,6 +1034,48 @@ function App() {
     }
   }, [activeClusterId, selectedSessionId])
 
+  const startMasterLoop = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId) {
+      return
+    }
+
+    setIsStartingLoop(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.startMasterLoop({
+        clusterId: activeClusterId,
+        reason: 'Loop started from Orrery controls.',
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsStartingLoop(false)
+    }
+  }, [activeClusterId])
+
+  const stopMasterLoop = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId) {
+      return
+    }
+
+    setIsStoppingLoop(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await window.orrery.runtime.stopMasterLoop({
+        clusterId: activeClusterId,
+        reason: 'Loop stopped from Orrery controls.',
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsStoppingLoop(false)
+    }
+  }, [activeClusterId])
+
   const updateCanvasSelection = useCallback(
     ({ nodes: selectedNodes }: { nodes: Node[] }) => {
       const nextSelection = selectedNodes
@@ -1010,7 +1111,7 @@ function App() {
                     Orrery
                   </h1>
                   <p className="text-xs text-muted-foreground">
-                    P2 membrane sessions
+                    P3 master loops
                   </p>
                 </div>
               </div>
@@ -1150,6 +1251,55 @@ function App() {
                   <MessageSquarePlus className="size-4" />
                   Assign Master
                 </Button>
+              </div>
+
+              <div className="rounded-md border border-border bg-background/70 p-2">
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  <Badge
+                    variant={activeLoopStatus === 'running' ? 'default' : 'secondary'}
+                  >
+                    {activeLoopStatus}
+                  </Badge>
+                  <Badge variant="outline">
+                    iter {activeLoopIterations}/{activeLoopMaxIterations}
+                  </Badge>
+                  {activeCluster?.frozen ? (
+                    <Badge variant="secondary">
+                      <Snowflake className="size-3" />
+                      frozen
+                    </Badge>
+                  ) : null}
+                </div>
+                <div className="mb-2 grid grid-cols-2 gap-2">
+                  <Button
+                    className="justify-start"
+                    disabled={!isElectron || isStartingLoop || !canStartLoop}
+                    onClick={startMasterLoop}
+                  >
+                    <CirclePlay className="size-4" />
+                    Run Loop
+                  </Button>
+                  <Button
+                    className="justify-start"
+                    variant="outline"
+                    disabled={!isElectron || isStoppingLoop || !canStopLoop}
+                    onClick={stopMasterLoop}
+                  >
+                    <Square className="size-4" />
+                    Stop Loop
+                  </Button>
+                </div>
+                <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
+                  <div className="truncate">last: {activeLoopLastEvent}</div>
+                  {activeLoopReason ? (
+                    <div className="line-clamp-2">reason: {activeLoopReason}</div>
+                  ) : null}
+                  {activeCluster?.freezeReason ? (
+                    <div className="line-clamp-2">
+                      freeze: {activeCluster.freezeReason}
+                    </div>
+                  ) : null}
+                </div>
               </div>
 
               {clusters.length ? (
