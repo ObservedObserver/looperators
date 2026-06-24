@@ -38,7 +38,9 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   runtime = new RuntimeSessionManager({
-    storageFile: path.join(app.getPath('userData'), 'orrery-runtime-state.json'),
+    storageFile:
+      process.env.ORRERY_RUNTIME_STORAGE_FILE ??
+      path.join(app.getPath('userData'), 'orrery-runtime-state.json'),
   })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())

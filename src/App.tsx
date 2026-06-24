@@ -2,14 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MiniMap,
+  MarkerType,
   ReactFlow,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
   Position,
+  getBezierPath,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
@@ -25,6 +30,7 @@ import {
   PanelsTopLeft,
   RefreshCw,
   Send,
+  Snowflake,
   Square,
   Sun,
   Terminal,
@@ -45,6 +51,8 @@ import {
   graphStateSchema,
   type AgentMessage,
   type AgentSession,
+  type GraphEdge,
+  type GraphEdgeKind,
   type GraphState,
   type Report,
   type SessionStatus,
@@ -59,7 +67,34 @@ type AgentNodeData = {
   status: SessionStatus
   messageCount: number
   latestVerdict?: string
+  latestReportIssueCount?: number
   latestReportSummary?: string
+  frozen?: boolean
+  freezeReason?: string
+  masterReason?: string
+}
+
+type GraphEdgeData = {
+  kind: GraphEdgeKind
+  label: string
+  sequence: number
+  ts: string
+  verdict?: string
+  issueCount?: number
+  summary?: string
+  masterReason?: string
+  frozen?: boolean
+  freezeReason?: string
+  recent?: boolean
+}
+
+type ActivityEvent = {
+  id: string
+  kind: GraphEdgeKind | 'report'
+  ts: string
+  title: string
+  detail?: string
+  reason?: string
 }
 
 const statusLabels: Record<SessionStatus, string> = {
@@ -78,6 +113,29 @@ const statusClassNames: Record<SessionStatus, string> = {
   killed: 'border-amber-500/70 bg-amber-500/10',
 }
 
+const edgeKindLabels: Record<GraphEdgeKind, string> = {
+  'create-session': 'create',
+  'resume-session': 'resume',
+  report: 'report',
+  freeze: 'freeze',
+}
+
+const edgeKindClassNames: Record<GraphEdgeKind, string> = {
+  'create-session': 'border-teal-500/40 bg-teal-500/10 text-teal-950 dark:text-teal-100',
+  'resume-session':
+    'border-amber-500/50 bg-amber-500/10 text-amber-950 dark:text-amber-100',
+  report:
+    'border-indigo-500/40 bg-indigo-500/10 text-indigo-950 dark:text-indigo-100',
+  freeze: 'border-zinc-500/50 bg-zinc-500/10 text-zinc-800 dark:text-zinc-100',
+}
+
+const edgeKindStrokes: Record<GraphEdgeKind, string> = {
+  'create-session': 'oklch(0.55 0.14 182)',
+  'resume-session': 'oklch(0.67 0.16 70)',
+  report: 'oklch(0.56 0.18 275)',
+  freeze: 'oklch(0.55 0 0)',
+}
+
 const defaultPrompt =
   'You are running under Orrery P2 membrane verification. Reply with one short sentence confirming this node is a resumable Claude session.'
 
@@ -85,8 +143,10 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   return (
     <div
       className={cn(
-        'min-w-[260px] rounded-lg border bg-card px-4 py-3 shadow-sm transition',
-        statusClassNames[data.status],
+        'min-w-[260px] max-w-[300px] rounded-lg border bg-card px-4 py-3 shadow-sm transition',
+        data.frozen
+          ? 'border-zinc-500/60 bg-muted/60 opacity-70 grayscale'
+          : statusClassNames[data.status],
         selected && 'ring-2 ring-ring ring-offset-2 ring-offset-background'
       )}
     >
@@ -106,7 +166,7 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
           </div>
         </div>
         <Badge variant="secondary" className="h-5 shrink-0">
-          {statusLabels[data.status]}
+          {data.frozen ? 'Frozen' : statusLabels[data.status]}
         </Badge>
       </div>
       <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
@@ -114,13 +174,33 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
       </p>
       {data.latestVerdict ? (
         <div className="mt-3 rounded-md border border-border bg-background/70 px-2 py-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
-            <ClipboardCheck className="size-3" />
-            verdict: {data.latestVerdict}
+          <div className="flex items-center justify-between gap-2 text-[11px] font-medium uppercase tracking-normal">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ClipboardCheck className="size-3 shrink-0" />
+              <span className="truncate">verdict: {data.latestVerdict}</span>
+            </span>
+            {data.latestReportIssueCount !== undefined ? (
+              <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
+                {data.latestReportIssueCount} issues
+              </Badge>
+            ) : null}
           </div>
           {data.latestReportSummary ? (
             <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
               {data.latestReportSummary}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {data.frozen ? (
+        <div className="mt-3 rounded-md border border-zinc-500/30 bg-background/70 px-2 py-1.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
+            <Snowflake className="size-3" />
+            freeze
+          </div>
+          {data.freezeReason || data.masterReason ? (
+            <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+              {data.freezeReason ?? data.masterReason}
             </p>
           ) : null}
         </div>
@@ -140,6 +220,81 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
 
 const nodeTypes = {
   agent: AgentNode,
+}
+
+function ReadabilityEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+  selected,
+  data,
+}: EdgeProps<Edge<GraphEdgeData>>) {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  })
+  const edgeData = data as GraphEdgeData
+  const reason = edgeData.freezeReason ?? edgeData.masterReason
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          stroke: edgeKindStrokes[edgeData.kind],
+          strokeWidth: selected ? 2.5 : 1.7,
+          strokeDasharray:
+            edgeData.kind === 'resume-session'
+              ? '6 4'
+              : edgeData.kind === 'report'
+                ? '2 4'
+                : edgeData.kind === 'freeze'
+                  ? '8 5'
+                  : undefined,
+          opacity: edgeData.frozen ? 0.55 : 1,
+        }}
+      />
+      <EdgeLabelRenderer>
+        <div
+          className={cn(
+            'nodrag nopan pointer-events-auto absolute rounded-md border px-2 py-1 text-[10px] leading-4 shadow-sm backdrop-blur-sm',
+            edgeKindClassNames[edgeData.kind],
+            edgeData.recent && 'orrery-edge-label-recent'
+          )}
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+          }}
+          title={[edgeData.summary, reason].filter(Boolean).join('\n')}
+        >
+          <div className="flex items-center gap-1.5 whitespace-nowrap font-medium uppercase tracking-normal">
+            <span className="tabular-nums">#{edgeData.sequence}</span>
+            <span>{edgeKindLabels[edgeData.kind]}</span>
+            {edgeData.verdict ? <span>{edgeData.verdict}</span> : null}
+            {edgeData.issueCount !== undefined ? (
+              <span>{edgeData.issueCount} issues</span>
+            ) : null}
+          </div>
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  )
+}
+
+const edgeTypes = {
+  readability: ReadabilityEdge,
 }
 
 function lastMessagePreview(session: AgentSession | undefined) {
@@ -189,6 +344,86 @@ function reportBody(report: Report) {
   }
 
   return JSON.stringify(report.payload.payload)
+}
+
+function reportIssueCount(report: Report) {
+  if (report.payload.type !== 'verdict') {
+    return undefined
+  }
+
+  return report.payload.issues?.length ?? 0
+}
+
+function reportSummary(report: Report) {
+  const body = reportBody(report)
+  return body.length > 180 ? `${body.slice(0, 177)}...` : body
+}
+
+function edgeReason(edge: GraphEdge) {
+  return edge.freezeReason ?? edge.masterReason
+}
+
+function edgeSummary(edge: GraphEdge, reportsById: Map<string, Report>) {
+  if (edge.summary) {
+    return edge.summary
+  }
+
+  if (edge.reportId) {
+    const report = reportsById.get(edge.reportId)
+    return report ? reportSummary(report) : undefined
+  }
+
+  if (edge.kind === 'freeze') {
+    return edge.freezeReason ?? 'freeze requested'
+  }
+
+  return undefined
+}
+
+function sessionLabel(state: GraphState, sessionId: string) {
+  return state.sessions[sessionId]?.label ?? sessionId.slice(0, 8)
+}
+
+function activityTitle(kind: ActivityEvent['kind']) {
+  if (kind === 'report') {
+    return 'report'
+  }
+
+  return edgeKindLabels[kind]
+}
+
+function activityEvents(state: GraphState): ActivityEvent[] {
+  const reportsById = new Map(state.reports.map((report) => [report.id, report]))
+  const edgeEvents = state.edges.map((edge) => ({
+    id: `edge:${edge.edgeId}`,
+    kind: edge.kind,
+    ts: edge.ts,
+    title: `${sessionLabel(state, edge.source)} -> ${sessionLabel(
+      state,
+      edge.target
+    )}`,
+    detail: edgeSummary(edge, reportsById) ?? edge.label ?? edge.kind,
+    reason: edgeReason(edge),
+  }))
+  const reportEvents = state.reports.map((report) => ({
+    id: `report:${report.id}`,
+    kind: 'report' as const,
+    ts: report.envelope.ts,
+    title:
+      report.payload.type === 'verdict'
+        ? `${sessionLabel(state, report.from)} reported ${
+            report.payload.verdict
+          }`
+        : `${sessionLabel(state, report.from)} reported ${report.payload.type}`,
+    detail:
+      report.payload.type === 'verdict'
+        ? `${reportIssueCount(report)} issues · ${reportSummary(report)}`
+        : reportSummary(report),
+  }))
+
+  return [...edgeEvents, ...reportEvents]
+    .sort((left, right) => left.ts.localeCompare(right.ts))
+    .slice(-12)
 }
 
 function sessionSort(left: AgentSession, right: AgentSession) {
@@ -253,6 +488,14 @@ function App() {
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
   )
+  const reportsById = useMemo(
+    () => new Map(runtimeState.reports.map((report) => [report.id, report])),
+    [runtimeState.reports]
+  )
+  const graphActivity = useMemo(
+    () => activityEvents(runtimeState),
+    [runtimeState]
+  )
   const canResume =
     Boolean(selectedSession) &&
     selectedSession?.status !== 'running' &&
@@ -273,6 +516,9 @@ function App() {
           latestReport?.payload.type === 'verdict'
             ? latestReport.payload.verdict
             : undefined
+        const latestIssueCount = latestReport
+          ? reportIssueCount(latestReport)
+          : undefined
         return {
           id: node.nodeId,
           type: 'agent',
@@ -284,9 +530,13 @@ function App() {
             status: node.status,
             messageCount: session?.messages.length ?? 0,
             latestVerdict,
+            latestReportIssueCount: latestIssueCount,
             latestReportSummary: latestReport
-              ? reportBody(latestReport)
+              ? reportSummary(latestReport)
               : undefined,
+            frozen: node.frozen,
+            freezeReason: node.freezeReason,
+            masterReason: node.masterReason,
           },
         }
       }),
@@ -294,19 +544,47 @@ function App() {
   )
 
   const edges: Edge[] = useMemo(
-    () =>
-      runtimeState.edges.map((edge) => ({
-        id: edge.edgeId,
-        source: edge.source,
-        target: edge.target,
-        animated: edge.kind === 'create-session' || edge.kind === 'resume-session',
-        label: edge.label ?? edge.kind,
-        style:
-          edge.kind === 'resume-session'
-            ? { strokeDasharray: '6 4' }
-            : undefined,
-      })),
-    [runtimeState]
+    () => {
+      const sorted = [...runtimeState.edges].sort((left, right) =>
+        left.ts.localeCompare(right.ts)
+      )
+      const sequenceById = new Map(
+        sorted.map((edge, index) => [edge.edgeId, index + 1])
+      )
+      const recentEdgeIds = new Set(sorted.slice(-3).map((edge) => edge.edgeId))
+
+      return runtimeState.edges.map((edge) => {
+        const report = edge.reportId ? reportsById.get(edge.reportId) : undefined
+        return {
+          id: edge.edgeId,
+          type: 'readability',
+          source: edge.source,
+          target: edge.target,
+          animated:
+            edge.kind === 'create-session' || edge.kind === 'resume-session',
+          markerEnd: { type: MarkerType.ArrowClosed },
+          data: {
+            kind: edge.kind,
+            label: edge.label ?? edge.kind,
+            sequence: sequenceById.get(edge.edgeId) ?? 0,
+            ts: edge.ts,
+            verdict:
+              edge.verdict ??
+              (report?.payload.type === 'verdict'
+                ? report.payload.verdict
+                : undefined),
+            issueCount:
+              edge.issueCount ?? (report ? reportIssueCount(report) : undefined),
+            summary: edgeSummary(edge, reportsById),
+            masterReason: edge.masterReason,
+            frozen: edge.frozen,
+            freezeReason: edge.freezeReason,
+            recent: recentEdgeIds.has(edge.edgeId),
+          },
+        }
+      })
+    },
+    [reportsById, runtimeState.edges]
   )
 
   useEffect(() => {
@@ -706,11 +984,74 @@ function App() {
           </header>
 
           <div className="relative min-h-0 flex-1">
+            <div className="pointer-events-none absolute bottom-4 left-16 z-10 w-[340px] max-w-[calc(100%-5rem)]">
+              <div className="pointer-events-auto rounded-lg border border-border bg-background/92 p-3 shadow-sm backdrop-blur">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <GitBranch className="size-4 shrink-0 text-muted-foreground" />
+                    <h2 className="truncate text-xs font-medium uppercase tracking-normal text-muted-foreground">
+                      Graph events
+                    </h2>
+                  </div>
+                  <Badge variant="secondary">{graphActivity.length}</Badge>
+                </div>
+
+                {graphActivity.length === 0 ? (
+                  <p className="text-xs leading-5 text-muted-foreground">
+                    No graph events yet.
+                  </p>
+                ) : (
+                  <ol className="max-h-[240px] space-y-2 overflow-y-auto pr-1">
+                    {graphActivity.map((event, index) => (
+                      <li
+                        key={event.id}
+                        className="grid grid-cols-[auto_1fr] gap-2 text-xs"
+                      >
+                        <Badge
+                          variant="outline"
+                          className="h-5 min-w-8 justify-center px-1.5 text-[10px] tabular-nums"
+                        >
+                          {index + 1}
+                        </Badge>
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className={cn(
+                                'rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-normal',
+                                event.kind === 'report'
+                                  ? edgeKindClassNames.report
+                                  : edgeKindClassNames[event.kind]
+                              )}
+                            >
+                              {activityTitle(event.kind)}
+                            </span>
+                            <span className="truncate font-medium">
+                              {event.title}
+                            </span>
+                          </div>
+                          {event.detail ? (
+                            <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                              {event.detail}
+                            </p>
+                          ) : null}
+                          {event.reason ? (
+                            <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                              reason: {event.reason}
+                            </p>
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </div>
+            </div>
             <ReactFlow
               colorMode={colorScheme}
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               onNodeClick={(_event, node) => setSelectedSessionId(node.id)}
               fitView
               fitViewOptions={{ padding: 0.24 }}

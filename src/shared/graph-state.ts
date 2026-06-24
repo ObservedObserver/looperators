@@ -1,4 +1,4 @@
-export const graphStateVersion = 2
+export const graphStateVersion = 3
 
 export const sessionStatuses = [
   'pending',
@@ -9,6 +9,13 @@ export const sessionStatuses = [
 ] as const
 
 export const reportTypes = ['verdict', 'relationship', 'info'] as const
+
+export const graphEdgeKinds = [
+  'create-session',
+  'resume-session',
+  'report',
+  'freeze',
+] as const
 
 export const graphStateSchema = {
   version: graphStateVersion,
@@ -60,7 +67,29 @@ export const graphStateSchema = {
     'session.failed',
     'session.killed',
     'report.received',
+    'freeze.applied',
   ],
+  readabilityFields: {
+    GraphNode: {
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+      masterReason: 'string?',
+    },
+    GraphEdge: {
+      kind: graphEdgeKinds,
+      reportId: 'string?',
+      verdict: 'string?',
+      issueCount: 'number?',
+      summary: 'string?',
+      masterReason: 'string?',
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+    },
+    Cluster: {
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+    },
+  },
 } as const
 
 export type SessionId = string
@@ -104,7 +133,13 @@ export type Report = {
   payload: ReportPayload
 }
 
-export type GraphNode = {
+export type FreezeState = {
+  frozen?: boolean
+  freezeReason?: string
+  masterReason?: string
+}
+
+export type GraphNode = FreezeState & {
   nodeId: NodeId
   sessionId: SessionId
   label: string
@@ -115,9 +150,9 @@ export type GraphNode = {
   position: { x: number; y: number }
 }
 
-export type GraphEdgeKind = 'create-session' | 'resume-session' | 'report'
+export type GraphEdgeKind = (typeof graphEdgeKinds)[number]
 
-export type GraphEdge = {
+export type GraphEdge = FreezeState & {
   edgeId: EdgeId
   source: SessionId
   target: SessionId
@@ -125,6 +160,10 @@ export type GraphEdge = {
   call?: SkillCallEnvelope
   label?: string
   ts: string
+  reportId?: string
+  verdict?: string
+  issueCount?: number
+  summary?: string
 }
 
 export type AgentStreamChunk = {
@@ -178,6 +217,7 @@ export type Cluster = {
   nodeIds: NodeId[]
   masterSessionId?: SessionId
   frozen?: boolean
+  freezeReason?: string
 }
 
 export type RuntimeStateDiagnostic = {
@@ -236,6 +276,7 @@ export type RuntimeEvent =
     }
   | { type: 'session.killed'; sessionId: SessionId; state: GraphState }
   | { type: 'report.received'; from: SessionId; report: Report; state: GraphState }
+  | { type: 'freeze.applied'; targetId: string; reason?: string; state: GraphState }
 
 export function createEmptyGraphState(): GraphState {
   return {

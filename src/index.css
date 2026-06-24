@@ -144,4 +144,22 @@
   a {
     -webkit-app-region: no-drag;
   }
+
+  .orrery-edge-label-recent {
+    animation: orrery-edge-label-pulse 1.8s ease-out 1;
+  }
+}
+
+@keyframes orrery-edge-label-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--ring) 52%, transparent);
+  }
+
+  55% {
+    box-shadow: 0 0 0 8px color-mix(in oklch, var(--ring) 0%, transparent);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--ring) 0%, transparent);
+  }
 }
