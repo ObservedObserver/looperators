@@ -1,4 +1,4 @@
-export const graphStateVersion = 2
+export const graphStateVersion = 3
 
 export const sessionStatuses = [
   'pending',
@@ -9,6 +9,13 @@ export const sessionStatuses = [
 ]
 
 export const reportTypes = ['verdict', 'relationship', 'info']
+
+export const graphEdgeKinds = [
+  'create-session',
+  'resume-session',
+  'report',
+  'freeze',
+]
 
 export const graphStateSchema = {
   version: graphStateVersion,
@@ -60,7 +67,29 @@ export const graphStateSchema = {
     'session.failed',
     'session.killed',
     'report.received',
+    'freeze.applied',
   ],
+  readabilityFields: {
+    GraphNode: {
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+      masterReason: 'string?',
+    },
+    GraphEdge: {
+      kind: graphEdgeKinds,
+      reportId: 'string?',
+      verdict: 'string?',
+      issueCount: 'number?',
+      summary: 'string?',
+      masterReason: 'string?',
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+    },
+    Cluster: {
+      frozen: 'boolean?',
+      freezeReason: 'string?',
+    },
+  },
 }
 
 export function createEmptyGraphState() {
