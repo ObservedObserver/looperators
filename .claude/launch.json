@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:web", "--", "--host", "127.0.0.1", "--port", "5191", "--strictPort"],
+      "port": 5191
+    }
+  ]
+}
