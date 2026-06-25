@@ -1,12 +1,14 @@
 /// <reference types="vite/client" />
 
 import type {
+  AnswerUserInputInput,
   AssignMasterToClusterInput,
   CreateMasterForClusterInput,
   CreateRuntimeSessionInput,
   CreateRuntimeSessionResult,
   FreezeInput,
   GraphState,
+  RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
   SetClusterLoopPolicyInput,
@@ -30,6 +32,12 @@ declare global {
         ) => Promise<{ ok: boolean; state: GraphState }>
         killSession: (
           sessionId: SessionId
+        ) => Promise<{ ok: boolean; state: GraphState }>
+        respondRuntimeRequest: (
+          input: RespondRuntimeRequestInput
+        ) => Promise<{ ok: boolean; state: GraphState }>
+        answerUserInput: (
+          input: AnswerUserInputInput
         ) => Promise<{ ok: boolean; state: GraphState }>
         upsertCluster: (
           input: UpsertClusterInput

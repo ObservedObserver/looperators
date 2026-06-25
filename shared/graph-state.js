@@ -1,4 +1,4 @@
-export const graphStateVersion = 4
+export const graphStateVersion = 5
 
 export const sessionStatuses = [
   'pending',
@@ -80,6 +80,7 @@ export const graphStateSchema = {
     'session.created',
     'session.resumed',
     'session.stream',
+    'provider.runtime',
     'session.finished',
     'session.failed',
     'session.killed',
@@ -93,6 +94,15 @@ export const graphStateSchema = {
       frozen: 'boolean?',
       freezeReason: 'string?',
       masterReason: 'string?',
+    },
+    AgentSession: {
+      backend: '"claude-cli" | "claude-agent-sdk" | "codex-app-server"',
+      providerKind: '"legacy-claude-cli" | "claude-code" | "codex"',
+      providerInstanceId: 'string',
+      providerSessionId: 'string?',
+      runtimeEvents: 'ProviderRuntimeEvent[]',
+      runtimeActivities: 'RuntimeActivity[]',
+      nativeEvents: 'NativeProviderEvent[]',
     },
     GraphEdge: {
       kind: graphEdgeKinds,

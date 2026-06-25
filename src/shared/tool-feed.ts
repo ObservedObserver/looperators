@@ -1,4 +1,5 @@
 import type { AgentStreamChunk } from './graph-state'
+import type { RuntimeActivity } from './provider-runtime'
 
 /**
  * Parses Claude CLI `--output-format=stream-json` chunks (as stored on
@@ -41,6 +42,7 @@ export type ToolTurnResult = {
 
 /** One `claude -p` invocation worth of tool activity. */
 export type ToolTurn = {
+  turnId?: string
   toolRuns: ToolRun[]
   result?: ToolTurnResult
 }
@@ -329,6 +331,53 @@ export function parseToolTurns(chunks: AgentStreamChunk[]): ToolTurn[] {
   // Flush a trailing open turn (still-running tools).
   if (current.toolRuns.length > 0) {
     turns.push(current)
+  }
+
+  return turns
+}
+
+function activityStatus(status: RuntimeActivity['status']): ToolRunStatus {
+  if (status === 'completed') {
+    return 'ok'
+  }
+  if (status === 'failed') {
+    return 'error'
+  }
+  return 'running'
+}
+
+export function toolTurnsFromRuntimeActivities(
+  activities: RuntimeActivity[]
+): Map<string, ToolTurn> {
+  const turns = new Map<string, ToolTurn>()
+
+  for (const activity of activities) {
+    if (!activity.turnId) {
+      continue
+    }
+
+    const turn = turns.get(activity.turnId) ?? {
+      turnId: activity.turnId,
+      toolRuns: [],
+    }
+    const existing = turn.toolRuns.find((run) => run.id === activity.id)
+    const run: ToolRun = {
+      id: activity.id,
+      name: activity.providerName ?? activity.title,
+      command: activity.command ?? toolCommand(activity.providerName ?? activity.title),
+      args: activity.args,
+      sublines: activity.sublines ?? [],
+      status: activityStatus(activity.status),
+      durationMs: activity.durationMs,
+    }
+
+    if (existing) {
+      Object.assign(existing, run)
+    } else {
+      turn.toolRuns.push(run)
+    }
+
+    turns.set(activity.turnId, turn)
   }
 
   return turns

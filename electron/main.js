@@ -53,6 +53,12 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
     runtime.killSession(sessionId)
   )
+  ipcMain.handle('orrery:respond-runtime-request', (_event, input) =>
+    runtime.respondRuntimeRequest(input)
+  )
+  ipcMain.handle('orrery:answer-user-input', (_event, input) =>
+    runtime.answerUserInput(input)
+  )
   ipcMain.handle('orrery:upsert-cluster', (_event, input) =>
     runtime.upsertCluster(input)
   )

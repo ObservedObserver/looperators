@@ -1,4 +1,14 @@
-export const graphStateVersion = 4
+import type {
+  NativeProviderEvent,
+  ProviderKind,
+  ProviderRuntimeEvent,
+  RuntimeActivity,
+  RuntimePlan,
+  RuntimeRequest,
+  UserInputRequest,
+} from './provider-runtime'
+
+export const graphStateVersion = 5
 
 export const sessionStatuses = [
   'pending',
@@ -120,7 +130,10 @@ export type CallId = string
 
 export type SessionStatus = (typeof sessionStatuses)[number]
 
-export type AgentBackend = 'claude-cli'
+export type AgentBackend =
+  | 'claude-cli'
+  | 'claude-agent-sdk'
+  | 'codex-app-server'
 export type SessionRole = 'worker' | 'master'
 
 export type SkillCallEnvelope = {
@@ -243,6 +256,10 @@ export type AgentSession = {
   nodeId: NodeId
   backend: AgentBackend
   backendSessionId?: string
+  providerKind: ProviderKind
+  providerInstanceId: string
+  providerSessionId?: string
+  providerResumeCursor?: string
   agent: string
   label: string
   prompt: string
@@ -259,6 +276,12 @@ export type AgentSession = {
   result?: string
   chunks: AgentStreamChunk[]
   messages: AgentMessage[]
+  nativeEvents: NativeProviderEvent[]
+  runtimeEvents: ProviderRuntimeEvent[]
+  runtimeActivities: RuntimeActivity[]
+  runtimeRequests: RuntimeRequest[]
+  runtimeUserInputRequests: UserInputRequest[]
+  runtimePlans: RuntimePlan[]
 }
 
 export type Cluster = {
@@ -294,7 +317,8 @@ export type GraphState = {
 export type CreateRuntimeSessionInput = {
   prompt: string
   cwd?: string
-  agent?: 'claude-code'
+  agent?: 'claude-code' | 'codex'
+  providerKind?: ProviderKind
   label?: string
   cluster?: ClusterId
   role?: SessionRole
@@ -309,6 +333,18 @@ export type ResumeRuntimeSessionInput = {
   sessionId: SessionId
   message: string
   context?: string
+}
+
+export type RespondRuntimeRequestInput = {
+  sessionId: SessionId
+  requestId: string
+  decision: 'approved' | 'denied'
+}
+
+export type AnswerUserInputInput = {
+  sessionId: SessionId
+  requestId: string
+  answer: string
 }
 
 export type UpsertClusterInput = {
@@ -359,6 +395,12 @@ export type RuntimeEvent =
       type: 'session.stream'
       sessionId: SessionId
       chunk: AgentStreamChunk
+      state: GraphState
+    }
+  | {
+      type: 'provider.runtime'
+      sessionId: SessionId
+      providerEvent: ProviderRuntimeEvent
       state: GraphState
     }
   | { type: 'session.finished'; sessionId: SessionId; state: GraphState }
