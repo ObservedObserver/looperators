@@ -1,10 +1,181 @@
-import { graphStateVersion, type GraphState } from './graph-state'
+import {
+  graphStateVersion,
+  type AgentStreamChunk,
+  type GraphState,
+} from './graph-state'
 
 /**
  * Demo runtime state for design / web preview only.
  * Activated via `?demo=1` when NOT running inside Electron (no window.orrery).
  * Never used by the real Electron runtime.
+ *
+ * The `chunks` below are real Claude CLI `stream-json` lines (tool_use /
+ * tool_result / result) so the ToolRunFeed renders end-to-end in the browser.
  */
+
+type ToolInput = Record<string, unknown>
+
+function toolUseChunk(
+  sessionId: string,
+  backendId: string,
+  ts: string,
+  toolId: string,
+  name: string,
+  input: ToolInput
+): AgentStreamChunk {
+  return {
+    id: `${toolId}-use`,
+    sessionId,
+    ts,
+    stream: 'stdout',
+    eventType: 'assistant',
+    raw: JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: `msg-${toolId}`,
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: toolId, name, input }],
+      },
+      session_id: backendId,
+    }),
+  }
+}
+
+function toolResultChunk(
+  sessionId: string,
+  backendId: string,
+  ts: string,
+  toolId: string,
+  content: string,
+  isError = false
+): AgentStreamChunk {
+  return {
+    id: `${toolId}-res`,
+    sessionId,
+    ts,
+    stream: 'stdout',
+    eventType: 'user',
+    raw: JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: toolId, content, is_error: isError },
+        ],
+      },
+      session_id: backendId,
+    }),
+  }
+}
+
+function resultChunk(
+  sessionId: string,
+  backendId: string,
+  ts: string,
+  durationMs: number,
+  numTurns: number,
+  result: string
+): AgentStreamChunk {
+  return {
+    id: `result-${ts}`,
+    sessionId,
+    ts,
+    stream: 'stdout',
+    eventType: 'result',
+    text: result,
+    raw: JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      duration_ms: durationMs,
+      num_turns: numTurns,
+      result,
+      session_id: backendId,
+    }),
+  }
+}
+
+// P1 acceptance run — read → grep → patch → verify → test(fail) → patch → test(ok).
+function p1AcceptanceChunks(): AgentStreamChunk[] {
+  const sid = 'sess-p1-accept'
+  const bid = '3cce7740-d183-4170-9ee4-0d45e5078234'
+  const T = '2026-06-24T12:56:'
+  return [
+    toolUseChunk(sid, bid, `${T}03.000Z`, 'toolu_01', 'Read', {
+      file_path: 'src/runtime/orchestrator.ts',
+    }),
+    toolResultChunk(sid, bid, `${T}03.040Z`, 'toolu_01', ''),
+    toolUseChunk(sid, bid, `${T}03.100Z`, 'toolu_02', 'Grep', {
+      pattern: 'sessionId === nodeId',
+      output_mode: 'content',
+    }),
+    toolResultChunk(sid, bid, `${T}03.122Z`, 'toolu_02', '3 matches'),
+    toolUseChunk(sid, bid, `${T}03.200Z`, 'toolu_03', 'Edit', {
+      file_path: 'src/runtime/orchestrator.ts',
+      old_string: 'x',
+      new_string: 'y',
+    }),
+    toolResultChunk(sid, bid, `${T}03.260Z`, 'toolu_03', ''),
+    toolUseChunk(sid, bid, `${T}03.300Z`, 'toolu_04', 'Bash', {
+      command: 'npm run verify',
+    }),
+    toolResultChunk(
+      sid,
+      bid,
+      `${T}04.500Z`,
+      'toolu_04',
+      'typecheck clean\nlint 0 warnings\nbuild 4 routes'
+    ),
+    toolUseChunk(sid, bid, `${T}04.600Z`, 'toolu_05', 'Bash', {
+      command: 'npm test',
+    }),
+    toolResultChunk(
+      sid,
+      bid,
+      `${T}05.200Z`,
+      'toolu_05',
+      'FAIL src/orchestrator.test.ts — 2 failing',
+      true
+    ),
+    toolUseChunk(sid, bid, `${T}05.300Z`, 'toolu_06', 'Edit', {
+      file_path: 'src/runtime/orchestrator.ts',
+      old_string: 'a',
+      new_string: 'b',
+    }),
+    toolResultChunk(sid, bid, `${T}05.350Z`, 'toolu_06', ''),
+    toolUseChunk(sid, bid, `${T}05.400Z`, 'toolu_07', 'Bash', {
+      command: 'npm test',
+    }),
+    toolResultChunk(sid, bid, `${T}06.300Z`, 'toolu_07', '48 passed'),
+    resultChunk(
+      sid,
+      bid,
+      `${T}06.420Z`,
+      3420,
+      4,
+      'Checkpointed p1-acceptance@4f2a · 48 green.'
+    ),
+  ]
+}
+
+// P2 research run — still streaming: one fetch done, one in flight.
+function p2ResearchChunks(): AgentStreamChunk[] {
+  const sid = 'sess-p2-research'
+  const bid = 'a91f2c08-77bd-4e10-9a2c-1de5079b21aa'
+  const T = '2026-06-24T12:56:'
+  return [
+    toolUseChunk(sid, bid, `${T}28.000Z`, 'toolu_r1', 'WebFetch', {
+      url: 'https://orrery.dev/changelog',
+      prompt: 'list regressions',
+    }),
+    toolResultChunk(sid, bid, `${T}29.500Z`, 'toolu_r1', 'fetched 24kb · 18 entries'),
+    toolUseChunk(sid, bid, `${T}30.000Z`, 'toolu_r2', 'WebFetch', {
+      url: 'https://orrery.dev/releases',
+      prompt: 'cluster by component',
+    }),
+  ]
+}
+
 export function createDemoGraphState(): GraphState {
   const base = '2026-06-24T12:5'
   return {
@@ -73,7 +244,7 @@ export function createDemoGraphState(): GraphState {
         status: 'idle',
         createdAt: `${base}0:00.000Z`,
         updatedAt: `${base}6:12.000Z`,
-        chunks: [],
+        chunks: p1AcceptanceChunks(),
         messages: [
           {
             id: 'm1',
@@ -140,7 +311,7 @@ export function createDemoGraphState(): GraphState {
         status: 'running',
         createdAt: `${base}3:10.000Z`,
         updatedAt: `${base}6:30.000Z`,
-        chunks: [],
+        chunks: p2ResearchChunks(),
         messages: [
           {
             id: 'r1',

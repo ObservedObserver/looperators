@@ -45,22 +45,24 @@
     /* accent-ink: lime accent for text on chrome (flips per theme) */
     --color-accent-ink: var(--accent-ink);
 
-    /* terminal "stage" palette — CONSTANT across themes (ink stays dark) */
-    --color-ink: #0b100c;
-    --color-ink-soft: #0f1511;
-    --color-ink-line: oklch(1 0 0 / 9%);
-    --color-ink-line-2: oklch(1 0 0 / 5%);
-    --color-term-name: #e5e7eb;
-    --color-term-dim: #9ca3af;
-    --color-term-dim2: #6b7280;
-    --color-term-faint: #4b5563;
-    --color-lime: #bef264;
-    --color-lime-hi: #a3e635;
-    --color-term-emerald: #6ee7b7;
-    --color-term-green: #5fd394;
-    --color-term-cyan: #67e8f9;
-    --color-term-amber: #fcd34d;
-    --color-term-rose: #fb7185;
+    /* terminal "stage" palette — theme-aware (dark console / light console).
+       Values live in :root (light) and .dark (dark) so the stages flip with
+       the chrome instead of staying permanently dark. */
+    --color-ink: var(--ink);
+    --color-ink-soft: var(--ink-soft);
+    --color-ink-line: var(--ink-line);
+    --color-ink-line-2: var(--ink-line-2);
+    --color-term-name: var(--term-name);
+    --color-term-dim: var(--term-dim);
+    --color-term-dim2: var(--term-dim2);
+    --color-term-faint: var(--term-faint);
+    --color-lime: var(--term-lime);
+    --color-lime-hi: var(--term-lime-hi);
+    --color-term-emerald: var(--term-emerald);
+    --color-term-green: var(--term-green);
+    --color-term-cyan: var(--term-cyan);
+    --color-term-amber: var(--term-amber);
+    --color-term-rose: var(--term-rose);
 
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
@@ -106,6 +108,23 @@
     --sidebar-accent-foreground: #3a4a16;
     --sidebar-border: oklch(0.27 0.03 140 / 14%);
     --sidebar-ring: #a3e635;
+
+    /* terminal stage palette — LIGHT console (warm near-white, darkened ink). */
+    --ink: #fbfcf7;
+    --ink-soft: #f1f3ea;
+    --ink-line: oklch(0.27 0.03 140 / 13%);
+    --ink-line-2: oklch(0.27 0.03 140 / 7%);
+    --term-name: #1a1f1a;
+    --term-dim: #585e54;
+    --term-dim2: #7c8275;
+    --term-faint: #a4a99c;
+    --term-lime: #4d7c0f;
+    --term-lime-hi: #4d7c0f;
+    --term-emerald: #047857;
+    --term-green: #15803d;
+    --term-cyan: #0e7490;
+    --term-amber: #b45309;
+    --term-rose: #e11d48;
 }
 
 /* ===== DARK: ink terminal everywhere, lime identity ===== */
@@ -142,6 +161,23 @@
     --sidebar-accent-foreground: #d9f99d;
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: #a3e635;
+
+    /* terminal stage palette — DARK console (ink). */
+    --ink: #0b100c;
+    --ink-soft: #0f1511;
+    --ink-line: oklch(1 0 0 / 9%);
+    --ink-line-2: oklch(1 0 0 / 5%);
+    --term-name: #e5e7eb;
+    --term-dim: #9ca3af;
+    --term-dim2: #6b7280;
+    --term-faint: #4b5563;
+    --term-lime: #bef264;
+    --term-lime-hi: #a3e635;
+    --term-emerald: #6ee7b7;
+    --term-green: #5fd394;
+    --term-cyan: #67e8f9;
+    --term-amber: #fcd34d;
+    --term-rose: #fb7185;
 }
 
 @layer base {
@@ -158,6 +194,11 @@
     }
   html {
     @apply font-sans;
+    }
+  /* Terminal surfaces render literal glyphs — no coding ligatures (===, !=, =>). */
+  .font-mono {
+    font-variant-ligatures: none;
+    font-feature-settings: 'calt' 0;
     }
 }
 
@@ -190,7 +231,7 @@
     width: 0.46em;
     height: 1em;
     vertical-align: -0.12em;
-    background: #a3e635;
+    background: var(--term-lime-hi);
     animation: orrery-caret-blink 1.05s steps(1) infinite;
   }
 
