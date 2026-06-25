@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld('orrery', {
     resumeSession: (input) => ipcRenderer.invoke('orrery:resume-session', input),
     killSession: (sessionId) =>
       ipcRenderer.invoke('orrery:kill-session', sessionId),
+    respondRuntimeRequest: (input) =>
+      ipcRenderer.invoke('orrery:respond-runtime-request', input),
+    answerUserInput: (input) =>
+      ipcRenderer.invoke('orrery:answer-user-input', input),
     upsertCluster: (input) => ipcRenderer.invoke('orrery:upsert-cluster', input),
     createMasterForCluster: (input) =>
       ipcRenderer.invoke('orrery:create-master-for-cluster', input),

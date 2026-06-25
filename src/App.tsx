@@ -21,6 +21,7 @@ import {
   Activity,
   Bot,
   Braces,
+  Check,
   ClipboardCheck,
   CirclePlay,
   FileText,
@@ -35,6 +36,7 @@ import {
   Square,
   Sun,
   Terminal,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -56,7 +58,11 @@ import {
   termTextareaCls,
 } from '@/components/terminal'
 import { ToolRunFeed } from '@/components/tool-run-feed'
-import { parseToolTurns, type ToolTurn } from '@/shared/tool-feed'
+import {
+  parseToolTurns,
+  toolTurnsFromRuntimeActivities,
+  type ToolTurn,
+} from '@/shared/tool-feed'
 import {
   createEmptyGraphState,
   graphStateSchema,
@@ -68,6 +74,13 @@ import {
   type Report,
   type SessionStatus,
 } from '@/shared/graph-state'
+import type {
+  NativeProviderEvent,
+  ProviderKind,
+  ProviderRuntimeEvent,
+  RuntimeRequest,
+  UserInputRequest,
+} from '@/shared/provider-runtime'
 import { createDemoGraphState } from '@/shared/demo-state'
 
 type ColorScheme = 'dark' | 'light'
@@ -233,6 +246,27 @@ const edgeKindStrokes: Record<GraphEdgeKind, string> = {
 
 const defaultPrompt =
   'You are running under Orrery live session verification. Reply with one short sentence confirming this node is a resumable Claude session.'
+
+const providerOptions: {
+  id: ProviderKind
+  agent: 'claude-code' | 'codex'
+  label: string
+}[] = [
+  { id: 'claude-code', agent: 'claude-code', label: 'Claude SDK' },
+  { id: 'codex', agent: 'codex', label: 'Codex' },
+  { id: 'legacy-claude-cli', agent: 'claude-code', label: 'Claude CLI' },
+]
+
+function providerOption(providerKind: ProviderKind) {
+  return (
+    providerOptions.find((option) => option.id === providerKind) ??
+    providerOptions[0]
+  )
+}
+
+function sessionProviderLabel(session: AgentSession) {
+  return providerOption(session.providerKind).label
+}
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master'
@@ -771,6 +805,240 @@ function ChatMessage({
   )
 }
 
+type RuntimeInteractionPanelProps = {
+  requests: RuntimeRequest[]
+  userInputRequests: UserInputRequest[]
+  userInputDrafts: Record<string, string>
+  pendingInteractionIds: Record<string, boolean>
+  onRespond: (
+    request: RuntimeRequest,
+    decision: 'approved' | 'denied'
+  ) => void
+  onDraftChange: (requestId: string, value: string) => void
+  onAnswer: (request: UserInputRequest) => void
+}
+
+function RuntimeInteractionPanel({
+  requests,
+  userInputRequests,
+  userInputDrafts,
+  pendingInteractionIds,
+  onRespond,
+  onDraftChange,
+  onAnswer,
+}: RuntimeInteractionPanelProps) {
+  if (requests.length === 0 && userInputRequests.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="shrink-0 border-b border-ink-line bg-ink px-3.5 py-3">
+      <div className="mb-2 flex items-center gap-2 font-mono">
+        <span className="text-[10px] uppercase tracking-[0.16em] text-term-amber">
+          provider waiting
+        </span>
+        <span className="ml-auto rounded border border-term-amber/30 bg-term-amber/10 px-1.5 py-0.5 text-[10px] tabular-nums text-term-amber">
+          {requests.length + userInputRequests.length}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {requests.map((request) => {
+          const isPending = pendingInteractionIds[request.id] === true
+          return (
+            <div
+              key={request.id}
+              className="rounded-lg border border-term-amber/35 bg-term-amber/10 p-3 font-mono"
+            >
+              <div className="flex min-w-0 items-start gap-2">
+                <span className="pt-0.5 text-term-amber">?</span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12.5px] font-medium text-term-name">
+                    {request.title}
+                  </div>
+                  {request.body ? (
+                    <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
+                      {request.body}
+                    </p>
+                  ) : null}
+                  <div className="mt-1 text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
+                    {request.kind} · {request.createdAt.slice(11, 19)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <Button
+                  className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+                  disabled={isPending}
+                  onClick={() => onRespond(request, 'approved')}
+                >
+                  <Check className="size-3.5" />
+                  Approve
+                </Button>
+                <Button
+                  className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+                  variant="outline"
+                  disabled={isPending}
+                  onClick={() => onRespond(request, 'denied')}
+                >
+                  <X className="size-3.5" />
+                  Deny
+                </Button>
+              </div>
+            </div>
+          )
+        })}
+
+        {userInputRequests.map((request) => {
+          const draft = userInputDrafts[request.id] ?? ''
+          const isPending = pendingInteractionIds[request.id] === true
+          return (
+            <div
+              key={request.id}
+              className="rounded-lg border border-term-cyan/35 bg-term-cyan/10 p-3 font-mono"
+            >
+              <div className="text-[12.5px] font-medium text-term-name">
+                Codex requested input
+              </div>
+              <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
+                {request.prompt}
+              </p>
+              <textarea
+                className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                value={draft}
+                placeholder={request.placeholder ?? 'Answer Codex'}
+                disabled={isPending}
+                onChange={(event) => onDraftChange(request.id, event.target.value)}
+              />
+              <Button
+                className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+                disabled={isPending || draft.trim().length === 0}
+                onClick={() => onAnswer(request)}
+              >
+                <Send className="size-3.5" />
+                Send answer
+              </Button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+type ProviderEventEntry = {
+  id: string
+  ts: string
+  channel: 'runtime' | 'native'
+  title: string
+  payload: unknown
+}
+
+function providerEventTitle(event: ProviderRuntimeEvent) {
+  if (event.type === 'content.delta') {
+    return `${event.type}:${event.streamKind}`
+  }
+  if (
+    event.type === 'item.started' ||
+    event.type === 'item.updated' ||
+    event.type === 'item.completed'
+  ) {
+    return `${event.type}:${event.item.kind}`
+  }
+  return event.type
+}
+
+function nativeEventTitle(event: NativeProviderEvent) {
+  return event.raw.method ?? event.raw.messageType ?? event.raw.source
+}
+
+function providerEventEntries(session: AgentSession): ProviderEventEntry[] {
+  const runtime = (session.runtimeEvents ?? []).map((event) => ({
+    id: event.id,
+    ts: event.ts,
+    channel: 'runtime' as const,
+    title: providerEventTitle(event),
+    payload: event.raw?.payload ?? event,
+  }))
+  const native = (session.nativeEvents ?? []).map((event) => ({
+    id: event.id,
+    ts: event.ts,
+    channel: 'native' as const,
+    title: nativeEventTitle(event),
+    payload: event.raw.payload,
+  }))
+
+  return [...runtime, ...native]
+    .sort((left, right) => right.ts.localeCompare(left.ts))
+    .slice(0, 40)
+}
+
+function stringifyEventPayload(payload: unknown) {
+  let text: string
+  try {
+    text = JSON.stringify(payload, null, 2)
+  } catch {
+    text = String(payload)
+  }
+
+  return text.length > 6000 ? `${text.slice(0, 6000)}\n... truncated` : text
+}
+
+function ProviderEventDrawer({ session }: { session: AgentSession }) {
+  const entries = providerEventEntries(session)
+
+  return (
+    <div className="border-b border-ink-line bg-ink px-3.5 py-3 font-mono">
+      <div className="mb-2 flex items-center gap-2">
+        <Braces className="size-3.5 text-term-cyan" />
+        <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">
+          provider events
+        </span>
+        <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
+          last {entries.length}
+        </span>
+      </div>
+
+      {entries.length === 0 ? (
+        <p className="rounded-lg border border-dashed border-ink-line p-3 text-[11.5px] text-term-dim2">
+          No provider events captured yet.
+        </p>
+      ) : (
+        <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
+          {entries.map((entry) => (
+            <details
+              key={`${entry.channel}:${entry.id}`}
+              className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2"
+            >
+              <summary className="cursor-pointer list-none">
+                <span className="inline-flex min-w-0 items-center gap-2 text-[11px]">
+                  <span
+                    className={cn(
+                      'rounded border px-1.5 py-0.5 uppercase tracking-[0.08em]',
+                      entry.channel === 'native'
+                        ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
+                        : 'border-lime/30 bg-lime/[0.08] text-lime'
+                    )}
+                  >
+                    {entry.channel}
+                  </span>
+                  <span className="truncate text-term-name">{entry.title}</span>
+                  <span className="ml-auto shrink-0 tabular-nums text-term-faint">
+                    {entry.ts.slice(11, 19)}
+                  </span>
+                </span>
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink px-2.5 py-2 text-[10.5px] leading-4 text-term-dim">
+                {stringifyEventPayload(entry.payload)}
+              </pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
   { id: 'sessions', label: 'Sessions', icon: Terminal },
@@ -815,8 +1083,17 @@ function App() {
   const [activeTab, setActiveTab] = useState<RailTab>(
     demoMode ? 'chat' : 'orchestrate'
   )
+  const [newProviderKind, setNewProviderKind] =
+    useState<ProviderKind>('claude-code')
   const [newPrompt, setNewPrompt] = useState(defaultPrompt)
   const [message, setMessage] = useState('')
+  const [showRawEvents, setShowRawEvents] = useState(false)
+  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>(
+    {}
+  )
+  const [pendingInteractionIds, setPendingInteractionIds] = useState<
+    Record<string, boolean>
+  >({})
   const [isCreating, setIsCreating] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
   const [isUpdatingCluster, setIsUpdatingCluster] = useState(false)
@@ -859,6 +1136,12 @@ function App() {
         .filter((report) => report.from === selectedSessionId)
         .sort((left, right) => right.envelope.ts.localeCompare(left.envelope.ts))
     : []
+  const openRuntimeRequests = (selectedSession?.runtimeRequests ?? []).filter(
+    (request) => request.status === 'open'
+  )
+  const openUserInputRequests = (
+    selectedSession?.runtimeUserInputRequests ?? []
+  ).filter((request) => (request.status ?? 'open') === 'open')
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
@@ -876,7 +1159,13 @@ function App() {
   // turns dropped) keeps recent turns matched to their messages.
   const transcript = useMemo(() => {
     const messages = selectedSession?.messages ?? []
-    const turns = selectedSession ? parseToolTurns(selectedSession.chunks) : []
+    const runtimeTurnsByRunId = selectedSession?.runtimeActivities?.length
+      ? toolTurnsFromRuntimeActivities(selectedSession.runtimeActivities)
+      : new Map<string, ToolTurn>()
+    const turns =
+      selectedSession && runtimeTurnsByRunId.size === 0
+        ? parseToolTurns(selectedSession.chunks)
+        : []
     const assistantPositions: number[] = []
     messages.forEach((item, index) => {
       if (item.role === 'assistant') {
@@ -891,10 +1180,15 @@ function App() {
         turnByIndex.set(position, turn)
       }
     })
-    return messages.map((message, index) => ({
-      message,
-      turn: turnByIndex.get(index),
-    }))
+    return messages.map((message, index) => {
+      const runtimeTurn = message.runId
+        ? runtimeTurnsByRunId.get(message.runId)
+        : undefined
+      return {
+        message,
+        turn: runtimeTurn ?? turnByIndex.get(index),
+      }
+    })
   }, [selectedSession])
   const clusters = Object.values(runtimeState.clusters).sort((left, right) =>
     left.label.localeCompare(right.label)
@@ -1072,10 +1366,12 @@ function App() {
     setRuntimeError(undefined)
 
     try {
+      const selectedProvider = providerOption(newProviderKind)
       const result = await window.orrery.runtime.createSession({
         prompt: newPrompt,
-        agent: 'claude-code',
-        label: `Claude ${sessions.length + 1}`,
+        agent: selectedProvider.agent,
+        providerKind: selectedProvider.id,
+        label: `${selectedProvider.label} ${sessions.length + 1}`,
       })
       setRuntimeState(result.state)
       setSelectedSessionId(result.sessionId)
@@ -1085,7 +1381,7 @@ function App() {
     } finally {
       setIsCreating(false)
     }
-  }, [newPrompt, sessions.length])
+  }, [newPrompt, newProviderKind, sessions.length])
 
   const resumeSelectedSession = useCallback(async () => {
     if (!window.orrery?.runtime || !selectedSessionId) {
@@ -1126,6 +1422,89 @@ function App() {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     }
   }, [selectedSessionId])
+
+  const respondToRuntimeRequest = useCallback(
+    async (request: RuntimeRequest, decision: 'approved' | 'denied') => {
+      if (!window.orrery?.runtime) {
+        setRuntimeError('Runtime is available only inside Electron.')
+        return
+      }
+
+      setPendingInteractionIds((current) => ({
+        ...current,
+        [request.id]: true,
+      }))
+      setRuntimeError(undefined)
+
+      try {
+        const result = await window.orrery.runtime.respondRuntimeRequest({
+          sessionId: request.sessionId,
+          requestId: request.id,
+          decision,
+        })
+        setRuntimeState(result.state)
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setPendingInteractionIds((current) => {
+          const next = { ...current }
+          delete next[request.id]
+          return next
+        })
+      }
+    },
+    []
+  )
+
+  const setUserInputDraft = useCallback((requestId: string, value: string) => {
+    setUserInputDrafts((current) => ({
+      ...current,
+      [requestId]: value,
+    }))
+  }, [])
+
+  const answerRuntimeUserInput = useCallback(
+    async (request: UserInputRequest) => {
+      if (!window.orrery?.runtime) {
+        setRuntimeError('Runtime is available only inside Electron.')
+        return
+      }
+
+      const answer = (userInputDrafts[request.id] ?? '').trim()
+      if (answer.length === 0) {
+        return
+      }
+
+      setPendingInteractionIds((current) => ({
+        ...current,
+        [request.id]: true,
+      }))
+      setRuntimeError(undefined)
+
+      try {
+        const result = await window.orrery.runtime.answerUserInput({
+          sessionId: request.sessionId,
+          requestId: request.id,
+          answer,
+        })
+        setRuntimeState(result.state)
+        setUserInputDrafts((current) => {
+          const next = { ...current }
+          delete next[request.id]
+          return next
+        })
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setPendingInteractionIds((current) => {
+          const next = { ...current }
+          delete next[request.id]
+          return next
+        })
+      }
+    },
+    [userInputDrafts]
+  )
 
   const currentLoopPolicy = useCallback(() => {
     const parsedMaxIterations = Number(maxIterations)
@@ -1389,6 +1768,27 @@ function App() {
               <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4">
                 <section className="space-y-2.5">
                   <CmdLine command="orrery session new" flag="--prompt" />
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-ink-line bg-ink p-1 font-mono">
+                    {providerOptions.map((option) => {
+                      const isSelected = newProviderKind === option.id
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          aria-pressed={isSelected}
+                          className={cn(
+                            'truncate rounded-md px-2 py-1.5 text-[10.5px] uppercase tracking-[0.06em] transition',
+                            isSelected
+                              ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30'
+                              : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name'
+                          )}
+                          onClick={() => setNewProviderKind(option.id)}
+                        >
+                          {option.label}
+                        </button>
+                      )
+                    })}
+                  </div>
                   <textarea
                     id="new-session-prompt"
                     className={cn(termTextareaCls, 'min-h-20 max-h-40')}
@@ -1403,7 +1803,9 @@ function App() {
                     onClick={createSession}
                   >
                     <CirclePlay className="size-4" />
-                    {isCreating ? 'Starting…' : 'Start Claude session'}
+                    {isCreating
+                      ? 'Starting...'
+                      : `Start ${providerOption(newProviderKind).label}`}
                   </Button>
                 </section>
 
@@ -1774,7 +2176,9 @@ function App() {
                             <span className="w-[52px] shrink-0 text-term-dim2">
                               agent
                             </span>
-                            <span className="text-term-dim">{session.agent}</span>
+                            <span className="text-term-dim">
+                              {sessionProviderLabel(session)}
+                            </span>
                           </div>
                           <div className="flex gap-2">
                             <span className="text-term-faint">└</span>
@@ -1814,17 +2218,34 @@ function App() {
                     <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
                       Selected session
                     </span>
-                    {selectedSession ? (
-                      <span className="ml-auto flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                        <span
-                          className={cn(
-                            'size-1.5 rounded-full',
-                            statusDotClassNames[selectedSession.status]
-                          )}
-                        />
-                        {statusLabels[selectedSession.status]}
-                      </span>
-                    ) : null}
+                    <div className="ml-auto flex items-center gap-2">
+                      {selectedSession ? (
+                        <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                          <span
+                            className={cn(
+                              'size-1.5 rounded-full',
+                              statusDotClassNames[selectedSession.status]
+                            )}
+                          />
+                          {statusLabels[selectedSession.status]}
+                        </span>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            className="app-region-no-drag size-7"
+                            variant={showRawEvents ? 'secondary' : 'ghost'}
+                            size="icon"
+                            disabled={!selectedSession}
+                            aria-label="Toggle provider event log"
+                            onClick={() => setShowRawEvents((current) => !current)}
+                          >
+                            <Braces className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Provider event log</TooltipContent>
+                      </Tooltip>
+                    </div>
                   </div>
                   <div className="mt-1.5 flex items-baseline gap-2">
                     <h2 className="truncate text-[15px] font-semibold">
@@ -1832,7 +2253,7 @@ function App() {
                     </h2>
                     {selectedSession ? (
                       <span className="shrink-0 font-mono text-xs text-accent-ink">
-                        {selectedSession.agent}
+                        {sessionProviderLabel(selectedSession)}
                       </span>
                     ) : null}
                   </div>
@@ -1881,6 +2302,20 @@ function App() {
                     </div>
                   ) : null}
                 </div>
+
+                <RuntimeInteractionPanel
+                  requests={openRuntimeRequests}
+                  userInputRequests={openUserInputRequests}
+                  userInputDrafts={userInputDrafts}
+                  pendingInteractionIds={pendingInteractionIds}
+                  onRespond={respondToRuntimeRequest}
+                  onDraftChange={setUserInputDraft}
+                  onAnswer={answerRuntimeUserInput}
+                />
+
+                {showRawEvents && selectedSession ? (
+                  <ProviderEventDrawer session={selectedSession} />
+                ) : null}
 
                 <div className="min-h-0 flex-1 overflow-y-auto bg-ink">
                   <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">

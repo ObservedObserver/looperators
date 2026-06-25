@@ -16,7 +16,7 @@ const commonCliPaths = [
   '/Users/observedobserver/.local/bin',
 ]
 
-function buildPath() {
+export function buildPath() {
   const currentPath = process.env.PATH ?? ''
   return [...commonCliPaths, currentPath].filter(Boolean).join(':')
 }
@@ -55,7 +55,7 @@ function getEventType(event) {
   return event?.type
 }
 
-function membraneSystemPrompt() {
+export function membraneSystemPrompt() {
   return [
     'You are running inside Orrery.',
     'Use the orrery_membrane MCP tools when you need to affect the agent graph:',
@@ -74,7 +74,7 @@ function writeJson0600(filePath, value) {
   fs.chmodSync(filePath, 0o600)
 }
 
-function createMcpHandoff(membrane) {
+export function createMcpHandoff(membrane) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-membrane-'))
   fs.chmodSync(dir, 0o700)
 
@@ -101,7 +101,7 @@ function createMcpHandoff(membrane) {
   return { dir, configPath }
 }
 
-function cleanupMcpHandoff(handoff) {
+export function cleanupMcpHandoff(handoff) {
   if (!handoff) {
     return
   }
@@ -139,7 +139,7 @@ function buildClaudeArgs({ prompt, backendSessionId, sessionId, mcpConfigPath })
   return args
 }
 
-function claudeCommand() {
+export function claudeCommand() {
   return process.env.ORRERY_CLAUDE_BIN || 'claude'
 }
 
