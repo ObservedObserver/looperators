@@ -1,0 +1,217 @@
+import { graphStateVersion, type GraphState } from './graph-state'
+
+/**
+ * Demo runtime state for design / web preview only.
+ * Activated via `?demo=1` when NOT running inside Electron (no window.orrery).
+ * Never used by the real Electron runtime.
+ */
+export function createDemoGraphState(): GraphState {
+  const base = '2026-06-24T12:5'
+  return {
+    version: graphStateVersion,
+    updatedAt: `${base}5:36.000Z`,
+    nodes: [
+      {
+        nodeId: 'sess-p1-accept',
+        sessionId: 'sess-p1-accept',
+        label: 'P1 Acceptance',
+        role: 'worker',
+        agent: 'claude-code',
+        status: 'idle',
+        position: { x: 0, y: 0 },
+      },
+      {
+        nodeId: 'sess-p2-research',
+        sessionId: 'sess-p2-research',
+        label: 'P2 Research loop',
+        role: 'worker',
+        agent: 'claude-code',
+        status: 'running',
+        position: { x: 360, y: -48 },
+      },
+      {
+        nodeId: 'sess-p0-bootstrap',
+        sessionId: 'sess-p0-bootstrap',
+        label: 'P0 Bootstrap',
+        role: 'master',
+        agent: 'claude-code',
+        status: 'idle',
+        position: { x: -340, y: 150 },
+      },
+    ],
+    edges: [
+      {
+        edgeId: 'edge-1',
+        source: 'sess-p0-bootstrap',
+        target: 'sess-p1-accept',
+        kind: 'create-session',
+        ts: `${base}0:02.000Z`,
+        label: 'spawn p1',
+      },
+      {
+        edgeId: 'edge-2',
+        source: 'sess-p1-accept',
+        target: 'sess-p0-bootstrap',
+        kind: 'report',
+        ts: `${base}6:10.000Z`,
+        verdict: 'clean',
+        issueCount: 0,
+        summary: 'P1 acceptance green — 48 tests pass.',
+      },
+    ],
+    sessions: {
+      'sess-p1-accept': {
+        sessionId: 'sess-p1-accept',
+        nodeId: 'sess-p1-accept',
+        backend: 'claude-cli',
+        backendSessionId: '3cce7740-d183-4170-9ee4-0d45e5078234',
+        agent: 'claude-code',
+        label: 'P1 Acceptance',
+        prompt: 'Run the P1 acceptance loop and checkpoint when green.',
+        cwd: '~/Documents/GitHub/orrery',
+        role: 'worker',
+        status: 'idle',
+        createdAt: `${base}0:00.000Z`,
+        updatedAt: `${base}6:12.000Z`,
+        chunks: [],
+        messages: [
+          {
+            id: 'm1',
+            sessionId: 'sess-p1-accept',
+            role: 'user',
+            content:
+              'Remember marker P1_ACCEPT_1782305678623_5453fb. Reply exactly done.',
+            ts: `${base}5:30.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'm2',
+            sessionId: 'sess-p1-accept',
+            role: 'assistant',
+            content: 'done',
+            ts: `${base}5:31.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'm3',
+            sessionId: 'sess-p1-accept',
+            role: 'user',
+            content: 'What marker did I ask you to remember? Reply only the marker.',
+            ts: `${base}5:48.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'm4',
+            sessionId: 'sess-p1-accept',
+            role: 'assistant',
+            content: 'P1_ACCEPT_1782305678623_5453fb',
+            ts: `${base}5:49.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'm5',
+            sessionId: 'sess-p1-accept',
+            role: 'user',
+            content: 'Run the P1 acceptance loop and checkpoint when green.',
+            ts: `${base}6:02.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'm6',
+            sessionId: 'sess-p1-accept',
+            role: 'assistant',
+            content:
+              'Read orchestrator.ts and patched the nodeId guard (-4 +11). Ran npm run verify (typecheck clean, lint 0 warnings, build 4 routes). First npm test had 2 failing, applied a fix (-1 +2), re-ran: 48 passed. Checkpointed p1-acceptance@4f2a.',
+            ts: `${base}6:11.000Z`,
+            status: 'complete',
+          },
+        ],
+      },
+      'sess-p2-research': {
+        sessionId: 'sess-p2-research',
+        nodeId: 'sess-p2-research',
+        backend: 'claude-cli',
+        backendSessionId: 'a91f2c08-77bd-4e10-9a2c-1de5079b21aa',
+        agent: 'claude-code',
+        label: 'P2 Research loop',
+        prompt: 'Crawl the changelog and summarize regressions.',
+        cwd: '~/Documents/GitHub/orrery',
+        role: 'worker',
+        status: 'running',
+        createdAt: `${base}3:10.000Z`,
+        updatedAt: `${base}6:30.000Z`,
+        chunks: [],
+        messages: [
+          {
+            id: 'r1',
+            sessionId: 'sess-p2-research',
+            role: 'user',
+            content: 'Crawl the changelog and summarize regressions.',
+            ts: `${base}3:10.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'r2',
+            sessionId: 'sess-p2-research',
+            role: 'assistant',
+            content: 'Fetching changelog pages and clustering by component…',
+            ts: `${base}6:30.000Z`,
+            status: 'streaming',
+          },
+        ],
+      },
+      'sess-p0-bootstrap': {
+        sessionId: 'sess-p0-bootstrap',
+        nodeId: 'sess-p0-bootstrap',
+        backend: 'claude-cli',
+        backendSessionId: '77bce4d1-02a9-4c33-8f10-9b0042aa0042',
+        agent: 'claude-code',
+        label: 'P0 Bootstrap',
+        prompt: 'Bootstrap the master loop and spawn acceptance workers.',
+        cwd: '~/Documents/GitHub/orrery',
+        role: 'master',
+        status: 'idle',
+        createdAt: `${base}0:00.000Z`,
+        updatedAt: `${base}6:10.000Z`,
+        exitCode: 0,
+        chunks: [],
+        messages: [
+          {
+            id: 'b1',
+            sessionId: 'sess-p0-bootstrap',
+            role: 'user',
+            content: 'Bootstrap the master loop and spawn acceptance workers.',
+            ts: `${base}0:00.000Z`,
+            status: 'complete',
+          },
+          {
+            id: 'b2',
+            sessionId: 'sess-p0-bootstrap',
+            role: 'assistant',
+            content: 'Bootstrap complete. Spawned p1-acceptance. Exit 0.',
+            ts: `${base}0:05.000Z`,
+            status: 'complete',
+          },
+        ],
+      },
+    },
+    clusters: {},
+    reports: [
+      {
+        id: 'rep-1',
+        from: 'sess-p1-accept',
+        envelope: {
+          callId: 'call-1',
+          source: 'sess-p1-accept',
+          ts: `${base}6:10.000Z`,
+        },
+        payload: {
+          type: 'verdict',
+          verdict: 'clean',
+          issues: [],
+          summary: 'P1 acceptance green — 48 tests pass, checkpoint p1-acceptance@4f2a.',
+        },
+      },
+    ],
+  }
+}

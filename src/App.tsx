@@ -59,6 +59,7 @@ import {
   type Report,
   type SessionStatus,
 } from '@/shared/graph-state'
+import { createDemoGraphState } from '@/shared/demo-state'
 
 type ColorScheme = 'dark' | 'light'
 
@@ -130,11 +131,51 @@ const statusClassNames: Record<SessionStatus, string> = {
 }
 
 const statusDotClassNames: Record<SessionStatus, string> = {
-  pending: 'bg-sky-500',
-  running: 'bg-emerald-500',
-  idle: 'bg-zinc-400',
-  failed: 'bg-red-500',
-  killed: 'bg-amber-500',
+  pending: 'bg-term-amber',
+  running: 'bg-term-green',
+  idle: 'bg-term-dim2',
+  failed: 'bg-term-rose',
+  killed: 'bg-term-amber',
+}
+
+// Terminal status marker (gutter glyph) for a session row.
+function sessionMarker(
+  status: SessionStatus,
+  isSelected: boolean,
+  role: 'worker' | 'master'
+): { char: string; cls: string } {
+  if (isSelected) return { char: '●', cls: 'text-lime-hi' }
+  if (role === 'master') return { char: '◆', cls: 'text-term-amber' }
+  switch (status) {
+    case 'running':
+      return { char: '◌', cls: 'text-term-amber animate-pulse' }
+    case 'pending':
+      return { char: '◌', cls: 'text-term-amber' }
+    case 'failed':
+      return { char: '✗', cls: 'text-term-rose' }
+    case 'killed':
+      return { char: '✗', cls: 'text-term-amber' }
+    default:
+      return { char: '○', cls: 'text-term-dim2' }
+  }
+}
+
+const statePillBase =
+  'shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.1em]'
+
+function statePillCls(status: SessionStatus, role: 'worker' | 'master') {
+  if (role === 'master')
+    return 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+  switch (status) {
+    case 'running':
+    case 'pending':
+    case 'killed':
+      return 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+    case 'failed':
+      return 'border-term-rose/30 bg-term-rose/10 text-term-rose'
+    default:
+      return 'border-ink-line bg-white/[0.03] text-term-dim'
+  }
 }
 
 const edgeKindLabels: Record<GraphEdgeKind, string> = {
@@ -603,25 +644,43 @@ function sameStringList(left: string[], right: string[]) {
 
 function ChatMessage({ message }: { message: AgentMessage }) {
   const isUser = message.role === 'user'
+  const isStreaming = message.status === 'streaming'
 
   return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'max-w-[88%] rounded-lg border px-3 py-2 text-sm leading-6',
-          isUser
-            ? 'border-primary/30 bg-primary text-primary-foreground'
-            : 'border-border bg-background'
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <div className="mb-1.5 flex items-center gap-2">
+        {isUser ? (
+          <span className="text-[10px] uppercase tracking-[0.14em] text-term-dim">
+            you
+          </span>
+        ) : (
+          <>
+            <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_#5fd394]" />
+            <span className="text-[10px] uppercase tracking-[0.14em] text-term-emerald">
+              claude
+            </span>
+          </>
         )}
-      >
-        <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-normal opacity-70">
-          {isUser ? 'You' : 'Claude'}
-          {message.status === 'streaming' ? (
-            <span className="normal-case">streaming</span>
-          ) : null}
-        </div>
-        <div className="whitespace-pre-wrap break-words">{message.content}</div>
+        {isStreaming ? (
+          <span className="text-[10px] text-term-amber">streaming</span>
+        ) : null}
+        <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
+          {message.ts.slice(11, 19)}
+        </span>
       </div>
+      {isUser ? (
+        <div className="flex gap-2 text-[13px] leading-6">
+          <span className="shrink-0 text-lime-hi">❯</span>
+          <span className="whitespace-pre-wrap break-words text-[#cfd6dd]">
+            {message.content}
+          </span>
+        </div>
+      ) : (
+        <div className="whitespace-pre-wrap break-words text-[13px] leading-6 text-term-name">
+          {message.content}
+          {isStreaming ? <span className="orrery-caret ml-1" /> : null}
+        </div>
+      )}
     </div>
   )
 }
@@ -682,11 +741,21 @@ function TabHeading({
   )
 }
 
+const demoMode =
+  typeof window !== 'undefined' &&
+  !window.orrery &&
+  new URLSearchParams(window.location.search).has('demo')
+
 function App() {
-  const [runtimeState, setRuntimeState] =
-    useState<GraphState>(createEmptyGraphState)
-  const [selectedSessionId, setSelectedSessionId] = useState<string>()
-  const [activeTab, setActiveTab] = useState<RailTab>('orchestrate')
+  const [runtimeState, setRuntimeState] = useState<GraphState>(
+    demoMode ? createDemoGraphState : createEmptyGraphState
+  )
+  const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(
+    demoMode ? 'sess-p1-accept' : undefined
+  )
+  const [activeTab, setActiveTab] = useState<RailTab>(
+    demoMode ? 'chat' : 'orchestrate'
+  )
   const [newPrompt, setNewPrompt] = useState(defaultPrompt)
   const [message, setMessage] = useState('')
   const [isCreating, setIsCreating] = useState(false)
@@ -1178,7 +1247,7 @@ function App() {
                 <h1 className="truncate text-sm font-semibold leading-tight">
                   Orrery
                 </h1>
-                <p className="truncate text-[11px] text-muted-foreground">
+                <p className="truncate font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">
                   P3 master loops
                 </p>
               </div>
@@ -1205,10 +1274,10 @@ function App() {
                     aria-pressed={isActive}
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      'relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors',
+                      'relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 font-mono text-xs font-medium transition-colors',
                       isActive
-                        ? 'bg-primary/12 text-primary ring-1 ring-inset ring-primary/25'
-                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                        ? 'bg-accent-ink/12 text-accent-ink ring-1 ring-inset ring-accent-ink/30'
+                        : 'text-muted-foreground hover:bg-accent hover:text-foreground'
                     )}
                   >
                     <TabIcon className="size-3.5 shrink-0" />
@@ -1474,22 +1543,20 @@ function App() {
 
             {activeTab === 'sessions' ? (
               <div className="flex min-h-0 flex-1 flex-col">
-                <div className="shrink-0 px-4 pb-2 pt-3">
-                  <TabHeading
-                    icon={Terminal}
-                    title="Sessions"
-                    hint={`${runningSessions.length} running`}
-                    action={
-                      <Badge variant="secondary" className="shrink-0">
-                        {sessions.length}
-                      </Badge>
-                    }
-                  />
+                <div className="shrink-0 px-4 pb-2.5 pt-3 font-mono">
+                  <div className="flex items-center gap-2 text-[12px]">
+                    <span className="text-lime-hi">❯</span>
+                    <span className="text-foreground">orrery sessions</span>
+                    <span className="text-accent-ink">--watch</span>
+                    <span className="ml-auto text-[11px] text-muted-foreground">
+                      {runningSessions.length} running · {sessions.length} total
+                    </span>
+                  </div>
                 </div>
 
                 <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
                   {sessions.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
                       No sessions yet. Start one from the Orchestrate tab.
                     </div>
                   ) : null}
@@ -1504,47 +1571,100 @@ function App() {
                         ? latestReport.payload.verdict
                         : undefined
 
+                    const isSel = selectedSessionId === session.sessionId
+                    const marker = sessionMarker(
+                      session.status,
+                      isSel,
+                      session.role
+                    )
+                    const idLabel =
+                      session.backendSessionId ?? session.sessionId
+
                     return (
                       <button
                         key={session.sessionId}
                         type="button"
                         className={cn(
-                          'w-full rounded-lg border border-border bg-background/60 p-3 text-left transition hover:bg-accent',
-                          selectedSessionId === session.sessionId &&
-                            'border-primary/70 bg-primary/5 ring-1 ring-primary/20'
+                          'relative w-full rounded-lg border bg-ink p-3 pl-3.5 text-left font-mono transition',
+                          isSel
+                            ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
+                            : 'border-ink-line hover:border-white/20'
                         )}
                         onClick={() => {
                           setSelectedSessionId(session.sessionId)
                           setActiveTab('chat')
                         }}
                       >
-                        <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className={cn(
-                                'size-2 shrink-0 rounded-full',
-                                session.role === 'master'
-                                  ? 'bg-amber-500'
-                                  : statusDotClassNames[session.status]
-                              )}
-                            />
-                            <span className="truncate text-sm font-medium">
-                              {session.label}
+                        {isSel ? (
+                          <span className="absolute bottom-2.5 left-0 top-2.5 w-0.5 rounded-full bg-lime-hi" />
+                        ) : null}
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className={cn(
+                              'w-3.5 shrink-0 text-center text-[12px] leading-none',
+                              marker.cls
+                            )}
+                          >
+                            {marker.char}
+                          </span>
+                          <span
+                            className={cn(
+                              'flex-1 truncate text-[13px] font-medium',
+                              isSel ? 'text-lime-hi' : 'text-lime'
+                            )}
+                          >
+                            {session.label}
+                          </span>
+                          <span
+                            className={cn(
+                              statePillBase,
+                              statePillCls(session.status, session.role)
+                            )}
+                          >
+                            {session.role === 'master'
+                              ? 'master'
+                              : statusLabels[session.status].toLowerCase()}
+                          </span>
+                        </div>
+                        <div className="mt-2 space-y-0.5 text-[11.5px]">
+                          <div className="flex gap-2">
+                            <span className="text-term-faint">├</span>
+                            <span className="w-[52px] shrink-0 text-term-dim2">
+                              id
+                            </span>
+                            <span className="truncate text-term-cyan">
+                              {idLabel}
                             </span>
                           </div>
-                          <Badge variant="secondary" className="shrink-0">
-                            {session.role === 'master'
-                              ? 'Master'
-                              : statusLabels[session.status]}
-                          </Badge>
+                          <div className="flex gap-2">
+                            <span className="text-term-faint">├</span>
+                            <span className="w-[52px] shrink-0 text-term-dim2">
+                              agent
+                            </span>
+                            <span className="text-term-dim">{session.agent}</span>
+                          </div>
+                          <div className="flex gap-2">
+                            <span className="text-term-faint">└</span>
+                            <span className="w-[52px] shrink-0 text-term-dim2">
+                              io
+                            </span>
+                            <span className="text-term-dim">
+                              <span className="text-term-cyan">
+                                {session.messages.length}
+                              </span>{' '}
+                              msgs · updated {session.updatedAt.slice(11, 16)}
+                            </span>
+                          </div>
                         </div>
-                        <p className="line-clamp-2 break-words text-xs leading-5 text-muted-foreground">
-                          {lastMessagePreview(session)}
-                        </p>
                         {latestVerdict ? (
-                          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10.5px] text-term-dim2">
                             <ClipboardCheck className="size-3 shrink-0" />
-                            <span className="truncate">{latestVerdict}</span>
+                            <span className="truncate">
+                              verdict{' '}
+                              <span className="text-term-green">
+                                {latestVerdict}
+                              </span>
+                            </span>
                           </div>
                         ) : null}
                       </button>
@@ -1556,30 +1676,57 @@ function App() {
 
             {activeTab === 'chat' ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="shrink-0 border-b border-border px-4 py-3">
-                  <div className="mb-1.5 flex min-w-0 items-center justify-between gap-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <MessagesSquare className="size-4 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                          Selected session
-                        </div>
-                        <h2 className="truncate text-sm font-semibold">
-                          {selectedSession?.label ?? 'No session selected'}
-                        </h2>
-                      </div>
-                    </div>
+                <div className="shrink-0 border-b border-border bg-card px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                      Selected session
+                    </span>
                     {selectedSession ? (
-                      <Badge variant="secondary" className="shrink-0">
+                      <span className="ml-auto flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                        <span
+                          className={cn(
+                            'size-1.5 rounded-full',
+                            statusDotClassNames[selectedSession.status]
+                          )}
+                        />
                         {statusLabels[selectedSession.status]}
-                      </Badge>
+                      </span>
                     ) : null}
                   </div>
-                  <p className="truncate font-mono text-[11px] leading-5 text-muted-foreground">
-                    {selectedSession?.backendSessionId ??
-                      selectedSession?.sessionId ??
-                      'Select a node on the graph or a session.'}
+                  <div className="mt-1.5 flex items-baseline gap-2">
+                    <h2 className="truncate text-[15px] font-semibold">
+                      {selectedSession?.label ?? 'No session selected'}
+                    </h2>
+                    {selectedSession ? (
+                      <span className="shrink-0 font-mono text-xs text-accent-ink">
+                        {selectedSession.agent}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="mt-1 truncate font-mono text-[11px] leading-5 text-muted-foreground">
+                    {selectedSession ? (
+                      <>
+                        marker{' '}
+                        <span className="text-accent-ink">
+                          {selectedSession.backendSessionId ??
+                            selectedSession.sessionId}
+                        </span>
+                      </>
+                    ) : (
+                      'Select a node on the graph or a session.'
+                    )}
                   </p>
+                  <div
+                    className="relative mt-2.5 h-2 overflow-hidden opacity-60"
+                    style={{
+                      backgroundImage:
+                        'repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 13px)',
+                      WebkitMaskImage:
+                        'linear-gradient(90deg, #000 55%, transparent)',
+                    }}
+                  >
+                    <span className="absolute left-[38%] top-0 h-full w-px bg-primary" />
+                  </div>
                   {selectedReports.length ? (
                     <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1">
                       {selectedReports.slice(0, 3).map((report) => (
@@ -1602,29 +1749,40 @@ function App() {
                   ) : null}
                 </div>
 
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3.5">
+                <div className="min-h-0 flex-1 overflow-y-auto bg-ink">
+                  <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-term-dim2">
+                      session transcript
+                    </span>
+                    <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">
+                      {selectedSession?.messages.length ?? 0} messages
+                    </span>
+                  </div>
                   {selectedSession?.messages.length ? (
                     selectedSession.messages.map((item) => (
                       <ChatMessage key={item.id} message={item} />
                     ))
                   ) : (
-                    <div className="rounded-lg border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+                    <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">
                       No chat history.
                     </div>
                   )}
                 </div>
 
-                <div className="shrink-0 border-t border-border p-2.5">
-                  <textarea
-                    className="app-region-no-drag mb-2 min-h-11 max-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring disabled:opacity-60"
-                    placeholder="Message selected session"
-                    value={message}
-                    disabled={!selectedSession || !canResume || isResuming}
-                    onChange={(event) => setMessage(event.target.value)}
-                  />
+                <div className="shrink-0 border-t border-border bg-card p-2.5">
+                  <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-ink-line bg-ink px-3 py-2.5 transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25">
+                    <span className="pt-0.5 font-mono text-lime-hi">❯</span>
+                    <textarea
+                      className="max-h-28 min-h-9 w-full resize-y bg-transparent font-mono text-[13px] leading-6 text-term-name outline-none placeholder:text-term-faint disabled:opacity-60"
+                      placeholder="Message selected session"
+                      value={message}
+                      disabled={!selectedSession || !canResume || isResuming}
+                      onChange={(event) => setMessage(event.target.value)}
+                    />
+                  </div>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                     <Button
-                      className="app-region-no-drag min-w-0 justify-center"
+                      className="app-region-no-drag min-w-0 justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
                       disabled={
                         !selectedSession ||
                         !canResume ||
@@ -1634,7 +1792,7 @@ function App() {
                       onClick={resumeSelectedSession}
                     >
                       <Send className="size-4 shrink-0" />
-                      <span className="truncate">Resume Session</span>
+                      <span className="truncate">Resume session</span>
                     </Button>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -1657,7 +1815,7 @@ function App() {
             ) : null}
           </div>
 
-          <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+          <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 font-mono text-[11px] tracking-[0.02em] text-muted-foreground">
             <span className="flex items-center gap-1.5" title="Running sessions">
               <span
                 className={cn(
@@ -1686,7 +1844,10 @@ function App() {
                 className="flex items-center gap-1"
                 title={`Graph schema v${graphStateSchema.version}`}
               >
-                <Braces className="size-3" />v{graphStateSchema.version}
+                <Braces className="size-3" />
+                <span className="text-accent-ink">
+                  v{graphStateSchema.version}
+                </span>
               </span>
               <span
                 className="flex items-center gap-1 tabular-nums"
