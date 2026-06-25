@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -48,6 +48,15 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import {
+  CmdLine,
+  TermChip,
+  TermLabel,
+  termInputCls,
+  termTextareaCls,
+} from '@/components/terminal'
+import { ToolRunFeed } from '@/components/tool-run-feed'
+import { parseToolTurns, type ToolTurn } from '@/shared/tool-feed'
 import {
   createEmptyGraphState,
   graphStateSchema,
@@ -122,14 +131,6 @@ const statusLabels: Record<SessionStatus, string> = {
   killed: 'Killed',
 }
 
-const statusClassNames: Record<SessionStatus, string> = {
-  pending: 'border-sky-500/70 bg-sky-500/10',
-  running: 'border-emerald-500/70 bg-emerald-500/10',
-  idle: 'border-zinc-500/70 bg-zinc-500/10',
-  failed: 'border-red-500/70 bg-red-500/10',
-  killed: 'border-amber-500/70 bg-amber-500/10',
-}
-
 const statusDotClassNames: Record<SessionStatus, string> = {
   pending: 'bg-term-amber',
   running: 'bg-term-green',
@@ -174,9 +175,36 @@ function statePillCls(status: SessionStatus, role: 'worker' | 'master') {
     case 'failed':
       return 'border-term-rose/30 bg-term-rose/10 text-term-rose'
     default:
-      return 'border-ink-line bg-white/[0.03] text-term-dim'
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim'
   }
 }
+
+// Chrome-friendly state pill for graph nodes (flips correctly in light mode).
+function nodeStatePillCls(
+  status: SessionStatus,
+  role: 'worker' | 'master',
+  frozen?: boolean
+) {
+  if (frozen) return 'border-border bg-muted text-muted-foreground'
+  if (role === 'master')
+    return 'border-term-amber/40 bg-term-amber/10 text-term-amber'
+  switch (status) {
+    case 'running':
+    case 'pending':
+      return 'border-term-amber/40 bg-term-amber/10 text-term-amber'
+    case 'failed':
+    case 'killed':
+      return 'border-term-rose/40 bg-term-rose/10 text-term-rose'
+    default:
+      return 'border-border bg-muted text-muted-foreground'
+  }
+}
+
+// Terminal action-button class presets (lime primary / chrome outline, mono).
+const termPrimaryBtnCls =
+  'w-full justify-center font-mono text-[11px] font-medium uppercase tracking-[0.08em]'
+const termActionBtnCls =
+  'min-w-0 justify-start font-mono text-[11px] uppercase tracking-[0.06em]'
 
 const edgeKindLabels: Record<GraphEdgeKind, string> = {
   'create-session': 'create',
@@ -186,19 +214,21 @@ const edgeKindLabels: Record<GraphEdgeKind, string> = {
 }
 
 const edgeKindClassNames: Record<GraphEdgeKind, string> = {
-  'create-session': 'border-teal-500/40 bg-teal-500/10 text-teal-950 dark:text-teal-100',
+  'create-session':
+    'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
   'resume-session':
-    'border-amber-500/50 bg-amber-500/10 text-amber-950 dark:text-amber-100',
+    'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
   report:
-    'border-indigo-500/40 bg-indigo-500/10 text-indigo-950 dark:text-indigo-100',
-  freeze: 'border-zinc-500/50 bg-zinc-500/10 text-zinc-800 dark:text-zinc-100',
+    'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+  freeze:
+    'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-300',
 }
 
 const edgeKindStrokes: Record<GraphEdgeKind, string> = {
-  'create-session': 'oklch(0.55 0.14 182)',
-  'resume-session': 'oklch(0.67 0.16 70)',
-  report: 'oklch(0.56 0.18 275)',
-  freeze: 'oklch(0.55 0 0)',
+  'create-session': 'oklch(0.72 0.15 162)',
+  'resume-session': 'oklch(0.75 0.15 75)',
+  report: 'oklch(0.72 0.13 210)',
+  freeze: 'oklch(0.6 0.02 240)',
 }
 
 const defaultPrompt =
@@ -206,95 +236,127 @@ const defaultPrompt =
 
 function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master'
+  const marker = sessionMarker(data.status, selected ?? false, data.role)
+  const freezeReason = data.freezeReason ?? data.masterReason
   return (
     <div
       className={cn(
-        'min-w-[260px] max-w-[300px] rounded-lg border bg-card px-4 py-3 shadow-sm transition',
+        'w-[300px] rounded-xl border bg-card font-mono shadow-sm transition',
         data.frozen
-          ? 'border-zinc-500/60 bg-muted/60 opacity-70 grayscale'
-          : statusClassNames[data.status],
-        data.isManaged && 'border-cyan-500/70 bg-cyan-500/10',
-        isMaster && 'border-amber-500/80 bg-amber-500/10 shadow-amber-500/10',
-        selected && 'ring-2 ring-ring ring-offset-2 ring-offset-background'
+          ? 'border-border bg-muted/50 opacity-75'
+          : isMaster
+            ? 'border-term-amber/50'
+            : data.isManaged
+              ? 'border-term-cyan/45'
+              : 'border-border',
+        selected && '!border-lime-hi/60 ring-2 ring-lime-hi/50'
       )}
     >
       <Handle
         type="target"
         position={Position.Left}
-        className="!size-2.5 !border-background !bg-muted-foreground"
+        className="!size-2.5 !border-0 !bg-lime-hi"
       />
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <Bot className="size-4 shrink-0 text-muted-foreground" />
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">{data.label}</div>
-            <div className="text-[11px] uppercase tracking-normal text-muted-foreground">
-              {data.agent}
-            </div>
+      <div className="flex items-center gap-2.5 px-3.5 pb-2.5 pt-3">
+        <span
+          className={cn(
+            'w-3.5 shrink-0 text-center text-[12px] leading-none',
+            marker.cls
+          )}
+        >
+          {marker.char}
+        </span>
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-accent-ink/25 bg-accent-ink/10 text-accent-ink">
+          {isMaster ? <Bot className="size-4" /> : <Terminal className="size-3.5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-semibold text-foreground">
+            {data.label}
+          </div>
+          <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            {data.agent}
           </div>
         </div>
-        <Badge variant="secondary" className="h-5 shrink-0">
-          {data.frozen ? 'Frozen' : isMaster ? 'Master' : statusLabels[data.status]}
-        </Badge>
+        <span
+          className={cn(
+            statePillBase,
+            nodeStatePillCls(data.status, data.role, data.frozen)
+          )}
+        >
+          {data.frozen
+            ? 'frozen'
+            : isMaster
+              ? 'master'
+              : statusLabels[data.status].toLowerCase()}
+        </span>
       </div>
+
       {data.clusterLabel || data.isManaged ? (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-1.5 px-3.5 pb-2">
           {data.clusterLabel ? (
-            <Badge variant="outline" className="h-5">
-              {data.clusterLabel}
-            </Badge>
+            <TermChip>{data.clusterLabel}</TermChip>
           ) : null}
           {data.isManaged ? (
-            <Badge variant="secondary" className="h-5">
-              Managed
-            </Badge>
+            <span className="inline-flex items-center gap-1 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10.5px] leading-none text-cyan-700 dark:text-cyan-300">
+              managed
+            </span>
           ) : null}
         </div>
       ) : null}
-      <p className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-        {data.description}
-      </p>
-      {data.latestVerdict ? (
-        <div className="mt-3 rounded-md border border-border bg-background/70 px-2 py-1.5">
-          <div className="flex items-center justify-between gap-2 text-[11px] font-medium uppercase tracking-normal">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <ClipboardCheck className="size-3 shrink-0" />
-              <span className="truncate">verdict: {data.latestVerdict}</span>
-            </span>
-            {data.latestReportIssueCount !== undefined ? (
-              <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">
-                {data.latestReportIssueCount} issues
-              </Badge>
+
+      <div className="px-3.5 pb-3">
+        <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-2">
+          <p className="line-clamp-2 break-words text-[11px] leading-5 text-muted-foreground">
+            {data.description}
+          </p>
+        </div>
+
+        {data.latestVerdict ? (
+          <div className="mt-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2">
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.12em]">
+              <span className="text-term-faint">└</span>
+              <span className="text-muted-foreground">verdict</span>
+              <span className="text-term-green">{data.latestVerdict}</span>
+              {data.latestReportIssueCount !== undefined ? (
+                <span className="ml-auto tabular-nums text-muted-foreground">
+                  {data.latestReportIssueCount} issues
+                </span>
+              ) : null}
+            </div>
+            {data.latestReportSummary ? (
+              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                {data.latestReportSummary}
+              </p>
             ) : null}
           </div>
-          {data.latestReportSummary ? (
-            <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
-              {data.latestReportSummary}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      {data.frozen ? (
-        <div className="mt-3 rounded-md border border-zinc-500/30 bg-background/70 px-2 py-1.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-normal">
-            <Snowflake className="size-3" />
-            freeze
+        ) : null}
+
+        {data.frozen ? (
+          <div className="mt-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2">
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+              <Snowflake className="size-3" />
+              freeze
+            </div>
+            {freezeReason ? (
+              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                {freezeReason}
+              </p>
+            ) : null}
           </div>
-          {data.freezeReason || data.masterReason ? (
-            <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
-              {data.freezeReason ?? data.masterReason}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <Activity className="size-3" />
-        {data.messageCount} messages
+        ) : null}
+      </div>
+
+      <div className="flex items-center gap-1.5 border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">
+        <Activity className="size-3 text-accent-ink" />
+        <span className="tabular-nums text-foreground/80">
+          {data.messageCount}
+        </span>
+        messages
       </div>
       <Handle
         type="source"
         position={Position.Right}
-        className="!size-2.5 !border-background !bg-primary"
+        className="!size-2.5 !border-0 !bg-lime-hi"
       />
     </div>
   )
@@ -306,35 +368,37 @@ function ClusterBoundaryNode({
   return (
     <div
       className={cn(
-        'h-full w-full rounded-lg border border-dashed border-cyan-500/70 bg-cyan-500/5 px-3 py-2 text-cyan-950 shadow-sm dark:text-cyan-100',
-        data.frozen && 'border-zinc-500/60 bg-zinc-500/10 opacity-70 grayscale'
+        'h-full w-full rounded-xl border border-dashed border-cyan-500/45 bg-cyan-500/[0.04] px-3 py-2.5 font-mono shadow-sm',
+        data.frozen && 'border-border bg-muted/30 opacity-70'
       )}
     >
-      <div className="flex flex-wrap items-center gap-1.5">
-        <Badge variant="outline" className="border-cyan-500/50 bg-background/80">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-cyan-700 dark:text-cyan-300">
+          <span className="opacity-70">❯</span>
           {data.label}
-        </Badge>
-        <Badge variant="secondary" className="bg-background/80">
+        </span>
+        <span className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] tabular-nums text-cyan-700 dark:text-cyan-300">
           {data.nodeCount} managed
-        </Badge>
+        </span>
         {data.masterLabel ? (
-          <Badge variant="secondary" className="bg-amber-500/15 text-amber-950 dark:text-amber-100">
-            {data.masterLabel}
-          </Badge>
+          <span className="rounded-md border border-term-amber/30 bg-term-amber/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-term-amber">
+            ◆ {data.masterLabel}
+          </span>
         ) : null}
         {data.frozen ? (
-          <Badge variant="secondary" className="bg-background/80">
-            Frozen
-          </Badge>
+          <span className="inline-flex items-center gap-1 rounded-md border border-border bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+            <Snowflake className="size-2.5" />
+            frozen
+          </span>
         ) : null}
       </div>
       {data.policySummary ? (
-        <div className="mt-1 text-[11px] text-cyan-900/80 dark:text-cyan-100/80">
+        <div className="mt-1.5 text-[10.5px] text-cyan-700/80 dark:text-cyan-300/80">
           {data.policySummary}
         </div>
       ) : null}
       {data.freezeReason ? (
-        <div className="mt-1 line-clamp-1 text-[11px] text-muted-foreground">
+        <div className="mt-1 line-clamp-1 text-[10.5px] text-muted-foreground">
           {data.freezeReason}
         </div>
       ) : null}
@@ -395,7 +459,7 @@ function ReadabilityEdge({
       <EdgeLabelRenderer>
         <div
           className={cn(
-            'nodrag nopan pointer-events-auto absolute rounded-md border px-2 py-1 text-[10px] leading-4 shadow-sm backdrop-blur-sm',
+            'nodrag nopan pointer-events-auto absolute rounded-md border px-2 py-1 font-mono text-[10px] leading-4 shadow-sm backdrop-blur-sm',
             edgeKindClassNames[edgeData.kind],
             edgeData.recent && 'orrery-edge-label-recent'
           )}
@@ -404,12 +468,12 @@ function ReadabilityEdge({
           }}
           title={[edgeData.summary, reason].filter(Boolean).join('\n')}
         >
-          <div className="flex items-center gap-1.5 whitespace-nowrap font-medium uppercase tracking-normal">
-            <span className="tabular-nums">#{edgeData.sequence}</span>
+          <div className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
+            <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>
             <span>{edgeKindLabels[edgeData.kind]}</span>
-            {edgeData.verdict ? <span>{edgeData.verdict}</span> : null}
+            {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
             {edgeData.issueCount !== undefined ? (
-              <span>{edgeData.issueCount} issues</span>
+              <span className="tabular-nums">· {edgeData.issueCount} iss</span>
             ) : null}
           </div>
         </div>
@@ -603,7 +667,7 @@ function activityEvents(state: GraphState): ActivityEvent[] {
     id: `edge:${edge.edgeId}`,
     kind: edge.kind,
     ts: edge.ts,
-    title: `${sessionLabel(state, edge.source)} -> ${sessionLabel(
+    title: `${sessionLabel(state, edge.source)} → ${sessionLabel(
       state,
       edge.target
     )}`,
@@ -642,9 +706,19 @@ function sameStringList(left: string[], right: string[]) {
   )
 }
 
-function ChatMessage({ message }: { message: AgentMessage }) {
+function ChatMessage({
+  message,
+  turn,
+  agent,
+}: {
+  message: AgentMessage
+  turn?: ToolTurn
+  agent?: string
+}) {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
+  const hasFeed = !isUser && Boolean(turn && turn.toolRuns.length > 0)
+  const hasText = message.content.trim().length > 0
 
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
@@ -655,7 +729,7 @@ function ChatMessage({ message }: { message: AgentMessage }) {
           </span>
         ) : (
           <>
-            <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_#5fd394]" />
+            <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_var(--term-green)]" />
             <span className="text-[10px] uppercase tracking-[0.14em] text-term-emerald">
               claude
             </span>
@@ -671,15 +745,27 @@ function ChatMessage({ message }: { message: AgentMessage }) {
       {isUser ? (
         <div className="flex gap-2 text-[13px] leading-6">
           <span className="shrink-0 text-lime-hi">❯</span>
-          <span className="whitespace-pre-wrap break-words text-[#cfd6dd]">
+          <span className="whitespace-pre-wrap break-words text-term-name">
             {message.content}
           </span>
         </div>
       ) : (
-        <div className="whitespace-pre-wrap break-words text-[13px] leading-6 text-term-name">
-          {message.content}
-          {isStreaming ? <span className="orrery-caret ml-1" /> : null}
-        </div>
+        <>
+          {hasFeed && turn ? (
+            <ToolRunFeed turn={turn} agent={agent} />
+          ) : null}
+          {hasText || (isStreaming && !hasFeed) ? (
+            <div
+              className={cn(
+                'whitespace-pre-wrap break-words text-[13px] leading-6 text-term-name',
+                hasFeed && 'mt-2'
+              )}
+            >
+              {message.content}
+              {isStreaming ? <span className="orrery-caret ml-1" /> : null}
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   )
@@ -711,33 +797,6 @@ function OrreryMark({ className }: { className?: string }) {
         </g>
       </svg>
     </span>
-  )
-}
-
-function TabHeading({
-  icon: Icon,
-  title,
-  hint,
-  action,
-}: {
-  icon: LucideIcon
-  title: string
-  hint?: string
-  action?: ReactNode
-}) {
-  return (
-    <div className="flex min-w-0 items-center justify-between gap-2">
-      <div className="flex min-w-0 items-center gap-2">
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-        <h3 className="truncate text-sm font-semibold tracking-tight">{title}</h3>
-        {hint ? (
-          <span className="shrink-0 text-[11px] font-normal text-muted-foreground">
-            {hint}
-          </span>
-        ) : null}
-      </div>
-      {action ?? null}
-    </div>
   )
 }
 
@@ -812,6 +871,31 @@ function App() {
     () => activityEvents(runtimeState),
     [runtimeState]
   )
+  // Parse tool runs from the selected session's stream-json chunks and zip them
+  // to assistant messages. Aligned from the END so chunk truncation (oldest
+  // turns dropped) keeps recent turns matched to their messages.
+  const transcript = useMemo(() => {
+    const messages = selectedSession?.messages ?? []
+    const turns = selectedSession ? parseToolTurns(selectedSession.chunks) : []
+    const assistantPositions: number[] = []
+    messages.forEach((item, index) => {
+      if (item.role === 'assistant') {
+        assistantPositions.push(index)
+      }
+    })
+    const offset = assistantPositions.length - turns.length
+    const turnByIndex = new Map<number, ToolTurn>()
+    turns.forEach((turn, turnIndex) => {
+      const position = assistantPositions[offset + turnIndex]
+      if (position !== undefined) {
+        turnByIndex.set(position, turn)
+      }
+    })
+    return messages.map((message, index) => ({
+      message,
+      turn: turnByIndex.get(index),
+    }))
+  }, [selectedSession])
   const clusters = Object.values(runtimeState.clusters).sort((left, right) =>
     left.label.localeCompare(right.label)
   )
@@ -1294,68 +1378,57 @@ function App() {
           </div>
 
           {runtimeError ? (
-            <div className="app-region-no-drag mx-3 mb-2 shrink-0 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs leading-5 text-destructive">
-              {runtimeError}
+            <div className="app-region-no-drag mx-3 mb-2 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 font-mono text-[11.5px] leading-5 text-destructive">
+              <span className="shrink-0">✗</span>
+              <span className="min-w-0 break-words">{runtimeError}</span>
             </div>
           ) : null}
 
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTab === 'orchestrate' ? (
-              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4">
+              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4">
                 <section className="space-y-2.5">
-                  <TabHeading icon={CirclePlay} title="New session" />
+                  <CmdLine command="orrery session new" flag="--prompt" />
                   <textarea
                     id="new-session-prompt"
-                    className="min-h-20 max-h-40 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                    className={cn(termTextareaCls, 'min-h-20 max-h-40')}
                     value={newPrompt}
                     onChange={(event) => setNewPrompt(event.target.value)}
                   />
                   <Button
-                    className="w-full justify-center"
+                    className={termPrimaryBtnCls}
                     disabled={
                       !isElectron || isCreating || newPrompt.trim().length === 0
                     }
                     onClick={createSession}
                   >
                     <CirclePlay className="size-4" />
-                    Start Claude Session
+                    {isCreating ? 'Starting…' : 'Start Claude session'}
                   </Button>
                 </section>
 
-                <Separator />
-
                 <section className="space-y-3">
-                  <TabHeading
-                    icon={Orbit}
-                    title="Cluster"
-                    hint={`${selectedManagedNodeIds.length} ${
-                      selectedManagedNodeIds.length === 1 ? 'node' : 'nodes'
-                    } selected`}
-                    action={
-                      <Badge variant="outline" className="shrink-0">
-                        {clusters.length}{' '}
-                        {clusters.length === 1 ? 'cluster' : 'clusters'}
-                      </Badge>
-                    }
+                  <CmdLine
+                    command="orrery cluster"
+                    flag="--loop"
+                    trailing={`${selectedManagedNodeIds.length} sel · ${clusters.length} ${
+                      clusters.length === 1 ? 'cluster' : 'clusters'
+                    }`}
                   />
 
                   <div className="grid grid-cols-[minmax(0,1fr)_84px] gap-2">
-                    <label className="min-w-0 space-y-1">
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                        Cluster
-                      </span>
+                    <label className="min-w-0 space-y-1.5">
+                      <TermLabel>cluster</TermLabel>
                       <input
-                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                        className={termInputCls}
                         value={clusterLabel}
                         onChange={(event) => setClusterLabel(event.target.value)}
                       />
                     </label>
-                    <label className="space-y-1">
-                      <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                        Max iter
-                      </span>
+                    <label className="space-y-1.5">
+                      <TermLabel>max iter</TermLabel>
                       <input
-                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm outline-none transition focus:ring-2 focus:ring-ring"
+                        className={cn(termInputCls, 'tabular-nums')}
                         inputMode="numeric"
                         min={1}
                         max={100}
@@ -1367,13 +1440,13 @@ function App() {
                   </div>
 
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge variant="secondary">until verdict=clean</Badge>
-                    <Badge variant="secondary">onStop freeze</Badge>
+                    <TermChip tone="lime">until verdict=clean</TermChip>
+                    <TermChip>onStop freeze</TermChip>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
                     <Button
-                      className="min-w-0 justify-start"
+                      className={termActionBtnCls}
                       variant="outline"
                       disabled={
                         !isElectron ||
@@ -1383,10 +1456,10 @@ function App() {
                       onClick={upsertManagedCluster}
                     >
                       <GitBranch className="size-4 shrink-0" />
-                      <span className="truncate">Save Cluster</span>
+                      <span className="truncate">Save cluster</span>
                     </Button>
                     <Button
-                      className="min-w-0 justify-start"
+                      className={termActionBtnCls}
                       variant="outline"
                       disabled={
                         !isElectron || isUpdatingCluster || !activeClusterId
@@ -1394,21 +1467,24 @@ function App() {
                       onClick={saveLoopPolicy}
                     >
                       <ClipboardCheck className="size-4 shrink-0" />
-                      <span className="truncate">Save Policy</span>
+                      <span className="truncate">Save policy</span>
                     </Button>
                   </div>
                 </section>
 
                 <section className="space-y-2.5">
-                  <TabHeading icon={Bot} title="Master" />
+                  <CmdLine command="orrery master" flag="--cluster" />
                   <textarea
-                    className="min-h-16 max-h-28 w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-xs leading-5 outline-none transition focus:ring-2 focus:ring-ring"
+                    className={cn(
+                      termTextareaCls,
+                      'min-h-16 max-h-28 text-xs leading-5'
+                    )}
                     value={masterPrompt}
                     onChange={(event) => setMasterPrompt(event.target.value)}
                   />
                   <div className="grid grid-cols-2 gap-2">
                     <Button
-                      className="min-w-0 justify-start"
+                      className={termActionBtnCls}
                       disabled={
                         !isElectron || isCreatingMaster || !activeClusterId
                       }
@@ -1417,12 +1493,12 @@ function App() {
                       <Bot className="size-4 shrink-0" />
                       <span className="truncate">
                         {activeCluster?.masterSessionId
-                          ? 'Open Master'
-                          : 'Start Master'}
+                          ? 'Open master'
+                          : 'Start master'}
                       </span>
                     </Button>
                     <Button
-                      className="min-w-0 justify-start"
+                      className={termActionBtnCls}
                       variant="outline"
                       disabled={
                         !isElectron ||
@@ -1434,107 +1510,164 @@ function App() {
                       onClick={assignSelectedAsMaster}
                     >
                       <MessageSquarePlus className="size-4 shrink-0" />
-                      <span className="truncate">Assign Master</span>
+                      <span className="truncate">Assign master</span>
                     </Button>
                   </div>
                 </section>
 
                 <section className="space-y-2.5">
-                  <TabHeading
-                    icon={Activity}
-                    title="Loop"
-                    action={
-                      <div className="flex flex-wrap items-center justify-end gap-1.5">
-                        <Badge
-                          variant={
-                            activeLoopStatus === 'running'
-                              ? 'default'
-                              : 'secondary'
-                          }
-                        >
-                          {activeLoopStatus}
-                        </Badge>
-                        <Badge variant="outline">
-                          iter {activeLoopIterations}/{activeLoopMaxIterations}
-                        </Badge>
-                        {activeCluster?.frozen ? (
-                          <Badge variant="secondary">
-                            <Snowflake className="size-3" />
-                            frozen
-                          </Badge>
-                        ) : null}
-                      </div>
+                  <CmdLine
+                    command="orrery loop"
+                    flag="--run"
+                    trailing={
+                      <span
+                        className={cn(
+                          statePillBase,
+                          activeLoopStatus === 'running'
+                            ? 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+                            : 'border-border bg-muted/50 text-muted-foreground'
+                        )}
+                      >
+                        {activeLoopStatus}
+                      </span>
                     }
                   />
-                  <div className="space-y-2.5 rounded-lg border border-border bg-background/60 p-3">
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button
-                        className="min-w-0 justify-start"
-                        disabled={!isElectron || isStartingLoop || !canStartLoop}
-                        onClick={startMasterLoop}
-                      >
-                        <CirclePlay className="size-4 shrink-0" />
-                        <span className="truncate">Run Loop</span>
-                      </Button>
-                      <Button
-                        className="min-w-0 justify-start"
-                        variant="outline"
-                        disabled={!isElectron || isStoppingLoop || !canStopLoop}
-                        onClick={stopMasterLoop}
-                      >
-                        <Square className="size-4 shrink-0" />
-                        <span className="truncate">Stop Loop</span>
-                      </Button>
+                  <div className="rounded-lg border border-ink-line bg-ink p-3 font-mono">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] uppercase tracking-[0.12em] text-term-dim2">
+                        iterations
+                      </span>
+                      <span className="tabular-nums text-term-cyan">
+                        {activeLoopIterations}/{activeLoopMaxIterations}
+                      </span>
+                      {activeCluster?.frozen ? (
+                        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-term-amber">
+                          <Snowflake className="size-3" />
+                          frozen
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="space-y-1 text-[11px] leading-4 text-muted-foreground">
-                      <div className="truncate">last: {activeLoopLastEvent}</div>
+                    <div className="mt-2.5 space-y-1 text-[11.5px]">
+                      <div className="flex gap-2">
+                        <span className="text-term-faint">
+                          {activeLoopReason || activeCluster?.freezeReason
+                            ? '├'
+                            : '└'}
+                        </span>
+                        <span className="w-14 shrink-0 text-term-dim2">last</span>
+                        <span className="truncate text-term-dim">
+                          {activeLoopLastEvent}
+                        </span>
+                      </div>
                       {activeLoopReason ? (
-                        <div className="line-clamp-2 break-words">
-                          reason: {activeLoopReason}
+                        <div className="flex gap-2">
+                          <span className="text-term-faint">
+                            {activeCluster?.freezeReason ? '├' : '└'}
+                          </span>
+                          <span className="w-14 shrink-0 text-term-dim2">
+                            reason
+                          </span>
+                          <span className="line-clamp-2 break-words text-term-dim">
+                            {activeLoopReason}
+                          </span>
                         </div>
                       ) : null}
                       {activeCluster?.freezeReason ? (
-                        <div className="line-clamp-2 break-words">
-                          freeze: {activeCluster.freezeReason}
+                        <div className="flex gap-2">
+                          <span className="text-term-faint">└</span>
+                          <span className="w-14 shrink-0 text-term-dim2">
+                            freeze
+                          </span>
+                          <span className="line-clamp-2 break-words text-term-dim">
+                            {activeCluster.freezeReason}
+                          </span>
                         </div>
                       ) : null}
                     </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      className={termActionBtnCls}
+                      disabled={!isElectron || isStartingLoop || !canStartLoop}
+                      onClick={startMasterLoop}
+                    >
+                      <CirclePlay className="size-4 shrink-0" />
+                      <span className="truncate">Run loop</span>
+                    </Button>
+                    <Button
+                      className={termActionBtnCls}
+                      variant="outline"
+                      disabled={!isElectron || isStoppingLoop || !canStopLoop}
+                      onClick={stopMasterLoop}
+                    >
+                      <Square className="size-4 shrink-0" />
+                      <span className="truncate">Stop loop</span>
+                    </Button>
                   </div>
                 </section>
 
                 {clusters.length ? (
                   <section className="space-y-2">
-                    <TabHeading icon={GitBranch} title="Clusters" />
+                    <CmdLine
+                      command="orrery clusters"
+                      flag="--list"
+                      trailing={clusters.length}
+                    />
                     <div className="space-y-1.5">
-                      {clusters.map((cluster) => (
-                        <button
-                          key={cluster.clusterId}
-                          type="button"
-                          className={cn(
-                            'w-full rounded-md border border-border bg-background/60 px-2.5 py-2 text-left transition hover:bg-accent',
-                            activeClusterId === cluster.clusterId &&
-                              'border-primary/70 bg-primary/5'
-                          )}
-                          onClick={() => {
-                            setActiveClusterId(cluster.clusterId)
-                            if (cluster.masterSessionId) {
-                              setSelectedSessionId(cluster.masterSessionId)
-                            }
-                          }}
-                        >
-                          <div className="flex min-w-0 items-center justify-between gap-2">
-                            <span className="truncate text-xs font-medium">
-                              {cluster.label}
-                            </span>
-                            <Badge variant="secondary" className="shrink-0">
-                              {cluster.nodeIds.length}
-                            </Badge>
-                          </div>
-                          <div className="mt-1 truncate text-[11px] text-muted-foreground">
-                            {loopPolicySummary(cluster) ?? 'No policy'}
-                          </div>
-                        </button>
-                      ))}
+                      {clusters.map((cluster) => {
+                        const isActive = activeClusterId === cluster.clusterId
+                        return (
+                          <button
+                            key={cluster.clusterId}
+                            type="button"
+                            className={cn(
+                              'w-full rounded-lg border bg-ink px-3 py-2 text-left font-mono transition',
+                              isActive
+                                ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
+                                : 'border-ink-line hover:border-foreground/20'
+                            )}
+                            onClick={() => {
+                              setActiveClusterId(cluster.clusterId)
+                              if (cluster.masterSessionId) {
+                                setSelectedSessionId(cluster.masterSessionId)
+                              }
+                            }}
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <span
+                                className={cn(
+                                  'w-3.5 shrink-0 text-center text-[12px] leading-none',
+                                  isActive ? 'text-lime-hi' : 'text-term-dim2'
+                                )}
+                              >
+                                {isActive ? '●' : '○'}
+                              </span>
+                              <span
+                                className={cn(
+                                  'flex-1 truncate text-[13px] font-medium',
+                                  isActive ? 'text-lime-hi' : 'text-lime'
+                                )}
+                              >
+                                {cluster.label}
+                              </span>
+                              <span
+                                className={cn(
+                                  statePillBase,
+                                  'border-ink-line bg-foreground/[0.04] tabular-nums text-term-dim'
+                                )}
+                              >
+                                {cluster.nodeIds.length}
+                              </span>
+                            </div>
+                            <div className="mt-1.5 flex gap-2 text-[11px]">
+                              <span className="text-term-faint">└</span>
+                              <span className="truncate text-term-dim2">
+                                {loopPolicySummary(cluster) ?? 'no policy'}
+                              </span>
+                            </div>
+                          </button>
+                        )
+                      })}
                     </div>
                   </section>
                 ) : null}
@@ -1588,7 +1721,7 @@ function App() {
                           'relative w-full rounded-lg border bg-ink p-3 pl-3.5 text-left font-mono transition',
                           isSel
                             ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
-                            : 'border-ink-line hover:border-white/20'
+                            : 'border-ink-line hover:border-foreground/20'
                         )}
                         onClick={() => {
                           setSelectedSessionId(session.sessionId)
@@ -1732,15 +1865,15 @@ function App() {
                       {selectedReports.slice(0, 3).map((report) => (
                         <div
                           key={report.id}
-                          className="rounded-md border border-border bg-background/70 p-2"
+                          className="rounded-lg border border-border bg-muted/40 p-2.5 font-mono"
                         >
-                          <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide">
-                            <ClipboardCheck className="size-3 shrink-0" />
+                          <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                            <ClipboardCheck className="size-3 shrink-0 text-accent-ink" />
                             <span className="truncate">
                               {reportTitle(report)}
                             </span>
                           </div>
-                          <p className="whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground">
+                          <p className="whitespace-pre-wrap break-words text-[11.5px] leading-5 text-muted-foreground">
                             {reportBody(report)}
                           </p>
                         </div>
@@ -1759,8 +1892,13 @@ function App() {
                     </span>
                   </div>
                   {selectedSession?.messages.length ? (
-                    selectedSession.messages.map((item) => (
-                      <ChatMessage key={item.id} message={item} />
+                    transcript.map(({ message, turn }) => (
+                      <ChatMessage
+                        key={message.id}
+                        message={message}
+                        turn={turn}
+                        agent={selectedSession.agent}
+                      />
                     ))
                   ) : (
                     <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">
@@ -1861,15 +1999,15 @@ function App() {
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col bg-background">
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 font-mono">
             <div className="flex min-w-0 items-center gap-3">
-              <Badge variant="outline" className="gap-1.5">
-                <Activity className="size-3" />
+              <span className="flex shrink-0 items-center gap-2 text-[12px] text-foreground">
+                <Activity className="size-4 text-accent-ink" />
                 Runtime graph
-              </Badge>
-              <p className="truncate text-sm text-muted-foreground">
-                nodeId === sessionId
-              </p>
+              </span>
+              <span className="truncate text-[12px] text-muted-foreground">
+                nodeId <span className="text-accent-ink">===</span> sessionId
+              </span>
             </div>
 
             <Tooltip>
@@ -1901,39 +2039,36 @@ function App() {
 
           <div className="relative min-h-0 flex-1">
             <div className="pointer-events-none absolute bottom-4 left-16 z-10 w-[340px] max-w-[calc(100%-5rem)]">
-              <div className="pointer-events-auto rounded-lg border border-border bg-background/92 p-3 shadow-sm backdrop-blur">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <GitBranch className="size-4 shrink-0 text-muted-foreground" />
-                    <h2 className="truncate text-xs font-medium uppercase tracking-normal text-muted-foreground">
-                      Graph events
-                    </h2>
-                  </div>
-                  <Badge variant="secondary">{graphActivity.length}</Badge>
+              <div className="pointer-events-auto rounded-xl border border-border bg-background/92 font-mono shadow-sm backdrop-blur">
+                <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2.5">
+                  <Activity className="size-3.5 shrink-0 text-accent-ink" />
+                  <h2 className="truncate text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    Graph events
+                  </h2>
+                  <span className="ml-auto tabular-nums text-[11px] text-muted-foreground">
+                    {graphActivity.length}
+                  </span>
                 </div>
 
                 {graphActivity.length === 0 ? (
-                  <p className="text-xs leading-5 text-muted-foreground">
+                  <p className="px-3 py-3 text-[11.5px] leading-5 text-muted-foreground">
                     No graph events yet.
                   </p>
                 ) : (
-                  <ol className="max-h-[240px] space-y-2 overflow-y-auto pr-1">
+                  <ol className="max-h-[240px] space-y-2.5 overflow-y-auto p-3">
                     {graphActivity.map((event, index) => (
                       <li
                         key={event.id}
-                        className="grid grid-cols-[auto_1fr] gap-2 text-xs"
+                        className="grid grid-cols-[auto_1fr] gap-2.5 text-xs"
                       >
-                        <Badge
-                          variant="outline"
-                          className="h-5 min-w-8 justify-center px-1.5 text-[10px] tabular-nums"
-                        >
-                          {index + 1}
-                        </Badge>
+                        <span className="pt-0.5 text-[11px] tabular-nums text-term-faint">
+                          {String(index + 1).padStart(2, '0')}
+                        </span>
                         <div className="min-w-0">
                           <div className="flex min-w-0 items-center gap-1.5">
                             <span
                               className={cn(
-                                'rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-normal',
+                                'rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em]',
                                 event.kind === 'report'
                                   ? edgeKindClassNames.report
                                   : edgeKindClassNames[event.kind]
@@ -1941,12 +2076,12 @@ function App() {
                             >
                               {activityTitle(event.kind)}
                             </span>
-                            <span className="truncate font-medium">
+                            <span className="truncate font-medium text-foreground/90">
                               {event.title}
                             </span>
                           </div>
                           {event.detail ? (
-                            <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                            <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
                               {event.detail}
                             </p>
                           ) : null}
