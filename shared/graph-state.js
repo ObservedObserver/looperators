@@ -75,6 +75,47 @@ export const graphStateSchema = {
       output: { ok: 'boolean' },
     },
   },
+  publicRuntimeApi: {
+    createSession: {
+      input: {
+        base: 'CreateRuntimeSessionInput',
+        sourceSessionId:
+          'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
+        linkLabel:
+          'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+      },
+    },
+    archiveSession: {
+      input: {
+        sessionId: 'SessionId',
+        archived: 'boolean?; true hides from default history, false restores',
+      },
+    },
+    freeze: {
+      input: {
+        target: 'SessionId | ClusterId',
+        reason: 'string?',
+        source: 'SessionId?; optional master/control session for visible freeze edge',
+        masterReason: 'string?; explanation shown on freeze edges',
+      },
+    },
+    createMasterForCluster: {
+      input: {
+        clusterId: 'ClusterId',
+        prompt: 'string?',
+        cwd: 'string?; project cwd selected by the UI for the master session',
+        agent: '"claude-code" | "codex"?',
+        providerKind: 'ProviderKind?',
+        label: 'string?',
+        loopPolicy: 'LoopPolicy?',
+      },
+    },
+    updateNodePositions: {
+      input: {
+        positions: '{ nodeId: NodeId, position: { x: number, y: number } }[]',
+      },
+    },
+  },
   runtimeEvents: [
     'runtime.state',
     'session.created',
@@ -100,6 +141,7 @@ export const graphStateSchema = {
       providerKind: '"legacy-claude-cli" | "claude-code" | "codex"',
       providerInstanceId: 'string',
       providerSessionId: 'string?',
+      archived: 'boolean?',
       runtimeEvents: 'ProviderRuntimeEvent[]',
       runtimeActivities: 'RuntimeActivity[]',
       nativeEvents: 'NativeProviderEvent[]',

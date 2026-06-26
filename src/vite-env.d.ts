@@ -2,6 +2,7 @@
 
 import type {
   AnswerUserInputInput,
+  ArchiveRuntimeSessionInput,
   AssignMasterToClusterInput,
   CreateMasterForClusterInput,
   CreateRuntimeSessionInput,
@@ -15,6 +16,7 @@ import type {
   SessionId,
   StartMasterLoopInput,
   StopMasterLoopInput,
+  UpdateNodePositionsInput,
   UpsertClusterInput,
 } from './shared/graph-state'
 
@@ -22,6 +24,9 @@ declare global {
   interface Window {
     orrery?: {
       platform: string
+      workspace?: {
+        defaultCwd?: string
+      }
       runtime: {
         getState: () => Promise<GraphState>
         createSession: (
@@ -29,6 +34,9 @@ declare global {
         ) => Promise<CreateRuntimeSessionResult>
         resumeSession: (
           input: ResumeRuntimeSessionInput
+        ) => Promise<{ ok: boolean; state: GraphState }>
+        archiveSession: (
+          input: ArchiveRuntimeSessionInput
         ) => Promise<{ ok: boolean; state: GraphState }>
         killSession: (
           sessionId: SessionId
@@ -50,6 +58,9 @@ declare global {
         ) => Promise<{ state: GraphState }>
         setClusterLoopPolicy: (
           input: SetClusterLoopPolicyInput
+        ) => Promise<{ state: GraphState }>
+        updateNodePositions: (
+          input: UpdateNodePositionsInput
         ) => Promise<{ state: GraphState }>
         startMasterLoop: (
           input: StartMasterLoopInput

@@ -2,6 +2,7 @@ import electron from 'electron'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import {
   createEmptyGraphState,
@@ -60,7 +61,44 @@ function safeCwd(cwd) {
     return process.cwd()
   }
 
-  return path.resolve(cwd)
+  const trimmed = cwd.trim()
+  if (trimmed === '~') {
+    return os.homedir()
+  }
+  if (trimmed.startsWith('~/')) {
+    return path.resolve(os.homedir(), trimmed.slice(2))
+  }
+
+  return path.resolve(trimmed)
+}
+
+function cwdStat(cwd) {
+  try {
+    return fs.statSync(cwd)
+  } catch {
+    return undefined
+  }
+}
+
+function isValidCwd(cwd) {
+  return cwdStat(cwd)?.isDirectory() === true
+}
+
+function validateRunnableCwd(cwd) {
+  const resolved = safeCwd(cwd)
+  const stat = cwdStat(resolved)
+  if (!stat) {
+    throw new Error(
+      `Project folder not found: ${resolved}. Choose an existing cwd before starting the chat.`
+    )
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `Project cwd is not a folder: ${resolved}. Choose an existing project directory.`
+    )
+  }
+
+  return resolved
 }
 
 function truncateChunks(chunks) {
@@ -239,13 +277,21 @@ export class RuntimeSessionManager {
     if (cluster && this.#state.clusters[cluster]?.frozen) {
       throw new Error(`Frozen cluster cannot create new sessions: ${cluster}`)
     }
+    const sourceSessionId =
+      typeof input.sourceSessionId === 'string' &&
+      input.sourceSessionId.trim().length > 0
+        ? input.sourceSessionId.trim()
+        : undefined
+    if (sourceSessionId && !this.#state.sessions[sourceSessionId]) {
+      throw new Error(`Unknown linked chat source session: ${sourceSessionId}`)
+    }
 
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
         : defaultPrompt
     const initialContent = messageContent(prompt, input.context)
-    const cwd = safeCwd(input.cwd)
+    const cwd = validateRunnableCwd(input.cwd)
     const provider = providerConfig(input)
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
@@ -310,6 +356,20 @@ export class RuntimeSessionManager {
         this.#addNodeToCluster(sessionId, cluster)
       }
     }
+    if (sourceSessionId) {
+      const linkLabel =
+        typeof input.linkLabel === 'string' && input.linkLabel.trim().length > 0
+          ? input.linkLabel.trim()
+          : 'linked chat'
+      this.#addEdge({
+        source: sourceSessionId,
+        target: sessionId,
+        kind: 'create-session',
+        envelope: this.#createEnvelope(sourceSessionId),
+        label: linkLabel,
+        masterReason: this.#masterReasonFromInput(sourceSessionId, input),
+      })
+    }
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
@@ -339,6 +399,14 @@ export class RuntimeSessionManager {
 
     if (this.#isSessionFrozen(sessionId)) {
       throw new Error(`Frozen session cannot be resumed: ${sessionId}`)
+    }
+
+    try {
+      session.cwd = validateRunnableCwd(session.cwd)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#failSession(sessionId, message)
+      throw error
     }
 
     const message =
@@ -377,6 +445,25 @@ export class RuntimeSessionManager {
       userMessageId: userMessage.id,
     })
 
+    return { ok: true, state: this.getState() }
+  }
+
+  archiveSession(input = {}) {
+    const sessionId =
+      typeof input === 'string'
+        ? input
+        : typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+          ? input.sessionId.trim()
+          : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    const archived = typeof input === 'object' && input.archived === false ? false : true
+    this.#state.sessions[sessionId].archived = archived
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { ok: true, state: this.getState() }
   }
 
@@ -610,8 +697,10 @@ export class RuntimeSessionManager {
         : `${cluster.label} Master`
 
     const result = await this.createSession({
-      agent: 'claude-code',
+      agent: input.agent === 'codex' ? 'codex' : 'claude-code',
+      providerKind: input.providerKind ?? 'claude-code',
       prompt,
+      cwd: input.cwd,
       label,
       cluster: clusterId,
       role: 'master',
@@ -659,6 +748,46 @@ export class RuntimeSessionManager {
     )
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { state: this.getState() }
+  }
+
+  updateNodePositions(input = {}) {
+    const positions = Array.isArray(input.positions) ? input.positions : []
+    let changed = false
+
+    for (const item of positions) {
+      if (!isObject(item) || !isObject(item.position)) {
+        continue
+      }
+
+      const nodeId =
+        typeof item.nodeId === 'string' && item.nodeId.trim().length > 0
+          ? item.nodeId.trim()
+          : undefined
+      const x = item.position.x
+      const y = item.position.y
+      if (!nodeId || !Number.isFinite(x) || !Number.isFinite(y)) {
+        continue
+      }
+
+      const node = this.#state.nodes.find((candidate) => candidate.nodeId === nodeId)
+      if (!node) {
+        continue
+      }
+
+      if (node.position.x === x && node.position.y === y) {
+        continue
+      }
+
+      node.position = { x, y }
+      changed = true
+    }
+
+    if (changed) {
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    }
+
     return { state: this.getState() }
   }
 
@@ -1443,7 +1572,7 @@ export class RuntimeSessionManager {
 
   #isSessionFrozen(sessionId) {
     const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-    const clusterId = this.#managedClusterId(sessionId) ?? this.#masterClusterId(sessionId)
+    const clusterId = this.#managedClusterId(sessionId)
     return node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
   }
 
@@ -2361,6 +2490,7 @@ export class RuntimeSessionManager {
     }
 
     const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
+    const sourceSession = this.#state.sessions[source]
     const cluster =
       typeof input.cluster === 'string' && input.cluster.trim().length > 0
         ? input.cluster.trim()
@@ -2369,6 +2499,7 @@ export class RuntimeSessionManager {
     const result = await this.createSession({
       agent: 'claude-code',
       prompt,
+      cwd: sourceSession?.cwd,
       context: input.context,
       cluster,
       label: input.label,
@@ -2815,7 +2946,31 @@ export class RuntimeSessionManager {
       state.nodes.push(this.#nodeFromSession(session))
     }
 
+    state.diagnostics = this.#activePersistedDiagnostics(state, source.diagnostics)
+
     return this.#withDiagnostics(state, diagnostics)
+  }
+
+  #activePersistedDiagnostics(state, diagnostics) {
+    if (!Array.isArray(diagnostics)) {
+      return undefined
+    }
+
+    return diagnostics
+      .filter((item) => isObject(item))
+      .filter((item) => {
+        if (item.type !== 'storage.cwd_invalid') {
+          return true
+        }
+
+        const sessionId =
+          isObject(item.details) && typeof item.details.sessionId === 'string'
+            ? item.details.sessionId
+            : undefined
+        const session = sessionId ? state.sessions[sessionId] : undefined
+        return !session || !isValidCwd(session.cwd)
+      })
+      .slice(-50)
   }
 
   #withDiagnostics(state, diagnostics) {
@@ -2850,6 +3005,19 @@ export class RuntimeSessionManager {
         : backend === 'claude-agent-sdk'
           ? 'claude-code'
           : 'legacy-claude-cli'
+    const cwd = safeCwd(value.cwd)
+    if (!isValidCwd(cwd)) {
+      diagnostics.push(
+        diagnostic(
+          'storage.cwd_invalid',
+          'A restored session points at a project folder that is no longer available.',
+          { sessionId, cwd }
+        )
+      )
+      value.error =
+        value.error ??
+        `Project folder is no longer available: ${cwd}. Restore the folder or start a linked chat with a valid cwd.`
+    }
     const session = {
       ...value,
       sessionId,
@@ -2873,7 +3041,7 @@ export class RuntimeSessionManager {
       agent: nonEmptyString(value.agent) ? value.agent : 'claude-code',
       label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
-      cwd: safeCwd(value.cwd),
+      cwd,
       role: value.role === 'master' ? 'master' : 'worker',
       status,
       createdAt: nonEmptyString(value.createdAt) ? value.createdAt : ts,
@@ -2910,6 +3078,7 @@ export class RuntimeSessionManager {
       runtimePlans: Array.isArray(value.runtimePlans)
         ? value.runtimePlans.filter(isObject)
         : [],
+      archived: value.archived === true,
     }
 
     if (value.nodeId !== sessionId) {
