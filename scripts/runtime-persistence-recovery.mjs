@@ -112,6 +112,89 @@ try {
   assert.ok(resumedState.sessions[sessionId].messages.length >= 4)
   assertIdentity(resumedState)
 
+  const cwdStorageFile = path.join(tempRoot, 'orrery-cwd-propagation-state.json')
+  const selectedProjectCwd = path.join(tempRoot, 'selected-project')
+  fs.mkdirSync(selectedProjectCwd)
+  const cwdRuntime = manager({ storageFile: cwdStorageFile })
+  const cwdWorker = await cwdRuntime.createSession({
+    prompt: 'cwd propagation worker',
+    label: 'Cwd Worker',
+    cwd: selectedProjectCwd,
+  })
+  await waitFor(
+    'cwd worker to finish',
+    () => cwdRuntime.getState().sessions[cwdWorker.sessionId]?.status === 'idle'
+  )
+  const policy = {
+    until: { whenReport: { verdict: 'clean' } },
+    onStop: 'freeze',
+    maxIterations: 2,
+  }
+  const cwdCluster = cwdRuntime.upsertCluster({
+    label: 'Cwd Cluster',
+    nodeIds: [cwdWorker.sessionId],
+    loopPolicy: policy,
+  })
+  const cwdMaster = await cwdRuntime.createMasterForCluster({
+    clusterId: cwdCluster.clusterId,
+    prompt: 'cwd propagation master',
+    label: 'Cwd Master',
+    cwd: selectedProjectCwd,
+    loopPolicy: policy,
+  })
+  await waitFor(
+    'cwd master to finish',
+    () => cwdRuntime.getState().sessions[cwdMaster.sessionId]?.status === 'idle'
+  )
+  assert.equal(
+    cwdRuntime.getState().sessions[cwdMaster.sessionId].cwd,
+    selectedProjectCwd,
+    'master sessions should use the selected project cwd'
+  )
+  const cwdChild = await cwdRuntime.handleMembraneRequest({
+    tool: 'create_session',
+    source: cwdMaster.sessionId,
+    input: {
+      prompt: 'cwd propagation child',
+      label: 'Cwd Child',
+    },
+  })
+  await waitFor(
+    'cwd child to finish',
+    () => cwdRuntime.getState().sessions[cwdChild.sessionId]?.status === 'idle'
+  )
+  assert.equal(
+    cwdRuntime.getState().sessions[cwdChild.sessionId].cwd,
+    selectedProjectCwd,
+    'membrane-created sessions should inherit source project cwd'
+  )
+
+  const staleCwdStorageFile = path.join(tempRoot, 'orrery-stale-cwd-state.json')
+  const staleProjectCwd = path.join(tempRoot, 'stale-project')
+  fs.mkdirSync(staleProjectCwd)
+  const staleCwdRuntime = manager({ storageFile: staleCwdStorageFile })
+  const staleCwdSession = await staleCwdRuntime.createSession({
+    prompt: 'stale cwd diagnostic',
+    label: 'Stale Cwd',
+    cwd: staleProjectCwd,
+  })
+  await waitFor(
+    'stale cwd session to finish',
+    () => staleCwdRuntime.getState().sessions[staleCwdSession.sessionId]?.status === 'idle'
+  )
+  fs.rmSync(staleProjectCwd, { recursive: true, force: true })
+  const invalidCwdRuntime = manager({ storageFile: staleCwdStorageFile })
+  assert.ok(
+    diagnosticsOf(invalidCwdRuntime.getState()).includes('storage.cwd_invalid'),
+    'missing restored project cwd should create a diagnostic'
+  )
+  fs.mkdirSync(staleProjectCwd)
+  const repairedCwdRuntime = manager({ storageFile: staleCwdStorageFile })
+  assert.ok(
+    !diagnosticsOf(repairedCwdRuntime.getState()).includes('storage.cwd_invalid'),
+    'restored project cwd should clear stale cwd diagnostics'
+  )
+
   assert.ok(fs.existsSync(`${storageFile}.bak`), 'atomic writer should keep a backup')
   fs.writeFileSync(storageFile, '{"version":2,"nodes":[')
   const corruptRecovered = manager({ storageFile }).getState()
@@ -171,7 +254,9 @@ try {
   )
   assertIdentity(activeRecovered.getState())
 
-  console.log('[runtime:persistence] restore, corrupt recovery, active recovery, and resume passed')
+  console.log(
+    '[runtime:persistence] restore, corrupt recovery, active recovery, cwd propagation, stale cwd diagnostics, and resume passed'
+  )
 } finally {
   for (const runtime of managers) {
     try {
