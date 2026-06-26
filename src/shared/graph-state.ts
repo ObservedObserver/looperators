@@ -85,6 +85,42 @@ export const graphStateSchema = {
       output: { ok: 'boolean' },
     },
   },
+  publicRuntimeApi: {
+    createSession: {
+      input: {
+        base: 'CreateRuntimeSessionInput',
+        sourceSessionId:
+          'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
+        linkLabel:
+          'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+      },
+    },
+    archiveSession: {
+      input: {
+        sessionId: 'SessionId',
+        archived: 'boolean?; true hides from default history, false restores',
+      },
+    },
+    freeze: {
+      input: {
+        target: 'SessionId | ClusterId',
+        reason: 'string?',
+        source: 'SessionId?; optional master/control session for visible freeze edge',
+        masterReason: 'string?; explanation shown on freeze edges',
+      },
+    },
+    createMasterForCluster: {
+      input: {
+        clusterId: 'ClusterId',
+        prompt: 'string?',
+        cwd: 'string?; project cwd selected by the UI for the master session',
+        agent: '"claude-code" | "codex"?',
+        providerKind: 'ProviderKind?',
+        label: 'string?',
+        loopPolicy: 'LoopPolicy?',
+      },
+    },
+  },
   runtimeEvents: [
     'runtime.state',
     'session.created',
@@ -103,6 +139,9 @@ export const graphStateSchema = {
       frozen: 'boolean?',
       freezeReason: 'string?',
       masterReason: 'string?',
+    },
+    AgentSession: {
+      archived: 'boolean?',
     },
     GraphEdge: {
       kind: graphEdgeKinds,
@@ -282,6 +321,7 @@ export type AgentSession = {
   runtimeRequests: RuntimeRequest[]
   runtimeUserInputRequests: UserInputRequest[]
   runtimePlans: RuntimePlan[]
+  archived?: boolean
 }
 
 export type Cluster = {
@@ -320,6 +360,9 @@ export type CreateRuntimeSessionInput = {
   agent?: 'claude-code' | 'codex'
   providerKind?: ProviderKind
   label?: string
+  context?: string
+  sourceSessionId?: SessionId
+  linkLabel?: string
   cluster?: ClusterId
   role?: SessionRole
 }
@@ -347,6 +390,11 @@ export type AnswerUserInputInput = {
   answer: string
 }
 
+export type ArchiveRuntimeSessionInput = {
+  sessionId: SessionId
+  archived?: boolean
+}
+
 export type UpsertClusterInput = {
   clusterId?: ClusterId
   label?: string
@@ -357,6 +405,9 @@ export type UpsertClusterInput = {
 export type CreateMasterForClusterInput = {
   clusterId: ClusterId
   prompt?: string
+  cwd?: string
+  agent?: 'claude-code' | 'codex'
+  providerKind?: ProviderKind
   label?: string
   loopPolicy?: LoopPolicy
 }
@@ -369,6 +420,13 @@ export type AssignMasterToClusterInput = {
 export type SetClusterLoopPolicyInput = {
   clusterId: ClusterId
   loopPolicy: LoopPolicy
+}
+
+export type UpdateNodePositionsInput = {
+  positions: {
+    nodeId: NodeId
+    position: { x: number; y: number }
+  }[]
 }
 
 export type StartMasterLoopInput = {
@@ -385,6 +443,8 @@ export type StopMasterLoopInput = {
 export type FreezeInput = {
   target: SessionId | ClusterId
   reason?: string
+  source?: SessionId
+  masterReason?: string
 }
 
 export type RuntimeEvent =

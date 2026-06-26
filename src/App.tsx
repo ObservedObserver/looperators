@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -9,9 +17,11 @@ import {
   MiniMap,
   MarkerType,
   ReactFlow,
+  applyNodeChanges,
   type Edge,
   type EdgeProps,
   type Node,
+  type NodeChange,
   type NodeProps,
   Position,
   getBezierPath,
@@ -19,23 +29,27 @@ import {
 import '@xyflow/react/dist/style.css'
 import {
   Activity,
+  Archive,
+  ArchiveRestore,
   Bot,
   Braces,
   Check,
   ClipboardCheck,
   CirclePlay,
   FileText,
+  FolderOpen,
   GitBranch,
   MessageSquarePlus,
   MessagesSquare,
   Moon,
   Orbit,
-  RefreshCw,
+  Search,
   Send,
   Snowflake,
   Square,
   Sun,
   Terminal,
+  TriangleAlert,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -51,7 +65,6 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import {
-  CmdLine,
   TermChip,
   TermLabel,
   termInputCls,
@@ -65,14 +78,15 @@ import {
 } from '@/shared/tool-feed'
 import {
   createEmptyGraphState,
-  graphStateSchema,
   type AgentMessage,
   type AgentSession,
   type GraphEdge,
   type GraphEdgeKind,
   type GraphState,
   type Report,
+  type RuntimeStateDiagnostic,
   type SessionStatus,
+  type UpdateNodePositionsInput,
 } from '@/shared/graph-state'
 import type {
   NativeProviderEvent,
@@ -214,14 +228,12 @@ function nodeStatePillCls(
 }
 
 // Terminal action-button class presets (lime primary / chrome outline, mono).
-const termPrimaryBtnCls =
-  'w-full justify-center font-mono text-[11px] font-medium uppercase tracking-[0.08em]'
 const termActionBtnCls =
   'min-w-0 justify-start font-mono text-[11px] uppercase tracking-[0.06em]'
 
 const edgeKindLabels: Record<GraphEdgeKind, string> = {
-  'create-session': 'create',
-  'resume-session': 'resume',
+  'create-session': 'new chat',
+  'resume-session': 'send',
   report: 'report',
   freeze: 'freeze',
 }
@@ -244,8 +256,19 @@ const edgeKindStrokes: Record<GraphEdgeKind, string> = {
   freeze: 'oklch(0.6 0.02 240)',
 }
 
-const defaultPrompt =
-  'You are running under Orrery live session verification. Reply with one short sentence confirming this node is a resumable Claude session.'
+function edgeDisplayLabel(edgeData: GraphEdgeData) {
+  const label = edgeData.label.trim()
+  if (
+    !label ||
+    label === edgeData.kind ||
+    label === 'create_session' ||
+    label === 'resume_session'
+  ) {
+    return edgeKindLabels[edgeData.kind]
+  }
+
+  return label
+}
 
 const providerOptions: {
   id: ProviderKind
@@ -264,11 +287,465 @@ function providerOption(providerKind: ProviderKind) {
   )
 }
 
+function ProviderSegmentedControl({
+  value,
+  disabled,
+  className,
+  onChange,
+}: {
+  value: ProviderKind
+  disabled?: boolean
+  className?: string
+  onChange: (value: ProviderKind) => void
+}) {
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-3 gap-1 rounded-lg border border-ink-line bg-ink p-1 font-mono',
+        disabled && 'opacity-60',
+        className
+      )}
+    >
+      {providerOptions.map((option) => {
+        const isSelected = value === option.id
+        return (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={isSelected}
+            disabled={disabled}
+            className={cn(
+              'truncate rounded-md px-2 py-1.5 text-[10.5px] uppercase tracking-[0.06em] transition disabled:cursor-not-allowed',
+              isSelected
+                ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30'
+                : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name'
+            )}
+            onClick={() => onChange(option.id)}
+          >
+            {option.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function sessionProviderLabel(session: AgentSession) {
   return providerOption(session.providerKind).label
 }
 
-function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
+function compactPath(value: string) {
+  const withHome = value.replace(/^\/Users\/[^/]+/, '~')
+  if (withHome.length <= 48) {
+    return withHome
+  }
+
+  const parts = withHome.split('/').filter(Boolean)
+  const tail = parts.slice(-2).join('/')
+  if (withHome.startsWith('~/')) {
+    return `~/.../${tail}`
+  }
+  if (withHome.startsWith('/')) {
+    return `/.../${tail}`
+  }
+  return `.../${tail}`
+}
+
+function compactId(value: string) {
+  return value.length > 12 ? value.slice(0, 8) : value
+}
+
+function sessionChatId(session: AgentSession) {
+  return (
+    session.backendSessionId ??
+    session.providerSessionId ??
+    session.sessionId
+  )
+}
+
+function parseTimestamp(value?: string) {
+  if (!value) {
+    return undefined
+  }
+
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date
+}
+
+function formatTimestamp(value?: string) {
+  const date = parseTimestamp(value)
+  if (!date) {
+    return value ?? 'unknown'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function formatClock(value?: string) {
+  const date = parseTimestamp(value)
+  if (!date) {
+    return value?.slice(11, 16) ?? 'unknown'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
+
+function SessionMetaPill({
+  label,
+  value,
+  title,
+  className,
+}: {
+  label: string
+  value: string
+  title?: string
+  className?: string
+}) {
+  return (
+    <span
+      className={cn(
+        'inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background/55 px-2 py-1 font-mono text-[10.5px] leading-none',
+        className
+      )}
+      title={title ?? value}
+    >
+      <span className="shrink-0 uppercase tracking-[0.1em] text-muted-foreground">
+        {label}
+      </span>
+      <span className="min-w-0 truncate text-foreground/85">{value}</span>
+    </span>
+  )
+}
+
+type ProjectCwdValidation = {
+  ok: boolean
+  message: string
+}
+
+type RecoveryTone = 'amber' | 'rose' | 'cyan' | 'muted'
+
+type RecoveryState = {
+  tone: RecoveryTone
+  title: string
+  detail: string
+}
+
+function defaultWorkspaceCwd() {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  return window.orrery?.workspace?.defaultCwd ?? ''
+}
+
+function latestSessionCwd(sessions: AgentSession[]) {
+  return sessions.find((session) => !session.archived)?.cwd ?? sessions[0]?.cwd
+}
+
+function validateProjectCwd(value: string): ProjectCwdValidation {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) {
+    return {
+      ok: false,
+      message: 'Choose a project folder before starting.',
+    }
+  }
+
+  if (trimmed !== '~' && !trimmed.startsWith('/') && !trimmed.startsWith('~/')) {
+    return {
+      ok: false,
+      message: 'Use an absolute path or ~/path.',
+    }
+  }
+
+  return {
+    ok: true,
+    message: `Selected cwd: ${compactPath(trimmed)}`,
+  }
+}
+
+function diagnosticSessionId(diagnostic: RuntimeStateDiagnostic) {
+  const sessionId = diagnostic.details?.sessionId
+  return typeof sessionId === 'string' ? sessionId : undefined
+}
+
+function diagnosticsForSession(
+  diagnostics: RuntimeStateDiagnostic[],
+  sessionId: string
+) {
+  return diagnostics.filter(
+    (diagnostic) => diagnosticSessionId(diagnostic) === sessionId
+  )
+}
+
+function diagnosticDisplay(diagnostic: RuntimeStateDiagnostic): RecoveryState {
+  if (diagnostic.type === 'runtime.active_session_recovered') {
+    return {
+      tone: 'amber',
+      title: 'Restored after restart',
+      detail: 'The previous turn was interrupted. Review the last output and send a new message when ready.',
+    }
+  }
+
+  if (diagnostic.type === 'storage.cwd_invalid') {
+    const cwd = diagnostic.details?.cwd
+    return {
+      tone: 'rose',
+      title: 'Project folder unavailable',
+      detail:
+        typeof cwd === 'string'
+          ? `Restore ${compactPath(cwd)} or start a linked chat with a valid cwd.`
+          : 'Restore the project folder or start a linked chat with a valid cwd.',
+    }
+  }
+
+  if (diagnostic.type.includes('parse_failed')) {
+    return {
+      tone: 'rose',
+      title: 'Saved state needed repair',
+      detail: 'Orrery recovered from persisted state diagnostics. Open diagnostics for details if anything looks missing.',
+    }
+  }
+
+  if (diagnostic.type.includes('repaired') || diagnostic.type.includes('created')) {
+    return {
+      tone: 'cyan',
+      title: 'Saved state repaired',
+      detail: diagnostic.message,
+    }
+  }
+
+  return {
+    tone: 'muted',
+    title: 'Recovery diagnostic',
+    detail: diagnostic.message,
+  }
+}
+
+function messageLooksLikeCwdIssue(message: string) {
+  return /Project (folder|cwd)|cwd|ENOTDIR|ENOENT/.test(message)
+}
+
+function messageLooksLikeProviderIssue(message: string) {
+  return /provider|claude|codex|auth|login|spawn|command not found|not found/i.test(
+    message
+  )
+}
+
+function sessionRecoveryState({
+  session,
+  diagnostics,
+  frozen,
+}: {
+  session: AgentSession
+  diagnostics: RuntimeStateDiagnostic[]
+  frozen?: boolean
+}): RecoveryState | undefined {
+  const sessionDiagnostics = diagnosticsForSession(diagnostics, session.sessionId)
+  const cwdDiagnostic = sessionDiagnostics.find(
+    (diagnostic) => diagnostic.type === 'storage.cwd_invalid'
+  )
+  if (cwdDiagnostic) {
+    return diagnosticDisplay(cwdDiagnostic)
+  }
+
+  const recoveredDiagnostic = sessionDiagnostics.find(
+    (diagnostic) => diagnostic.type === 'runtime.active_session_recovered'
+  )
+  if (recoveredDiagnostic) {
+    return diagnosticDisplay(recoveredDiagnostic)
+  }
+
+  if (frozen) {
+    return {
+      tone: 'muted',
+      title: 'Frozen by workflow',
+      detail: 'This chat is paused by its graph scope. Unfreeze or start a linked chat to continue.',
+    }
+  }
+
+  if (session.status === 'killed') {
+    return {
+      tone: 'amber',
+      title: 'Stopped',
+      detail: 'This turn was stopped and cannot be resumed directly. Start a linked chat to continue the thread.',
+    }
+  }
+
+  if (session.status === 'failed') {
+    const message = session.error ?? 'The provider run failed.'
+    if (messageLooksLikeCwdIssue(message)) {
+      return {
+        tone: 'rose',
+        title: 'Project folder unavailable',
+        detail: message,
+      }
+    }
+
+    if (messageLooksLikeProviderIssue(message)) {
+      return {
+        tone: 'rose',
+        title: 'Provider unavailable',
+        detail: message,
+      }
+    }
+
+    return {
+      tone: 'rose',
+      title: 'Run failed',
+      detail: message,
+    }
+  }
+
+  return undefined
+}
+
+function recoveryToneClassName(tone: RecoveryTone) {
+  switch (tone) {
+    case 'rose':
+      return 'border-term-rose/35 bg-term-rose/10 text-term-rose'
+    case 'amber':
+      return 'border-term-amber/35 bg-term-amber/10 text-term-amber'
+    case 'cyan':
+      return 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
+    default:
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim'
+  }
+}
+
+function recoveryDetailClassName(tone: RecoveryTone) {
+  return tone === 'rose' ? 'text-term-dim' : 'text-term-dim2'
+}
+
+function RecoveryNotice({
+  state,
+  compact,
+}: {
+  state?: RecoveryState
+  compact?: boolean
+}) {
+  if (!state) {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border px-2.5 py-2 font-mono',
+        recoveryToneClassName(state.tone)
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] uppercase tracking-[0.1em]">
+        <TriangleAlert className="size-3 shrink-0" />
+        <span className="truncate">{state.title}</span>
+      </div>
+      <p
+        className={cn(
+          compact ? 'line-clamp-2' : 'whitespace-pre-wrap',
+          'mt-1 break-words text-[11.5px] leading-5',
+          recoveryDetailClassName(state.tone)
+        )}
+      >
+        {state.detail}
+      </p>
+    </div>
+  )
+}
+
+function RuntimeDiagnosticsBanner({
+  diagnostics,
+}: {
+  diagnostics: RuntimeStateDiagnostic[]
+}) {
+  const visibleDiagnostics = diagnostics.slice(-3).reverse()
+  if (visibleDiagnostics.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="app-region-no-drag mx-3 mb-2 space-y-1.5">
+      {visibleDiagnostics.map((diagnostic) => {
+        const state = diagnosticDisplay(diagnostic)
+        return (
+          <div
+            key={diagnostic.id}
+            className={cn(
+              'rounded-lg border px-3 py-2 font-mono',
+              recoveryToneClassName(state.tone)
+            )}
+            title={diagnostic.type}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <TriangleAlert className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">
+                {state.title}
+              </span>
+              <span className="shrink-0 text-[10px] tabular-nums opacity-70">
+                {formatClock(diagnostic.ts)}
+              </span>
+            </div>
+            <p className="mt-1 line-clamp-2 break-words text-[11px] leading-4 text-term-dim">
+              {state.detail}
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ProjectCwdField({
+  value,
+  validation,
+  disabled,
+  onChange,
+}: {
+  value: string
+  validation: ProjectCwdValidation
+  disabled?: boolean
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block space-y-1.5 font-mono">
+      <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
+        <FolderOpen className="size-3" />
+        project cwd
+      </span>
+      <input
+        className={cn(
+          termInputCls,
+          !validation.ok && 'border-term-rose/45 focus:border-term-rose/70'
+        )}
+        value={value}
+        spellCheck={false}
+        disabled={disabled}
+        placeholder="/path/to/project"
+        onChange={(event) => onChange(event.target.value)}
+      />
+      <span
+        className={cn(
+          'block text-[10.5px] leading-4',
+          validation.ok ? 'text-term-dim2' : 'text-term-rose'
+        )}
+      >
+        {validation.message}
+      </span>
+    </label>
+  )
+}
+
+const AgentNode = memo(function AgentNode({
+  data,
+  selected,
+}: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master'
   const marker = sessionMarker(data.status, selected ?? false, data.role)
   const freezeReason = data.freezeReason ?? data.masterReason
@@ -394,9 +871,9 @@ function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
       />
     </div>
   )
-}
+})
 
-function ClusterBoundaryNode({
+const ClusterBoundaryNode = memo(function ClusterBoundaryNode({
   data,
 }: NodeProps<Node<ClusterNodeData>>) {
   return (
@@ -438,7 +915,7 @@ function ClusterBoundaryNode({
       ) : null}
     </div>
   )
-}
+})
 
 const nodeTypes = {
   agent: AgentNode,
@@ -468,6 +945,7 @@ function ReadabilityEdge({
   })
   const edgeData = data as GraphEdgeData
   const reason = edgeData.freezeReason ?? edgeData.masterReason
+  const visibleDetail = reason ?? edgeData.summary
 
   return (
     <>
@@ -504,12 +982,17 @@ function ReadabilityEdge({
         >
           <div className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
             <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>
-            <span>{edgeKindLabels[edgeData.kind]}</span>
+            <span>{edgeDisplayLabel(edgeData)}</span>
             {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
             {edgeData.issueCount !== undefined ? (
               <span className="tabular-nums">· {edgeData.issueCount} iss</span>
             ) : null}
           </div>
+          {visibleDetail ? (
+            <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">
+              {visibleDetail}
+            </div>
+          ) : null}
         </div>
       </EdgeLabelRenderer>
     </>
@@ -529,6 +1012,15 @@ function lastMessagePreview(session: AgentSession | undefined) {
   return session?.prompt ?? 'Runtime session'
 }
 
+function latestUserMessagePreview(session: AgentSession) {
+  return (
+    [...session.messages]
+      .reverse()
+      .find((message) => message.role === 'user' && message.content.trim())
+      ?.content ?? session.prompt
+  )
+}
+
 function latestReportForSession(reports: Report[], sessionId: string) {
   return reports
     .filter((report) => report.from === sessionId)
@@ -539,9 +1031,9 @@ function loopPolicySummary(cluster: GraphState['clusters'][string]) {
   const verdict = cluster.loopPolicy?.until?.whenReport.verdict
   const maxIterations = cluster.loopPolicy?.maxIterations
   const parts = [
-    verdict ? `until verdict=${verdict}` : undefined,
-    cluster.loopPolicy?.onStop ? `then ${cluster.loopPolicy.onStop}` : undefined,
-    maxIterations ? `max ${maxIterations}` : undefined,
+    verdict ? `Review until ${verdict}` : undefined,
+    cluster.loopPolicy?.onStop === 'freeze' ? 'Freeze on stop' : undefined,
+    maxIterations ? `Max ${maxIterations}` : undefined,
   ].filter(Boolean)
 
   return parts.length ? parts.join(' · ') : undefined
@@ -551,17 +1043,58 @@ function loopStateStatus(cluster: GraphState['clusters'][string] | undefined) {
   return cluster?.loopState?.status ?? 'stopped'
 }
 
-function loopLastEvent(cluster: GraphState['clusters'][string] | undefined) {
+function workflowTargetLabel(state: GraphState, targetId: string) {
+  return (
+    state.sessions[targetId]?.label ??
+    state.clusters[targetId]?.label ??
+    compactId(targetId)
+  )
+}
+
+function loopEventLabel(type: string) {
+  switch (type) {
+    case 'loop.started':
+      return 'Loop started'
+    case 'loop.stopped':
+      return 'Loop stopped'
+    case 'session.finished':
+      return 'Chat finished'
+    case 'session.failed':
+      return 'Chat failed'
+    case 'session.killed':
+      return 'Chat stopped'
+    case 'report.received':
+      return 'Report received'
+    case 'freeze.applied':
+      return 'Freeze applied'
+    case 'runtime.recovered':
+      return 'Runtime recovered'
+    default:
+      return type.replaceAll('.', ' ')
+  }
+}
+
+function loopLastEvent(
+  cluster: GraphState['clusters'][string] | undefined,
+  state: GraphState
+) {
   const event = cluster?.loopState?.lastEvent
   if (!event) {
     return 'none'
   }
 
-  return event.sessionId
-    ? `${event.type} ${event.sessionId.slice(0, 8)}`
-    : event.reportId
-      ? `${event.type} ${event.reportId.slice(0, 8)}`
-      : event.type
+  const subject = event.sessionId
+    ? workflowTargetLabel(state, event.sessionId)
+    : event.from
+      ? workflowTargetLabel(state, event.from)
+      : event.targetId
+        ? workflowTargetLabel(state, event.targetId)
+        : event.reportId
+          ? compactId(event.reportId)
+          : undefined
+  return [loopEventLabel(event.type), subject, formatClock(event.ts)]
+    .filter(Boolean)
+    .join(' · ')
 }
 
 function clusterBoundaryNodes(state: GraphState): Node<ClusterNodeData>[] {
@@ -574,8 +1107,8 @@ function clusterBoundaryNodes(state: GraphState): Node<ClusterNodeData>[] {
       return []
     }
 
-    const nodeWidth = 280
-    const nodeHeight = 176
+    const nodeWidth = 300
+    const nodeHeight = 240
     const padding = 36
     const minX = Math.min(...managedNodes.map((node) => node.position.x)) - padding
     const minY = Math.min(...managedNodes.map((node) => node.position.y)) - padding
@@ -662,6 +1195,68 @@ function reportSummary(report: Report) {
   return body.length > 180 ? `${body.slice(0, 177)}...` : body
 }
 
+function normalizeSearchText(value: string) {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function sessionSearchHaystack({
+  session,
+  latestReport,
+  recovery,
+}: {
+  session: AgentSession
+  latestReport?: Report
+  recovery?: RecoveryState
+}) {
+  return normalizeSearchText(
+    [
+      session.label,
+      session.sessionId,
+      session.backendSessionId,
+      session.providerSessionId,
+      session.providerKind,
+      sessionProviderLabel(session),
+      session.agent,
+      session.cwd,
+      statusLabels[session.status],
+      session.status,
+      session.role,
+      session.error,
+      latestUserMessagePreview(session),
+      lastMessagePreview(session),
+      latestReport ? reportTitle(latestReport) : undefined,
+      latestReport ? reportBody(latestReport) : undefined,
+      recovery?.title,
+      recovery?.detail,
+    ]
+      .filter(Boolean)
+      .join(' ')
+  )
+}
+
+function sessionMatchesSearch({
+  session,
+  latestReport,
+  recovery,
+  query,
+}: {
+  session: AgentSession
+  latestReport?: Report
+  recovery?: RecoveryState
+  query: string
+}) {
+  const normalizedQuery = normalizeSearchText(query)
+  if (!normalizedQuery) {
+    return true
+  }
+
+  return normalizedQuery
+    .split(' ')
+    .every((token) =>
+      sessionSearchHaystack({ session, latestReport, recovery }).includes(token)
+    )
+}
+
 function edgeReason(edge: GraphEdge) {
   return edge.freezeReason ?? edge.masterReason
 }
@@ -740,6 +1335,167 @@ function sameStringList(left: string[], right: string[]) {
   )
 }
 
+type NodePositionUpdate = UpdateNodePositionsInput['positions'][number]
+
+function isFinitePosition(position: { x: number; y: number }) {
+  return Number.isFinite(position.x) && Number.isFinite(position.y)
+}
+
+function nodePositionUpdatesFromFlowNodes(nodes: Node[]): NodePositionUpdate[] {
+  return nodes.flatMap((node) => {
+    if (node.id.startsWith('cluster:') || !isFinitePosition(node.position)) {
+      return []
+    }
+
+    return [
+      {
+        nodeId: node.id,
+        position: { x: node.position.x, y: node.position.y },
+      },
+    ]
+  })
+}
+
+function applyNodePositionUpdates(
+  state: GraphState,
+  updates: NodePositionUpdate[]
+) {
+  if (updates.length === 0) {
+    return state
+  }
+
+  const updateById = new Map(updates.map((update) => [update.nodeId, update]))
+  let changed = false
+  const nextNodes = state.nodes.map((node) => {
+    const update = updateById.get(node.nodeId)
+    if (
+      !update ||
+      node.position.x === update.position.x &&
+        node.position.y === update.position.y
+    ) {
+      return node
+    }
+
+    changed = true
+    return {
+      ...node,
+      position: {
+        x: update.position.x,
+        y: update.position.y,
+      },
+    }
+  })
+
+  return changed ? { ...state, nodes: nextNodes } : state
+}
+
+function applyFlowNodePositionUpdates(
+  nodes: Node[],
+  updates: NodePositionUpdate[]
+) {
+  if (updates.length === 0) {
+    return nodes
+  }
+
+  const updateById = new Map(updates.map((update) => [update.nodeId, update]))
+  let changed = false
+  const nextNodes = nodes.map((node) => {
+    const update = updateById.get(node.id)
+    if (
+      !update ||
+      node.position.x === update.position.x &&
+        node.position.y === update.position.y
+    ) {
+      return node
+    }
+
+    changed = true
+    return {
+      ...node,
+      position: {
+        x: update.position.x,
+        y: update.position.y,
+      },
+    }
+  })
+
+  return changed ? nextNodes : nodes
+}
+
+type WorkflowStepStatus = 'done' | 'active' | 'blocked'
+
+function workflowStepClassName(status: WorkflowStepStatus) {
+  switch (status) {
+    case 'done':
+      return 'border-term-green/35 bg-term-green/10 text-term-green'
+    case 'active':
+      return 'border-lime-hi/35 bg-lime/[0.08] text-lime-hi'
+    default:
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim2'
+  }
+}
+
+function workflowStatusPillClassName(status: WorkflowStepStatus) {
+  switch (status) {
+    case 'done':
+      return 'border-term-green/30 bg-term-green/10 text-term-green'
+    case 'active':
+      return 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+    default:
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim2'
+  }
+}
+
+function WorkflowStep({
+  index,
+  title,
+  detail,
+  status,
+}: {
+  index: number
+  title: string
+  detail: string
+  status: WorkflowStepStatus
+}) {
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-[28px_minmax(0,1fr)] gap-2 rounded-lg border px-2.5 py-2 font-mono',
+        workflowStepClassName(status)
+      )}
+    >
+      <span className="flex size-5 items-center justify-center rounded-md border border-current/25 text-[10px] tabular-nums">
+        {status === 'done' ? <Check className="size-3" /> : index}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[12px] font-medium">{title}</span>
+        <span className="mt-0.5 block line-clamp-2 text-[10.5px] leading-4 opacity-75">
+          {detail}
+        </span>
+      </span>
+    </div>
+  )
+}
+
+function WorkflowSummaryRow({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className="grid grid-cols-[82px_minmax(0,1fr)] gap-2 text-[11.5px] leading-5">
+      <span className="text-term-dim2">{label}</span>
+      <span className="min-w-0 text-term-dim">{children}</span>
+    </div>
+  )
+}
+
+function assistantLabel(agent?: string) {
+  return agent?.toLowerCase().includes('codex') ? 'codex' : 'assistant'
+}
+
 function ChatMessage({
   message,
   turn,
@@ -753,6 +1509,7 @@ function ChatMessage({
   const isStreaming = message.status === 'streaming'
   const hasFeed = !isUser && Boolean(turn && turn.toolRuns.length > 0)
   const hasText = message.content.trim().length > 0
+  const senderLabel = assistantLabel(agent)
 
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
@@ -765,7 +1522,7 @@ function ChatMessage({
           <>
             <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_var(--term-green)]" />
             <span className="text-[10px] uppercase tracking-[0.14em] text-term-emerald">
-              claude
+              {senderLabel}
             </span>
           </>
         )}
@@ -818,6 +1575,12 @@ type RuntimeInteractionPanelProps = {
   onAnswer: (request: UserInputRequest) => void
 }
 
+const requestKindLabels: Record<RuntimeRequest['kind'], string> = {
+  approval: 'Approval request',
+  permission: 'Permission request',
+  confirmation: 'Confirmation request',
+}
+
 function RuntimeInteractionPanel({
   requests,
   userInputRequests,
@@ -835,7 +1598,7 @@ function RuntimeInteractionPanel({
     <div className="shrink-0 border-b border-ink-line bg-ink px-3.5 py-3">
       <div className="mb-2 flex items-center gap-2 font-mono">
         <span className="text-[10px] uppercase tracking-[0.16em] text-term-amber">
-          provider waiting
+          Action needed
         </span>
         <span className="ml-auto rounded border border-term-amber/30 bg-term-amber/10 px-1.5 py-0.5 text-[10px] tabular-nums text-term-amber">
           {requests.length + userInputRequests.length}
@@ -862,7 +1625,8 @@ function RuntimeInteractionPanel({
                     </p>
                   ) : null}
                   <div className="mt-1 text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
-                    {request.kind} · {request.createdAt.slice(11, 19)}
+                    {requestKindLabels[request.kind]} ·{' '}
+                    {formatClock(request.createdAt)}
                   </div>
                 </div>
               </div>
@@ -898,7 +1662,7 @@ function RuntimeInteractionPanel({
               className="rounded-lg border border-term-cyan/35 bg-term-cyan/10 p-3 font-mono"
             >
               <div className="text-[12.5px] font-medium text-term-name">
-                Codex requested input
+                Input requested
               </div>
               <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
                 {request.prompt}
@@ -906,13 +1670,13 @@ function RuntimeInteractionPanel({
               <textarea
                 className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
                 value={draft}
-                placeholder={request.placeholder ?? 'Answer Codex'}
+                placeholder={request.placeholder ?? 'Type an answer'}
                 disabled={isPending}
                 onChange={(event) => onDraftChange(request.id, event.target.value)}
               />
               <Button
                 className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
-                disabled={isPending || draft.trim().length === 0}
+                disabled={isPending}
                 onClick={() => onAnswer(request)}
               >
                 <Send className="size-3.5" />
@@ -924,6 +1688,11 @@ function RuntimeInteractionPanel({
       </div>
     </div>
   )
+}
+
+function clampOneLine(value: string, max = 110) {
+  const oneLine = value.replace(/\s+/g, ' ').trim()
+  return oneLine.length > max ? `${oneLine.slice(0, max - 3)}...` : oneLine
 }
 
 type ProviderEventEntry = {
@@ -992,7 +1761,7 @@ function ProviderEventDrawer({ session }: { session: AgentSession }) {
       <div className="mb-2 flex items-center gap-2">
         <Braces className="size-3.5 text-term-cyan" />
         <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">
-          provider events
+          diagnostics
         </span>
         <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
           last {entries.length}
@@ -1001,7 +1770,7 @@ function ProviderEventDrawer({ session }: { session: AgentSession }) {
 
       {entries.length === 0 ? (
         <p className="rounded-lg border border-dashed border-ink-line p-3 text-[11.5px] text-term-dim2">
-          No provider events captured yet.
+          No diagnostics captured yet.
         </p>
       ) : (
         <div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">
@@ -1039,10 +1808,116 @@ function ProviderEventDrawer({ session }: { session: AgentSession }) {
   )
 }
 
+function providerSetupHints(providerKind: ProviderKind) {
+  switch (providerKind) {
+    case 'claude-code':
+      return [
+        'Confirm Claude SDK auth is available to the desktop runtime.',
+        'Check that this app can start @anthropic-ai/claude-agent-sdk.',
+        'Use Legacy Claude CLI to isolate SDK setup from account setup.',
+      ]
+    case 'codex':
+      return [
+        'Confirm the Codex provider is enabled and authenticated.',
+        'Check that the Codex app-server can access this workspace path.',
+        'Restart the desktop runtime after auth or provider changes.',
+      ]
+    case 'legacy-claude-cli':
+      return [
+        'Install the claude CLI and make sure Electron can find it on PATH.',
+        'Run claude login in the same user environment.',
+        'Check shell startup files if Terminal works but Orrery cannot start it.',
+      ]
+  }
+}
+
+function ProviderSetupDiagnostics({
+  isRuntimeAvailable,
+  providerKind,
+  runtimeError,
+}: {
+  isRuntimeAvailable: boolean
+  providerKind: ProviderKind
+  runtimeError?: string
+}) {
+  const provider = providerOption(providerKind)
+  const hints = providerSetupHints(providerKind)
+
+  return (
+    <div className="border-b border-ink-line bg-ink px-3.5 py-3 font-mono">
+      <div className="mb-2 flex items-center gap-2">
+        <Braces className="size-3.5 text-term-cyan" />
+        <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">
+          Diagnostics
+        </span>
+        <span
+          className={cn(
+            'ml-auto rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em]',
+            isRuntimeAvailable
+              ? 'border-term-green/30 bg-term-green/10 text-term-green'
+              : 'border-term-rose/30 bg-term-rose/10 text-term-rose'
+          )}
+        >
+          {isRuntimeAvailable ? 'runtime ready' : 'runtime unavailable'}
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
+          <div className="grid gap-1.5 text-[11.5px] leading-5">
+            <div className="flex min-w-0 gap-2">
+              <span className="w-20 shrink-0 text-term-dim2">runtime</span>
+              <span className="min-w-0 text-term-name">
+                {isRuntimeAvailable
+                  ? 'Electron bridge connected'
+                  : 'Open Orrery in the desktop runtime to create chats'}
+              </span>
+            </div>
+            <div className="flex min-w-0 gap-2">
+              <span className="w-20 shrink-0 text-term-dim2">provider</span>
+              <span className="min-w-0 text-term-name">{provider.label}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
+          <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-dim2">
+            Setup checks
+          </div>
+          <div className="space-y-1">
+            {hints.map((hint, index) => (
+              <div
+                key={hint}
+                className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-[11.5px] leading-5"
+              >
+                <span className="text-center text-term-faint">
+                  {index === hints.length - 1 ? '└' : '├'}
+                </span>
+                <span className="min-w-0 text-term-dim">{hint}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {runtimeError ? (
+          <div className="rounded-lg border border-term-rose/35 bg-term-rose/10 px-2.5 py-2">
+            <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-rose">
+              Last error
+            </div>
+            <p className="whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
+              {runtimeError}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
-  { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
-  { id: 'sessions', label: 'Sessions', icon: Terminal },
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
+  { id: 'sessions', label: 'Chats', icon: Terminal },
+  { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
 ]
 
 function OrreryMark({ className }: { className?: string }) {
@@ -1077,16 +1952,16 @@ function App() {
   const [runtimeState, setRuntimeState] = useState<GraphState>(
     demoMode ? createDemoGraphState : createEmptyGraphState
   )
-  const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(
-    demoMode ? 'sess-p1-accept' : undefined
-  )
-  const [activeTab, setActiveTab] = useState<RailTab>(
-    demoMode ? 'chat' : 'orchestrate'
-  )
+  const [selectedSessionId, setSelectedSessionId] = useState<
+    string | null | undefined
+  >(demoMode ? 'sess-p1-accept' : undefined)
+  const [activeTab, setActiveTab] = useState<RailTab>('chat')
   const [newProviderKind, setNewProviderKind] =
     useState<ProviderKind>('claude-code')
-  const [newPrompt, setNewPrompt] = useState(defaultPrompt)
+  const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd)
   const [message, setMessage] = useState('')
+  const [sessionSearch, setSessionSearch] = useState('')
+  const [showArchivedSessions, setShowArchivedSessions] = useState(false)
   const [showRawEvents, setShowRawEvents] = useState(false)
   const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>(
     {}
@@ -1096,12 +1971,20 @@ function App() {
   >({})
   const [isCreating, setIsCreating] = useState(false)
   const [isResuming, setIsResuming] = useState(false)
+  const [archivingSessionIds, setArchivingSessionIds] = useState<
+    Record<string, boolean>
+  >({})
   const [isUpdatingCluster, setIsUpdatingCluster] = useState(false)
   const [isCreatingMaster, setIsCreatingMaster] = useState(false)
   const [isStartingLoop, setIsStartingLoop] = useState(false)
   const [isStoppingLoop, setIsStoppingLoop] = useState(false)
+  const [isFreezingSelected, setIsFreezingSelected] = useState(false)
+  const [isFreezingCluster, setIsFreezingCluster] = useState(false)
   const [runtimeError, setRuntimeError] = useState<string>()
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
+  const [pendingLinkedSourceId, setPendingLinkedSourceId] = useState<
+    string | null
+  >(null)
   const [activeClusterId, setActiveClusterId] = useState<string>()
   const [clusterLabel, setClusterLabel] = useState('Review loop')
   const [maxIterations, setMaxIterations] = useState('6')
@@ -1123,19 +2006,19 @@ function App() {
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
+  const pendingLinkedSource = pendingLinkedSourceId
+    ? runtimeState.sessions[pendingLinkedSourceId]
+    : undefined
   const selectedNode = selectedSessionId
     ? runtimeState.nodes.find((node) => node.sessionId === selectedSessionId)
     : undefined
+  const selectedManagedCluster = selectedSessionId
+    ? Object.values(runtimeState.clusters).find((cluster) =>
+        cluster.nodeIds.includes(selectedSessionId)
+      )
+    : undefined
   const selectedSessionFrozen =
-    selectedNode?.frozen === true ||
-    (selectedNode?.clusterId
-      ? runtimeState.clusters[selectedNode.clusterId]?.frozen === true
-      : false)
-  const selectedReports = selectedSessionId
-    ? runtimeState.reports
-        .filter((report) => report.from === selectedSessionId)
-        .sort((left, right) => right.envelope.ts.localeCompare(left.envelope.ts))
-    : []
+    selectedNode?.frozen === true || selectedManagedCluster?.frozen === true
   const openRuntimeRequests = (selectedSession?.runtimeRequests ?? []).filter(
     (request) => request.status === 'open'
   )
@@ -1143,9 +2026,48 @@ function App() {
     selectedSession?.runtimeUserInputRequests ?? []
   ).filter((request) => (request.status ?? 'open') === 'open')
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
+  const runtimeDiagnostics = runtimeState.diagnostics ?? []
+  const newCwdValidation = useMemo(() => validateProjectCwd(newCwd), [newCwd])
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
   )
+  const archivedSessionCount = sessions.filter((session) => session.archived).length
+  const selectedRecoveryState =
+    selectedSession !== undefined
+      ? sessionRecoveryState({
+          session: selectedSession,
+          diagnostics: runtimeDiagnostics,
+          frozen: selectedSessionFrozen,
+        })
+      : undefined
+  const filteredSessions = sessions.filter((session) => {
+    if (session.archived && !showArchivedSessions) {
+      return false
+    }
+
+    const node = runtimeState.nodes.find(
+      (candidate) => candidate.sessionId === session.sessionId
+    )
+    const managedCluster = Object.values(runtimeState.clusters).find((cluster) =>
+      cluster.nodeIds.includes(session.sessionId)
+    )
+    const latestReport = latestReportForSession(
+      runtimeState.reports,
+      session.sessionId
+    )
+    const recovery = sessionRecoveryState({
+      session,
+      diagnostics: runtimeDiagnostics,
+      frozen: node?.frozen === true || managedCluster?.frozen === true,
+    })
+
+    return sessionMatchesSearch({
+      session,
+      latestReport,
+      recovery,
+      query: sessionSearch,
+    })
+  })
   const reportsById = useMemo(
     () => new Map(runtimeState.reports.map((report) => [report.id, report])),
     [runtimeState.reports]
@@ -1190,17 +2112,62 @@ function App() {
       }
     })
   }, [selectedSession])
+  const selectedManagedNodeIds = useMemo(() => {
+    const canvasSelection = selectedCanvasNodeIds.filter((nodeId) => {
+      const session = runtimeState.sessions[nodeId]
+      return session && session.role !== 'master'
+    })
+
+    if (canvasSelection.length > 0) {
+      return canvasSelection
+    }
+
+    if (selectedSession && selectedSession.role !== 'master') {
+      return [selectedSession.sessionId]
+    }
+
+    return []
+  }, [runtimeState.sessions, selectedCanvasNodeIds, selectedSession])
   const clusters = Object.values(runtimeState.clusters).sort((left, right) =>
     left.label.localeCompare(right.label)
   )
   const activeCluster = activeClusterId
     ? runtimeState.clusters[activeClusterId]
     : undefined
+  const workflowManagedNodeIds = useMemo(() => {
+    if (selectedManagedNodeIds.length > 0 && selectedCanvasNodeIds.length > 0) {
+      return selectedManagedNodeIds
+    }
+
+    if (activeCluster?.nodeIds.length) {
+      return activeCluster.nodeIds
+    }
+
+    return selectedManagedNodeIds
+  }, [activeCluster, selectedCanvasNodeIds.length, selectedManagedNodeIds])
+  const activeManagedSessions = useMemo(
+    () =>
+      activeCluster?.nodeIds
+        .map((sessionId) => runtimeState.sessions[sessionId])
+        .filter((session): session is AgentSession => Boolean(session)) ?? [],
+    [activeCluster, runtimeState.sessions]
+  )
+  const activeMasterSession = activeCluster?.masterSessionId
+    ? runtimeState.sessions[activeCluster.masterSessionId]
+    : undefined
   const activeLoopStatus = loopStateStatus(activeCluster)
   const activeLoopIterations = activeCluster?.loopState?.iterations ?? 0
   const activeLoopMaxIterations = activeCluster?.loopPolicy?.maxIterations ?? 6
   const activeLoopReason = activeCluster?.loopState?.reason
-  const activeLoopLastEvent = loopLastEvent(activeCluster)
+  const activeLoopLastEvent = loopLastEvent(activeCluster, runtimeState)
+  const activeLoopCoder = activeCluster?.loopState?.coderSessionId
+    ? runtimeState.sessions[activeCluster.loopState.coderSessionId]
+    : activeManagedSessions[0]
+  const activeLoopReviewer = activeCluster?.loopState?.reviewerSessionId
+    ? runtimeState.sessions[activeCluster.loopState.reviewerSessionId]
+    : activeManagedSessions.find(
+        (session) => session.sessionId !== activeLoopCoder?.sessionId
+      )
   const selectedSessionIsMaster = selectedSession?.role === 'master'
   const canResume =
     Boolean(selectedSession) &&
@@ -1217,6 +2184,91 @@ function App() {
     activeLoopStatus !== 'running' &&
     activeCluster?.frozen !== true
   const canStopLoop = Boolean(activeCluster) && activeLoopStatus === 'running'
+  const canFreezeSelectedSession =
+    Boolean(selectedSession) && !selectedSessionFrozen
+  const canFreezeActiveCluster =
+    Boolean(activeCluster) && activeCluster?.frozen !== true
+  const hasWorkerSelection = workflowManagedNodeIds.length > 0
+  const setupSteps = [
+    {
+      title: 'Select worker chats',
+      detail: hasWorkerSelection
+        ? `${workflowManagedNodeIds.length} worker ${
+            workflowManagedNodeIds.length === 1 ? 'chat' : 'chats'
+          } selected`
+        : 'Use the canvas selection or current worker chat',
+      status: hasWorkerSelection ? 'done' : 'active',
+    },
+    {
+      title: 'Save cluster',
+      detail: activeCluster
+        ? activeCluster.label
+        : hasWorkerSelection
+          ? 'Ready to save'
+          : 'Waiting for worker selection',
+      status: activeCluster ? 'done' : hasWorkerSelection ? 'active' : 'blocked',
+    },
+    {
+      title: 'Create or open master',
+      detail: activeMasterSession?.label ?? 'Master is a normal chat session',
+      status: activeMasterSession
+        ? 'done'
+        : activeCluster
+          ? 'active'
+          : 'blocked',
+    },
+    {
+      title: 'Run review loop',
+      detail:
+        activeLoopStatus === 'running'
+          ? `${activeLoopIterations}/${activeLoopMaxIterations} iterations`
+          : canStartLoop
+            ? 'Ready to run'
+            : 'Needs cluster, master, and policy',
+      status:
+        activeLoopStatus === 'running'
+          ? 'active'
+          : canStartLoop
+            ? 'active'
+            : activeCluster?.frozen
+              ? 'done'
+              : 'blocked',
+    },
+    {
+      title: 'Freeze if needed',
+      detail: activeCluster?.frozen
+        ? activeCluster.freezeReason ?? 'Cluster frozen'
+        : 'Available for selected chat or active cluster',
+      status: activeCluster?.frozen ? 'done' : activeCluster ? 'active' : 'blocked',
+    },
+  ] satisfies {
+    title: string
+    detail: string
+    status: WorkflowStepStatus
+  }[]
+
+  const startNewChat = useCallback(() => {
+    setPendingLinkedSourceId(null)
+    setSelectedSessionId(null)
+    setNewCwd(latestSessionCwd(sessions) ?? defaultWorkspaceCwd())
+    setActiveTab('chat')
+    setShowRawEvents(false)
+    setMessage('')
+  }, [sessions])
+
+  const startLinkedChat = useCallback(() => {
+    if (!selectedSession) {
+      return
+    }
+
+    setPendingLinkedSourceId(selectedSession.sessionId)
+    setSelectedSessionId(null)
+    setNewProviderKind(selectedSession.providerKind)
+    setNewCwd(selectedSession.cwd)
+    setActiveTab('chat')
+    setShowRawEvents(false)
+    setMessage('')
+  }, [selectedSession])
 
   const nodes: Node[] = useMemo(
     () => [
@@ -1265,6 +2317,8 @@ function App() {
     ],
     [runtimeState]
   )
+  const [canvasNodes, setCanvasNodes] = useState<Node[]>(nodes)
+  const isDraggingCanvasNodeRef = useRef(false)
 
   const edges: Edge[] = useMemo(
     () => {
@@ -1311,6 +2365,12 @@ function App() {
   )
 
   useEffect(() => {
+    if (!isDraggingCanvasNodeRef.current) {
+      setCanvasNodes(nodes)
+    }
+  }, [nodes])
+
+  useEffect(() => {
     document.documentElement.classList.toggle('dark', colorScheme === 'dark')
   }, [colorScheme])
 
@@ -1334,7 +2394,17 @@ function App() {
       .then((state) => {
         if (isMounted) {
           setRuntimeState(state)
-          setSelectedSessionId((current) => current ?? state.nodes[0]?.sessionId)
+          setSelectedSessionId((current) =>
+            current === undefined ? state.nodes[0]?.sessionId : current
+          )
+          setNewCwd((current) => {
+            if (current.trim().length > 0) {
+              return current
+            }
+
+            const restoredSessions = Object.values(state.sessions).sort(sessionSort)
+            return latestSessionCwd(restoredSessions) ?? defaultWorkspaceCwd()
+          })
         }
       })
       .catch((error: unknown) => {
@@ -1345,9 +2415,6 @@ function App() {
 
     const unsubscribe = window.orrery.runtime.onEvent((event) => {
       setRuntimeState(event.state)
-      if (event.type === 'session.created' || event.type === 'session.resumed') {
-        setSelectedSessionId(event.sessionId)
-      }
     })
 
     return () => {
@@ -1356,40 +2423,91 @@ function App() {
     }
   }, [])
 
-  const createSession = useCallback(async () => {
+  const createSessionFromPrompt = useCallback(
+    async (
+      prompt: string,
+      options: { sourceSessionId?: string | null } = {}
+    ) => {
+      if (!window.orrery?.runtime) {
+        setRuntimeError('Runtime is available only inside Electron.')
+        return false
+      }
+
+      const trimmedPrompt = prompt.trim()
+      if (trimmedPrompt.length === 0) {
+        return false
+      }
+
+      const cwd = newCwd.trim()
+      const cwdValidation = validateProjectCwd(cwd)
+      if (!cwdValidation.ok) {
+        setRuntimeError(cwdValidation.message)
+        return false
+      }
+
+      const sourceSessionId =
+        typeof options.sourceSessionId === 'string' &&
+        options.sourceSessionId.trim().length > 0
+          ? options.sourceSessionId.trim()
+          : undefined
+      if (sourceSessionId && !runtimeState.sessions[sourceSessionId]) {
+        setRuntimeError('Linked chat source is no longer available.')
+        return false
+      }
+
+      setIsCreating(true)
+      setRuntimeError(undefined)
+
+      try {
+        const selectedProvider = providerOption(newProviderKind)
+        const result = await window.orrery.runtime.createSession({
+          prompt: trimmedPrompt,
+          cwd,
+          agent: selectedProvider.agent,
+          providerKind: selectedProvider.id,
+          label: `${sourceSessionId ? 'Linked Chat' : 'New Chat'} ${
+            sessions.length + 1
+          }`,
+          ...(sourceSessionId
+            ? {
+                sourceSessionId,
+                linkLabel: 'linked chat',
+              }
+            : {}),
+        })
+        setRuntimeState(result.state)
+        setSelectedSessionId(result.sessionId)
+        setPendingLinkedSourceId(null)
+        setActiveTab('chat')
+        return true
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+        return false
+      } finally {
+        setIsCreating(false)
+      }
+    },
+    [newCwd, newProviderKind, runtimeState.sessions, sessions.length]
+  )
+
+  const sendChatMessage = useCallback(async () => {
     if (!window.orrery?.runtime) {
       setRuntimeError('Runtime is available only inside Electron.')
       return
     }
 
-    setIsCreating(true)
-    setRuntimeError(undefined)
-
-    try {
-      const selectedProvider = providerOption(newProviderKind)
-      const result = await window.orrery.runtime.createSession({
-        prompt: newPrompt,
-        agent: selectedProvider.agent,
-        providerKind: selectedProvider.id,
-        label: `${selectedProvider.label} ${sessions.length + 1}`,
-      })
-      setRuntimeState(result.state)
-      setSelectedSessionId(result.sessionId)
-      setActiveTab('chat')
-    } catch (error) {
-      setRuntimeError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsCreating(false)
-    }
-  }, [newPrompt, newProviderKind, sessions.length])
-
-  const resumeSelectedSession = useCallback(async () => {
-    if (!window.orrery?.runtime || !selectedSessionId) {
+    const trimmed = message.trim()
+    if (trimmed.length === 0) {
       return
     }
 
-    const trimmed = message.trim()
-    if (trimmed.length === 0) {
+    if (!selectedSession || !selectedSessionId) {
+      const created = await createSessionFromPrompt(trimmed, {
+        sourceSessionId: pendingLinkedSourceId,
+      })
+      if (created) {
+        setMessage('')
+      }
       return
     }
 
@@ -1408,7 +2526,13 @@ function App() {
     } finally {
       setIsResuming(false)
     }
-  }, [message, selectedSessionId])
+  }, [
+    createSessionFromPrompt,
+    message,
+    pendingLinkedSourceId,
+    selectedSession,
+    selectedSessionId,
+  ])
 
   const killSelectedSession = useCallback(async () => {
     if (!window.orrery?.runtime || !selectedSessionId) {
@@ -1422,6 +2546,38 @@ function App() {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     }
   }, [selectedSessionId])
+
+  const setSessionArchived = useCallback(
+    async (sessionId: string, archived: boolean) => {
+      if (!window.orrery?.runtime) {
+        setRuntimeError('Runtime is available only inside Electron.')
+        return
+      }
+
+      setArchivingSessionIds((current) => ({
+        ...current,
+        [sessionId]: true,
+      }))
+      setRuntimeError(undefined)
+
+      try {
+        const result = await window.orrery.runtime.archiveSession({
+          sessionId,
+          archived,
+        })
+        setRuntimeState(result.state)
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setArchivingSessionIds((current) => {
+          const next = { ...current }
+          delete next[sessionId]
+          return next
+        })
+      }
+    },
+    []
+  )
 
   const respondToRuntimeRequest = useCallback(
     async (request: RuntimeRequest, decision: 'approved' | 'denied') => {
@@ -1470,10 +2626,7 @@ function App() {
         return
       }
 
-      const answer = (userInputDrafts[request.id] ?? '').trim()
-      if (answer.length === 0) {
-        return
-      }
+      const answer = userInputDrafts[request.id] ?? ''
 
       setPendingInteractionIds((current) => ({
         ...current,
@@ -1518,30 +2671,13 @@ function App() {
     }
   }, [maxIterations])
 
-  const selectedManagedNodeIds = useMemo(() => {
-    const canvasSelection = selectedCanvasNodeIds.filter((nodeId) => {
-      const session = runtimeState.sessions[nodeId]
-      return session && session.role !== 'master'
-    })
-
-    if (canvasSelection.length > 0) {
-      return canvasSelection
-    }
-
-    if (selectedSession && selectedSession.role !== 'master') {
-      return [selectedSession.sessionId]
-    }
-
-    return []
-  }, [runtimeState.sessions, selectedCanvasNodeIds, selectedSession])
-
   const upsertManagedCluster = useCallback(async () => {
     if (!window.orrery?.runtime) {
       setRuntimeError('Runtime is available only inside Electron.')
       return
     }
 
-    if (selectedManagedNodeIds.length === 0) {
+    if (workflowManagedNodeIds.length === 0) {
       setRuntimeError('Select at least one worker node for the cluster.')
       return
     }
@@ -1553,7 +2689,7 @@ function App() {
       const result = await window.orrery.runtime.upsertCluster({
         clusterId: activeClusterId,
         label: clusterLabel,
-        nodeIds: selectedManagedNodeIds,
+        nodeIds: workflowManagedNodeIds,
         loopPolicy: currentLoopPolicy(),
       })
       setRuntimeState(result.state)
@@ -1567,7 +2703,7 @@ function App() {
     activeClusterId,
     clusterLabel,
     currentLoopPolicy,
-    selectedManagedNodeIds,
+    workflowManagedNodeIds,
   ])
 
   const saveLoopPolicy = useCallback(async () => {
@@ -1596,24 +2732,43 @@ function App() {
       return
     }
 
+    const cwd = newCwd.trim()
+    const cwdValidation = validateProjectCwd(cwd)
+    if (!cwdValidation.ok) {
+      setRuntimeError(cwdValidation.message)
+      return
+    }
+
     setIsCreatingMaster(true)
     setRuntimeError(undefined)
 
     try {
+      const selectedProvider = providerOption(newProviderKind)
       const result = await window.orrery.runtime.createMasterForCluster({
         clusterId: activeClusterId,
         prompt: masterPrompt,
+        cwd,
+        agent: selectedProvider.agent,
+        providerKind: selectedProvider.id,
         label: `${runtimeState.clusters[activeClusterId]?.label ?? 'Cluster'} Master`,
         loopPolicy: currentLoopPolicy(),
       })
       setRuntimeState(result.state)
+      setPendingLinkedSourceId(null)
       setSelectedSessionId(result.sessionId)
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     } finally {
       setIsCreatingMaster(false)
     }
-  }, [activeClusterId, currentLoopPolicy, masterPrompt, runtimeState.clusters])
+  }, [
+    activeClusterId,
+    currentLoopPolicy,
+    masterPrompt,
+    newCwd,
+    newProviderKind,
+    runtimeState.clusters,
+  ])
 
   const assignSelectedAsMaster = useCallback(async () => {
     if (!window.orrery?.runtime || !activeClusterId || !selectedSessionId) {
@@ -1679,6 +2834,98 @@ function App() {
     }
   }, [activeClusterId])
 
+  const freezeSelectedSession = useCallback(async () => {
+    if (!window.orrery?.runtime || !selectedSessionId || !selectedSession) {
+      return
+    }
+
+    setIsFreezingSelected(true)
+    setRuntimeError(undefined)
+
+    try {
+      const reason = `Frozen from Workflows panel: ${selectedSession.label}`
+      const source =
+        activeMasterSession?.sessionId &&
+        activeMasterSession.sessionId !== selectedSessionId
+          ? activeMasterSession.sessionId
+          : undefined
+      const result = await window.orrery.runtime.freeze({
+        target: selectedSessionId,
+        reason,
+        source,
+        masterReason: source ? reason : undefined,
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsFreezingSelected(false)
+    }
+  }, [activeMasterSession, selectedSession, selectedSessionId])
+
+  const freezeActiveCluster = useCallback(async () => {
+    if (!window.orrery?.runtime || !activeClusterId || !activeCluster) {
+      return
+    }
+
+    setIsFreezingCluster(true)
+    setRuntimeError(undefined)
+
+    try {
+      const reason = `Frozen from Workflows panel: ${activeCluster.label}`
+      const result = await window.orrery.runtime.freeze({
+        target: activeClusterId,
+        reason,
+        source: activeMasterSession?.sessionId,
+        masterReason: activeMasterSession ? reason : undefined,
+      })
+      setRuntimeState(result.state)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsFreezingCluster(false)
+    }
+  }, [activeCluster, activeClusterId, activeMasterSession])
+
+  const updateCanvasNodePositions = useCallback((changes: NodeChange[]) => {
+    setCanvasNodes((current) => applyNodeChanges(changes, current))
+  }, [])
+
+  const beginCanvasNodeDrag = useCallback(() => {
+    isDraggingCanvasNodeRef.current = true
+  }, [])
+
+  const persistCanvasNodePositions = useCallback(
+    (
+      _event: globalThis.MouseEvent | TouchEvent,
+      node: Node,
+      draggedNodes: Node[]
+    ) => {
+      isDraggingCanvasNodeRef.current = false
+      const updates = nodePositionUpdatesFromFlowNodes(
+        draggedNodes.length > 0 ? draggedNodes : [node]
+      )
+      if (updates.length === 0) {
+        return
+      }
+
+      setCanvasNodes((current) => applyFlowNodePositionUpdates(current, updates))
+      setRuntimeState((current) => applyNodePositionUpdates(current, updates))
+
+      if (!window.orrery?.runtime?.updateNodePositions) {
+        return
+      }
+
+      window.orrery.runtime
+        .updateNodePositions({ positions: updates })
+        .then((result) => setRuntimeState(result.state))
+        .catch((error: unknown) => {
+          setRuntimeError(error instanceof Error ? error.message : String(error))
+        })
+    },
+    []
+  )
+
   const updateCanvasSelection = useCallback(
     ({ nodes: selectedNodes }: { nodes: Node[] }) => {
       const nextSelection = selectedNodes
@@ -1690,8 +2937,20 @@ function App() {
           ? previousSelection
           : nextSelection
       )
+
+      const selectedClusterId = nextSelection
+        .map(
+          (nodeId) =>
+            runtimeState.nodes.find((node) => node.nodeId === nodeId)?.clusterId
+        )
+        .find((clusterId): clusterId is string => Boolean(clusterId))
+      if (selectedClusterId) {
+        setActiveClusterId((current) =>
+          current === selectedClusterId ? current : selectedClusterId
+        )
+      }
     },
-    []
+    [runtimeState.nodes]
   )
 
   return (
@@ -1711,7 +2970,7 @@ function App() {
                   Orrery
                 </h1>
                 <p className="truncate font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">
-                  P3 master loops
+                  Code agent workspace
                 </p>
               </div>
             </div>
@@ -1722,6 +2981,16 @@ function App() {
               {isElectron ? 'electron' : 'web only'}
             </Badge>
           </header>
+
+          <div className="app-region-no-drag shrink-0 px-3 pb-2">
+            <Button
+              className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
+              onClick={startNewChat}
+            >
+              <MessageSquarePlus className="size-4" />
+              New Chat
+            </Button>
+          </div>
 
           <div className="app-region-no-drag shrink-0 px-3 pb-3 pt-1">
             <div
@@ -1763,64 +3032,172 @@ function App() {
             </div>
           ) : null}
 
+          <RuntimeDiagnosticsBanner diagnostics={runtimeDiagnostics} />
+
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTab === 'orchestrate' ? (
-              <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4">
-                <section className="space-y-2.5">
-                  <CmdLine command="orrery session new" flag="--prompt" />
-                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-ink-line bg-ink p-1 font-mono">
-                    {providerOptions.map((option) => {
-                      const isSelected = newProviderKind === option.id
-                      return (
-                        <button
-                          key={option.id}
-                          type="button"
-                          aria-pressed={isSelected}
-                          className={cn(
-                            'truncate rounded-md px-2 py-1.5 text-[10.5px] uppercase tracking-[0.06em] transition',
-                            isSelected
-                              ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30'
-                              : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name'
-                          )}
-                          onClick={() => setNewProviderKind(option.id)}
-                        >
-                          {option.label}
-                        </button>
-                      )
-                    })}
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4">
+                <section className="space-y-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 font-mono text-[12px]">
+                        <Orbit className="size-3.5 text-accent-ink" />
+                        <span className="text-foreground">Workflows</span>
+                      </div>
+                      <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                        Review loop setup
+                      </p>
+                    </div>
+                    <span
+                      className={cn(
+                        statePillBase,
+                        activeLoopStatus === 'running'
+                          ? 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+                          : activeCluster?.frozen
+                            ? 'border-border bg-muted text-muted-foreground'
+                            : 'border-ink-line bg-foreground/[0.04] text-term-dim'
+                      )}
+                    >
+                      {activeCluster?.frozen ? 'frozen' : activeLoopStatus}
+                    </span>
                   </div>
-                  <textarea
-                    id="new-session-prompt"
-                    className={cn(termTextareaCls, 'min-h-20 max-h-40')}
-                    value={newPrompt}
-                    onChange={(event) => setNewPrompt(event.target.value)}
-                  />
-                  <Button
-                    className={termPrimaryBtnCls}
-                    disabled={
-                      !isElectron || isCreating || newPrompt.trim().length === 0
-                    }
-                    onClick={createSession}
-                  >
-                    <CirclePlay className="size-4" />
-                    {isCreating
-                      ? 'Starting...'
-                      : `Start ${providerOption(newProviderKind).label}`}
-                  </Button>
+
+                  <div className="grid gap-2">
+                    {setupSteps.map((step, index) => (
+                      <WorkflowStep
+                        key={step.title}
+                        index={index + 1}
+                        title={step.title}
+                        detail={step.detail}
+                        status={step.status}
+                      />
+                    ))}
+                  </div>
+                </section>
+
+                <section className="space-y-2.5 rounded-lg border border-ink-line bg-ink p-3 font-mono">
+                  <div className="flex items-center gap-2">
+                    <ClipboardCheck className="size-3.5 text-term-cyan" />
+                    <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">
+                      Active workflow
+                    </span>
+                    <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
+                      {activeCluster ? activeManagedSessions.length : 0} managed
+                    </span>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <WorkflowSummaryRow label="cluster">
+                      {activeCluster?.label ?? (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="workers">
+                      {activeManagedSessions.length ? (
+                        <span className="flex flex-wrap gap-1.5">
+                          {activeManagedSessions.slice(0, 4).map((session) => (
+                            <TermChip key={session.sessionId}>
+                              {session.label}
+                            </TermChip>
+                          ))}
+                          {activeManagedSessions.length > 4 ? (
+                            <TermChip>
+                              +{activeManagedSessions.length - 4}
+                            </TermChip>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="master">
+                      {activeMasterSession ? (
+                        <button
+                          type="button"
+                          className="max-w-full truncate text-term-amber underline-offset-2 hover:underline"
+                          onClick={() => {
+                            setPendingLinkedSourceId(null)
+                            setSelectedSessionId(activeMasterSession.sessionId)
+                            setActiveTab('chat')
+                          }}
+                        >
+                          {activeMasterSession.label}
+                        </button>
+                      ) : (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="policy">
+                      {activeCluster ? (
+                        loopPolicySummary(activeCluster) ?? (
+                          <span className="text-term-faint">none</span>
+                        )
+                      ) : (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="loop">
+                      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <span
+                          className={cn(
+                            statePillBase,
+                            activeLoopStatus === 'running'
+                              ? 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+                              : 'border-ink-line bg-foreground/[0.04] text-term-dim'
+                          )}
+                        >
+                          {activeLoopStatus}
+                        </span>
+                        <span className="tabular-nums text-term-cyan">
+                          {activeLoopIterations}/{activeLoopMaxIterations}
+                        </span>
+                      </span>
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="coder">
+                      {activeLoopCoder?.label ?? (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="reviewer">
+                      {activeLoopReviewer?.label ?? (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="last">
+                      <span className="truncate">{activeLoopLastEvent}</span>
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="reason">
+                      {activeLoopReason ?? activeCluster?.freezeReason ?? (
+                        <span className="text-term-faint">none</span>
+                      )}
+                    </WorkflowSummaryRow>
+                    <WorkflowSummaryRow label="frozen">
+                      {activeCluster?.frozen ? (
+                        <span className="inline-flex items-center gap-1 text-term-amber">
+                          <Snowflake className="size-3" />
+                          {activeCluster.freezeReason ?? 'yes'}
+                        </span>
+                      ) : (
+                        <span className="text-term-dim2">no</span>
+                      )}
+                    </WorkflowSummaryRow>
+                  </div>
                 </section>
 
                 <section className="space-y-3">
-                  <CmdLine
-                    command="orrery cluster"
-                    flag="--loop"
-                    trailing={`${selectedManagedNodeIds.length} sel · ${clusters.length} ${
-                      clusters.length === 1 ? 'cluster' : 'clusters'
-                    }`}
-                  />
+                  <div className="flex items-center gap-2 font-mono">
+                    <GitBranch className="size-3.5 text-accent-ink" />
+                    <span className="text-[12px] text-foreground">
+                      1. Cluster scope
+                    </span>
+                    <span className="ml-auto text-[10.5px] tabular-nums text-muted-foreground">
+                      {workflowManagedNodeIds.length} managed
+                    </span>
+                  </div>
 
                   <div className="grid grid-cols-[minmax(0,1fr)_84px] gap-2">
                     <label className="min-w-0 space-y-1.5">
-                      <TermLabel>cluster</TermLabel>
+                      <TermLabel>cluster name</TermLabel>
                       <input
                         className={termInputCls}
                         value={clusterLabel}
@@ -1828,7 +3205,7 @@ function App() {
                       />
                     </label>
                     <label className="space-y-1.5">
-                      <TermLabel>max iter</TermLabel>
+                      <TermLabel>max turns</TermLabel>
                       <input
                         className={cn(termInputCls, 'tabular-nums')}
                         inputMode="numeric"
@@ -1842,8 +3219,33 @@ function App() {
                   </div>
 
                   <div className="flex flex-wrap gap-1.5">
-                    <TermChip tone="lime">until verdict=clean</TermChip>
-                    <TermChip>onStop freeze</TermChip>
+                    <TermChip tone="lime">Review until clean</TermChip>
+                    <TermChip>Freeze on stop</TermChip>
+                    <TermChip>Max {currentLoopPolicy().maxIterations}</TermChip>
+                  </div>
+
+                  <div className="rounded-lg border border-ink-line bg-ink px-3 py-2 font-mono">
+                    <WorkflowSummaryRow label="workers">
+                      {workflowManagedNodeIds.length ? (
+                        <span className="flex flex-wrap gap-1.5">
+                          {workflowManagedNodeIds.slice(0, 4).map((sessionId) => (
+                            <TermChip key={sessionId}>
+                              {runtimeState.sessions[sessionId]?.label ??
+                                compactId(sessionId)}
+                            </TermChip>
+                          ))}
+                          {workflowManagedNodeIds.length > 4 ? (
+                            <TermChip>
+                              +{workflowManagedNodeIds.length - 4}
+                            </TermChip>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-term-faint">
+                          canvas selection or current worker chat
+                        </span>
+                      )}
+                    </WorkflowSummaryRow>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -1853,7 +3255,7 @@ function App() {
                       disabled={
                         !isElectron ||
                         isUpdatingCluster ||
-                        selectedManagedNodeIds.length === 0
+                        workflowManagedNodeIds.length === 0
                       }
                       onClick={upsertManagedCluster}
                     >
@@ -1874,21 +3276,53 @@ function App() {
                   </div>
                 </section>
 
-                <section className="space-y-2.5">
-                  <CmdLine command="orrery master" flag="--cluster" />
-                  <textarea
-                    className={cn(
-                      termTextareaCls,
-                      'min-h-16 max-h-28 text-xs leading-5'
-                    )}
-                    value={masterPrompt}
-                    onChange={(event) => setMasterPrompt(event.target.value)}
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 font-mono">
+                    <Bot className="size-3.5 text-term-amber" />
+                    <span className="text-[12px] text-foreground">
+                      2. Master chat
+                    </span>
+                    <span className="ml-auto truncate text-[10.5px] text-muted-foreground">
+                      {activeMasterSession?.label ?? 'none'}
+                    </span>
+                  </div>
+
+                  <ProjectCwdField
+                    value={newCwd}
+                    validation={newCwdValidation}
+                    disabled={isCreatingMaster}
+                    onChange={setNewCwd}
                   />
+
+                  <div className="space-y-1.5">
+                    <TermLabel>provider</TermLabel>
+                    <ProviderSegmentedControl
+                      value={newProviderKind}
+                      disabled={isCreatingMaster}
+                      onChange={setNewProviderKind}
+                    />
+                  </div>
+
+                  <label className="block space-y-1.5">
+                    <TermLabel>master instructions</TermLabel>
+                    <textarea
+                      className={cn(
+                        termTextareaCls,
+                        'min-h-20 max-h-32 text-xs leading-5'
+                      )}
+                      value={masterPrompt}
+                      onChange={(event) => setMasterPrompt(event.target.value)}
+                    />
+                  </label>
+
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       className={termActionBtnCls}
                       disabled={
-                        !isElectron || isCreatingMaster || !activeClusterId
+                        !isElectron ||
+                        isCreatingMaster ||
+                        !activeClusterId ||
+                        !newCwdValidation.ok
                       }
                       onClick={createMasterForCluster}
                     >
@@ -1896,7 +3330,7 @@ function App() {
                       <span className="truncate">
                         {activeCluster?.masterSessionId
                           ? 'Open master'
-                          : 'Start master'}
+                          : 'Create master'}
                       </span>
                     </Button>
                     <Button
@@ -1912,81 +3346,22 @@ function App() {
                       onClick={assignSelectedAsMaster}
                     >
                       <MessageSquarePlus className="size-4 shrink-0" />
-                      <span className="truncate">Assign master</span>
+                      <span className="truncate">Use selected</span>
                     </Button>
                   </div>
                 </section>
 
-                <section className="space-y-2.5">
-                  <CmdLine
-                    command="orrery loop"
-                    flag="--run"
-                    trailing={
-                      <span
-                        className={cn(
-                          statePillBase,
-                          activeLoopStatus === 'running'
-                            ? 'border-term-amber/30 bg-term-amber/10 text-term-amber'
-                            : 'border-border bg-muted/50 text-muted-foreground'
-                        )}
-                      >
-                        {activeLoopStatus}
-                      </span>
-                    }
-                  />
-                  <div className="rounded-lg border border-ink-line bg-ink p-3 font-mono">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] uppercase tracking-[0.12em] text-term-dim2">
-                        iterations
-                      </span>
-                      <span className="tabular-nums text-term-cyan">
-                        {activeLoopIterations}/{activeLoopMaxIterations}
-                      </span>
-                      {activeCluster?.frozen ? (
-                        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-term-amber">
-                          <Snowflake className="size-3" />
-                          frozen
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-2.5 space-y-1 text-[11.5px]">
-                      <div className="flex gap-2">
-                        <span className="text-term-faint">
-                          {activeLoopReason || activeCluster?.freezeReason
-                            ? '├'
-                            : '└'}
-                        </span>
-                        <span className="w-14 shrink-0 text-term-dim2">last</span>
-                        <span className="truncate text-term-dim">
-                          {activeLoopLastEvent}
-                        </span>
-                      </div>
-                      {activeLoopReason ? (
-                        <div className="flex gap-2">
-                          <span className="text-term-faint">
-                            {activeCluster?.freezeReason ? '├' : '└'}
-                          </span>
-                          <span className="w-14 shrink-0 text-term-dim2">
-                            reason
-                          </span>
-                          <span className="line-clamp-2 break-words text-term-dim">
-                            {activeLoopReason}
-                          </span>
-                        </div>
-                      ) : null}
-                      {activeCluster?.freezeReason ? (
-                        <div className="flex gap-2">
-                          <span className="text-term-faint">└</span>
-                          <span className="w-14 shrink-0 text-term-dim2">
-                            freeze
-                          </span>
-                          <span className="line-clamp-2 break-words text-term-dim">
-                            {activeCluster.freezeReason}
-                          </span>
-                        </div>
-                      ) : null}
-                    </div>
+                <section className="space-y-3">
+                  <div className="flex items-center gap-2 font-mono">
+                    <CirclePlay className="size-3.5 text-accent-ink" />
+                    <span className="text-[12px] text-foreground">
+                      3. Run and freeze
+                    </span>
+                    <span className="ml-auto text-[10.5px] tabular-nums text-muted-foreground">
+                      {activeLoopIterations}/{activeLoopMaxIterations}
+                    </span>
                   </div>
+
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       className={termActionBtnCls}
@@ -1994,7 +3369,9 @@ function App() {
                       onClick={startMasterLoop}
                     >
                       <CirclePlay className="size-4 shrink-0" />
-                      <span className="truncate">Run loop</span>
+                      <span className="truncate">
+                        {isStartingLoop ? 'Starting...' : 'Run loop'}
+                      </span>
                     </Button>
                     <Button
                       className={termActionBtnCls}
@@ -2003,21 +3380,117 @@ function App() {
                       onClick={stopMasterLoop}
                     >
                       <Square className="size-4 shrink-0" />
-                      <span className="truncate">Stop loop</span>
+                      <span className="truncate">
+                        {isStoppingLoop ? 'Stopping...' : 'Stop loop'}
+                      </span>
                     </Button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="rounded-lg border border-ink-line bg-ink p-3 font-mono">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[12px] text-term-name">
+                          {selectedSession?.label ?? 'Selected chat'}
+                        </span>
+                        <span
+                          className={cn(
+                            statePillBase,
+                            workflowStatusPillClassName(
+                              !selectedSession
+                                ? 'blocked'
+                                : selectedSessionFrozen
+                                  ? 'done'
+                                  : 'active'
+                            )
+                          )}
+                        >
+                          {!selectedSession
+                            ? 'no chat'
+                            : selectedSessionFrozen
+                              ? 'frozen'
+                              : 'ready'}
+                        </span>
+                      </div>
+                      <Button
+                        className={cn(termActionBtnCls, 'mt-2 w-full')}
+                        variant="outline"
+                        disabled={
+                          !isElectron ||
+                          isFreezingSelected ||
+                          !canFreezeSelectedSession
+                        }
+                        onClick={freezeSelectedSession}
+                      >
+                        <Snowflake className="size-4 shrink-0" />
+                        <span className="truncate">
+                          {isFreezingSelected ? 'Freezing...' : 'Freeze chat'}
+                        </span>
+                      </Button>
+                    </div>
+
+                    <div className="rounded-lg border border-ink-line bg-ink p-3 font-mono">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[12px] text-term-name">
+                          {activeCluster?.label ?? 'Active cluster'}
+                        </span>
+                        <span
+                          className={cn(
+                            statePillBase,
+                            workflowStatusPillClassName(
+                              !activeCluster
+                                ? 'blocked'
+                                : activeCluster.frozen
+                                  ? 'done'
+                                  : 'active'
+                            )
+                          )}
+                        >
+                          {!activeCluster
+                            ? 'no cluster'
+                            : activeCluster.frozen
+                              ? 'frozen'
+                              : 'ready'}
+                        </span>
+                      </div>
+                      <Button
+                        className={cn(termActionBtnCls, 'mt-2 w-full')}
+                        variant="outline"
+                        disabled={
+                          !isElectron ||
+                          isFreezingCluster ||
+                          !canFreezeActiveCluster
+                        }
+                        onClick={freezeActiveCluster}
+                      >
+                        <Snowflake className="size-4 shrink-0" />
+                        <span className="truncate">
+                          {isFreezingCluster
+                            ? 'Freezing...'
+                            : 'Freeze cluster'}
+                        </span>
+                      </Button>
+                    </div>
                   </div>
                 </section>
 
                 {clusters.length ? (
                   <section className="space-y-2">
-                    <CmdLine
-                      command="orrery clusters"
-                      flag="--list"
-                      trailing={clusters.length}
-                    />
+                    <div className="flex items-center gap-2 font-mono">
+                      <MessagesSquare className="size-3.5 text-accent-ink" />
+                      <span className="text-[12px] text-foreground">
+                        Saved workflows
+                      </span>
+                      <span className="ml-auto text-[10.5px] tabular-nums text-muted-foreground">
+                        {clusters.length}
+                      </span>
+                    </div>
                     <div className="space-y-1.5">
                       {clusters.map((cluster) => {
                         const isActive = activeClusterId === cluster.clusterId
+                        const master = cluster.masterSessionId
+                          ? runtimeState.sessions[cluster.masterSessionId]
+                          : undefined
+                        const loopStatus = loopStateStatus(cluster)
                         return (
                           <button
                             key={cluster.clusterId}
@@ -2031,6 +3504,7 @@ function App() {
                             onClick={() => {
                               setActiveClusterId(cluster.clusterId)
                               if (cluster.masterSessionId) {
+                                setPendingLinkedSourceId(null)
                                 setSelectedSessionId(cluster.masterSessionId)
                               }
                             }}
@@ -2046,26 +3520,46 @@ function App() {
                               </span>
                               <span
                                 className={cn(
-                                  'flex-1 truncate text-[13px] font-medium',
+                                  'min-w-0 flex-1 truncate text-[13px] font-medium',
                                   isActive ? 'text-lime-hi' : 'text-lime'
                                 )}
                               >
                                 {cluster.label}
                               </span>
+                              {cluster.frozen ? (
+                                <Snowflake className="size-3.5 shrink-0 text-term-amber" />
+                              ) : null}
                               <span
                                 className={cn(
                                   statePillBase,
-                                  'border-ink-line bg-foreground/[0.04] tabular-nums text-term-dim'
+                                  loopStatus === 'running'
+                                    ? 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+                                    : 'border-ink-line bg-foreground/[0.04] text-term-dim'
                                 )}
                               >
-                                {cluster.nodeIds.length}
+                                {cluster.frozen ? 'frozen' : loopStatus}
                               </span>
                             </div>
-                            <div className="mt-1.5 flex gap-2 text-[11px]">
-                              <span className="text-term-faint">└</span>
-                              <span className="truncate text-term-dim2">
-                                {loopPolicySummary(cluster) ?? 'no policy'}
-                              </span>
+                            <div className="mt-1.5 grid gap-0.5 text-[11px]">
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">├</span>
+                                <span className="w-14 shrink-0 text-term-dim2">
+                                  nodes
+                                </span>
+                                <span className="truncate text-term-dim">
+                                  {cluster.nodeIds.length} managed
+                                  {master ? ` · ${master.label}` : ''}
+                                </span>
+                              </div>
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">└</span>
+                                <span className="w-14 shrink-0 text-term-dim2">
+                                  policy
+                                </span>
+                                <span className="truncate text-term-dim2">
+                                  {loopPolicySummary(cluster) ?? 'no policy'}
+                                </span>
+                              </div>
                             </div>
                           </button>
                         )
@@ -2081,22 +3575,66 @@ function App() {
                 <div className="shrink-0 px-4 pb-2.5 pt-3 font-mono">
                   <div className="flex items-center gap-2 text-[12px]">
                     <span className="text-lime-hi">❯</span>
-                    <span className="text-foreground">orrery sessions</span>
-                    <span className="text-accent-ink">--watch</span>
+                    <span className="text-foreground">Chats</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">
                       {runningSessions.length} running · {sessions.length} total
                     </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-ink-line bg-ink px-2.5 py-1.5">
+                      <Search className="size-3.5 shrink-0 text-term-dim2" />
+                      <input
+                        className="min-w-0 flex-1 bg-transparent text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint"
+                        value={sessionSearch}
+                        spellCheck={false}
+                        placeholder="Search label, id, provider, cwd, status, messages"
+                        onChange={(event) => setSessionSearch(event.target.value)}
+                      />
+                      {sessionSearch.trim().length > 0 ? (
+                        <button
+                          type="button"
+                          className="rounded p-1 text-term-dim2 hover:bg-foreground/[0.06] hover:text-term-name"
+                          aria-label="Clear search"
+                          onClick={() => setSessionSearch('')}
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      aria-pressed={showArchivedSessions}
+                      className={cn(
+                        'shrink-0 rounded-lg border px-2.5 py-2 text-[10.5px] uppercase tracking-[0.08em] transition',
+                        showArchivedSessions
+                          ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
+                          : 'border-ink-line bg-ink text-term-dim hover:border-foreground/20'
+                      )}
+                      onClick={() =>
+                        setShowArchivedSessions((current) => !current)
+                      }
+                    >
+                      {showArchivedSessions
+                        ? 'All'
+                        : `Hidden ${archivedSessionCount}`}
+                    </button>
                   </div>
                 </div>
 
                 <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
                   {sessions.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
-                      No sessions yet. Start one from the Orchestrate tab.
+                      No chats yet.
                     </div>
                   ) : null}
 
-                  {sessions.map((session) => {
+                  {sessions.length > 0 && filteredSessions.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
+                      No chats match the current search.
+                    </div>
+                  ) : null}
+
+                  {filteredSessions.map((session) => {
                     const latestReport = latestReportForSession(
                       runtimeState.reports,
                       session.sessionId
@@ -2105,6 +3643,17 @@ function App() {
                       latestReport?.payload.type === 'verdict'
                         ? latestReport.payload.verdict
                         : undefined
+                    const node = runtimeState.nodes.find(
+                      (candidate) => candidate.sessionId === session.sessionId
+                    )
+                    const managedCluster = Object.values(runtimeState.clusters).find(
+                      (cluster) => cluster.nodeIds.includes(session.sessionId)
+                    )
+                    const recovery = sessionRecoveryState({
+                      session,
+                      diagnostics: runtimeDiagnostics,
+                      frozen: node?.frozen === true || managedCluster?.frozen === true,
+                    })
 
                     const isSel = selectedSessionId === session.sessionId
                     const marker = sessionMarker(
@@ -2112,99 +3661,192 @@ function App() {
                       isSel,
                       session.role
                     )
-                    const idLabel =
-                      session.backendSessionId ?? session.sessionId
+                    const idLabel = sessionChatId(session)
+                    const preview = clampOneLine(lastMessagePreview(session), 140)
+                    const canArchive =
+                      session.status !== 'running' && session.status !== 'pending'
+                    const archivePending =
+                      archivingSessionIds[session.sessionId] === true
 
                     return (
-                      <button
+                      <div
                         key={session.sessionId}
-                        type="button"
                         className={cn(
-                          'relative w-full rounded-lg border bg-ink p-3 pl-3.5 text-left font-mono transition',
+                          'relative rounded-lg border bg-ink font-mono transition',
                           isSel
                             ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
                             : 'border-ink-line hover:border-foreground/20'
                         )}
-                        onClick={() => {
-                          setSelectedSessionId(session.sessionId)
-                          setActiveTab('chat')
-                        }}
                       >
                         {isSel ? (
                           <span className="absolute bottom-2.5 left-0 top-2.5 w-0.5 rounded-full bg-lime-hi" />
                         ) : null}
-                        <div className="flex items-center gap-2.5">
-                          <span
-                            className={cn(
-                              'w-3.5 shrink-0 text-center text-[12px] leading-none',
-                              marker.cls
-                            )}
+                        <div className="flex items-start gap-2 p-3 pl-3.5">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => {
+                              setPendingLinkedSourceId(null)
+                              setSelectedSessionId(session.sessionId)
+                              setActiveTab('chat')
+                            }}
                           >
-                            {marker.char}
-                          </span>
-                          <span
-                            className={cn(
-                              'flex-1 truncate text-[13px] font-medium',
-                              isSel ? 'text-lime-hi' : 'text-lime'
-                            )}
-                          >
-                            {session.label}
-                          </span>
-                          <span
-                            className={cn(
-                              statePillBase,
-                              statePillCls(session.status, session.role)
-                            )}
-                          >
-                            {session.role === 'master'
-                              ? 'master'
-                              : statusLabels[session.status].toLowerCase()}
-                          </span>
-                        </div>
-                        <div className="mt-2 space-y-0.5 text-[11.5px]">
-                          <div className="flex gap-2">
-                            <span className="text-term-faint">├</span>
-                            <span className="w-[52px] shrink-0 text-term-dim2">
-                              id
-                            </span>
-                            <span className="truncate text-term-cyan">
-                              {idLabel}
-                            </span>
-                          </div>
-                          <div className="flex gap-2">
-                            <span className="text-term-faint">├</span>
-                            <span className="w-[52px] shrink-0 text-term-dim2">
-                              agent
-                            </span>
-                            <span className="text-term-dim">
-                              {sessionProviderLabel(session)}
-                            </span>
-                          </div>
-                          <div className="flex gap-2">
-                            <span className="text-term-faint">└</span>
-                            <span className="w-[52px] shrink-0 text-term-dim2">
-                              io
-                            </span>
-                            <span className="text-term-dim">
-                              <span className="text-term-cyan">
-                                {session.messages.length}
-                              </span>{' '}
-                              msgs · updated {session.updatedAt.slice(11, 16)}
-                            </span>
-                          </div>
-                        </div>
-                        {latestVerdict ? (
-                          <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10.5px] text-term-dim2">
-                            <ClipboardCheck className="size-3 shrink-0" />
-                            <span className="truncate">
-                              verdict{' '}
-                              <span className="text-term-green">
-                                {latestVerdict}
+                            <div className="flex items-center gap-2.5">
+                              <span
+                                className={cn(
+                                  'w-3.5 shrink-0 text-center text-[12px] leading-none',
+                                  marker.cls
+                                )}
+                              >
+                                {marker.char}
                               </span>
-                            </span>
+                              <span
+                                className={cn(
+                                  'flex-1 truncate text-[13px] font-medium',
+                                  isSel ? 'text-lime-hi' : 'text-lime'
+                                )}
+                              >
+                                {session.label}
+                              </span>
+                              {session.archived ? (
+                                <span className="rounded border border-ink-line bg-foreground/[0.04] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-term-dim">
+                                  hidden
+                                </span>
+                              ) : null}
+                              <span
+                                className={cn(
+                                  statePillBase,
+                                  statePillCls(session.status, session.role)
+                                )}
+                              >
+                                {session.role === 'master'
+                                  ? 'master'
+                                  : statusLabels[session.status].toLowerCase()}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid gap-0.5 text-[11.5px]">
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">├</span>
+                                <span className="w-[58px] shrink-0 text-term-dim2">
+                                  id
+                                </span>
+                                <span className="truncate text-term-cyan">
+                                  {idLabel}
+                                </span>
+                              </div>
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">├</span>
+                                <span className="w-[58px] shrink-0 text-term-dim2">
+                                  provider
+                                </span>
+                                <span className="truncate text-term-dim">
+                                  {sessionProviderLabel(session)}
+                                </span>
+                              </div>
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">├</span>
+                                <span className="w-[58px] shrink-0 text-term-dim2">
+                                  cwd
+                                </span>
+                                <span
+                                  className="truncate text-term-dim"
+                                  title={session.cwd}
+                                >
+                                  {compactPath(session.cwd)}
+                                </span>
+                              </div>
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">├</span>
+                                <span className="w-[58px] shrink-0 text-term-dim2">
+                                  preview
+                                </span>
+                                <span className="truncate text-term-dim">
+                                  {preview}
+                                </span>
+                              </div>
+                              <div className="flex min-w-0 gap-2">
+                                <span className="text-term-faint">└</span>
+                                <span className="w-[58px] shrink-0 text-term-dim2">
+                                  updated
+                                </span>
+                                <span className="truncate text-term-dim">
+                                  <span className="text-term-cyan">
+                                    {session.messages.length}
+                                  </span>{' '}
+                                  msgs · {formatTimestamp(session.updatedAt)}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="shrink-0 rounded-md border border-ink-line bg-background/35 p-1.5 text-term-dim transition hover:border-foreground/20 hover:text-term-name disabled:cursor-not-allowed disabled:opacity-45"
+                                disabled={
+                                  !isElectron || archivePending || !canArchive
+                                }
+                                aria-label={
+                                  session.archived ? 'Restore chat' : 'Hide chat'
+                                }
+                                onClick={() =>
+                                  setSessionArchived(
+                                    session.sessionId,
+                                    !session.archived
+                                  )
+                                }
+                              >
+                                {session.archived ? (
+                                  <ArchiveRestore className="size-3.5" />
+                                ) : (
+                                  <Archive className="size-3.5" />
+                                )}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {session.archived ? 'Restore chat' : 'Hide chat'}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+
+                        <div className="px-3 pb-3">
+                          {recovery ? (
+                            <div className="mb-2">
+                              <RecoveryNotice state={recovery} compact />
+                            </div>
+                          ) : null}
+                          <div className="flex flex-wrap gap-1.5">
+                            <SessionMetaPill
+                              label="created"
+                              value={formatTimestamp(session.createdAt)}
+                              title={session.createdAt}
+                            />
+                            <SessionMetaPill
+                              label="status"
+                              value={statusLabels[session.status]}
+                            />
+                            {session.exitCode !== undefined &&
+                            session.exitCode !== null ? (
+                              <SessionMetaPill
+                                label="exit"
+                                value={String(session.exitCode)}
+                              />
+                            ) : null}
                           </div>
-                        ) : null}
-                      </button>
+                          {latestVerdict ? (
+                            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10.5px] text-term-dim2">
+                              <ClipboardCheck className="size-3 shrink-0" />
+                              <span className="truncate">
+                                verdict{' '}
+                                <span className="text-term-green">
+                                  {latestVerdict}
+                                </span>
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     )
                   })}
                 </div>
@@ -2213,12 +3855,74 @@ function App() {
 
             {activeTab === 'chat' ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="shrink-0 border-b border-border bg-card px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-                      Selected session
-                    </span>
-                    <div className="ml-auto flex items-center gap-2">
+                <div className="shrink-0 border-b border-border bg-card px-3.5 py-2">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                          Chat
+                        </span>
+                        <h2 className="min-w-0 flex-1 truncate text-[14px] font-semibold">
+                          {selectedSession?.label ??
+                            (pendingLinkedSource ? 'Linked Chat' : 'New Chat')}
+                        </h2>
+                        {!selectedSession ? (
+                          <span className="shrink-0 font-mono text-[11px] text-accent-ink">
+                            {providerOption(newProviderKind).label}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] leading-4 text-muted-foreground">
+                        {selectedSession ? (
+                          <>
+                            <span className="shrink-0 text-foreground/75">
+                              {sessionProviderLabel(selectedSession)}
+                            </span>
+                            <span className="shrink-0 text-term-faint">|</span>
+                            <span
+                              className="min-w-0 flex-1 truncate"
+                              title={selectedSession.cwd}
+                            >
+                              {compactPath(selectedSession.cwd)}
+                            </span>
+                            <span className="shrink-0 text-term-faint">|</span>
+                            <span
+                              className="shrink-0 text-foreground/70"
+                              title={sessionChatId(selectedSession)}
+                            >
+                              {compactId(sessionChatId(selectedSession))}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="shrink-0 text-foreground/75">
+                              {providerOption(newProviderKind).label}
+                            </span>
+                            <span className="shrink-0 text-term-faint">|</span>
+                            <span
+                              className="min-w-0 flex-1 truncate"
+                              title={newCwd}
+                            >
+                              {newCwd.trim()
+                                ? compactPath(newCwd.trim())
+                                : 'cwd required'}
+                            </span>
+                            {pendingLinkedSource ? (
+                              <>
+                                <span className="shrink-0 text-term-faint">|</span>
+                                <span
+                                  className="min-w-0 flex-1 truncate text-foreground/70"
+                                  title={pendingLinkedSource.sessionId}
+                                >
+                                  from {pendingLinkedSource.label}
+                                </span>
+                              </>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
                       {selectedSession ? (
                         <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
                           <span
@@ -2230,75 +3934,37 @@ function App() {
                           {statusLabels[selectedSession.status]}
                         </span>
                       ) : null}
+                      {selectedSession ? (
+                        <Button
+                          className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
+                          variant="outline"
+                          size="sm"
+                          disabled={!isElectron}
+                          onClick={startLinkedChat}
+                        >
+                          <GitBranch className="size-3.5" />
+                          Linked
+                        </Button>
+                      ) : null}
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button
                             className="app-region-no-drag size-7"
                             variant={showRawEvents ? 'secondary' : 'ghost'}
                             size="icon"
-                            disabled={!selectedSession}
-                            aria-label="Toggle provider event log"
+                            aria-label="Diagnostics"
                             onClick={() => setShowRawEvents((current) => !current)}
                           >
                             <Braces className="size-3.5" />
                           </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Provider event log</TooltipContent>
+                        <TooltipContent>Diagnostics</TooltipContent>
                       </Tooltip>
                     </div>
                   </div>
-                  <div className="mt-1.5 flex items-baseline gap-2">
-                    <h2 className="truncate text-[15px] font-semibold">
-                      {selectedSession?.label ?? 'No session selected'}
-                    </h2>
-                    {selectedSession ? (
-                      <span className="shrink-0 font-mono text-xs text-accent-ink">
-                        {sessionProviderLabel(selectedSession)}
-                      </span>
-                    ) : null}
-                  </div>
-                  <p className="mt-1 truncate font-mono text-[11px] leading-5 text-muted-foreground">
-                    {selectedSession ? (
-                      <>
-                        marker{' '}
-                        <span className="text-accent-ink">
-                          {selectedSession.backendSessionId ??
-                            selectedSession.sessionId}
-                        </span>
-                      </>
-                    ) : (
-                      'Select a node on the graph or a session.'
-                    )}
-                  </p>
-                  <div
-                    className="relative mt-2.5 h-2 overflow-hidden opacity-60"
-                    style={{
-                      backgroundImage:
-                        'repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 13px)',
-                      WebkitMaskImage:
-                        'linear-gradient(90deg, #000 55%, transparent)',
-                    }}
-                  >
-                    <span className="absolute left-[38%] top-0 h-full w-px bg-primary" />
-                  </div>
-                  {selectedReports.length ? (
-                    <div className="mt-3 max-h-36 space-y-2 overflow-y-auto pr-1">
-                      {selectedReports.slice(0, 3).map((report) => (
-                        <div
-                          key={report.id}
-                          className="rounded-lg border border-border bg-muted/40 p-2.5 font-mono"
-                        >
-                          <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                            <ClipboardCheck className="size-3 shrink-0 text-accent-ink" />
-                            <span className="truncate">
-                              {reportTitle(report)}
-                            </span>
-                          </div>
-                          <p className="whitespace-pre-wrap break-words text-[11.5px] leading-5 text-muted-foreground">
-                            {reportBody(report)}
-                          </p>
-                        </div>
-                      ))}
+                  {selectedRecoveryState ? (
+                    <div className="mt-2">
+                      <RecoveryNotice state={selectedRecoveryState} compact />
                     </div>
                   ) : null}
                 </div>
@@ -2313,14 +3979,22 @@ function App() {
                   onAnswer={answerRuntimeUserInput}
                 />
 
-                {showRawEvents && selectedSession ? (
-                  <ProviderEventDrawer session={selectedSession} />
+                {showRawEvents ? (
+                  selectedSession ? (
+                    <ProviderEventDrawer session={selectedSession} />
+                  ) : (
+                    <ProviderSetupDiagnostics
+                      isRuntimeAvailable={isElectron}
+                      providerKind={newProviderKind}
+                      runtimeError={runtimeError}
+                    />
+                  )
                 ) : null}
 
                 <div className="min-h-0 flex-1 overflow-y-auto bg-ink">
                   <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">
                     <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-term-dim2">
-                      session transcript
+                      Messages
                     </span>
                     <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">
                       {selectedSession?.messages.length ?? 0} messages
@@ -2337,19 +4011,43 @@ function App() {
                     ))
                   ) : (
                     <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">
-                      No chat history.
+                      {selectedSession ? 'No messages yet.' : 'New Chat'}
                     </div>
                   )}
                 </div>
 
                 <div className="shrink-0 border-t border-border bg-card p-2.5">
+                  {!selectedSession ? (
+                    <div className="app-region-no-drag mb-2 space-y-2">
+                      <ProviderSegmentedControl
+                        value={newProviderKind}
+                        disabled={isCreating}
+                        onChange={setNewProviderKind}
+                      />
+                      <ProjectCwdField
+                        value={newCwd}
+                        validation={newCwdValidation}
+                        disabled={isCreating}
+                        onChange={setNewCwd}
+                      />
+                    </div>
+                  ) : null}
                   <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-ink-line bg-ink px-3 py-2.5 transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25">
                     <span className="pt-0.5 font-mono text-lime-hi">❯</span>
                     <textarea
                       className="max-h-28 min-h-9 w-full resize-y bg-transparent font-mono text-[13px] leading-6 text-term-name outline-none placeholder:text-term-faint disabled:opacity-60"
-                      placeholder="Message selected session"
+                      placeholder={
+                        selectedSession
+                          ? 'Message this chat'
+                          : pendingLinkedSource
+                            ? 'Start a linked chat'
+                            : 'Start a new chat'
+                      }
                       value={message}
-                      disabled={!selectedSession || !canResume || isResuming}
+                      disabled={
+                        !isElectron ||
+                        (selectedSession ? !canResume || isResuming : isCreating)
+                      }
                       onChange={(event) => setMessage(event.target.value)}
                     />
                   </div>
@@ -2357,15 +4055,20 @@ function App() {
                     <Button
                       className="app-region-no-drag min-w-0 justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
                       disabled={
-                        !selectedSession ||
-                        !canResume ||
-                        isResuming ||
+                        !isElectron ||
+                        (selectedSession
+                          ? !canResume || isResuming
+                          : isCreating || !newCwdValidation.ok) ||
                         message.trim().length === 0
                       }
-                      onClick={resumeSelectedSession}
+                      onClick={sendChatMessage}
                     >
                       <Send className="size-4 shrink-0" />
-                      <span className="truncate">Resume session</span>
+                      <span className="truncate">
+                        {!selectedSession && pendingLinkedSource
+                          ? 'Create Linked Chat'
+                          : 'Send'}
+                      </span>
                     </Button>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -2374,13 +4077,13 @@ function App() {
                           variant="destructive"
                           size="icon"
                           disabled={!selectedSession || !canKill}
-                          aria-label="Kill selected session"
+                          aria-label="Stop"
                           onClick={killSelectedSession}
                         >
                           <Square className="size-4" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>Kill selected session</TooltipContent>
+                      <TooltipContent>Stop</TooltipContent>
                     </Tooltip>
                   </div>
                 </div>
@@ -2389,7 +4092,7 @@ function App() {
           </div>
 
           <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 font-mono text-[11px] tracking-[0.02em] text-muted-foreground">
-            <span className="flex items-center gap-1.5" title="Running sessions">
+            <span className="flex items-center gap-1.5" title="Running chats">
               <span
                 className={cn(
                   'size-1.5 rounded-full',
@@ -2404,31 +4107,13 @@ function App() {
               running
             </span>
             <Separator orientation="vertical" className="h-3" />
-            <span className="flex items-center gap-1" title="Graph edges">
+            <span className="flex items-center gap-1" title="Links">
               <GitBranch className="size-3" />
               <span className="tabular-nums">{runtimeState.edges.length}</span>
             </span>
             <span className="flex items-center gap-1" title="Reports">
               <FileText className="size-3" />
               <span className="tabular-nums">{runtimeState.reports.length}</span>
-            </span>
-            <span className="ml-auto flex items-center gap-2.5">
-              <span
-                className="flex items-center gap-1"
-                title={`Graph schema v${graphStateSchema.version}`}
-              >
-                <Braces className="size-3" />
-                <span className="text-accent-ink">
-                  v{graphStateSchema.version}
-                </span>
-              </span>
-              <span
-                className="flex items-center gap-1 tabular-nums"
-                title="Last updated"
-              >
-                <RefreshCw className="size-3" />
-                {runtimeState.updatedAt.slice(11, 19)}
-              </span>
             </span>
           </footer>
         </aside>
@@ -2438,10 +4123,10 @@ function App() {
             <div className="flex min-w-0 items-center gap-3">
               <span className="flex shrink-0 items-center gap-2 text-[12px] text-foreground">
                 <Activity className="size-4 text-accent-ink" />
-                Runtime graph
+                Session graph
               </span>
               <span className="truncate text-[12px] text-muted-foreground">
-                nodeId <span className="text-accent-ink">===</span> sessionId
+                Code-agent chats and handoffs
               </span>
             </div>
 
@@ -2473,31 +4158,32 @@ function App() {
           </header>
 
           <div className="relative min-h-0 flex-1">
-            <div className="pointer-events-none absolute bottom-4 left-16 z-10 w-[340px] max-w-[calc(100%-5rem)]">
-              <div className="pointer-events-auto rounded-xl border border-border bg-background/92 font-mono shadow-sm backdrop-blur">
-                <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2.5">
-                  <Activity className="size-3.5 shrink-0 text-accent-ink" />
-                  <h2 className="truncate text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                    Graph events
-                  </h2>
-                  <span className="ml-auto tabular-nums text-[11px] text-muted-foreground">
-                    {graphActivity.length}
-                  </span>
-                </div>
+            {graphActivity.length > 0 ? (
+              <div className="pointer-events-none absolute bottom-3 right-3 z-10 w-[280px] max-w-[calc(100%-1.5rem)] opacity-80 transition-opacity hover:opacity-100">
+                <div className="pointer-events-auto rounded-lg border border-border bg-background/88 font-mono shadow-sm backdrop-blur">
+                  <div className="flex items-center gap-2 border-b border-border/70 px-2.5 py-2">
+                    <Activity className="size-3 shrink-0 text-accent-ink" />
+                    <h2 className="truncate text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                      Graph events
+                    </h2>
+                    <span className="ml-auto tabular-nums text-[11px] text-muted-foreground">
+                      {graphActivity.length}
+                    </span>
+                  </div>
 
-                {graphActivity.length === 0 ? (
-                  <p className="px-3 py-3 text-[11.5px] leading-5 text-muted-foreground">
-                    No graph events yet.
-                  </p>
-                ) : (
-                  <ol className="max-h-[240px] space-y-2.5 overflow-y-auto p-3">
-                    {graphActivity.map((event, index) => (
+                  <ol className="max-h-36 space-y-2 overflow-y-auto p-2.5">
+                    {graphActivity.slice(-4).map((event, index) => (
                       <li
                         key={event.id}
                         className="grid grid-cols-[auto_1fr] gap-2.5 text-xs"
                       >
                         <span className="pt-0.5 text-[11px] tabular-nums text-term-faint">
-                          {String(index + 1).padStart(2, '0')}
+                          {String(
+                            graphActivity.length -
+                              Math.min(graphActivity.length, 4) +
+                              index +
+                              1
+                          ).padStart(2, '0')}
                         </span>
                         <div className="min-w-0">
                           <div className="flex min-w-0 items-center gap-1.5">
@@ -2529,17 +4215,27 @@ function App() {
                       </li>
                     ))}
                   </ol>
-                )}
+                </div>
               </div>
-            </div>
+            ) : null}
             <ReactFlow
               colorMode={colorScheme}
-              nodes={nodes}
+              nodes={canvasNodes}
               edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
+              onNodesChange={updateCanvasNodePositions}
+              onNodeDragStart={beginCanvasNodeDrag}
+              onNodeDragStop={persistCanvasNodePositions}
               onNodeClick={(_event, node) => {
                 if (!node.id.startsWith('cluster:')) {
+                  const graphNode = runtimeState.nodes.find(
+                    (candidate) => candidate.nodeId === node.id
+                  )
+                  if (graphNode?.clusterId) {
+                    setActiveClusterId(graphNode.clusterId)
+                  }
+                  setPendingLinkedSourceId(null)
                   setSelectedSessionId(node.id)
                   setActiveTab('chat')
                 }
