@@ -90,11 +90,17 @@ try {
     clusterId: cluster.clusterId,
     label: 'Review loop Master',
     prompt: 'master session for canvas orchestration smoke',
+    providerKind: 'claude-code',
     loopPolicy: policy,
   })
   await waitFor(
     'master to finish',
     () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
+  )
+  assert.equal(
+    runtime.getState().sessions[master.sessionId].providerKind,
+    'claude-code',
+    'workflow-created master should use the normal Claude SDK provider'
   )
 
   const repeatedMaster = await runtime.createMasterForCluster({
@@ -159,6 +165,48 @@ try {
     clusterMasterNodes(state, cluster.clusterId).length,
     1,
     'cluster should expose exactly one master node'
+  )
+
+  const freezeReason = 'Freeze managed scope for canvas orchestration smoke'
+  runtime.freeze({
+    target: cluster.clusterId,
+    reason: freezeReason,
+    source: replacement.sessionId,
+    masterReason: freezeReason,
+  })
+  assert.ok(
+    runtime
+      .getState()
+      .edges.some(
+        (edge) =>
+          edge.kind === 'freeze' &&
+          edge.source === replacement.sessionId &&
+          edge.target === worker.sessionId &&
+          edge.masterReason === freezeReason
+      ),
+    'master-attributed cluster freeze should create a visible freeze edge'
+  )
+  await assert.rejects(
+    () =>
+      runtime.resumeSession({
+        sessionId: worker.sessionId,
+        message: 'worker should remain frozen with the cluster',
+      }),
+    /Frozen session cannot be resumed/
+  )
+  await runtime.resumeSession({
+    sessionId: replacement.sessionId,
+    message: 'master should remain a normal chat after cluster freeze',
+  })
+  await waitFor(
+    'master to resume after cluster freeze',
+    () => runtime.getState().sessions[replacement.sessionId]?.status === 'idle'
+  )
+  assert.equal(
+    runtime.getState().nodes.find((node) => node.sessionId === replacement.sessionId)
+      ?.frozen,
+    undefined,
+    'cluster freeze should not mark the master node frozen'
   )
 
   const restored = manager({ storageFile })

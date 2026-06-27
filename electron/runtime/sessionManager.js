@@ -2,14 +2,19 @@ import electron from 'electron'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import {
   createEmptyGraphState,
   graphEdgeKinds,
   graphStateVersion,
 } from '../../shared/graph-state.js'
-import { runClaudeCli } from './claudeCliAdapter.js'
 import { MembraneBridge } from './membraneBridge.js'
+import { ProviderService } from './providerService.js'
+import {
+  legacyClaudeRuntimeEventsFromChunk,
+  resultSublines,
+} from './providers/legacyClaudeRuntimeMapper.js'
 
 const { BrowserWindow } =
   electron && typeof electron === 'object' && 'BrowserWindow' in electron
@@ -23,6 +28,23 @@ const storageBackupSuffix = '.bak'
 const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
+const validAgentBackends = new Set([
+  'claude-cli',
+  'claude-agent-sdk',
+  'codex-app-server',
+])
+const validProviderKinds = new Set([
+  'legacy-claude-cli',
+  'claude-code',
+  'codex',
+])
+const validRuntimeItemStatuses = new Set([
+  'pending',
+  'running',
+  'completed',
+  'failed',
+])
+const validRuntimeRequestDecisions = new Set(['approved', 'denied'])
 const validGraphEdgeKinds = new Set(graphEdgeKinds)
 const validLoopStatuses = new Set(['running', 'stopped'])
 
@@ -39,12 +61,61 @@ function safeCwd(cwd) {
     return process.cwd()
   }
 
-  return path.resolve(cwd)
+  const trimmed = cwd.trim()
+  if (trimmed === '~') {
+    return os.homedir()
+  }
+  if (trimmed.startsWith('~/')) {
+    return path.resolve(os.homedir(), trimmed.slice(2))
+  }
+
+  return path.resolve(trimmed)
+}
+
+function cwdStat(cwd) {
+  try {
+    return fs.statSync(cwd)
+  } catch {
+    return undefined
+  }
+}
+
+function isValidCwd(cwd) {
+  return cwdStat(cwd)?.isDirectory() === true
+}
+
+function validateRunnableCwd(cwd) {
+  const resolved = safeCwd(cwd)
+  const stat = cwdStat(resolved)
+  if (!stat) {
+    throw new Error(
+      `Project folder not found: ${resolved}. Choose an existing cwd before starting the chat.`
+    )
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(
+      `Project cwd is not a folder: ${resolved}. Choose an existing project directory.`
+    )
+  }
+
+  return resolved
 }
 
 function truncateChunks(chunks) {
   if (chunks.length > 1000) {
     chunks.splice(0, chunks.length - 1000)
+  }
+}
+
+function truncateEvents(events) {
+  if (events.length > 2000) {
+    events.splice(0, events.length - 2000)
+  }
+}
+
+function truncateActivities(activities) {
+  if (activities.length > 500) {
+    activities.splice(0, activities.length - 500)
   }
 }
 
@@ -137,6 +208,38 @@ function messageContent(message, context) {
   return message
 }
 
+function providerConfig(input = {}) {
+  const requested = input.providerKind ?? (input.agent === 'codex' ? 'codex' : undefined)
+
+  if (requested === 'codex') {
+    return {
+      agent: 'codex',
+      backend: 'codex-app-server',
+      providerKind: 'codex',
+      providerInstanceId: 'default-codex',
+      labelPrefix: 'Codex',
+    }
+  }
+
+  if (requested === 'claude-code') {
+    return {
+      agent: 'claude-code',
+      backend: 'claude-agent-sdk',
+      providerKind: 'claude-code',
+      providerInstanceId: 'default-claude-sdk',
+      labelPrefix: 'Claude',
+    }
+  }
+
+  return {
+    agent: 'claude-code',
+    backend: 'claude-cli',
+    providerKind: 'legacy-claude-cli',
+    providerInstanceId: 'legacy-claude-cli',
+    labelPrefix: 'Claude',
+  }
+}
+
 export class RuntimeSessionManager {
   #state = createEmptyGraphState()
   #runs = new Map()
@@ -144,6 +247,7 @@ export class RuntimeSessionManager {
   #loopTasks = new Map()
   #storageFile
   #bridge
+  #providerService
 
   constructor({ storageFile } = {}) {
     this.#storageFile =
@@ -154,6 +258,7 @@ export class RuntimeSessionManager {
     this.#bridge = new MembraneBridge({
       handler: (request) => this.handleMembraneRequest(request),
     })
+    this.#providerService = new ProviderService()
     this.#persistState()
     this.#recoverRunningLoops()
   }
@@ -172,25 +277,39 @@ export class RuntimeSessionManager {
     if (cluster && this.#state.clusters[cluster]?.frozen) {
       throw new Error(`Frozen cluster cannot create new sessions: ${cluster}`)
     }
+    const sourceSessionId =
+      typeof input.sourceSessionId === 'string' &&
+      input.sourceSessionId.trim().length > 0
+        ? input.sourceSessionId.trim()
+        : undefined
+    if (sourceSessionId && !this.#state.sessions[sourceSessionId]) {
+      throw new Error(`Unknown linked chat source session: ${sourceSessionId}`)
+    }
 
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
         : defaultPrompt
     const initialContent = messageContent(prompt, input.context)
-    const cwd = safeCwd(input.cwd)
+    const cwd = validateRunnableCwd(input.cwd)
+    const provider = providerConfig(input)
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
         ? input.label.trim()
-        : `Claude ${this.#state.nodes.length + 1}`
+        : `${provider.labelPrefix} ${this.#state.nodes.length + 1}`
     const ts = now()
 
     this.#state.sessions[sessionId] = {
       sessionId,
       nodeId: sessionId,
-      backend: 'claude-cli',
-      backendSessionId: sessionId,
-      agent: 'claude-code',
+      backend: provider.backend,
+      backendSessionId:
+        provider.providerKind === 'legacy-claude-cli' ? sessionId : undefined,
+      providerKind: provider.providerKind,
+      providerInstanceId: provider.providerInstanceId,
+      providerSessionId:
+        provider.providerKind === 'legacy-claude-cli' ? sessionId : undefined,
+      agent: provider.agent,
       label,
       prompt: initialContent,
       cwd,
@@ -199,6 +318,12 @@ export class RuntimeSessionManager {
       createdAt: ts,
       updatedAt: ts,
       chunks: [],
+      nativeEvents: [],
+      runtimeEvents: [],
+      runtimeActivities: [],
+      runtimeRequests: [],
+      runtimeUserInputRequests: [],
+      runtimePlans: [],
       messages: [
         {
           id: randomUUID(),
@@ -217,7 +342,7 @@ export class RuntimeSessionManager {
       sessionId,
       label,
       role,
-      agent: 'claude-code',
+      agent: provider.agent,
       clusterId: cluster,
       status: 'pending',
       position: {
@@ -230,6 +355,20 @@ export class RuntimeSessionManager {
       if (role !== 'master') {
         this.#addNodeToCluster(sessionId, cluster)
       }
+    }
+    if (sourceSessionId) {
+      const linkLabel =
+        typeof input.linkLabel === 'string' && input.linkLabel.trim().length > 0
+          ? input.linkLabel.trim()
+          : 'linked chat'
+      this.#addEdge({
+        source: sourceSessionId,
+        target: sessionId,
+        kind: 'create-session',
+        envelope: this.#createEnvelope(sourceSessionId),
+        label: linkLabel,
+        masterReason: this.#masterReasonFromInput(sourceSessionId, input),
+      })
     }
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
@@ -260,6 +399,14 @@ export class RuntimeSessionManager {
 
     if (this.#isSessionFrozen(sessionId)) {
       throw new Error(`Frozen session cannot be resumed: ${sessionId}`)
+    }
+
+    try {
+      session.cwd = validateRunnableCwd(session.cwd)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.#failSession(sessionId, message)
+      throw error
     }
 
     const message =
@@ -301,6 +448,25 @@ export class RuntimeSessionManager {
     return { ok: true, state: this.getState() }
   }
 
+  archiveSession(input = {}) {
+    const sessionId =
+      typeof input === 'string'
+        ? input
+        : typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+          ? input.sessionId.trim()
+          : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    const archived = typeof input === 'object' && input.archived === false ? false : true
+    this.#state.sessions[sessionId].archived = archived
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { ok: true, state: this.getState() }
+  }
+
   killSession(sessionId) {
     const run = this.#runs.get(sessionId)
     const session = this.#state.sessions[sessionId]
@@ -319,6 +485,13 @@ export class RuntimeSessionManager {
       session.updatedAt = now()
       this.#markActiveAssistant(sessionId, 'failed')
       this.#updateNodeStatus(sessionId, 'killed')
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts: session.updatedAt,
+        type: 'session.state',
+        sessionId,
+        status: 'killed',
+      })
       this.#touch()
       this.#emitRuntimeEvent({
         type: 'session.killed',
@@ -334,7 +507,106 @@ export class RuntimeSessionManager {
     for (const sessionId of this.#runs.keys()) {
       this.killSession(sessionId)
     }
+    this.#providerService?.closeAll?.()
     this.#bridge?.close()
+  }
+
+  respondRuntimeRequest(input = {}) {
+    const sessionId =
+      typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+        ? input.sessionId.trim()
+        : undefined
+    const requestId =
+      typeof input.requestId === 'string' && input.requestId.trim().length > 0
+        ? input.requestId.trim()
+        : undefined
+    const decision = input.decision
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+    if (!requestId) {
+      throw new Error('Runtime request id is required')
+    }
+    if (!validRuntimeRequestDecisions.has(decision)) {
+      throw new Error('Runtime request decision must be approved or denied')
+    }
+
+    const session = this.#state.sessions[sessionId]
+    const request = session.runtimeRequests?.find((item) => item.id === requestId)
+    if (!request) {
+      throw new Error(`Unknown runtime request: ${requestId}`)
+    }
+    if (request.status !== 'open') {
+      return { ok: false, state: this.getState() }
+    }
+
+    const run = this.#runs.get(sessionId)
+    if (typeof run?.respondRuntimeRequest !== 'function') {
+      throw new Error(`Session cannot respond to runtime requests: ${sessionId}`)
+    }
+
+    run.respondRuntimeRequest({ requestId, decision })
+    const event = {
+      id: randomUUID(),
+      ts: now(),
+      type: 'request.resolved',
+      sessionId,
+      requestId,
+      status: decision,
+    }
+    this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    return { ok: true, state: this.getState() }
+  }
+
+  answerUserInput(input = {}) {
+    const sessionId =
+      typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+        ? input.sessionId.trim()
+        : undefined
+    const requestId =
+      typeof input.requestId === 'string' && input.requestId.trim().length > 0
+        ? input.requestId.trim()
+        : undefined
+    const answer = typeof input.answer === 'string' ? input.answer : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+    if (!requestId) {
+      throw new Error('User input request id is required')
+    }
+    if (answer === undefined) {
+      throw new Error('User input answer is required')
+    }
+
+    const session = this.#state.sessions[sessionId]
+    const request = session.runtimeUserInputRequests?.find(
+      (item) => item.id === requestId
+    )
+    if (!request) {
+      throw new Error(`Unknown user input request: ${requestId}`)
+    }
+    if (request.status !== 'open') {
+      return { ok: false, state: this.getState() }
+    }
+
+    const run = this.#runs.get(sessionId)
+    if (typeof run?.answerUserInput !== 'function') {
+      throw new Error(`Session cannot answer user input requests: ${sessionId}`)
+    }
+
+    run.answerUserInput({ requestId, answer })
+    const event = {
+      id: randomUUID(),
+      ts: now(),
+      type: 'user-input.answered',
+      sessionId,
+      requestId,
+      answer,
+    }
+    this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    return { ok: true, state: this.getState() }
   }
 
   upsertCluster(input = {}) {
@@ -425,8 +697,10 @@ export class RuntimeSessionManager {
         : `${cluster.label} Master`
 
     const result = await this.createSession({
-      agent: 'claude-code',
+      agent: input.agent === 'codex' ? 'codex' : 'claude-code',
+      providerKind: input.providerKind ?? 'claude-code',
       prompt,
+      cwd: input.cwd,
       label,
       cluster: clusterId,
       role: 'master',
@@ -474,6 +748,46 @@ export class RuntimeSessionManager {
     )
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { state: this.getState() }
+  }
+
+  updateNodePositions(input = {}) {
+    const positions = Array.isArray(input.positions) ? input.positions : []
+    let changed = false
+
+    for (const item of positions) {
+      if (!isObject(item) || !isObject(item.position)) {
+        continue
+      }
+
+      const nodeId =
+        typeof item.nodeId === 'string' && item.nodeId.trim().length > 0
+          ? item.nodeId.trim()
+          : undefined
+      const x = item.position.x
+      const y = item.position.y
+      if (!nodeId || !Number.isFinite(x) || !Number.isFinite(y)) {
+        continue
+      }
+
+      const node = this.#state.nodes.find((candidate) => candidate.nodeId === nodeId)
+      if (!node) {
+        continue
+      }
+
+      if (node.position.x === x && node.position.y === y) {
+        continue
+      }
+
+      node.position = { x, y }
+      changed = true
+    }
+
+    if (changed) {
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    }
+
     return { state: this.getState() }
   }
 
@@ -623,16 +937,35 @@ export class RuntimeSessionManager {
       assistantMessageId: undefined,
       sawTextDelta: false,
     })
+    this.#appendProviderRuntimeEvent(sessionId, {
+      id: randomUUID(),
+      ts: session.startedAt,
+      type: 'turn.started',
+      sessionId,
+      turnId: runId,
+    })
+    this.#appendProviderRuntimeEvent(sessionId, {
+      id: randomUUID(),
+      ts: session.startedAt,
+      type: 'session.state',
+      sessionId,
+      status: 'running',
+    })
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
 
     let run
     try {
-      run = runClaudeCli({
+      run = this.#providerService.startTurn({
+        providerKind: session.providerKind,
+        turnId: runId,
         prompt,
         cwd: session.cwd,
-        backendSessionId: runKind === 'resume' ? session.backendSessionId : undefined,
-        sessionId: runKind === 'create' ? sessionId : undefined,
+        backendSessionId:
+          runKind === 'resume'
+            ? session.providerSessionId ?? session.backendSessionId
+            : undefined,
+        sessionId,
         membrane: {
           bridgeUrl,
           token: membraneToken,
@@ -647,6 +980,14 @@ export class RuntimeSessionManager {
     this.#runs.set(sessionId, run)
 
     run.on('stream', (chunk) => this.#appendStreamChunk(sessionId, chunk))
+    run.on('native', (event) => this.#appendNativeProviderEnvelope(sessionId, event))
+    run.on('providerEvent', (event) =>
+      this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    )
+    run.on('providerSession', (event) =>
+      this.#recordProviderSession(sessionId, event)
+    )
+    run.on('stderr', (data) => this.#appendProviderStderr(sessionId, data))
     run.on('result', (event) => this.#recordResult(sessionId, event))
     run.on('error', (error) => this.#failSession(sessionId, error.message))
     run.on('close', ({ code, signal, killed }) => {
@@ -662,11 +1003,19 @@ export class RuntimeSessionManager {
       current.signal = signal
       current.finishedAt = now()
       current.updatedAt = current.finishedAt
+      this.#appendTurnCompletedIfMissing(sessionId, current.finishedAt)
 
       if (killed || current.status === 'killed') {
         current.status = 'killed'
         this.#markActiveAssistant(sessionId, 'failed')
         this.#updateNodeStatus(sessionId, 'killed')
+        this.#appendProviderRuntimeEvent(sessionId, {
+          id: randomUUID(),
+          ts: current.updatedAt,
+          type: 'session.state',
+          sessionId,
+          status: 'killed',
+        })
         this.#runContext.delete(sessionId)
         this.#touch()
         this.#emitRuntimeEvent({
@@ -681,6 +1030,13 @@ export class RuntimeSessionManager {
         current.status = 'idle'
         this.#markActiveAssistant(sessionId, 'complete')
         this.#updateNodeStatus(sessionId, 'idle')
+        this.#appendProviderRuntimeEvent(sessionId, {
+          id: randomUUID(),
+          ts: current.updatedAt,
+          type: 'session.state',
+          sessionId,
+          status: 'idle',
+        })
         this.#runContext.delete(sessionId)
         this.#touch()
         this.#emitRuntimeEvent({
@@ -707,6 +1063,7 @@ export class RuntimeSessionManager {
     const backendSessionId = chunk.event?.session_id ?? chunk.event?.event?.session_id
     if (typeof backendSessionId === 'string') {
       session.backendSessionId = backendSessionId
+      session.providerSessionId = backendSessionId
     }
 
     const streamChunk = {
@@ -722,6 +1079,8 @@ export class RuntimeSessionManager {
     session.chunks.push(streamChunk)
     truncateChunks(session.chunks)
 
+    this.#appendNativeProviderEvent(session, streamChunk, chunk)
+    this.#appendLegacyProviderRuntimeEvents(sessionId, streamChunk, chunk)
     this.#appendAssistantMessage(sessionId, chunk)
     session.updatedAt = streamChunk.ts
     this.#touch()
@@ -731,6 +1090,296 @@ export class RuntimeSessionManager {
       chunk: streamChunk,
       state: this.getState(),
     })
+  }
+
+  #appendNativeProviderEvent(session, streamChunk, chunk) {
+    if (!chunk.event) {
+      return
+    }
+
+    session.nativeEvents ??= []
+    session.nativeEvents.push({
+      id: randomUUID(),
+      ts: streamChunk.ts,
+      sessionId: session.sessionId,
+      providerKind: session.providerKind ?? 'legacy-claude-cli',
+      turnId: this.#runContext.get(session.sessionId)?.runId,
+      raw: {
+        source: 'legacy.claude-cli.stream-json',
+        messageType: streamChunk.eventType,
+        payload: chunk.event,
+      },
+    })
+    truncateEvents(session.nativeEvents)
+  }
+
+  #appendNativeProviderEnvelope(sessionId, event) {
+    const session = this.#state.sessions[sessionId]
+    if (!session || !event?.raw) {
+      return
+    }
+
+    session.nativeEvents ??= []
+    session.nativeEvents.push({
+      id: randomUUID(),
+      ts: nonEmptyString(event.ts) ? event.ts : now(),
+      sessionId,
+      providerKind: validProviderKinds.has(event.providerKind)
+        ? event.providerKind
+        : session.providerKind,
+      turnId: nonEmptyString(event.turnId)
+        ? event.turnId
+        : this.#runContext.get(sessionId)?.runId,
+      raw: event.raw,
+    })
+    truncateEvents(session.nativeEvents)
+  }
+
+  #recordProviderSession(sessionId, event) {
+    const session = this.#state.sessions[sessionId]
+    if (!session || !nonEmptyString(event?.providerSessionId)) {
+      return
+    }
+
+    session.providerSessionId = event.providerSessionId
+    session.backendSessionId = event.providerSessionId
+    session.updatedAt = now()
+    this.#touch()
+  }
+
+  #appendExternalProviderRuntimeEvent(sessionId, event) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      return
+    }
+
+    const normalizedEvent = {
+      ...event,
+      sessionId,
+    }
+    this.#appendProviderRuntimeEvent(sessionId, normalizedEvent)
+
+    if (normalizedEvent.type === 'content.delta') {
+      this.#appendContentDeltaMessage(sessionId, normalizedEvent)
+    }
+
+    session.updatedAt = normalizedEvent.ts ?? now()
+    this.#touch()
+    this.#broadcast({
+      type: 'provider.runtime',
+      sessionId,
+      providerEvent: normalizedEvent,
+      state: this.getState(),
+    })
+  }
+
+  #appendContentDeltaMessage(sessionId, event) {
+    if (event.streamKind !== 'assistant_text' || typeof event.text !== 'string') {
+      return
+    }
+
+    const session = this.#state.sessions[sessionId]
+    const context = this.#runContext.get(sessionId)
+    if (!session || !context) {
+      return
+    }
+
+    const message = this.#ensureAssistantMessage(session, context)
+    if (event.isSnapshot) {
+      if (!context.sawTextDelta || message.content.trim().length === 0) {
+        message.content = event.text
+      }
+    } else {
+      message.content += event.text
+      context.sawTextDelta = true
+    }
+    message.status = 'streaming'
+  }
+
+  #appendProviderStderr(sessionId, data) {
+    const session = this.#state.sessions[sessionId]
+    if (!session || typeof data !== 'string' || data.length === 0) {
+      return
+    }
+
+    const chunk = {
+      id: randomUUID(),
+      sessionId,
+      ts: now(),
+      stream: 'stderr',
+      raw: data,
+      text: data,
+    }
+    session.chunks.push(chunk)
+    truncateChunks(session.chunks)
+  }
+
+  #appendLegacyProviderRuntimeEvents(sessionId, streamChunk, chunk) {
+    const context = this.#runContext.get(sessionId)
+    const events = legacyClaudeRuntimeEventsFromChunk({
+      sessionId,
+      turnId: context?.runId,
+      ts: streamChunk.ts,
+      chunk,
+      sawTextDelta: context?.sawTextDelta === true,
+    })
+
+    for (const event of events) {
+      this.#appendProviderRuntimeEvent(sessionId, event)
+    }
+  }
+
+  #appendProviderRuntimeEvent(sessionId, event) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      return
+    }
+
+    session.runtimeEvents ??= []
+    session.runtimeEvents.push(event)
+    truncateEvents(session.runtimeEvents)
+
+    if (
+      event.type === 'item.started' ||
+      event.type === 'item.updated' ||
+      event.type === 'item.completed'
+    ) {
+      this.#upsertRuntimeActivity(session, event.item)
+      return
+    }
+
+    if (event.type === 'request.opened') {
+      session.runtimeRequests ??= []
+      const existing = session.runtimeRequests.find(
+        (item) => item.id === event.request.id
+      )
+      if (existing) {
+        Object.assign(existing, event.request)
+      } else {
+        session.runtimeRequests.push(event.request)
+      }
+      truncateActivities(session.runtimeRequests)
+      return
+    }
+
+    if (event.type === 'request.resolved') {
+      session.runtimeRequests ??= []
+      const request = session.runtimeRequests.find(
+        (item) => item.id === event.requestId
+      )
+      if (request) {
+        request.status = event.status ?? 'resolved'
+        request.resolvedAt = event.ts
+      }
+      return
+    }
+
+    if (event.type === 'user-input.requested') {
+      session.runtimeUserInputRequests ??= []
+      const existing = session.runtimeUserInputRequests.find(
+        (item) => item.id === event.request.id
+      )
+      const nextRequest = {
+        status: 'open',
+        ...event.request,
+      }
+      if (existing) {
+        Object.assign(existing, nextRequest)
+      } else {
+        session.runtimeUserInputRequests.push(nextRequest)
+      }
+      truncateActivities(session.runtimeUserInputRequests)
+      return
+    }
+
+    if (event.type === 'user-input.answered') {
+      session.runtimeUserInputRequests ??= []
+      const request = session.runtimeUserInputRequests.find(
+        (item) => item.id === event.requestId
+      )
+      if (request) {
+        request.status = 'answered'
+        request.answeredAt = event.ts
+        request.answer = event.answer
+      }
+      return
+    }
+
+    if (event.type === 'plan.updated') {
+      session.runtimePlans ??= []
+      const index = session.runtimePlans.findIndex(
+        (plan) => plan.id === event.plan.id
+      )
+      if (index >= 0) {
+        session.runtimePlans[index] = event.plan
+      } else {
+        session.runtimePlans.push(event.plan)
+      }
+      truncateActivities(session.runtimePlans)
+    }
+  }
+
+  #appendTurnCompletedIfMissing(sessionId, ts) {
+    const session = this.#state.sessions[sessionId]
+    const turnId = this.#runContext.get(sessionId)?.runId
+    if (!session || !turnId) {
+      return
+    }
+
+    const alreadyCompleted = session.runtimeEvents?.some(
+      (event) => event.type === 'turn.completed' && event.turnId === turnId
+    )
+    if (alreadyCompleted) {
+      return
+    }
+
+    this.#appendProviderRuntimeEvent(sessionId, {
+      id: randomUUID(),
+      ts,
+      type: 'turn.completed',
+      sessionId,
+      turnId,
+    })
+  }
+
+  #upsertRuntimeActivity(session, item) {
+    session.runtimeActivities ??= []
+    const existing = session.runtimeActivities.find(
+      (activity) => activity.id === item.id
+    )
+    const next = {
+      ...(existing ?? {}),
+      ...item,
+      sessionId: session.sessionId,
+      title: item.title ?? existing?.title ?? item.command ?? item.providerName ?? item.id,
+      status:
+        item.status ??
+        existing?.status ??
+        (item.completedAt ? 'completed' : 'running'),
+      startedAt: existing?.startedAt ?? item.startedAt,
+      updatedAt: item.updatedAt ?? item.completedAt ?? now(),
+    }
+
+    if (item.completedAt) {
+      next.completedAt = item.completedAt
+    }
+    if (next.startedAt && next.completedAt && next.durationMs === undefined) {
+      const start = Date.parse(next.startedAt)
+      const end = Date.parse(next.completedAt)
+      if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
+        next.durationMs = end - start
+      }
+    }
+    if (typeof next.output === 'string') {
+      next.sublines = resultSublines(next.output)
+    }
+
+    if (existing) {
+      Object.assign(existing, next)
+    } else {
+      session.runtimeActivities.push(next)
+      truncateActivities(session.runtimeActivities)
+    }
   }
 
   #appendAssistantMessage(sessionId, chunk) {
@@ -790,6 +1439,7 @@ export class RuntimeSessionManager {
     }
 
     session.backendSessionId = event.session_id ?? session.backendSessionId
+    session.providerSessionId = event.session_id ?? session.providerSessionId
     session.result = typeof event.result === 'string' ? event.result : undefined
     if (session.result) {
       const context = this.#runContext.get(sessionId)
@@ -816,6 +1466,14 @@ export class RuntimeSessionManager {
     session.updatedAt = session.finishedAt
     this.#markActiveAssistant(sessionId, 'failed')
     this.#updateNodeStatus(sessionId, 'failed')
+    this.#appendTurnCompletedIfMissing(sessionId, session.finishedAt)
+    this.#appendProviderRuntimeEvent(sessionId, {
+      id: randomUUID(),
+      ts: session.finishedAt,
+      type: 'session.state',
+      sessionId,
+      status: 'failed',
+    })
     this.#runContext.delete(sessionId)
     this.#touch()
     this.#emitRuntimeEvent({
@@ -914,7 +1572,7 @@ export class RuntimeSessionManager {
 
   #isSessionFrozen(sessionId) {
     const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-    const clusterId = this.#managedClusterId(sessionId) ?? this.#masterClusterId(sessionId)
+    const clusterId = this.#managedClusterId(sessionId)
     return node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
   }
 
@@ -1832,6 +2490,7 @@ export class RuntimeSessionManager {
     }
 
     const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
+    const sourceSession = this.#state.sessions[source]
     const cluster =
       typeof input.cluster === 'string' && input.cluster.trim().length > 0
         ? input.cluster.trim()
@@ -1840,6 +2499,7 @@ export class RuntimeSessionManager {
     const result = await this.createSession({
       agent: 'claude-code',
       prompt,
+      cwd: sourceSession?.cwd,
       context: input.context,
       cluster,
       label: input.label,
@@ -2286,7 +2946,31 @@ export class RuntimeSessionManager {
       state.nodes.push(this.#nodeFromSession(session))
     }
 
+    state.diagnostics = this.#activePersistedDiagnostics(state, source.diagnostics)
+
     return this.#withDiagnostics(state, diagnostics)
+  }
+
+  #activePersistedDiagnostics(state, diagnostics) {
+    if (!Array.isArray(diagnostics)) {
+      return undefined
+    }
+
+    return diagnostics
+      .filter((item) => isObject(item))
+      .filter((item) => {
+        if (item.type !== 'storage.cwd_invalid') {
+          return true
+        }
+
+        const sessionId =
+          isObject(item.details) && typeof item.details.sessionId === 'string'
+            ? item.details.sessionId
+            : undefined
+        const session = sessionId ? state.sessions[sessionId] : undefined
+        return !session || !isValidCwd(session.cwd)
+      })
+      .slice(-50)
   }
 
   #withDiagnostics(state, diagnostics) {
@@ -2311,18 +2995,53 @@ export class RuntimeSessionManager {
         : randomUUID()
     const ts = now()
     const status = this.#normalizeSessionStatus(sessionId, value, diagnostics)
+    const backend = validAgentBackends.has(value.backend)
+      ? value.backend
+      : 'claude-cli'
+    const providerKind = validProviderKinds.has(value.providerKind)
+      ? value.providerKind
+      : backend === 'codex-app-server'
+        ? 'codex'
+        : backend === 'claude-agent-sdk'
+          ? 'claude-code'
+          : 'legacy-claude-cli'
+    const cwd = safeCwd(value.cwd)
+    if (!isValidCwd(cwd)) {
+      diagnostics.push(
+        diagnostic(
+          'storage.cwd_invalid',
+          'A restored session points at a project folder that is no longer available.',
+          { sessionId, cwd }
+        )
+      )
+      value.error =
+        value.error ??
+        `Project folder is no longer available: ${cwd}. Restore the folder or start a linked chat with a valid cwd.`
+    }
     const session = {
       ...value,
       sessionId,
       nodeId: sessionId,
-      backend: nonEmptyString(value.backend) ? value.backend : 'claude-cli',
+      backend,
       backendSessionId: nonEmptyString(value.backendSessionId)
         ? value.backendSessionId
         : sessionId,
+      providerKind,
+      providerInstanceId: nonEmptyString(value.providerInstanceId)
+        ? value.providerInstanceId
+        : providerKind,
+      providerSessionId: nonEmptyString(value.providerSessionId)
+        ? value.providerSessionId
+        : nonEmptyString(value.backendSessionId)
+          ? value.backendSessionId
+          : sessionId,
+      providerResumeCursor: nonEmptyString(value.providerResumeCursor)
+        ? value.providerResumeCursor
+        : undefined,
       agent: nonEmptyString(value.agent) ? value.agent : 'claude-code',
       label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
-      cwd: safeCwd(value.cwd),
+      cwd,
       role: value.role === 'master' ? 'master' : 'worker',
       status,
       createdAt: nonEmptyString(value.createdAt) ? value.createdAt : ts,
@@ -2335,6 +3054,31 @@ export class RuntimeSessionManager {
             this.#normalizeMessage(sessionId, message, status, diagnostics)
           )
         : this.#messagesFromLegacySession({ ...value, sessionId }),
+      nativeEvents: Array.isArray(value.nativeEvents)
+        ? value.nativeEvents.map((event) =>
+            this.#normalizeNativeProviderEvent(sessionId, providerKind, event)
+          )
+        : [],
+      runtimeEvents: Array.isArray(value.runtimeEvents)
+        ? value.runtimeEvents.map((event) =>
+            this.#normalizeProviderRuntimeEvent(sessionId, event)
+          )
+        : [],
+      runtimeActivities: Array.isArray(value.runtimeActivities)
+        ? value.runtimeActivities.map((activity) =>
+            this.#normalizeRuntimeActivity(sessionId, activity)
+          )
+        : [],
+      runtimeRequests: Array.isArray(value.runtimeRequests)
+        ? value.runtimeRequests.filter(isObject)
+        : [],
+      runtimeUserInputRequests: Array.isArray(value.runtimeUserInputRequests)
+        ? value.runtimeUserInputRequests.filter(isObject)
+        : [],
+      runtimePlans: Array.isArray(value.runtimePlans)
+        ? value.runtimePlans.filter(isObject)
+        : [],
+      archived: value.archived === true,
     }
 
     if (value.nodeId !== sessionId) {
@@ -2411,6 +3155,74 @@ export class RuntimeSessionManager {
       ts: nonEmptyString(value.ts) ? value.ts : now(),
       stream: value.stream === 'stderr' ? 'stderr' : 'stdout',
       raw: typeof value.raw === 'string' ? value.raw : '',
+    }
+  }
+
+  #normalizeNativeProviderEvent(sessionId, providerKind, value) {
+    const event = isObject(value) ? value : {}
+    const raw = isObject(event.raw)
+      ? event.raw
+      : {
+          source: 'legacy.claude-cli.stream-json',
+          payload: value,
+        }
+
+    return {
+      ...event,
+      id: nonEmptyString(event.id) ? event.id : randomUUID(),
+      ts: nonEmptyString(event.ts) ? event.ts : now(),
+      sessionId,
+      providerKind: validProviderKinds.has(event.providerKind)
+        ? event.providerKind
+        : providerKind,
+      turnId: nonEmptyString(event.turnId) ? event.turnId : undefined,
+      raw,
+    }
+  }
+
+  #normalizeProviderRuntimeEvent(sessionId, value) {
+    const event = isObject(value) ? value : {}
+    return {
+      ...event,
+      id: nonEmptyString(event.id) ? event.id : randomUUID(),
+      ts: nonEmptyString(event.ts) ? event.ts : now(),
+      type: nonEmptyString(event.type) ? event.type : 'session.state',
+      sessionId,
+    }
+  }
+
+  #normalizeRuntimeActivity(sessionId, value) {
+    const activity = isObject(value) ? value : {}
+    const status = validRuntimeItemStatuses.has(activity.status)
+      ? activity.status
+      : activity.completedAt
+        ? 'completed'
+        : 'running'
+
+    return {
+      ...activity,
+      id: nonEmptyString(activity.id) ? activity.id : randomUUID(),
+      sessionId,
+      kind: nonEmptyString(activity.kind) ? activity.kind : 'tool_call',
+      title: nonEmptyString(activity.title)
+        ? activity.title
+        : nonEmptyString(activity.command)
+          ? activity.command
+          : 'activity',
+      status,
+      startedAt: nonEmptyString(activity.startedAt)
+        ? activity.startedAt
+        : undefined,
+      updatedAt: nonEmptyString(activity.updatedAt) ? activity.updatedAt : now(),
+      completedAt: nonEmptyString(activity.completedAt)
+        ? activity.completedAt
+        : undefined,
+      durationMs: Number.isFinite(activity.durationMs)
+        ? activity.durationMs
+        : undefined,
+      sublines: Array.isArray(activity.sublines)
+        ? activity.sublines.filter(isObject)
+        : [],
     }
   }
 
@@ -2514,6 +3326,9 @@ export class RuntimeSessionManager {
       nodeId: sessionId,
       backend: 'claude-cli',
       backendSessionId: sessionId,
+      providerKind: 'legacy-claude-cli',
+      providerInstanceId: 'legacy-claude-cli',
+      providerSessionId: sessionId,
       agent: nonEmptyString(node.agent) ? node.agent : 'claude-code',
       label: nonEmptyString(node.label) ? node.label : `Recovered ${sessionId.slice(0, 8)}`,
       prompt: '',
@@ -2526,6 +3341,12 @@ export class RuntimeSessionManager {
       error: 'Recovered graph node without a persisted session record.',
       chunks: [],
       messages: [],
+      nativeEvents: [],
+      runtimeEvents: [],
+      runtimeActivities: [],
+      runtimeRequests: [],
+      runtimeUserInputRequests: [],
+      runtimePlans: [],
     }
   }
 

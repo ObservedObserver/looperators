@@ -50,8 +50,17 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:resume-session', (_event, input) =>
     runtime.resumeSession(input)
   )
+  ipcMain.handle('orrery:archive-session', (_event, input) =>
+    runtime.archiveSession(input)
+  )
   ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
     runtime.killSession(sessionId)
+  )
+  ipcMain.handle('orrery:respond-runtime-request', (_event, input) =>
+    runtime.respondRuntimeRequest(input)
+  )
+  ipcMain.handle('orrery:answer-user-input', (_event, input) =>
+    runtime.answerUserInput(input)
   )
   ipcMain.handle('orrery:upsert-cluster', (_event, input) =>
     runtime.upsertCluster(input)
@@ -64,6 +73,9 @@ app.whenReady().then(() => {
   )
   ipcMain.handle('orrery:set-cluster-loop-policy', (_event, input) =>
     runtime.setClusterLoopPolicy(input)
+  )
+  ipcMain.handle('orrery:update-node-positions', (_event, input) =>
+    runtime.updateNodePositions(input)
   )
   ipcMain.handle('orrery:start-master-loop', (_event, input) =>
     runtime.startMasterLoop(input)

@@ -1,4 +1,14 @@
-export const graphStateVersion = 4
+import type {
+  NativeProviderEvent,
+  ProviderKind,
+  ProviderRuntimeEvent,
+  RuntimeActivity,
+  RuntimePlan,
+  RuntimeRequest,
+  UserInputRequest,
+} from './provider-runtime'
+
+export const graphStateVersion = 5
 
 export const sessionStatuses = [
   'pending',
@@ -75,6 +85,42 @@ export const graphStateSchema = {
       output: { ok: 'boolean' },
     },
   },
+  publicRuntimeApi: {
+    createSession: {
+      input: {
+        base: 'CreateRuntimeSessionInput',
+        sourceSessionId:
+          'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
+        linkLabel:
+          'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+      },
+    },
+    archiveSession: {
+      input: {
+        sessionId: 'SessionId',
+        archived: 'boolean?; true hides from default history, false restores',
+      },
+    },
+    freeze: {
+      input: {
+        target: 'SessionId | ClusterId',
+        reason: 'string?',
+        source: 'SessionId?; optional master/control session for visible freeze edge',
+        masterReason: 'string?; explanation shown on freeze edges',
+      },
+    },
+    createMasterForCluster: {
+      input: {
+        clusterId: 'ClusterId',
+        prompt: 'string?',
+        cwd: 'string?; project cwd selected by the UI for the master session',
+        agent: '"claude-code" | "codex"?',
+        providerKind: 'ProviderKind?',
+        label: 'string?',
+        loopPolicy: 'LoopPolicy?',
+      },
+    },
+  },
   runtimeEvents: [
     'runtime.state',
     'session.created',
@@ -93,6 +139,9 @@ export const graphStateSchema = {
       frozen: 'boolean?',
       freezeReason: 'string?',
       masterReason: 'string?',
+    },
+    AgentSession: {
+      archived: 'boolean?',
     },
     GraphEdge: {
       kind: graphEdgeKinds,
@@ -120,7 +169,10 @@ export type CallId = string
 
 export type SessionStatus = (typeof sessionStatuses)[number]
 
-export type AgentBackend = 'claude-cli'
+export type AgentBackend =
+  | 'claude-cli'
+  | 'claude-agent-sdk'
+  | 'codex-app-server'
 export type SessionRole = 'worker' | 'master'
 
 export type SkillCallEnvelope = {
@@ -243,6 +295,10 @@ export type AgentSession = {
   nodeId: NodeId
   backend: AgentBackend
   backendSessionId?: string
+  providerKind: ProviderKind
+  providerInstanceId: string
+  providerSessionId?: string
+  providerResumeCursor?: string
   agent: string
   label: string
   prompt: string
@@ -259,6 +315,13 @@ export type AgentSession = {
   result?: string
   chunks: AgentStreamChunk[]
   messages: AgentMessage[]
+  nativeEvents: NativeProviderEvent[]
+  runtimeEvents: ProviderRuntimeEvent[]
+  runtimeActivities: RuntimeActivity[]
+  runtimeRequests: RuntimeRequest[]
+  runtimeUserInputRequests: UserInputRequest[]
+  runtimePlans: RuntimePlan[]
+  archived?: boolean
 }
 
 export type Cluster = {
@@ -294,8 +357,12 @@ export type GraphState = {
 export type CreateRuntimeSessionInput = {
   prompt: string
   cwd?: string
-  agent?: 'claude-code'
+  agent?: 'claude-code' | 'codex'
+  providerKind?: ProviderKind
   label?: string
+  context?: string
+  sourceSessionId?: SessionId
+  linkLabel?: string
   cluster?: ClusterId
   role?: SessionRole
 }
@@ -311,6 +378,23 @@ export type ResumeRuntimeSessionInput = {
   context?: string
 }
 
+export type RespondRuntimeRequestInput = {
+  sessionId: SessionId
+  requestId: string
+  decision: 'approved' | 'denied'
+}
+
+export type AnswerUserInputInput = {
+  sessionId: SessionId
+  requestId: string
+  answer: string
+}
+
+export type ArchiveRuntimeSessionInput = {
+  sessionId: SessionId
+  archived?: boolean
+}
+
 export type UpsertClusterInput = {
   clusterId?: ClusterId
   label?: string
@@ -321,6 +405,9 @@ export type UpsertClusterInput = {
 export type CreateMasterForClusterInput = {
   clusterId: ClusterId
   prompt?: string
+  cwd?: string
+  agent?: 'claude-code' | 'codex'
+  providerKind?: ProviderKind
   label?: string
   loopPolicy?: LoopPolicy
 }
@@ -333,6 +420,13 @@ export type AssignMasterToClusterInput = {
 export type SetClusterLoopPolicyInput = {
   clusterId: ClusterId
   loopPolicy: LoopPolicy
+}
+
+export type UpdateNodePositionsInput = {
+  positions: {
+    nodeId: NodeId
+    position: { x: number; y: number }
+  }[]
 }
 
 export type StartMasterLoopInput = {
@@ -349,6 +443,8 @@ export type StopMasterLoopInput = {
 export type FreezeInput = {
   target: SessionId | ClusterId
   reason?: string
+  source?: SessionId
+  masterReason?: string
 }
 
 export type RuntimeEvent =
@@ -359,6 +455,12 @@ export type RuntimeEvent =
       type: 'session.stream'
       sessionId: SessionId
       chunk: AgentStreamChunk
+      state: GraphState
+    }
+  | {
+      type: 'provider.runtime'
+      sessionId: SessionId
+      providerEvent: ProviderRuntimeEvent
       state: GraphState
     }
   | { type: 'session.finished'; sessionId: SessionId; state: GraphState }

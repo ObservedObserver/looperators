@@ -2,12 +2,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('orrery', {
   platform: process.platform,
+  workspace: {
+    defaultCwd: process.cwd(),
+  },
   runtime: {
     getState: () => ipcRenderer.invoke('orrery:runtime-state'),
     createSession: (input) => ipcRenderer.invoke('orrery:create-session', input),
     resumeSession: (input) => ipcRenderer.invoke('orrery:resume-session', input),
+    archiveSession: (input) =>
+      ipcRenderer.invoke('orrery:archive-session', input),
     killSession: (sessionId) =>
       ipcRenderer.invoke('orrery:kill-session', sessionId),
+    respondRuntimeRequest: (input) =>
+      ipcRenderer.invoke('orrery:respond-runtime-request', input),
+    answerUserInput: (input) =>
+      ipcRenderer.invoke('orrery:answer-user-input', input),
     upsertCluster: (input) => ipcRenderer.invoke('orrery:upsert-cluster', input),
     createMasterForCluster: (input) =>
       ipcRenderer.invoke('orrery:create-master-for-cluster', input),
@@ -15,6 +24,8 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:assign-master-to-cluster', input),
     setClusterLoopPolicy: (input) =>
       ipcRenderer.invoke('orrery:set-cluster-loop-policy', input),
+    updateNodePositions: (input) =>
+      ipcRenderer.invoke('orrery:update-node-positions', input),
     startMasterLoop: (input) =>
       ipcRenderer.invoke('orrery:start-master-loop', input),
     stopMasterLoop: (input) =>
