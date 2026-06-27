@@ -70,6 +70,7 @@ import {
   termInputCls,
   termTextareaCls,
 } from '@/components/terminal'
+import { AgentMarkdown } from '@/components/agent-markdown'
 import { ToolRunFeed } from '@/components/tool-run-feed'
 import {
   parseToolTurns,
@@ -438,6 +439,12 @@ type RecoveryState = {
   detail: string
 }
 
+type RuntimeDiagnosticNotice = RecoveryState & {
+  id: string
+  ts: string
+  titleText: string
+}
+
 function defaultWorkspaceCwd() {
   if (typeof window === 'undefined') {
     return ''
@@ -660,40 +667,139 @@ function RecoveryNotice({
   )
 }
 
-function RuntimeDiagnosticsBanner({
+function diagnosticCwd(diagnostic: RuntimeStateDiagnostic) {
+  if (diagnostic.type !== 'storage.cwd_invalid') {
+    return undefined
+  }
+
+  const cwd = diagnostic.details?.cwd
+  return typeof cwd === 'string' ? cwd : undefined
+}
+
+function formatAffectedChats(labels: string[], fallbackCount: number) {
+  const uniqueLabels = Array.from(new Set(labels)).filter(Boolean)
+  const count = uniqueLabels.length || fallbackCount
+  if (uniqueLabels.length === 0) {
+    return `${count} ${count === 1 ? 'chat' : 'chats'}`
+  }
+
+  const visibleLabels = uniqueLabels.slice(0, 2)
+  const remaining = uniqueLabels.length - visibleLabels.length
+  return `${visibleLabels.join(', ')}${remaining > 0 ? ` +${remaining} more` : ''}`
+}
+
+function affectedChatCount(labels: string[], fallbackCount: number) {
+  return Array.from(new Set(labels)).filter(Boolean).length || fallbackCount
+}
+
+function latestDiagnosticTs(diagnostics: RuntimeStateDiagnostic[]) {
+  return diagnostics.reduce((latest, diagnostic) => {
+    const latestMs = parseTimestamp(latest)?.getTime() ?? 0
+    const diagnosticMs = parseTimestamp(diagnostic.ts)?.getTime() ?? 0
+    return diagnosticMs > latestMs ? diagnostic.ts : latest
+  }, diagnostics[0]?.ts ?? '')
+}
+
+function runtimeDiagnosticNotices({
   diagnostics,
+  sessions,
 }: {
   diagnostics: RuntimeStateDiagnostic[]
+  sessions: AgentSession[]
+}): RuntimeDiagnosticNotice[] {
+  const sessionById = new Map(
+    sessions.map((session) => [session.sessionId, session])
+  )
+  const cwdGroups = new Map<string, RuntimeStateDiagnostic[]>()
+  const notices: RuntimeDiagnosticNotice[] = []
+
+  diagnostics.forEach((diagnostic) => {
+    const cwd = diagnosticCwd(diagnostic)
+    if (!cwd) {
+      const state = diagnosticDisplay(diagnostic)
+      notices.push({
+        ...state,
+        id: diagnostic.id,
+        ts: diagnostic.ts,
+        titleText: diagnostic.type,
+      })
+      return
+    }
+
+    const group = cwdGroups.get(cwd) ?? []
+    group.push(diagnostic)
+    cwdGroups.set(cwd, group)
+  })
+
+  cwdGroups.forEach((group, cwd) => {
+    const labels = group.flatMap((diagnostic) => {
+      const sessionId = diagnosticSessionId(diagnostic)
+      if (!sessionId) {
+        return []
+      }
+
+      return [sessionById.get(sessionId)?.label ?? compactId(sessionId)]
+    })
+    const affected = formatAffectedChats(labels, group.length)
+    const affectedCount = affectedChatCount(labels, group.length)
+    const usesVerb = affectedCount === 1 ? 'uses' : 'use'
+    notices.push({
+      id: `storage.cwd_invalid:${cwd}`,
+      ts: latestDiagnosticTs(group),
+      titleText: `storage.cwd_invalid ${cwd}`,
+      tone: 'rose',
+      title:
+        affectedCount === 1
+          ? 'Project folder unavailable'
+          : `${affectedCount} chats need a valid cwd`,
+      detail: `${affected} ${usesVerb} ${compactPath(cwd)}. Restore the folder or start linked chats with a valid cwd.`,
+    })
+  })
+
+  return notices
+    .sort((a, b) => {
+      const aMs = parseTimestamp(a.ts)?.getTime() ?? 0
+      const bMs = parseTimestamp(b.ts)?.getTime() ?? 0
+      return bMs - aMs
+    })
+    .slice(0, 3)
+}
+
+function RuntimeDiagnosticsBanner({
+  diagnostics,
+  sessions,
+}: {
+  diagnostics: RuntimeStateDiagnostic[]
+  sessions: AgentSession[]
 }) {
-  const visibleDiagnostics = diagnostics.slice(-3).reverse()
-  if (visibleDiagnostics.length === 0) {
+  const visibleNotices = runtimeDiagnosticNotices({ diagnostics, sessions })
+  if (visibleNotices.length === 0) {
     return null
   }
 
   return (
     <div className="app-region-no-drag mx-3 mb-2 space-y-1.5">
-      {visibleDiagnostics.map((diagnostic) => {
-        const state = diagnosticDisplay(diagnostic)
+      {visibleNotices.map((notice) => {
         return (
           <div
-            key={diagnostic.id}
+            key={notice.id}
             className={cn(
               'rounded-lg border px-3 py-2 font-mono',
-              recoveryToneClassName(state.tone)
+              recoveryToneClassName(notice.tone)
             )}
-            title={diagnostic.type}
+            title={notice.titleText}
           >
             <div className="flex min-w-0 items-center gap-2">
               <TriangleAlert className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">
-                {state.title}
+                {notice.title}
               </span>
               <span className="shrink-0 text-[10px] tabular-nums opacity-70">
-                {formatClock(diagnostic.ts)}
+                {formatClock(notice.ts)}
               </span>
             </div>
             <p className="mt-1 line-clamp-2 break-words text-[11px] leading-4 text-term-dim">
-              {state.detail}
+              {notice.detail}
             </p>
           </div>
         )
@@ -1548,11 +1654,11 @@ function ChatMessage({
           {hasText || (isStreaming && !hasFeed) ? (
             <div
               className={cn(
-                'whitespace-pre-wrap break-words text-[13px] leading-6 text-term-name',
+                'text-[13px] leading-6 text-term-name',
                 hasFeed && 'mt-2'
               )}
             >
-              {message.content}
+              <AgentMarkdown text={message.content} streaming={isStreaming} />
               {isStreaming ? <span className="orrery-caret ml-1" /> : null}
             </div>
           ) : null}
@@ -3032,7 +3138,10 @@ function App() {
             </div>
           ) : null}
 
-          <RuntimeDiagnosticsBanner diagnostics={runtimeDiagnostics} />
+          <RuntimeDiagnosticsBanner
+            diagnostics={runtimeDiagnostics}
+            sessions={sessions}
+          />
 
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTab === 'orchestrate' ? (
