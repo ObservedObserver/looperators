@@ -248,6 +248,205 @@
   .orrery-orbit-rev {
     animation: orrery-spin 6.5s linear infinite reverse;
   }
+
+  .orrery-markdown {
+    font-family: var(--font-sans);
+    overflow-wrap: anywhere;
+  }
+
+  .orrery-markdown > :first-child {
+    margin-top: 0;
+  }
+
+  .orrery-markdown > :last-child {
+    margin-bottom: 0;
+  }
+
+  .orrery-markdown p {
+    margin: 0.45rem 0;
+    white-space: pre-wrap;
+  }
+
+  .orrery-markdown h1,
+  .orrery-markdown h2,
+  .orrery-markdown h3,
+  .orrery-markdown h4 {
+    margin: 0.75rem 0 0.35rem;
+    color: var(--term-name);
+    font-weight: 650;
+    letter-spacing: 0;
+  }
+
+  .orrery-markdown h1 {
+    font-size: 1.05rem;
+    line-height: 1.45;
+  }
+
+  .orrery-markdown h2 {
+    font-size: 0.98rem;
+    line-height: 1.45;
+  }
+
+  .orrery-markdown h3,
+  .orrery-markdown h4 {
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+
+  .orrery-markdown ul,
+  .orrery-markdown ol {
+    margin: 0.45rem 0;
+    padding-left: 1.25rem;
+  }
+
+  .orrery-markdown ul {
+    list-style: disc;
+  }
+
+  .orrery-markdown ol {
+    list-style: decimal;
+  }
+
+  .orrery-markdown li {
+    margin: 0.18rem 0;
+    padding-left: 0.1rem;
+  }
+
+  .orrery-markdown li > p {
+    margin: 0.15rem 0;
+  }
+
+  .orrery-markdown input[type='checkbox'] {
+    margin-right: 0.45rem;
+    vertical-align: -0.1rem;
+    accent-color: var(--term-lime-hi);
+  }
+
+  .orrery-markdown blockquote {
+    margin: 0.6rem 0;
+    border-left: 2px solid color-mix(in oklch, var(--term-lime-hi) 50%, transparent);
+    background: color-mix(in oklch, var(--term-lime-hi) 7%, transparent);
+    padding: 0.45rem 0.75rem;
+    color: var(--term-dim);
+  }
+
+  .orrery-markdown a {
+    color: var(--term-cyan);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+
+  .orrery-markdown a:hover {
+    color: var(--term-name);
+  }
+
+  .orrery-markdown code {
+    border: 1px solid var(--ink-line);
+    border-radius: 0.3rem;
+    background: var(--ink-soft);
+    padding: 0.08rem 0.3rem;
+    color: var(--term-name);
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  .orrery-code-block {
+    margin: 0.65rem 0;
+    overflow: hidden;
+    border: 1px solid var(--ink-line);
+    border-radius: 0.45rem;
+    background: var(--ink-soft);
+  }
+
+  .orrery-code-block__bar {
+    display: flex;
+    min-height: 2rem;
+    align-items: center;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--ink-line-2);
+    padding: 0.25rem 0.35rem 0.25rem 0.75rem;
+  }
+
+  .orrery-code-block__lang {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--term-dim);
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.08em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .orrery-code-block pre {
+    margin: 0;
+    overflow-x: auto;
+    padding: 0.75rem;
+  }
+
+  .orrery-code-block pre code,
+  .orrery-markdown pre code {
+    display: block;
+    min-width: max-content;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 0;
+    color: var(--term-name);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1.65;
+    overflow-wrap: normal;
+    tab-size: 2;
+    white-space: pre;
+  }
+
+  .orrery-markdown-table-wrap {
+    margin: 0.65rem 0;
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--ink-line);
+    border-radius: 0.45rem;
+  }
+
+  .orrery-markdown table {
+    width: 100%;
+    min-width: max-content;
+    border-collapse: collapse;
+    background: var(--ink-soft);
+    font-size: 0.78rem;
+  }
+
+  .orrery-markdown th,
+  .orrery-markdown td {
+    border-bottom: 1px solid var(--ink-line-2);
+    padding: 0.45rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .orrery-markdown th {
+    color: var(--term-name);
+    font-weight: 650;
+    white-space: nowrap;
+  }
+
+  .orrery-markdown tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .orrery-markdown-file-ref {
+    border: 1px solid var(--ink-line);
+    border-radius: 0.3rem;
+    background: var(--ink-soft);
+    padding: 0.05rem 0.3rem;
+    color: var(--term-cyan);
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
 }
 
 @keyframes orrery-edge-label-pulse {
