@@ -79,11 +79,27 @@ export const graphStateSchema = {
     createSession: {
       input: {
         base: 'CreateRuntimeSessionInput',
+        workMode:
+          '"local" | "worktree"?; UI intent, runtime resolves to final cwd',
+        branch:
+          'string?; existing branch to use locally or as the base for a managed worktree',
         sourceSessionId:
           'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
         linkLabel:
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
       },
+    },
+    getProjectContext: {
+      input: {
+        cwd: 'string?; project cwd selected by the UI',
+      },
+      output:
+        'ProjectContext; project name, git repo root, current branch, and local branch list',
+    },
+    chooseProjectFolder: {
+      input: {},
+      output:
+        '{ canceled: boolean, cwd?: string }; opens a native folder picker for Project selection',
     },
     archiveSession: {
       input: {

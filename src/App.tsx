@@ -34,6 +34,7 @@ import {
   Bot,
   Braces,
   Check,
+  ChevronDown,
   ClipboardCheck,
   CirclePlay,
   FileText,
@@ -85,9 +86,11 @@ import {
   type GraphEdge,
   type GraphEdgeKind,
   type GraphState,
+  type ProjectContext,
   type Report,
   type RuntimeStateDiagnostic,
   type SessionStatus,
+  type WorkMode,
   type UpdateNodePositionsInput,
   type WorkingTreeDiffResult,
 } from '@/shared/graph-state'
@@ -333,6 +336,36 @@ function ProviderSegmentedControl({
   )
 }
 
+function ProviderInlineSelect({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: ProviderKind
+  disabled?: boolean
+  onChange: (value: ProviderKind) => void
+}) {
+  return (
+    <label className="relative shrink-0">
+      <span className="sr-only">Provider</span>
+      <select
+        className="app-region-no-drag h-7 appearance-none rounded-md border border-border bg-background/60 py-1 pl-2 pr-7 font-mono text-[10.5px] text-accent-ink outline-none transition focus:border-lime-hi/55 focus:ring-1 focus:ring-lime-hi/25 disabled:opacity-55"
+        value={value}
+        disabled={disabled}
+        aria-label="Provider"
+        onChange={(event) => onChange(event.target.value as ProviderKind)}
+      >
+        {providerOptions.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+    </label>
+  )
+}
+
 function sessionProviderLabel(session: AgentSession) {
   return providerOption(session.providerKind).label
 }
@@ -468,6 +501,22 @@ type ProjectCwdValidation = {
   message: string
 }
 
+type NewChatProjectOption = {
+  id: string
+  name: string
+  cwd: string
+  isGitRepo?: boolean
+  currentBranch?: string
+  branches: string[]
+  error?: string
+}
+
+const workModeOptions: { id: WorkMode; label: string }[] = [
+  { id: 'local', label: 'Work locally' },
+  { id: 'worktree', label: 'New worktree' },
+]
+const chooseProjectOptionValue = '__orrery_choose_project__'
+
 type RecoveryTone = 'amber' | 'rose' | 'cyan' | 'muted'
 
 type RecoveryState = {
@@ -490,8 +539,139 @@ function defaultWorkspaceCwd() {
   return window.orrery?.workspace?.defaultCwd ?? ''
 }
 
-function latestSessionCwd(sessions: AgentSession[]) {
-  return sessions.find((session) => !session.archived)?.cwd ?? sessions[0]?.cwd
+function latestSessionCwd(
+  sessions: AgentSession[],
+  invalidCwds = new Set<string>()
+) {
+  const latestSession =
+    sessions.find((session) => {
+      const cwd = session.project?.cwd ?? session.cwd
+      return !session.archived && !invalidCwds.has(cwd)
+    }) ??
+    sessions.find((session) => {
+      const cwd = session.project?.cwd ?? session.cwd
+      return !invalidCwds.has(cwd)
+    })
+  return latestSession?.project?.cwd ?? latestSession?.cwd
+}
+
+function projectNameFromCwd(value: string) {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  if (trimmed.length === 0) {
+    return 'Project'
+  }
+
+  const parts = trimmed.split('/').filter(Boolean)
+  const name = parts[parts.length - 1]
+  if (!name || name === '~') {
+    return compactPath(trimmed)
+  }
+
+  return name
+}
+
+function uniqueStrings(values: (string | undefined)[]) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value))
+    )
+  )
+}
+
+function branchCandidatesForSession(session: AgentSession) {
+  const project = session.project
+  if (!project) {
+    return []
+  }
+
+  return uniqueStrings([
+    project.baseBranch,
+    project.workMode === 'local' ? project.branch : undefined,
+  ])
+}
+
+function projectOptionsFromSessions(
+  sessions: AgentSession[],
+  selectedCwd: string,
+  fallbackCwd: string,
+  projectContext?: ProjectContext,
+  invalidCwds = new Set<string>()
+): NewChatProjectOption[] {
+  const projects = new Map<string, NewChatProjectOption>()
+
+  function addProject({
+    cwd,
+    name,
+    isGitRepo,
+    currentBranch,
+    branches = [],
+    error,
+  }: {
+    cwd?: string
+    name?: string
+    isGitRepo?: boolean
+    currentBranch?: string
+    branches?: string[]
+    error?: string
+  }) {
+    const normalizedCwd = cwd?.trim()
+    if (!normalizedCwd) {
+      return
+    }
+
+    const existing = projects.get(normalizedCwd)
+    if (existing) {
+      existing.branches = uniqueStrings([...existing.branches, ...branches])
+      existing.isGitRepo = existing.isGitRepo ?? isGitRepo
+      existing.currentBranch = existing.currentBranch ?? currentBranch
+      existing.error = existing.error ?? error
+      return
+    }
+
+    projects.set(normalizedCwd, {
+      id: normalizedCwd,
+      name: name?.trim() || projectNameFromCwd(normalizedCwd),
+      cwd: normalizedCwd,
+      isGitRepo,
+      currentBranch,
+      branches: uniqueStrings(branches),
+      error,
+    })
+  }
+
+  addProject({ cwd: selectedCwd })
+  addProject({ cwd: fallbackCwd })
+  addProject({
+    cwd: projectContext?.cwd,
+    name: projectContext?.projectName,
+    isGitRepo: projectContext?.isGitRepo,
+    currentBranch: projectContext?.currentBranch,
+    branches: uniqueStrings([
+      projectContext?.currentBranch,
+      ...(projectContext?.branches ?? []),
+    ]),
+    error: projectContext?.error,
+  })
+
+  sessions.forEach((session) => {
+    const sessionProjectCwd = session.project?.cwd ?? session.cwd
+    if (invalidCwds.has(sessionProjectCwd)) {
+      return
+    }
+
+    addProject({
+      cwd: sessionProjectCwd,
+      name: session.project?.name,
+      isGitRepo: session.project?.repoRoot ? true : undefined,
+      currentBranch:
+        session.project?.workMode === 'local' ? session.project.branch : undefined,
+      branches: branchCandidatesForSession(session),
+    })
+  })
+
+  return Array.from(projects.values())
 }
 
 function validateProjectCwd(value: string): ProjectCwdValidation {
@@ -713,6 +893,10 @@ function diagnosticCwd(diagnostic: RuntimeStateDiagnostic) {
   return typeof cwd === 'string' ? cwd : undefined
 }
 
+function invalidCwdsFromDiagnostics(diagnostics: RuntimeStateDiagnostic[]) {
+  return new Set(diagnostics.flatMap((diagnostic) => diagnosticCwd(diagnostic) ?? []))
+}
+
 function formatAffectedChats(labels: string[], fallbackCount: number) {
   const uniqueLabels = Array.from(new Set(labels)).filter(Boolean)
   const count = uniqueLabels.length || fallbackCount
@@ -882,6 +1066,174 @@ function ProjectCwdField({
         {validation.message}
       </span>
     </label>
+  )
+}
+
+function NewChatSetupPill({
+  icon: Icon,
+  label,
+  value,
+  disabled,
+  className,
+  children,
+  onChange,
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  disabled?: boolean
+  className?: string
+  children: ReactNode
+  onChange: (value: string) => void
+}) {
+  return (
+    <label
+      className={cn(
+        'relative flex min-w-0 items-center gap-2 rounded-full border border-accent-ink/30 bg-ink px-3 py-2 font-mono shadow-sm transition focus-within:border-lime-hi/60 focus-within:ring-1 focus-within:ring-lime-hi/25',
+        disabled && 'opacity-55',
+        className
+      )}
+    >
+      <Icon className="size-3.5 shrink-0 text-lime-hi" />
+      <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
+        {label}
+      </span>
+      <select
+        className="min-w-0 flex-1 appearance-none bg-transparent pr-5 text-[12px] font-semibold text-term-name outline-none disabled:cursor-not-allowed"
+        value={value}
+        disabled={disabled}
+        aria-label={label}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 size-3.5 text-term-dim2" />
+    </label>
+  )
+}
+
+function NewChatSetupBar({
+  projects,
+  projectCwd,
+  validation,
+  workMode,
+  branch,
+  disabled,
+  onProjectChange,
+  onChooseProject,
+  onWorkModeChange,
+  onBranchChange,
+}: {
+  projects: NewChatProjectOption[]
+  projectCwd: string
+  validation: ProjectCwdValidation
+  workMode: WorkMode
+  branch: string
+  disabled?: boolean
+  onProjectChange: (cwd: string) => void
+  onChooseProject: () => void
+  onWorkModeChange: (workMode: WorkMode) => void
+  onBranchChange: (branch: string) => void
+}) {
+  const selectedProject =
+    projects.find((project) => project.cwd === projectCwd.trim()) ?? projects[0]
+  const branchOptions = uniqueStrings([
+    selectedProject?.currentBranch,
+    ...(selectedProject?.branches ?? []),
+  ])
+  const currentBranch = selectedProject?.currentBranch ?? branchOptions[0]
+  const localBranchValue = currentBranch ?? ''
+  const worktreeBranchValue =
+    branch && branchOptions.includes(branch) ? branch : localBranchValue
+  const branchValue =
+    workMode === 'worktree' ? worktreeBranchValue : localBranchValue
+  const isKnownNonGitProject = selectedProject?.isGitRepo === false
+  const canPickBranch = workMode === 'worktree' && branchOptions.length > 0
+
+  return (
+    <div className="app-region-no-drag mb-2 space-y-1.5">
+      <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-[minmax(0,1.15fr)_minmax(128px,0.85fr)]">
+        <NewChatSetupPill
+          icon={FolderOpen}
+          label="Project"
+          value={selectedProject?.cwd ?? ''}
+          disabled={disabled || projects.length === 0}
+          className="min-[380px]:col-span-2"
+          onChange={(nextCwd) => {
+            if (nextCwd === chooseProjectOptionValue) {
+              onChooseProject()
+              return
+            }
+            onProjectChange(nextCwd)
+            onBranchChange('')
+          }}
+        >
+          {projects.length === 0 ? (
+            <option value="">Choose project</option>
+          ) : (
+            projects.map((project) => (
+              <option key={project.id} value={project.cwd}>
+                {project.name} - {compactPath(project.cwd)}
+              </option>
+            ))
+          )}
+          <option value={chooseProjectOptionValue}>
+            Choose project...
+          </option>
+        </NewChatSetupPill>
+
+        <NewChatSetupPill
+          icon={Terminal}
+          label="Work"
+          value={workMode}
+          disabled={disabled}
+          onChange={(nextWorkMode) => {
+            const normalized =
+              nextWorkMode === 'worktree' ? 'worktree' : 'local'
+            onWorkModeChange(normalized)
+            if (normalized === 'local') {
+              onBranchChange('')
+            }
+          }}
+        >
+          {workModeOptions.map((option) => (
+            <option
+              key={option.id}
+              value={option.id}
+              disabled={option.id === 'worktree' && isKnownNonGitProject}
+            >
+              {option.label}
+            </option>
+          ))}
+        </NewChatSetupPill>
+
+        <NewChatSetupPill
+          icon={GitBranch}
+          label="Branch"
+          value={branchValue}
+          disabled={disabled || !canPickBranch}
+          onChange={onBranchChange}
+        >
+          {branchValue ? null : <option value="">Current branch</option>}
+          {branchOptions.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </NewChatSetupPill>
+      </div>
+      {!validation.ok ? (
+        <div className="flex items-center gap-1.5 px-1 font-mono text-[10.5px] leading-4 text-term-rose">
+          <TriangleAlert className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">{validation.message}</span>
+        </div>
+      ) : selectedProject?.error ? (
+        <div className="flex items-center gap-1.5 px-1 font-mono text-[10.5px] leading-4 text-term-amber">
+          <TriangleAlert className="size-3 shrink-0" />
+          <span className="min-w-0 truncate">{selectedProject.error}</span>
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -2323,6 +2675,9 @@ function App() {
   const [newProviderKind, setNewProviderKind] =
     useState<ProviderKind>('claude-code')
   const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd)
+  const [newWorkMode, setNewWorkMode] = useState<WorkMode>('local')
+  const [newBranch, setNewBranch] = useState('')
+  const [newProjectContext, setNewProjectContext] = useState<ProjectContext>()
   const [message, setMessage] = useState('')
   const [sessionSearch, setSessionSearch] = useState('')
   const [showArchivedSessions, setShowArchivedSessions] = useState(false)
@@ -2372,6 +2727,7 @@ function App() {
   const runtimeApi = typeof window === 'undefined' ? undefined : window.orrery
   const isElectron = useMemo(() => Boolean(runtimeApi), [runtimeApi])
   const diffRequestSeqRef = useRef(0)
+  const projectContextSeqRef = useRef(0)
 
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
@@ -2398,8 +2754,26 @@ function App() {
     selectedSession?.runtimeUserInputRequests ?? []
   ).filter((request) => (request.status ?? 'open') === 'open')
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
-  const runtimeDiagnostics = runtimeState.diagnostics ?? []
+  const runtimeDiagnostics = useMemo(
+    () => runtimeState.diagnostics ?? [],
+    [runtimeState.diagnostics]
+  )
+  const invalidProjectCwds = useMemo(
+    () => invalidCwdsFromDiagnostics(runtimeDiagnostics),
+    [runtimeDiagnostics]
+  )
   const newCwdValidation = useMemo(() => validateProjectCwd(newCwd), [newCwd])
+  const newChatProjects = useMemo(
+    () =>
+      projectOptionsFromSessions(
+        sessions,
+        newCwd,
+        defaultWorkspaceCwd(),
+        newProjectContext,
+        invalidProjectCwds
+      ),
+    [invalidProjectCwds, newCwd, newProjectContext, sessions]
+  )
   const runningSessions = sessions.filter(
     (session) => session.status === 'running' || session.status === 'pending'
   )
@@ -2623,11 +2997,13 @@ function App() {
   const startNewChat = useCallback(() => {
     setPendingLinkedSourceId(null)
     setSelectedSessionId(null)
-    setNewCwd(latestSessionCwd(sessions) ?? defaultWorkspaceCwd())
+    setNewCwd(latestSessionCwd(sessions, invalidProjectCwds) ?? defaultWorkspaceCwd())
+    setNewWorkMode('local')
+    setNewBranch('')
     setActiveTab('chat')
     setShowRawEvents(false)
     setMessage('')
-  }, [sessions])
+  }, [invalidProjectCwds, sessions])
 
   const startLinkedChat = useCallback(() => {
     if (!selectedSession) {
@@ -2638,10 +3014,33 @@ function App() {
     setSelectedSessionId(null)
     setNewProviderKind(selectedSession.providerKind)
     setNewCwd(selectedSession.cwd)
+    setNewWorkMode('local')
+    setNewBranch('')
     setActiveTab('chat')
     setShowRawEvents(false)
     setMessage('')
   }, [selectedSession])
+
+  const chooseNewChatProject = useCallback(async () => {
+    if (!window.orrery?.runtime?.chooseProjectFolder) {
+      setRuntimeError('Project picker is available only inside Electron.')
+      return
+    }
+
+    try {
+      const result = await window.orrery.runtime.chooseProjectFolder()
+      if (result.canceled || !result.cwd) {
+        return
+      }
+
+      setNewCwd(result.cwd)
+      setNewWorkMode('local')
+      setNewBranch('')
+      setRuntimeError(undefined)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    }
+  }, [])
 
   const nodes: Node[] = useMemo(
     () => [
@@ -2748,6 +3147,52 @@ function App() {
   }, [colorScheme])
 
   useEffect(() => {
+    if (!window.orrery?.runtime || !newCwdValidation.ok) {
+      setNewProjectContext(undefined)
+      return
+    }
+
+    const requestId = projectContextSeqRef.current + 1
+    projectContextSeqRef.current = requestId
+    const cwd = newCwd.trim()
+    let isMounted = true
+
+    window.orrery.runtime
+      .getProjectContext({ cwd })
+      .then((context) => {
+        if (isMounted && projectContextSeqRef.current === requestId) {
+          setNewProjectContext(context)
+        }
+      })
+      .catch((error: unknown) => {
+        if (isMounted && projectContextSeqRef.current === requestId) {
+          setNewProjectContext({
+            cwd,
+            projectName: projectNameFromCwd(cwd),
+            isGitRepo: false,
+            branches: [],
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [newCwd, newCwdValidation.ok])
+
+  useEffect(() => {
+    if (
+      newWorkMode === 'worktree' &&
+      newProjectContext?.cwd === newCwd.trim() &&
+      newProjectContext.isGitRepo === false
+    ) {
+      setNewWorkMode('local')
+      setNewBranch('')
+    }
+  }, [newCwd, newProjectContext, newWorkMode])
+
+  useEffect(() => {
     if (!activeCluster) {
       return
     }
@@ -2768,7 +3213,7 @@ function App() {
         if (isMounted) {
           setRuntimeState(state)
           setSelectedSessionId((current) =>
-            current === undefined ? state.nodes[0]?.sessionId : current
+            current === undefined ? null : current
           )
           setNewCwd((current) => {
             if (current.trim().length > 0) {
@@ -2776,7 +3221,12 @@ function App() {
             }
 
             const restoredSessions = Object.values(state.sessions).sort(sessionSort)
-            return latestSessionCwd(restoredSessions) ?? defaultWorkspaceCwd()
+            return (
+              latestSessionCwd(
+                restoredSessions,
+                invalidCwdsFromDiagnostics(state.diagnostics ?? [])
+              ) ?? defaultWorkspaceCwd()
+            )
           })
         }
       })
@@ -2836,6 +3286,10 @@ function App() {
         const result = await window.orrery.runtime.createSession({
           prompt: trimmedPrompt,
           cwd,
+          workMode: newWorkMode,
+          ...(newWorkMode === 'worktree' && newBranch.trim().length > 0
+            ? { branch: newBranch.trim() }
+            : {}),
           agent: selectedProvider.agent,
           providerKind: selectedProvider.id,
           label: `${sourceSessionId ? 'Linked Chat' : 'New Chat'} ${
@@ -2860,7 +3314,14 @@ function App() {
         setIsCreating(false)
       }
     },
-    [newCwd, newProviderKind, runtimeState.sessions, sessions.length]
+    [
+      newBranch,
+      newCwd,
+      newProviderKind,
+      newWorkMode,
+      runtimeState.sessions,
+      sessions.length,
+    ]
   )
 
   const sendChatMessage = useCallback(async () => {
@@ -4300,9 +4761,11 @@ function App() {
                             (pendingLinkedSource ? 'Linked Chat' : 'New Chat')}
                         </h2>
                         {!selectedSession ? (
-                          <span className="shrink-0 font-mono text-[11px] text-accent-ink">
-                            {providerOption(newProviderKind).label}
-                          </span>
+                          <ProviderInlineSelect
+                            value={newProviderKind}
+                            disabled={isCreating || !isElectron}
+                            onChange={setNewProviderKind}
+                          />
                         ) : null}
                       </div>
                       <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] leading-4 text-muted-foreground">
@@ -4338,7 +4801,7 @@ function App() {
                             >
                               {newCwd.trim()
                                 ? compactPath(newCwd.trim())
-                                : 'cwd required'}
+                                : 'project required'}
                             </span>
                             {pendingLinkedSource ? (
                               <>
@@ -4451,19 +4914,29 @@ function App() {
 
                 <div className="shrink-0 border-t border-border bg-card p-2.5">
                   {!selectedSession ? (
-                    <div className="app-region-no-drag mb-2 space-y-2">
-                      <ProviderSegmentedControl
-                        value={newProviderKind}
-                        disabled={isCreating}
-                        onChange={setNewProviderKind}
-                      />
-                      <ProjectCwdField
-                        value={newCwd}
+                    <>
+                      {!isElectron ? (
+                        <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-term-amber/35 bg-term-amber/10 px-3 py-2 font-mono text-[11px] leading-4 text-term-amber">
+                          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                          <span className="min-w-0">
+                            Project picker and chat creation require the Electron
+                            app. This web preview cannot access local folders.
+                          </span>
+                        </div>
+                      ) : null}
+                      <NewChatSetupBar
+                        projects={newChatProjects}
+                        projectCwd={newCwd}
                         validation={newCwdValidation}
-                        disabled={isCreating}
-                        onChange={setNewCwd}
+                        workMode={newWorkMode}
+                        branch={newBranch}
+                        disabled={isCreating || !isElectron}
+                        onProjectChange={setNewCwd}
+                        onChooseProject={chooseNewChatProject}
+                        onWorkModeChange={setNewWorkMode}
+                        onBranchChange={setNewBranch}
                       />
-                    </div>
+                    </>
                   ) : null}
                   <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-ink-line bg-ink px-3 py-2.5 transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25">
                     <span className="pt-0.5 font-mono text-lime-hi">❯</span>

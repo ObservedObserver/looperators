@@ -89,11 +89,27 @@ export const graphStateSchema = {
     createSession: {
       input: {
         base: 'CreateRuntimeSessionInput',
+        workMode:
+          '"local" | "worktree"?; UI intent, runtime resolves to final cwd',
+        branch:
+          'string?; existing branch to use locally or as the base for a managed worktree',
         sourceSessionId:
           'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
         linkLabel:
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
       },
+    },
+    getProjectContext: {
+      input: {
+        cwd: 'string?; project cwd selected by the UI',
+      },
+      output:
+        'ProjectContext; project name, git repo root, current branch, and local branch list',
+    },
+    chooseProjectFolder: {
+      input: {},
+      output:
+        '{ canceled: boolean, cwd?: string }; opens a native folder picker for Project selection',
     },
     archiveSession: {
       input: {
@@ -183,6 +199,16 @@ export type AgentBackend =
   | 'claude-agent-sdk'
   | 'codex-app-server'
 export type SessionRole = 'worker' | 'master'
+export type WorkMode = 'local' | 'worktree'
+
+export type SessionProject = {
+  name: string
+  cwd: string
+  repoRoot?: string
+  workMode: WorkMode
+  baseBranch?: string
+  branch?: string
+}
 
 export type SkillCallEnvelope = {
   callId: CallId
@@ -312,6 +338,7 @@ export type AgentSession = {
   label: string
   prompt: string
   cwd: string
+  project?: SessionProject
   role: SessionRole
   status: SessionStatus
   createdAt: string
@@ -366,6 +393,8 @@ export type GraphState = {
 export type CreateRuntimeSessionInput = {
   prompt: string
   cwd?: string
+  workMode?: WorkMode
+  branch?: string
   agent?: 'claude-code' | 'codex'
   providerKind?: ProviderKind
   label?: string
@@ -379,6 +408,20 @@ export type CreateRuntimeSessionInput = {
 export type CreateRuntimeSessionResult = {
   sessionId: SessionId
   state: GraphState
+}
+
+export type ProjectContextInput = {
+  cwd?: string
+}
+
+export type ProjectContext = {
+  cwd: string
+  projectName: string
+  isGitRepo: boolean
+  repoRoot?: string
+  currentBranch?: string
+  branches: string[]
+  error?: string
 }
 
 export type ResumeRuntimeSessionInput = {

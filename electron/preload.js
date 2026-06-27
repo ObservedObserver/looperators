@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('orrery', {
   },
   runtime: {
     getState: () => ipcRenderer.invoke('orrery:runtime-state'),
+    getProjectContext: (input) =>
+      ipcRenderer.invoke('orrery:get-project-context', input),
+    chooseProjectFolder: () => ipcRenderer.invoke('orrery:choose-project-folder'),
     createSession: (input) => ipcRenderer.invoke('orrery:create-session', input),
     resumeSession: (input) => ipcRenderer.invoke('orrery:resume-session', input),
     archiveSession: (input) =>

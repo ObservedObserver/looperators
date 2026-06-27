@@ -9,6 +9,8 @@ import type {
   CreateRuntimeSessionResult,
   FreezeInput,
   GraphState,
+  ProjectContext,
+  ProjectContextInput,
   RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
@@ -31,6 +33,10 @@ declare global {
       }
       runtime: {
         getState: () => Promise<GraphState>
+        getProjectContext: (
+          input: ProjectContextInput
+        ) => Promise<ProjectContext>
+        chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>
         createSession: (
           input: CreateRuntimeSessionInput
         ) => Promise<CreateRuntimeSessionResult>

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
@@ -44,6 +44,16 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())
+  ipcMain.handle('orrery:get-project-context', (_event, input) =>
+    runtime.getProjectContext(input)
+  )
+  ipcMain.handle('orrery:choose-project-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: 'Choose Project',
+    })
+    return { canceled: result.canceled, cwd: result.filePaths[0] }
+  })
   ipcMain.handle('orrery:create-session', (_event, input) =>
     runtime.createSession(input)
   )

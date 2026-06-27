@@ -39,6 +39,7 @@ const validProviderKinds = new Set([
   'claude-code',
   'codex',
 ])
+const validWorkModes = new Set(['local', 'worktree'])
 const validRuntimeItemStatuses = new Set([
   'pending',
   'running',
@@ -149,6 +150,7 @@ function gitOutput(cwd, args, options = {}) {
     encoding: 'utf8',
     env: options.env ?? process.env,
     maxBuffer: options.maxBuffer ?? gitDiffMaxBuffer,
+    stdio: ['ignore', 'pipe', options.quietStderr ? 'ignore' : 'pipe'],
   }).trimEnd()
 }
 
@@ -158,6 +160,206 @@ function hasGitHead(cwd, env) {
     return true
   } catch {
     return false
+  }
+}
+
+function projectNameFromCwd(cwd) {
+  return path.basename(cwd.replace(/\/$/, '')) || 'Project'
+}
+
+function currentGitBranch(cwd) {
+  try {
+    const branch = gitOutput(cwd, ['branch', '--show-current'], {
+      quietStderr: true,
+    })
+    if (branch.length > 0) {
+      return branch
+    }
+  } catch {
+    return undefined
+  }
+
+  try {
+    const commit = gitOutput(cwd, ['rev-parse', '--short', 'HEAD'], {
+      quietStderr: true,
+    })
+    return commit.length > 0 ? commit : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function localGitBranches(cwd) {
+  try {
+    return gitOutput(cwd, [
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads',
+    ], { quietStderr: true })
+      .split('\n')
+      .map((branch) => branch.trim())
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right))
+  } catch {
+    return []
+  }
+}
+
+function gitRepoRoot(cwd) {
+  try {
+    const root = gitOutput(cwd, ['rev-parse', '--show-toplevel'], {
+      quietStderr: true,
+    })
+    return root.length > 0 ? root : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function gitProjectContext(cwd) {
+  const resolved = validateRunnableCwd(cwd)
+  const repoRoot = gitRepoRoot(resolved)
+  const isGitRepo = Boolean(repoRoot)
+  const currentBranch = isGitRepo ? currentGitBranch(resolved) : undefined
+  const branches = isGitRepo ? localGitBranches(resolved) : []
+
+  return {
+    cwd: resolved,
+    projectName: projectNameFromCwd(repoRoot ?? resolved),
+    isGitRepo,
+    repoRoot,
+    currentBranch,
+    branches:
+      currentBranch && !branches.includes(currentBranch)
+        ? [currentBranch, ...branches]
+        : branches,
+  }
+}
+
+function normalizeWorkMode(value) {
+  return validWorkModes.has(value) ? value : 'local'
+}
+
+function normalizeBranchName(value) {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (
+    trimmed.length === 0 ||
+    trimmed.startsWith('-') ||
+    trimmed.includes('..') ||
+    /[\s~^:?*[\\]/.test(trimmed)
+  ) {
+    return undefined
+  }
+
+  return trimmed
+}
+
+function branchSlug(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, '-')
+    .replace(/^[-/.]+|[-/.]+$/g, '')
+    .replace(/\/+/g, '/')
+    .slice(0, 48)
+}
+
+function sessionProjectFromContext(context, workMode, branch, baseBranch) {
+  return {
+    name: context.projectName,
+    cwd: context.repoRoot ?? context.cwd,
+    repoRoot: context.repoRoot,
+    workMode,
+    baseBranch,
+    branch,
+  }
+}
+
+function normalizeSessionProject(value, cwd) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const workMode = normalizeWorkMode(value.workMode)
+  const name =
+    nonEmptyString(value.name) ? value.name.trim() : projectNameFromCwd(cwd)
+  const projectCwd = nonEmptyString(value.cwd) ? safeCwd(value.cwd) : cwd
+  const repoRoot = nonEmptyString(value.repoRoot)
+    ? safeCwd(value.repoRoot)
+    : undefined
+
+  return {
+    name,
+    cwd: projectCwd,
+    repoRoot,
+    workMode,
+    baseBranch: normalizeBranchName(value.baseBranch),
+    branch: normalizeBranchName(value.branch),
+  }
+}
+
+function createSessionWorktree(projectCwd, sessionId, requestedBranch) {
+  const context = gitProjectContext(projectCwd)
+  if (!context.repoRoot) {
+    throw new Error('New worktree requires a Git project.')
+  }
+
+  const baseBranch =
+    normalizeBranchName(requestedBranch) ??
+    normalizeBranchName(context.currentBranch) ??
+    'HEAD'
+  const shortId = sessionId.slice(0, 8)
+  const slug = branchSlug(baseBranch) || 'branch'
+  const sessionBranch = `orrery/${slug}-${shortId}`
+  const worktreeRoot = path.join(
+    path.dirname(context.repoRoot),
+    '.orrery-worktrees',
+    context.projectName
+  )
+  const worktreePath = path.join(worktreeRoot, shortId)
+
+  fs.mkdirSync(worktreeRoot, { recursive: true })
+  gitOutput(context.repoRoot, [
+    'worktree',
+    'add',
+    '-b',
+    sessionBranch,
+    worktreePath,
+    baseBranch,
+  ])
+
+  return {
+    cwd: worktreePath,
+    project: sessionProjectFromContext(
+      context,
+      'worktree',
+      sessionBranch,
+      baseBranch
+    ),
+  }
+}
+
+function localSessionWorkspace(projectCwd, requestedBranch) {
+  const context = gitProjectContext(projectCwd)
+  const currentBranch = normalizeBranchName(context.currentBranch)
+  const requested = normalizeBranchName(requestedBranch)
+  if (requested && currentBranch && requested !== currentBranch) {
+    throw new Error(
+      `Work locally uses the currently checked out branch (${currentBranch}). Choose New worktree to start from ${requested}.`
+    )
+  }
+
+  return {
+    cwd: context.cwd,
+    project: sessionProjectFromContext(
+      context,
+      'local',
+      currentBranch ?? requested,
+      undefined
+    ),
   }
 }
 
@@ -344,6 +546,22 @@ export class RuntimeSessionManager {
     return clone(this.#state)
   }
 
+  getProjectContext(input = {}) {
+    const request = isObject(input) ? input : {}
+    try {
+      return gitProjectContext(request.cwd)
+    } catch (error) {
+      const cwd = safeCwd(request.cwd)
+      return {
+        cwd,
+        projectName: projectNameFromCwd(cwd),
+        isGitRepo: false,
+        branches: [],
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
   async createSession(input = {}) {
     const sessionId = randomUUID()
     const role = input.role === 'master' ? 'master' : 'worker'
@@ -368,8 +586,12 @@ export class RuntimeSessionManager {
         ? input.prompt
         : defaultPrompt
     const initialContent = messageContent(prompt, input.context)
-    const cwd = validateRunnableCwd(input.cwd)
     const provider = providerConfig(input)
+    const workspace =
+      normalizeWorkMode(input.workMode) === 'worktree'
+        ? createSessionWorktree(input.cwd, sessionId, input.branch)
+        : localSessionWorkspace(input.cwd, input.branch)
+    const cwd = workspace.cwd
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
         ? input.label.trim()
@@ -390,6 +612,7 @@ export class RuntimeSessionManager {
       label,
       prompt: initialContent,
       cwd,
+      project: workspace.project,
       role,
       status: 'pending',
       createdAt: ts,
@@ -3223,6 +3446,7 @@ export class RuntimeSessionManager {
       label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
       cwd,
+      project: normalizeSessionProject(value.project, cwd),
       role: value.role === 'master' ? 'master' : 'worker',
       status,
       createdAt: nonEmptyString(value.createdAt) ? value.createdAt : ts,
