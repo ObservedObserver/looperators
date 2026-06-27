@@ -99,6 +99,15 @@ export const graphStateSchema = {
         masterReason: 'string?; explanation shown on freeze edges',
       },
     },
+    getWorkingTreeDiff: {
+      input: {
+        sessionId:
+          'SessionId; resolves the selected chat node to its project cwd',
+        ignoreWhitespace: 'boolean?',
+      },
+      output:
+        'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
+    },
     createMasterForCluster: {
       input: {
         clusterId: 'ClusterId',

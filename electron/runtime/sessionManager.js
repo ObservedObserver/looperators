@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { parsePatchFiles } from '@pierre/diffs'
 import {
   createEmptyGraphState,
   graphEdgeKinds,
@@ -47,6 +48,9 @@ const validRuntimeItemStatuses = new Set([
 const validRuntimeRequestDecisions = new Set(['approved', 'denied'])
 const validGraphEdgeKinds = new Set(graphEdgeKinds)
 const validLoopStatuses = new Set(['running', 'stopped'])
+const emptyGitTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+const gitDiffMaxBuffer = 64 * 1024 * 1024
+const uiPatchMaxLength = 2 * 1024 * 1024
 
 function now() {
   return new Date().toISOString()
@@ -137,6 +141,79 @@ function boundedText(value, maxLength = 50000) {
   }
 
   return `${value.slice(0, maxLength)}\n\n[truncated by Orrery]`
+}
+
+function gitOutput(cwd, args, options = {}) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: options.env ?? process.env,
+    maxBuffer: options.maxBuffer ?? gitDiffMaxBuffer,
+  }).trimEnd()
+}
+
+function hasGitHead(cwd, env) {
+  try {
+    gitOutput(cwd, ['rev-parse', '--verify', 'HEAD^{commit}'], { env })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function parseDiffFilesFromPatch(patch) {
+  if (patch.trim().length === 0) {
+    return []
+  }
+
+  const files = parsePatchFiles(patch)
+    .flatMap((parsedPatch) =>
+      parsedPatch.files.map((file) => ({
+        path: file.name,
+        previousPath:
+          typeof file.prevName === 'string' && file.prevName.length > 0
+            ? file.prevName
+            : undefined,
+        changeType: typeof file.type === 'string' ? file.type : 'change',
+        additions: file.hunks.reduce(
+          (total, hunk) => total + hunk.additionLines,
+          0
+        ),
+        deletions: file.hunks.reduce(
+          (total, hunk) => total + hunk.deletionLines,
+          0
+        ),
+      }))
+    )
+  const filesByPath = new Map()
+  for (const file of files) {
+    const existing = filesByPath.get(file.path)
+    if (!existing) {
+      filesByPath.set(file.path, file)
+      continue
+    }
+
+    existing.additions += file.additions
+    existing.deletions += file.deletions
+    existing.changeType =
+      existing.changeType === file.changeType ? existing.changeType : 'mixed'
+    existing.previousPath = existing.previousPath ?? file.previousPath
+  }
+
+  return [...filesByPath.values()].sort((left, right) =>
+    left.path.localeCompare(right.path)
+  )
+}
+
+function totalsForDiffFiles(files) {
+  return files.reduce(
+    (totals, file) => ({
+      files: totals.files + 1,
+      additions: totals.additions + file.additions,
+      deletions: totals.deletions + file.deletions,
+    }),
+    { files: 0, additions: 0, deletions: 0 }
+  )
 }
 
 function diagnostic(type, message, details = {}) {
@@ -465,6 +542,23 @@ export class RuntimeSessionManager {
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { ok: true, state: this.getState() }
+  }
+
+  getWorkingTreeDiff(input = {}) {
+    const sessionId =
+      typeof input === 'string'
+        ? input
+        : typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+          ? input.sessionId.trim()
+          : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    return this.#workingTreeDiffForSession(sessionId, {
+      ignoreWhitespace: input.ignoreWhitespace === true,
+    })
   }
 
   killSession(sessionId) {
@@ -2245,27 +2339,114 @@ export class RuntimeSessionManager {
   }
 
   #gitDiffForSession(sessionId) {
-    const cwd = this.#state.sessions[sessionId]?.cwd ?? process.cwd()
     try {
-      const stat = execFileSync('git', ['diff', '--stat'], {
-        cwd,
-        encoding: 'utf8',
-        maxBuffer: 1024 * 1024,
-      }).trim()
-      const diff = execFileSync('git', ['diff', '--'], {
-        cwd,
-        encoding: 'utf8',
-        maxBuffer: 5 * 1024 * 1024,
-      }).trim()
+      const result = this.#workingTreeDiffForSession(sessionId)
+      const stat = result.files
+        .map((file) => `${file.path} | +${file.additions} -${file.deletions}`)
+        .join('\n')
       const content = [
+        `Project cwd: ${result.cwd}`,
         stat ? `Diff stat:\n${stat}` : undefined,
-        diff ? `Patch:\n${diff}` : 'No current git diff.',
+        result.patch ? `Patch:\n${result.patch}` : 'No current git diff.',
       ].filter(Boolean)
 
       return boundedText(content.join('\n\n'))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      const cwd = this.#state.sessions[sessionId]?.cwd ?? process.cwd()
       return `Unable to read git diff for ${cwd}: ${message}`
+    }
+  }
+
+  #workingTreeDiffForSession(sessionId, options = {}) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId}`)
+    }
+
+    const cwd = validateRunnableCwd(session.cwd)
+    let repoRoot
+    try {
+      gitOutput(cwd, ['rev-parse', '--is-inside-work-tree'])
+      repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Project folder is not a Git work tree: ${cwd}. ${message}`)
+    }
+
+    const tempIndex = path.join(
+      os.tmpdir(),
+      `orrery-diff-${process.pid}-${randomUUID()}.index`
+    )
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: tempIndex,
+    }
+
+    try {
+      const hasHead = hasGitHead(cwd, env)
+      const baseTree = hasHead ? 'HEAD' : emptyGitTree
+      const indexTree = gitOutput(cwd, ['write-tree'])
+      gitOutput(cwd, ['read-tree', indexTree], { env })
+      gitOutput(cwd, ['add', '-A', '--', '.'], { env })
+      const workingTree = gitOutput(cwd, ['write-tree'], { env })
+      const diffArgs = [
+        'diff',
+        '--patch',
+        '--no-color',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--relative',
+      ]
+
+      if (options.ignoreWhitespace === true) {
+        diffArgs.push('--ignore-all-space')
+      }
+
+      const stagedPatch = gitOutput(cwd, [...diffArgs, baseTree, indexTree, '--', '.'], {
+        maxBuffer: gitDiffMaxBuffer,
+      })
+      const unstagedPatch = gitOutput(
+        cwd,
+        [...diffArgs, indexTree, workingTree, '--', '.'],
+        { maxBuffer: gitDiffMaxBuffer }
+      )
+      const rawPatch = [stagedPatch, unstagedPatch]
+        .filter((section) => section.trim().length > 0)
+        .join('\n\n')
+      const files = parseDiffFilesFromPatch(rawPatch)
+      const patch = boundedText(rawPatch, uiPatchMaxLength)
+      const statusOutput = gitOutput(
+        cwd,
+        ['status', '--short', '--untracked-files=all', '--', '.'],
+        { maxBuffer: 4 * 1024 * 1024 }
+      )
+
+      return {
+        sessionId,
+        cwd,
+        repoRoot,
+        generatedAt: now(),
+        range: {
+          kind: 'working-tree',
+          base: 'HEAD',
+          target: 'workspace',
+        },
+        files,
+        totals: totalsForDiffFiles(files),
+        statusEntries: statusOutput
+          ? statusOutput.split('\n').filter((line) => line.trim().length > 0)
+          : [],
+        patch,
+        truncated: rawPatch.length > uiPatchMaxLength,
+      }
+    } finally {
+      try {
+        fs.rmSync(tempIndex, { force: true })
+        fs.rmSync(`${tempIndex}.lock`, { force: true })
+      } catch {
+        // Best-effort cleanup; the temp index is outside the user's repo.
+      }
     }
   }
 

@@ -109,6 +109,15 @@ export const graphStateSchema = {
         masterReason: 'string?; explanation shown on freeze edges',
       },
     },
+    getWorkingTreeDiff: {
+      input: {
+        sessionId:
+          'SessionId; resolves the selected chat node to its project cwd',
+        ignoreWhitespace: 'boolean?',
+      },
+      output:
+        'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
+    },
     createMasterForCluster: {
       input: {
         clusterId: 'ClusterId',
@@ -445,6 +454,50 @@ export type FreezeInput = {
   reason?: string
   source?: SessionId
   masterReason?: string
+}
+
+export type DiffRange =
+  | {
+      kind: 'working-tree'
+      base: 'HEAD'
+      target: 'workspace'
+    }
+  | {
+      kind: 'checkpoint'
+      fromCheckpointRef: string
+      toCheckpointRef: string
+      fromTurnCount?: number
+      toTurnCount?: number
+    }
+
+export type WorkingTreeDiffFile = {
+  path: string
+  previousPath?: string
+  changeType: string
+  additions: number
+  deletions: number
+}
+
+export type WorkingTreeDiffResult = {
+  sessionId: SessionId
+  cwd: string
+  repoRoot: string
+  generatedAt: string
+  range: DiffRange
+  files: WorkingTreeDiffFile[]
+  totals: {
+    files: number
+    additions: number
+    deletions: number
+  }
+  statusEntries: string[]
+  patch: string
+  truncated: boolean
+}
+
+export type WorkingTreeDiffInput = {
+  sessionId: SessionId
+  ignoreWhitespace?: boolean
 }
 
 export type RuntimeEvent =

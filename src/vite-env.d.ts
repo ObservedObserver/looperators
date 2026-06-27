@@ -18,6 +18,8 @@ import type {
   StopMasterLoopInput,
   UpdateNodePositionsInput,
   UpsertClusterInput,
+  WorkingTreeDiffInput,
+  WorkingTreeDiffResult,
 } from './shared/graph-state'
 
 declare global {
@@ -69,6 +71,9 @@ declare global {
           input: StopMasterLoopInput
         ) => Promise<{ state: GraphState }>
         freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>
+        getWorkingTreeDiff: (
+          input: WorkingTreeDiffInput
+        ) => Promise<WorkingTreeDiffResult>
         onEvent: (listener: (event: RuntimeEvent) => void) => () => void
       }
     }

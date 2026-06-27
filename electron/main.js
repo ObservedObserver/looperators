@@ -84,6 +84,9 @@ app.whenReady().then(() => {
     runtime.stopMasterLoop(input)
   )
   ipcMain.handle('orrery:freeze', (_event, input) => runtime.freeze(input))
+  ipcMain.handle('orrery:get-working-tree-diff', (_event, input) =>
+    runtime.getWorkingTreeDiff(input)
+  )
 
   createMainWindow()
 

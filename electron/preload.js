@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('orrery', {
     stopMasterLoop: (input) =>
       ipcRenderer.invoke('orrery:stop-master-loop', input),
     freeze: (input) => ipcRenderer.invoke('orrery:freeze', input),
+    getWorkingTreeDiff: (input) =>
+      ipcRenderer.invoke('orrery:get-working-tree-diff', input),
     onEvent: (listener) => {
       const wrappedListener = (_event, payload) => listener(payload)
       ipcRenderer.on('orrery:runtime-event', wrappedListener)
