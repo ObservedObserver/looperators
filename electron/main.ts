@@ -5,7 +5,7 @@ import { RuntimeSessionManager } from './runtime/sessionManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
-let runtime
+let runtime: RuntimeSessionManager | undefined
 
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
@@ -32,7 +32,7 @@ function createMainWindow() {
   if (devServerUrl) {
     mainWindow.loadURL(devServerUrl)
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    mainWindow.loadFile(path.join(app.getAppPath(), 'dist/index.html'))
   }
 }
 

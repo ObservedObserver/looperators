@@ -2,20 +2,25 @@ import { LegacyClaudeCliAdapter } from './providers/legacyClaudeCliAdapter.js'
 import { ClaudeAgentSdkAdapter } from './providers/claudeAgentSdkAdapter.js'
 import { CodexAppServerAdapter } from './providers/codexAppServerAdapter.js'
 
-export class ProviderService {
-  #adapters
+type ProviderAdapter = {
+  startTurn: (input: Record<string, any>) => any
+  closeAll?: () => void
+}
 
-  constructor({ adapters } = {}) {
+export class ProviderService {
+  #adapters: Map<string, ProviderAdapter>
+
+  constructor({ adapters }: { adapters?: Map<string, ProviderAdapter> } = {}) {
     this.#adapters =
       adapters ??
-      new Map([
+      new Map<string, ProviderAdapter>([
         ['legacy-claude-cli', new LegacyClaudeCliAdapter()],
         ['claude-code', new ClaudeAgentSdkAdapter()],
         ['codex', new CodexAppServerAdapter()],
       ])
   }
 
-  startTurn(input) {
+  startTurn(input: Record<string, any>) {
     const providerKind = input.providerKind ?? 'legacy-claude-cli'
     const adapter = this.#adapters.get(providerKind)
     if (!adapter) {

@@ -26,7 +26,7 @@ export class CodexJsonRpcClient extends EventEmitter {
   #pending = new Map()
   #closed = false
 
-  constructor({ cwd } = {}) {
+  constructor({ cwd }: { cwd?: string } = {}) {
     super()
     this.#child = spawn(codexCommand(), ['app-server', '--listen', 'stdio://'], {
       cwd,

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { RuntimeSessionManager } from '../electron/runtime/sessionManager.js'
+import { RuntimeSessionManager } from '../dist-electron/electron/runtime/sessionManager.js'
 import { cleanupRuntimeStorage } from './runtime-storage-cleanup.mjs'
 
 const storageFile = path.join(

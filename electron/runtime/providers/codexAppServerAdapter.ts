@@ -202,7 +202,7 @@ export class CodexAppServerRun extends EventEmitter {
       this.#codexTurnId = turnResult?.turn?.id
 
       if (!this.#turnCompleted) {
-        await new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(
             () => reject(new Error('Timed out waiting for Codex turn completion.')),
             30 * 60 * 1000

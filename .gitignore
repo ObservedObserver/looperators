@@ -136,6 +136,7 @@ dist
 .pnp.*
 
 # Vite / Electron
+dist-electron
 dist-ssr
 out
 release

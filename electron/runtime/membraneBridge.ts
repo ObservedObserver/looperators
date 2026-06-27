@@ -65,7 +65,7 @@ export class MembraneBridge {
       void this.#handleRequest(request, response)
     })
 
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       this.#server.once('error', reject)
       this.#server.listen(0, '127.0.0.1', () => {
         this.#server.off('error', reject)

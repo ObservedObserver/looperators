@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { RuntimeSessionManager } from '../electron/runtime/sessionManager.js'
+import { RuntimeSessionManager } from '../dist-electron/electron/runtime/sessionManager.js'
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-runtime-recovery-'))
 const fakeClaude = path.join(tempRoot, 'claude')

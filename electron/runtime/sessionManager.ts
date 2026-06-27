@@ -53,6 +53,13 @@ const emptyGitTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const gitDiffMaxBuffer = 64 * 1024 * 1024
 const uiPatchMaxLength = 2 * 1024 * 1024
 
+type JsonRecord = Record<string, any>
+type RuntimeRun = JsonRecord & {
+  kill: () => boolean
+  respondRuntimeRequest?: (input: JsonRecord) => void
+  answerUserInput?: (input: JsonRecord) => void
+}
+
 function now() {
   return new Date().toISOString()
 }
@@ -124,7 +131,7 @@ function truncateActivities(activities) {
   }
 }
 
-function isObject(value) {
+function isObject(value): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
@@ -144,7 +151,7 @@ function boundedText(value, maxLength = 50000) {
   return `${value.slice(0, maxLength)}\n\n[truncated by Orrery]`
 }
 
-function gitOutput(cwd, args, options = {}) {
+function gitOutput(cwd, args, options: JsonRecord = {}) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
@@ -487,7 +494,7 @@ function messageContent(message, context) {
   return message
 }
 
-function providerConfig(input = {}) {
+function providerConfig(input: JsonRecord = {}) {
   const requested = input.providerKind ?? (input.agent === 'codex' ? 'codex' : undefined)
 
   if (requested === 'codex') {
@@ -520,15 +527,15 @@ function providerConfig(input = {}) {
 }
 
 export class RuntimeSessionManager {
-  #state = createEmptyGraphState()
-  #runs = new Map()
-  #runContext = new Map()
-  #loopTasks = new Map()
-  #storageFile
-  #bridge
-  #providerService
+  #state: JsonRecord = createEmptyGraphState()
+  #runs = new Map<string, RuntimeRun>()
+  #runContext = new Map<string, JsonRecord>()
+  #loopTasks = new Map<string, Promise<void>>()
+  #storageFile: string | undefined
+  #bridge: MembraneBridge
+  #providerService: ProviderService
 
-  constructor({ storageFile } = {}) {
+  constructor({ storageFile }: JsonRecord = {}) {
     this.#storageFile =
       typeof storageFile === 'string' && storageFile.length > 0
         ? storageFile
@@ -546,7 +553,7 @@ export class RuntimeSessionManager {
     return clone(this.#state)
   }
 
-  getProjectContext(input = {}) {
+  getProjectContext(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
     try {
       return gitProjectContext(request.cwd)
@@ -562,7 +569,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  async createSession(input = {}) {
+  async createSession(input: JsonRecord = {}) {
     const sessionId = randomUUID()
     const role = input.role === 'master' ? 'master' : 'worker'
     const cluster =
@@ -682,7 +689,7 @@ export class RuntimeSessionManager {
     return { sessionId, state: this.getState() }
   }
 
-  async resumeSession(input = {}) {
+  async resumeSession(input: JsonRecord = {}) {
     const sessionId = input.sessionId
     const session = this.#state.sessions[sessionId]
     if (!session) {
@@ -748,7 +755,7 @@ export class RuntimeSessionManager {
     return { ok: true, state: this.getState() }
   }
 
-  archiveSession(input = {}) {
+  archiveSession(input: JsonRecord | string = {}) {
     const sessionId =
       typeof input === 'string'
         ? input
@@ -767,7 +774,7 @@ export class RuntimeSessionManager {
     return { ok: true, state: this.getState() }
   }
 
-  getWorkingTreeDiff(input = {}) {
+  getWorkingTreeDiff(input: JsonRecord | string = {}) {
     const sessionId =
       typeof input === 'string'
         ? input
@@ -780,7 +787,8 @@ export class RuntimeSessionManager {
     }
 
     return this.#workingTreeDiffForSession(sessionId, {
-      ignoreWhitespace: input.ignoreWhitespace === true,
+      ignoreWhitespace:
+        typeof input === 'object' && input.ignoreWhitespace === true,
     })
   }
 
@@ -828,7 +836,7 @@ export class RuntimeSessionManager {
     this.#bridge?.close()
   }
 
-  respondRuntimeRequest(input = {}) {
+  respondRuntimeRequest(input: JsonRecord = {}) {
     const sessionId =
       typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
         ? input.sessionId.trim()
@@ -876,7 +884,7 @@ export class RuntimeSessionManager {
     return { ok: true, state: this.getState() }
   }
 
-  answerUserInput(input = {}) {
+  answerUserInput(input: JsonRecord = {}) {
     const sessionId =
       typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
         ? input.sessionId.trim()
@@ -926,7 +934,7 @@ export class RuntimeSessionManager {
     return { ok: true, state: this.getState() }
   }
 
-  upsertCluster(input = {}) {
+  upsertCluster(input: JsonRecord = {}) {
     const nodeIds = this.#normalizeClusterNodeIds(input.nodeIds)
     if (nodeIds.length === 0) {
       throw new Error('Cluster requires at least one managed session node')
@@ -979,7 +987,7 @@ export class RuntimeSessionManager {
     return { clusterId, state: this.getState() }
   }
 
-  async createMasterForCluster(input = {}) {
+  async createMasterForCluster(input: JsonRecord = {}) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -1028,7 +1036,7 @@ export class RuntimeSessionManager {
     return { sessionId: result.sessionId, state: this.getState() }
   }
 
-  assignMasterToCluster(input = {}) {
+  assignMasterToCluster(input: JsonRecord = {}) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -1051,7 +1059,7 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
-  setClusterLoopPolicy(input = {}) {
+  setClusterLoopPolicy(input: JsonRecord = {}) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -1068,7 +1076,7 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
-  updateNodePositions(input = {}) {
+  updateNodePositions(input: JsonRecord = {}) {
     const positions = Array.isArray(input.positions) ? input.positions : []
     let changed = false
 
@@ -1108,7 +1116,7 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
-  startMasterLoop(input = {}) {
+  startMasterLoop(input: JsonRecord = {}) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -1162,7 +1170,7 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
-  stopMasterLoop(input = {}) {
+  stopMasterLoop(input: JsonRecord = {}) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -1194,7 +1202,7 @@ export class RuntimeSessionManager {
     return { state: this.getState() }
   }
 
-  freeze(input = {}) {
+  freeze(input: JsonRecord = {}) {
     const target =
       typeof input.target === 'string' && input.target.trim().length > 0
         ? input.target.trim()
@@ -1217,7 +1225,7 @@ export class RuntimeSessionManager {
     })
   }
 
-  async handleMembraneRequest({ tool, source, input }) {
+  async handleMembraneRequest({ tool, source, input }: JsonRecord) {
     if (!this.#state.sessions[source]) {
       throw new Error(`Unknown membrane source session: ${source}`)
     }
@@ -1855,7 +1863,9 @@ export class RuntimeSessionManager {
   }
 
   #removeNodeFromOtherClusters(sessionId, clusterId) {
-    for (const [candidateId, cluster] of Object.entries(this.#state.clusters)) {
+    for (const [candidateId, cluster] of Object.entries(
+      this.#state.clusters as JsonRecord
+    )) {
       if (candidateId === clusterId) {
         continue
       }
@@ -1864,13 +1874,13 @@ export class RuntimeSessionManager {
   }
 
   #masterClusterId(sessionId) {
-    return Object.values(this.#state.clusters).find(
+    return Object.values(this.#state.clusters as JsonRecord).find(
       (cluster) => cluster.masterSessionId === sessionId
     )?.clusterId
   }
 
   #managedClusterId(sessionId) {
-    return Object.values(this.#state.clusters).find((cluster) =>
+    return Object.values(this.#state.clusters as JsonRecord).find((cluster) =>
       cluster.nodeIds.includes(sessionId)
     )?.clusterId
   }
@@ -1987,7 +1997,7 @@ export class RuntimeSessionManager {
     }
 
     for (const [candidateClusterId, candidateCluster] of Object.entries(
-      this.#state.clusters
+      this.#state.clusters as JsonRecord
     )) {
       candidateCluster.nodeIds = candidateCluster.nodeIds.filter(
         (nodeId) => nodeId !== sessionId
@@ -2107,7 +2117,7 @@ export class RuntimeSessionManager {
   }
 
   #recoverRunningLoops() {
-    for (const cluster of Object.values(this.#state.clusters)) {
+    for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
       if (cluster.loopState?.status === 'running' && !cluster.frozen) {
         this.#queueLoopWakeup(cluster.clusterId, {
           type: 'runtime.recovered',
@@ -2581,7 +2591,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  #workingTreeDiffForSession(sessionId, options = {}) {
+  #workingTreeDiffForSession(sessionId, options: JsonRecord = {}) {
     const session = this.#state.sessions[sessionId]
     if (!session) {
       throw new Error(`Unknown session: ${sessionId}`)
@@ -2752,7 +2762,7 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
   }
 
-  #stopLoop(clusterId, reason, { event, broadcast = false } = {}) {
+  #stopLoop(clusterId, reason, { event, broadcast = false }: JsonRecord = {}) {
     const cluster = this.#state.clusters[clusterId]
     if (!cluster) {
       return
@@ -2778,7 +2788,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  #applyFreeze({ targetId, reason, source, masterReason }) {
+  #applyFreeze({ targetId, reason, source, masterReason }: JsonRecord) {
     const cluster = this.#state.clusters[targetId]
     const session = this.#state.sessions[targetId]
     const sourceSessionId =
@@ -2880,7 +2890,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  async #membraneCreateSession(source, input = {}) {
+  async #membraneCreateSession(source, input: JsonRecord = {}) {
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt.trim()
@@ -2921,7 +2931,7 @@ export class RuntimeSessionManager {
     return { sessionId: result.sessionId }
   }
 
-  async #membraneResumeSession(source, input = {}) {
+  async #membraneResumeSession(source, input: JsonRecord = {}) {
     const target = input.sessionId
     if (typeof target !== 'string' || target.trim().length === 0) {
       throw new Error('resume_session sessionId is required')
@@ -2956,7 +2966,7 @@ export class RuntimeSessionManager {
     return { ok: true }
   }
 
-  #membraneReport(source, input = {}) {
+  #membraneReport(source, input: JsonRecord = {}) {
     const payload = this.#normalizeReportPayload(input)
     const envelope = this.#createEnvelope(source)
     const report = {
@@ -3034,7 +3044,7 @@ export class RuntimeSessionManager {
     masterReason,
     frozen,
     freezeReason,
-  }) {
+  }: JsonRecord) {
     if (!this.#state.sessions[source]) {
       throw new Error(`Unknown edge source session: ${source}`)
     }
@@ -3262,10 +3272,10 @@ export class RuntimeSessionManager {
     return this.#withDiagnostics(createEmptyGraphState(), diagnostics)
   }
 
-  #normalizeState(value, diagnostics = []) {
+  #normalizeState(value, diagnostics: JsonRecord[] = []) {
     const fallback = createEmptyGraphState()
     const source = isObject(value) ? value : {}
-    const state = {
+    const state: JsonRecord = {
       ...fallback,
       ...source,
       version: graphStateVersion,
@@ -3335,7 +3345,7 @@ export class RuntimeSessionManager {
       seenNodeSessionIds.add(nodeSessionId)
     }
 
-    for (const session of Object.values(state.sessions)) {
+    for (const session of Object.values(state.sessions as JsonRecord)) {
       if (seenNodeSessionIds.has(session.sessionId)) {
         continue
       }
@@ -3806,7 +3816,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  #normalizeClusters(clusters) {
+  #normalizeClusters(clusters: JsonRecord) {
     return Object.fromEntries(
       Object.entries(clusters)
         .filter(([, cluster]) => isObject(cluster))

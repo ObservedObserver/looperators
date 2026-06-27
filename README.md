@@ -36,9 +36,10 @@ The default entry point is the Chat tab:
 
 - Shared graph-state contract:
   - renderer: `src/shared/graph-state.ts`
-  - Electron runtime: `shared/graph-state.js`
-- Session manager: `electron/runtime/sessionManager.js`
-- IPC bridge: `electron/main.js` and `electron/preload.js`
+  - Electron runtime: `shared/graph-state.ts`
+- Session manager: `electron/runtime/sessionManager.ts`
+- IPC bridge: `electron/main.ts` and `electron/preload.ts`
+- Electron build output: `dist-electron/electron/main.js`
 - Invariant: `nodeId === sessionId`
 - Providers: Claude Code SDK, Codex, and legacy Claude CLI
 - Runtime persistence covers session restore, corrupt-state recovery, invalid
@@ -52,6 +53,8 @@ Build and lint:
 ```sh
 npm run build
 npm run lint
+npm run test:runtime
+npm run acceptance:electron
 ```
 
 Runtime regression checks:
