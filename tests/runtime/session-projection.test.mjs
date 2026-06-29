@@ -104,6 +104,42 @@ test('projectSession keeps restored stale interactions closed when old open even
   assert.equal(projection.staleUserInputRequests[0].id, 'input-1')
 })
 
+test('projectSession treats session-scoped approval as terminal', async () => {
+  const { projectSession } = await loadProjectionModule()
+  const sessionId = 'session-1'
+  const ts = '2026-06-29T00:00:00.000Z'
+  const projection = projectSession(
+    baseSession({
+      runtimeRequests: [
+        {
+          id: 'approval-session',
+          sessionId,
+          kind: 'permission',
+          title: 'Run tests',
+          status: 'open',
+          createdAt: ts,
+        },
+      ],
+      runtimeEvents: [
+        {
+          id: 'event-approval-session',
+          ts: '2026-06-29T00:00:01.000Z',
+          type: 'request.resolved',
+          sessionId,
+          requestId: 'approval-session',
+          status: 'approved_for_session',
+        },
+      ],
+    })
+  )
+
+  assert.equal(projection.openRequests.length, 0)
+  const requestEntry = projection.timeline.find(
+    (entry) => entry.kind === 'request' && entry.request.id === 'approval-session'
+  )
+  assert.equal(requestEntry.request.status, 'approved_for_session')
+})
+
 test('projectSession preserves persisted assistant turns and ignores late snapshots after text deltas', async () => {
   const { projectSession } = await loadProjectionModule()
   const sessionId = 'session-1'

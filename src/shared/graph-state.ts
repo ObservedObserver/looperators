@@ -5,6 +5,7 @@ import type {
   ProviderKind,
   ProviderRuntimeEvent,
   ProviderRuntimeSettings,
+  RuntimeRequestDecision,
   RuntimeActivity,
   RuntimePlan,
   RuntimeRequest,
@@ -520,7 +521,7 @@ export type ResumeRuntimeSessionInput = {
 export type RespondRuntimeRequestInput = {
   sessionId: SessionId
   requestId: string
-  decision: 'approved' | 'denied'
+  decision: RuntimeRequestDecision
 }
 
 export type AnswerUserInputInput = {

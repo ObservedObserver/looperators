@@ -106,6 +106,60 @@ rl.on('line', (line) => {
 `
 }
 
+function fakeCodexPermissionRequestSource(markerFile) {
+  return `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+let permissionRequested = false
+function send(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: 'fake-codex-thread' } } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    send({ id: message.id, result: { turn: { id: 'fake-codex-turn' } } })
+    send({ method: 'turn/started', params: { turn: { id: 'fake-codex-turn' } } })
+    permissionRequested = true
+    send({
+      id: 'codex-permission-1',
+      method: 'item/permissions/requestApproval',
+      params: {
+        turnId: 'fake-codex-turn',
+        permissions: {
+          network: null,
+          fileSystem: { read: [process.cwd()], write: null },
+        },
+        scope: 'turn',
+        description: 'Need test permission',
+      },
+    })
+    return
+  }
+  if (permissionRequested && message.id === 'codex-permission-1' && message.result) {
+    fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify(message.result))
+    send({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'assistant-message', delta: 'permission handled' },
+    })
+    send({ method: 'turn/completed', params: { turnId: 'fake-codex-turn' } })
+    setTimeout(() => process.exit(0), 25)
+    return
+  }
+  send({ id: message.id, result: {} })
+})
+`
+}
+
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
@@ -531,6 +585,65 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
     assert.equal(session.providerKind, 'codex')
     assert.equal(session.providerInstanceId, 'default-codex')
     assert.equal(marker.params.cwd, project)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager records unsupported Codex permission cancel as denied', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-codex-cancel-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const markerFile = path.join(tempRoot, 'permission-response.json')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexPermissionRequestSource(markerFile))
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex Permission',
+      binaryPath: fakeCodex,
+    })
+    const created = await runtime.createSession({
+      prompt: 'request codex permission',
+      providerInstanceId: 'default-codex',
+      cwd: project,
+    })
+    await waitFor(
+      'codex permission request open',
+      () =>
+        runtime.getState().sessions[created.sessionId]?.runtimeRequests?.[0]
+          ?.status === 'open'
+    )
+
+    const result = runtime.respondRuntimeRequest({
+      sessionId: created.sessionId,
+      requestId: 'codex-permission-1',
+      decision: 'cancel',
+    })
+    assert.equal(result.ok, true)
+    assert.equal(
+      result.state.sessions[created.sessionId].runtimeRequests[0].status,
+      'denied'
+    )
+    await waitFor(
+      'codex permission cancel session idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    assert.deepEqual(marker, {
+      permissions: {},
+      scope: 'turn',
+      strictAutoReview: false,
+    })
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

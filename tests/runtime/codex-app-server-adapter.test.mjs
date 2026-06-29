@@ -4,7 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { codexInputItemsForTest } from '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+import {
+  codexApprovalResponseForTest,
+  codexInputItemsForTest,
+} from '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
 import { CodexJsonRpcClient } from '../../dist-electron/electron/runtime/providers/codexJsonRpcClient.js'
 
 test('Codex app-server input uses provider-native image attachment payloads', () => {
@@ -53,6 +56,46 @@ test('Codex app-server input uses provider-native image attachment payloads', ()
   assert.equal(input[3].type, 'text')
   assert.match(input[3].text, /diagram\.svg/)
   assert.doesNotMatch(input[3].text, /data:image/)
+})
+
+test('Codex app-server approval responses preserve provider-style decisions', () => {
+  assert.deepEqual(
+    codexApprovalResponseForTest(
+      { method: 'item/fileChange/requestApproval', params: {} },
+      'acceptForSession'
+    ),
+    { decision: 'acceptForSession' }
+  )
+  assert.deepEqual(
+    codexApprovalResponseForTest(
+      { method: 'item/commandExecution/requestApproval', params: {} },
+      'cancel'
+    ),
+    { decision: 'cancel' }
+  )
+  assert.deepEqual(
+    codexApprovalResponseForTest(
+      {
+        method: 'item/permissions/requestApproval',
+        params: {
+          permissions: {
+            network: null,
+            fileSystem: { read: ['/tmp/project'], write: null },
+          },
+          scope: 'turn',
+        },
+      },
+      'acceptForSession'
+    ),
+    {
+      permissions: {
+        network: null,
+        fileSystem: { read: ['/tmp/project'], write: null },
+      },
+      scope: 'session',
+      strictAutoReview: false,
+    }
+  )
 })
 
 test('Codex JSON-RPC client launches through provider instance settings', async () => {

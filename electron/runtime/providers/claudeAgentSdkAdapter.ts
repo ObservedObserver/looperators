@@ -462,11 +462,33 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
           }
           settled = true
           options.signal?.removeEventListener('abort', abortListener)
-          if (decision === 'approved') {
+          if (decision === 'accept' || decision === 'approved') {
             resolve({
               behavior: 'allow',
               toolUseID: options.toolUseID,
               decisionClassification: 'user_temporary',
+            })
+            return
+          }
+          if (decision === 'acceptForSession') {
+            resolve({
+              behavior: 'allow',
+              ...(Array.isArray(options.suggestions) &&
+              options.suggestions.length > 0
+                ? { updatedPermissions: options.suggestions }
+                : {}),
+              toolUseID: options.toolUseID,
+              decisionClassification: 'user_permanent',
+            })
+            return
+          }
+          if (decision === 'cancel') {
+            resolve({
+              behavior: 'deny',
+              message: 'Canceled in Orrery.',
+              interrupt: true,
+              toolUseID: options.toolUseID,
+              decisionClassification: 'user_reject',
             })
             return
           }

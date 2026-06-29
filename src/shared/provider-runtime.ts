@@ -147,11 +147,26 @@ export type RuntimeRequest = {
   kind: 'approval' | 'permission' | 'confirmation'
   title: string
   body?: string
-  status: 'open' | 'approved' | 'denied' | 'resolved' | 'stale' | 'canceled'
+  status:
+    | 'open'
+    | 'approved'
+    | 'approved_for_session'
+    | 'denied'
+    | 'resolved'
+    | 'stale'
+    | 'canceled'
   createdAt: string
   resolvedAt?: string
   raw?: RawEnvelope
 }
+
+export type RuntimeRequestDecision =
+  | 'accept'
+  | 'acceptForSession'
+  | 'decline'
+  | 'cancel'
+  | 'approved'
+  | 'denied'
 
 export type UserInputRequest = {
   id: string

@@ -100,6 +100,58 @@ test('ClaudeAgentSdkTurnRun marks pending permission and user-dialog requests ca
   )
 })
 
+test('ClaudeAgentSdkTurnRun maps session permission approval to SDK permanent result', async () => {
+  const run = testRun()
+  const suggestions = [
+    {
+      type: 'setMode',
+      mode: 'default',
+      destination: 'session',
+    },
+  ]
+  const resultPromise = run.requestPermission({
+    input: { command: 'npm test' },
+    options: {
+      toolUseID: 'permission-session',
+      suggestions,
+    },
+    toolName: 'Bash',
+    turnId: 'turn-1',
+    sessionId: 'session-1',
+  })
+
+  run.respondRuntimeRequest({
+    requestId: 'permission-session',
+    decision: 'acceptForSession',
+  })
+
+  const result = await resultPromise
+  assert.equal(result.behavior, 'allow')
+  assert.equal(result.decisionClassification, 'user_permanent')
+  assert.deepEqual(result.updatedPermissions, suggestions)
+})
+
+test('ClaudeAgentSdkTurnRun maps canceled permission approval to SDK denial interrupt', async () => {
+  const run = testRun()
+  const resultPromise = run.requestPermission({
+    input: { command: 'rm -rf build' },
+    options: { toolUseID: 'permission-cancel' },
+    toolName: 'Bash',
+    turnId: 'turn-1',
+    sessionId: 'session-1',
+  })
+
+  run.respondRuntimeRequest({
+    requestId: 'permission-cancel',
+    decision: 'cancel',
+  })
+
+  const result = await resultPromise
+  assert.equal(result.behavior, 'deny')
+  assert.equal(result.interrupt, true)
+  assert.equal(result.decisionClassification, 'user_reject')
+})
+
 test('ClaudeAgentSdkTurnRun answers ask_user_question with SDK result shape', async () => {
   const run = testRun()
   const resultPromise = run.requestUserDialog({

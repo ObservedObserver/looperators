@@ -44,10 +44,18 @@ const validRuntimeItemStatuses = new Set([
   'completed',
   'failed',
 ])
-const validRuntimeRequestDecisions = new Set(['approved', 'denied'])
+const validRuntimeRequestDecisions = new Set([
+  'accept',
+  'acceptForSession',
+  'decline',
+  'cancel',
+  'approved',
+  'denied',
+])
 const validRuntimeRequestStatuses = new Set([
   'open',
   'approved',
+  'approved_for_session',
   'denied',
   'resolved',
   'stale',
@@ -1018,6 +1026,37 @@ function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
   return settings
 }
 
+function normalizeRuntimeRequestDecision(decision) {
+  if (decision === 'approved') {
+    return 'accept'
+  }
+  if (decision === 'denied') {
+    return 'decline'
+  }
+  return decision
+}
+
+function runtimeRequestSupportsCancellation(request) {
+  return !(
+    request?.raw?.source === 'codex.app-server.request' &&
+    request.raw.method === 'item/permissions/requestApproval'
+  )
+}
+
+function runtimeRequestStatusForDecision(decision, request) {
+  switch (decision) {
+    case 'accept':
+      return 'approved'
+    case 'acceptForSession':
+      return 'approved_for_session'
+    case 'cancel':
+      return runtimeRequestSupportsCancellation(request) ? 'canceled' : 'denied'
+    case 'decline':
+    default:
+      return 'denied'
+  }
+}
+
 export class RuntimeSessionManager {
   #state: JsonRecord = createEmptyGraphState()
   #runs = new Map<string, RuntimeRun>()
@@ -1520,8 +1559,11 @@ export class RuntimeSessionManager {
       throw new Error('Runtime request id is required')
     }
     if (!validRuntimeRequestDecisions.has(decision)) {
-      throw new Error('Runtime request decision must be approved or denied')
+      throw new Error(
+        'Runtime request decision must be accept, acceptForSession, decline, or cancel'
+      )
     }
+    const normalizedDecision = normalizeRuntimeRequestDecision(decision)
 
     const session = this.#state.sessions[sessionId]
     const request = session.runtimeRequests?.find((item) => item.id === requestId)
@@ -1537,14 +1579,14 @@ export class RuntimeSessionManager {
       throw new Error(`Session cannot respond to runtime requests: ${sessionId}`)
     }
 
-    run.respondRuntimeRequest({ requestId, decision })
+    run.respondRuntimeRequest({ requestId, decision: normalizedDecision })
     const event = {
       id: randomUUID(),
       ts: now(),
       type: 'request.resolved',
       sessionId,
       requestId,
-      status: decision,
+      status: runtimeRequestStatusForDecision(normalizedDecision, request),
     }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
     return { ok: true, state: this.getState() }

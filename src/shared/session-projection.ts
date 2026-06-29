@@ -42,6 +42,7 @@ function sortByCreatedAt<T>(items: T[]) {
 function isTerminalRuntimeRequestStatus(status?: RuntimeRequest['status']) {
   return (
     status === 'approved' ||
+    status === 'approved_for_session' ||
     status === 'denied' ||
     status === 'resolved' ||
     status === 'stale' ||

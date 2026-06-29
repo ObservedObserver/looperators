@@ -103,6 +103,7 @@ import type {
   ProviderRuntimeEvent,
   ProviderRuntimeMode,
   ProviderRuntimeSettings,
+  RuntimeRequestDecision,
   RuntimeActivity,
   RuntimePlan,
   RuntimeRequest,
@@ -2785,7 +2786,7 @@ type RuntimeInteractionPanelProps = {
   pendingInteractionIds: Record<string, boolean>
   onRespond: (
     request: RuntimeRequest,
-    decision: 'approved' | 'denied'
+    decision: RuntimeRequestDecision
   ) => void
   onDraftChange: (requestId: string, value: string) => void
   onAnswer: (request: UserInputRequest) => void
@@ -2850,19 +2851,37 @@ function RuntimeInteractionPanel({
                 <Button
                   className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
                   disabled={isPending}
-                  onClick={() => onRespond(request, 'approved')}
+                  onClick={() => onRespond(request, 'accept')}
                 >
                   <Check className="size-3.5" />
-                  Approve
+                  Allow once
                 </Button>
                 <Button
                   className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
                   variant="outline"
                   disabled={isPending}
-                  onClick={() => onRespond(request, 'denied')}
+                  onClick={() => onRespond(request, 'acceptForSession')}
+                >
+                  <ClipboardCheck className="size-3.5" />
+                  Allow session
+                </Button>
+                <Button
+                  className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+                  variant="outline"
+                  disabled={isPending}
+                  onClick={() => onRespond(request, 'decline')}
                 >
                   <X className="size-3.5" />
-                  Deny
+                  Decline
+                </Button>
+                <Button
+                  className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+                  variant="outline"
+                  disabled={isPending}
+                  onClick={() => onRespond(request, 'cancel')}
+                >
+                  <Square className="size-3.5" />
+                  Cancel
                 </Button>
               </div>
             </div>
@@ -4744,7 +4763,7 @@ function App() {
   )
 
   const respondToRuntimeRequest = useCallback(
-    async (request: RuntimeRequest, decision: 'approved' | 'denied') => {
+    async (request: RuntimeRequest, decision: RuntimeRequestDecision) => {
       if (!runtimeApi) {
         setRuntimeError(runtimeUnavailableText)
         return

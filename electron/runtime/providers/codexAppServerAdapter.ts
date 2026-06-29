@@ -150,8 +150,10 @@ function autoResponseForRequest(message) {
 }
 
 function approvalResponseForDecision(message, decision) {
+  const normalizedDecision =
+    decision === 'approved' ? 'accept' : decision === 'denied' ? 'decline' : decision
   if (message.method === 'item/permissions/requestApproval') {
-    if (decision !== 'approved') {
+    if (normalizedDecision !== 'accept' && normalizedDecision !== 'acceptForSession') {
       return {
         permissions: {},
         scope: 'turn',
@@ -165,12 +167,29 @@ function approvalResponseForDecision(message, decision) {
           ? message.params.permissions
           : {},
       scope:
-        typeof message.params?.scope === 'string' ? message.params.scope : 'turn',
+        normalizedDecision === 'acceptForSession'
+          ? 'session'
+          : typeof message.params?.scope === 'string'
+            ? message.params.scope
+            : 'turn',
       strictAutoReview: false,
     }
   }
 
-  return { decision: decision === 'approved' ? 'accept' : 'decline' }
+  if (normalizedDecision === 'accept') {
+    return { decision: 'accept' }
+  }
+  if (normalizedDecision === 'acceptForSession') {
+    return { decision: 'acceptForSession' }
+  }
+  if (normalizedDecision === 'cancel') {
+    return { decision: 'cancel' }
+  }
+  return { decision: 'decline' }
+}
+
+export function codexApprovalResponseForTest(message, decision) {
+  return approvalResponseForDecision(message, decision)
 }
 
 function userInputResponseForAnswer(message, answer) {
