@@ -199,3 +199,108 @@ test('projectSession preserves persisted assistant turns and ignores late snapsh
     'persisted second turn'
   )
 })
+
+test('projectSession projects plans turn diffs and work into a unified timeline', async () => {
+  const { projectSession } = await loadProjectionModule()
+  const sessionId = 'session-1'
+  const turnId = 'turn-a'
+  const projection = projectSession(
+    baseSession({
+      messages: [
+        {
+          id: 'user-1',
+          sessionId,
+          role: 'user',
+          content: 'change a file',
+          ts: '2026-06-29T00:00:00.000Z',
+          status: 'complete',
+          runId: turnId,
+        },
+      ],
+      runtimeEvents: [
+        {
+          id: 'turn-start',
+          ts: '2026-06-29T00:00:01.000Z',
+          type: 'turn.started',
+          sessionId,
+          turnId,
+        },
+        {
+          id: 'plan',
+          ts: '2026-06-29T00:00:02.000Z',
+          type: 'plan.updated',
+          sessionId,
+          plan: {
+            id: 'plan-1',
+            sessionId,
+            turnId,
+            title: 'Proposed plan',
+            items: [{ id: 'plan-1:item-1', title: 'Edit file', status: 'pending' }],
+            updatedAt: '2026-06-29T00:00:02.000Z',
+          },
+        },
+        {
+          id: 'activity',
+          ts: '2026-06-29T00:00:03.000Z',
+          type: 'item.completed',
+          sessionId,
+          item: {
+            id: 'tool-1',
+            sessionId,
+            turnId,
+            kind: 'command',
+            title: 'git status',
+            status: 'completed',
+            startedAt: '2026-06-29T00:00:03.000Z',
+            completedAt: '2026-06-29T00:00:03.500Z',
+          },
+        },
+        {
+          id: 'diff',
+          ts: '2026-06-29T00:00:04.000Z',
+          type: 'turn.diff.updated',
+          sessionId,
+          turnId,
+          diff: {
+            sessionId,
+            turnId,
+            cwd: '/tmp/project',
+            repoRoot: '/tmp/project',
+            generatedAt: '2026-06-29T00:00:04.000Z',
+            range: {
+              kind: 'checkpoint',
+              fromCheckpointRef: 'refs/orrery/checkpoints/session-1/turns/0/turn-a-before',
+              toCheckpointRef: 'refs/orrery/checkpoints/session-1/turns/1/turn-a-after',
+              fromTurnCount: 0,
+              toTurnCount: 1,
+            },
+            files: [
+              {
+                path: 'src/app.ts',
+                changeType: 'change',
+                additions: 2,
+                deletions: 1,
+              },
+            ],
+            totals: { files: 1, additions: 2, deletions: 1 },
+          },
+        },
+        {
+          id: 'turn-complete',
+          ts: '2026-06-29T00:00:05.000Z',
+          type: 'turn.completed',
+          sessionId,
+          turnId,
+        },
+      ],
+    })
+  )
+
+  assert.equal(projection.activePlan?.id, 'plan-1')
+  assert.equal(projection.turnDiffs.length, 1)
+  assert.equal(projection.turnDiffs[0].totals.additions, 2)
+  assert.deepEqual(
+    projection.timeline.map((entry) => entry.kind),
+    ['message', 'turn', 'plan', 'activity', 'turn-diff', 'turn']
+  )
+})

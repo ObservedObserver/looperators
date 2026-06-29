@@ -9,6 +9,8 @@ import type {
   CreateRuntimeSessionResult,
   FreezeInput,
   GraphState,
+  ProviderSetupStatus,
+  ProviderSetupStatusInput,
   ProjectContext,
   ProjectContextInput,
   RespondRuntimeRequestInput,
@@ -38,6 +40,9 @@ export type RuntimeConfig = {
 export type RuntimeApi = {
   getState: () => Promise<GraphState>
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>
+  getProviderSetupStatus: (
+    input: ProviderSetupStatusInput
+  ) => Promise<ProviderSetupStatus>
   chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>
   createSession: (
     input: CreateRuntimeSessionInput
@@ -273,6 +278,10 @@ class HttpRuntimeApi implements RuntimeApi {
 
   getProjectContext(input: ProjectContextInput) {
     return this.#post<ProjectContext>('project-context', input)
+  }
+
+  getProviderSetupStatus(input: ProviderSetupStatusInput) {
+    return this.#post<ProviderSetupStatus>('provider-setup-status', input)
   }
 
   async chooseProjectFolder() {

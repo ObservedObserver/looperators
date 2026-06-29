@@ -5,6 +5,8 @@ import type {
   RuntimePlan,
   RuntimeRequest,
   SessionProjection,
+  SessionTimelineEntry,
+  TurnDiffSummary,
   UserInputRequest,
 } from './provider-runtime'
 
@@ -16,9 +18,17 @@ function sortKey(item: {
   createdAt?: string
   startedAt?: string
   updatedAt?: string
+  generatedAt?: string
   ts?: string
 }) {
-  return item.createdAt ?? item.startedAt ?? item.updatedAt ?? item.ts ?? ''
+  return (
+    item.createdAt ??
+    item.startedAt ??
+    item.updatedAt ??
+    item.generatedAt ??
+    item.ts ??
+    ''
+  )
 }
 
 function sortByCreatedAt<T>(items: T[]) {
@@ -180,6 +190,19 @@ function applyRuntimeEvents(input: {
   }
 }
 
+function projectedTurnDiffs(events: ProviderRuntimeEvent[]) {
+  const turnDiffs = new Map<string, TurnDiffSummary>()
+
+  for (const event of events) {
+    if (event.type !== 'turn.diff.updated') {
+      continue
+    }
+    turnDiffs.set(event.turnId, clone(event.diff))
+  }
+
+  return sortByCreatedAt([...turnDiffs.values()])
+}
+
 function projectedAssistantMessages(session: AgentSession, events: ProviderRuntimeEvent[]) {
   const assistantByTurn = new Map<
     string,
@@ -247,6 +270,122 @@ function projectedAssistantMessages(session: AgentSession, events: ProviderRunti
   return [...persistedMessages, ...projectedMessages]
 }
 
+function messageTimelineEntry(message: AgentMessage): SessionTimelineEntry {
+  return {
+    id: `message:${message.id}`,
+    kind: 'message',
+    ts: message.ts,
+    turnId: message.runId,
+    message,
+  }
+}
+
+function buildTimeline(input: {
+  events: ProviderRuntimeEvent[]
+  messages: AgentMessage[]
+  activities: RuntimeActivity[]
+  requests: RuntimeRequest[]
+  userInputRequests: UserInputRequest[]
+  plans: RuntimePlan[]
+  turnDiffs: TurnDiffSummary[]
+}) {
+  const entries: SessionTimelineEntry[] = []
+
+  for (const event of input.events) {
+    if (event.type === 'turn.started') {
+      entries.push({
+        id: `turn-started:${event.turnId}:${event.id}`,
+        kind: 'turn',
+        status: 'started',
+        ts: event.ts,
+        turnId: event.turnId,
+      })
+    }
+    if (event.type === 'turn.completed') {
+      entries.push({
+        id: `turn-completed:${event.turnId}:${event.id}`,
+        kind: 'turn',
+        status: 'completed',
+        ts: event.ts,
+        turnId: event.turnId,
+      })
+    }
+  }
+
+  entries.push(...input.messages.map(messageTimelineEntry))
+  entries.push(
+    ...input.activities.map((activity) => ({
+      id: `activity:${activity.id}`,
+      kind: 'activity' as const,
+      ts: sortKey(activity),
+      turnId: activity.turnId,
+      activity,
+    }))
+  )
+  entries.push(
+    ...input.requests.map((request) => ({
+      id: `request:${request.id}`,
+      kind: 'request' as const,
+      ts: request.createdAt,
+      turnId: request.turnId,
+      request,
+    }))
+  )
+  entries.push(
+    ...input.userInputRequests.map((request) => ({
+      id: `user-input:${request.id}`,
+      kind: 'user-input' as const,
+      ts: request.createdAt,
+      turnId: request.turnId,
+      request,
+    }))
+  )
+  entries.push(
+    ...input.plans.map((plan) => ({
+      id: `plan:${plan.id}`,
+      kind: 'plan' as const,
+      ts: plan.updatedAt,
+      turnId: plan.turnId,
+      plan,
+    }))
+  )
+  entries.push(
+    ...input.turnDiffs.map((diff) => ({
+      id: `turn-diff:${diff.turnId}`,
+      kind: 'turn-diff' as const,
+      ts: diff.generatedAt,
+      turnId: diff.turnId,
+      diff,
+    }))
+  )
+
+  return entries.sort((left, right) => {
+    const tsComparison = left.ts.localeCompare(right.ts)
+    if (tsComparison !== 0) {
+      return tsComparison
+    }
+    return timelineKindOrder(left.kind) - timelineKindOrder(right.kind)
+  })
+}
+
+function timelineKindOrder(kind: SessionTimelineEntry['kind']) {
+  switch (kind) {
+    case 'turn':
+      return 0
+    case 'request':
+    case 'user-input':
+      return 1
+    case 'plan':
+      return 2
+    case 'activity':
+      return 3
+    case 'message':
+      return 4
+    case 'turn-diff':
+      return 5
+  }
+}
+
 export function projectSession(session: AgentSession): SessionProjection {
   const events = session.runtimeEvents ?? []
   const userAndSystemMessages = (session.messages ?? [])
@@ -263,6 +402,17 @@ export function projectSession(session: AgentSession): SessionProjection {
     fallbackUserInputRequests: session.runtimeUserInputRequests ?? [],
     fallbackPlans: session.runtimePlans ?? [],
   })
+  const turnDiffs = projectedTurnDiffs(events)
+  const activePlan = runtime.plans.at(-1)
+  const timeline = buildTimeline({
+    events,
+    messages,
+    activities: runtime.activities,
+    requests: runtime.requests,
+    userInputRequests: runtime.userInputRequests,
+    plans: runtime.plans,
+    turnDiffs,
+  })
 
   return {
     sessionId: session.sessionId,
@@ -277,6 +427,9 @@ export function projectSession(session: AgentSession): SessionProjection {
       (request) => request.status === 'stale'
     ),
     plans: runtime.plans,
+    activePlan,
+    turnDiffs,
+    timeline,
     status: statusFromEvents(events, session.status),
     runtimeSettings: session.runtimeSettings,
   }

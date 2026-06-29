@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -24,6 +25,69 @@ emit({
 })
 emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
 `
+}
+
+function fakeClaudeFileEditorSource() {
+  return `#!/usr/bin/env node
+const fs = require('node:fs')
+const path = require('node:path')
+function emit(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+const file = path.join(process.cwd(), 'p1-turn-diff.txt')
+fs.appendFileSync(file, 'changed by fake agent\\n')
+emit({
+  type: 'assistant',
+  session_id: 'fake-editor-session',
+  message: { content: [{ type: 'text', text: 'edited p1-turn-diff.txt' }] },
+})
+emit({ type: 'result', session_id: 'fake-editor-session', result: 'done' })
+`
+}
+
+function fakeClaudePromptRecorderSource(outputFile) {
+  return `#!/usr/bin/env node
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+const readArg = (name) => {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] : undefined
+}
+const prompt = readArg('-p') ?? ''
+fs.writeFileSync(${JSON.stringify(outputFile)}, prompt)
+function emit(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+emit({
+  type: 'assistant',
+  session_id: 'fake-attachment-session',
+  message: { content: [{ type: 'text', text: 'recorded attachment prompt' }] },
+})
+emit({ type: 'result', session_id: 'fake-attachment-session', result: 'done' })
+`
+}
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Orrery Test',
+      GIT_AUTHOR_EMAIL: 'orrery-test@example.com',
+      GIT_COMMITTER_NAME: 'Orrery Test',
+      GIT_COMMITTER_EMAIL: 'orrery-test@example.com',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+function gitRefs(cwd, root) {
+  const output = git(cwd, ['for-each-ref', '--format=%(refname)', root])
+  return output
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter(Boolean)
 }
 
 function delay(ms) {
@@ -146,6 +210,263 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
     for (const runtime of managers) {
       runtime.killAll()
     }
+    if (previousClaudeBin === undefined) {
+      delete process.env.ORRERY_CLAUDE_BIN
+    } else {
+      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-turn-diff-test-'))
+  const fakeClaude = path.join(tempRoot, 'claude')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
+  const managers = new Set()
+
+  fs.mkdirSync(project, { recursive: true })
+  git(project, ['init'])
+  fs.writeFileSync(path.join(project, 'README.md'), '# Turn diff test\n')
+  git(project, ['add', 'README.md'])
+  git(project, ['commit', '-m', 'initial'])
+  fs.writeFileSync(fakeClaude, fakeClaudeFileEditorSource())
+  fs.chmodSync(fakeClaude, 0o755)
+  process.env.ORRERY_CLAUDE_BIN = fakeClaude
+
+  const manager = (input) => {
+    const runtime = new RuntimeSessionManager(input)
+    managers.add(runtime)
+    return runtime
+  }
+
+  try {
+    const runtime = manager({ storageFile })
+    const created = await runtime.createSession({
+      prompt: 'edit a file',
+      label: 'Turn Diff',
+      cwd: project,
+    })
+    const sessionId = created.sessionId
+
+    await waitFor(
+      'turn diff session idle',
+      () => runtime.getState().sessions[sessionId]?.status === 'idle'
+    )
+
+    const session = runtime.getState().sessions[sessionId]
+    const diffEvent = session.runtimeEvents.find(
+      (event) => event.type === 'turn.diff.updated'
+    )
+    assert.ok(diffEvent, 'expected a turn.diff.updated runtime event')
+    assert.equal(diffEvent.diff.error, undefined)
+    assert.equal(diffEvent.diff.totals.files, 1)
+    assert.equal(diffEvent.diff.files[0].path, 'p1-turn-diff.txt')
+
+    const turnDiff = runtime.getWorkingTreeDiff({
+      sessionId,
+      turnId: diffEvent.turnId,
+    })
+    assert.equal(turnDiff.range.kind, 'checkpoint')
+    assert.equal(turnDiff.totals.files, 1)
+    assert.match(turnDiff.patch, /changed by fake agent/)
+
+    const checkpointRoot = `refs/orrery/checkpoints/${sessionId}`
+    const orphanRef = `${checkpointRoot}/turns/999/orphan-before`
+    git(project, ['update-ref', orphanRef, git(project, ['rev-parse', 'HEAD'])])
+    assert.ok(gitRefs(project, checkpointRoot).includes(orphanRef))
+
+    await runtime.resumeSession({
+      sessionId,
+      message: 'edit the file again',
+    })
+    await waitFor(
+      'second turn diff session idle',
+      () => runtime.getState().sessions[sessionId]?.status === 'idle'
+    )
+
+    const nextSession = runtime.getState().sessions[sessionId]
+    const diffEvents = nextSession.runtimeEvents.filter(
+      (event) => event.type === 'turn.diff.updated'
+    )
+    assert.equal(diffEvents.length, 2)
+
+    const retainedRefs = new Set(
+      diffEvents.flatMap((event) => [
+        event.diff.range?.fromCheckpointRef,
+        event.diff.range?.toCheckpointRef,
+      ])
+    )
+    const currentRefs = gitRefs(project, checkpointRoot)
+    assert.ok(!currentRefs.includes(orphanRef))
+    for (const ref of retainedRefs) {
+      assert.equal(currentRefs.includes(ref), true, `${ref} should be retained`)
+    }
+
+    runtime.killAll()
+    managers.delete(runtime)
+
+    const persisted = JSON.parse(fs.readFileSync(storageFile, 'utf8'))
+    persisted.sessions[sessionId].runtimeEvents = Array.from({ length: 2000 }, (_, index) => ({
+      id: `filler-${index}`,
+      ts: new Date(index).toISOString(),
+      type: 'content.delta',
+      sessionId,
+      turnId: `filler-turn-${Math.floor(index / 2)}`,
+      streamKind: 'assistant_text',
+      text: 'filler',
+    }))
+    fs.writeFileSync(storageFile, JSON.stringify(persisted, null, 2))
+
+    const cappedRuntime = manager({ storageFile })
+    await cappedRuntime.resumeSession({
+      sessionId,
+      message: 'edit after event cap',
+    })
+    await waitFor(
+      'event capped turn diff session idle',
+      () => cappedRuntime.getState().sessions[sessionId]?.status === 'idle'
+    )
+
+    const cappedSession = cappedRuntime.getState().sessions[sessionId]
+    const cappedDiffEvent = [...cappedSession.runtimeEvents]
+      .reverse()
+      .find((event) => event.type === 'turn.diff.updated')
+    assert.ok(cappedDiffEvent, 'expected a checkpoint diff after event cap')
+    assert.equal(cappedDiffEvent.diff.error, undefined)
+    const cappedTurnDiff = cappedRuntime.getWorkingTreeDiff({
+      sessionId,
+      turnId: cappedDiffEvent.turnId,
+    })
+    assert.equal(cappedTurnDiff.range.kind, 'checkpoint')
+    assert.match(cappedTurnDiff.patch, /changed by fake agent/)
+  } finally {
+    for (const runtime of managers) {
+      runtime.killAll()
+    }
+    if (previousClaudeBin === undefined) {
+      delete process.env.ORRERY_CLAUDE_BIN
+    } else {
+      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager persists structured attachments without inlining image data into chat text', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-attachment-test-'))
+  const fakeClaude = path.join(tempRoot, 'claude')
+  const promptFile = path.join(tempRoot, 'provider-prompt.txt')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
+  const managers = new Set()
+
+  fs.writeFileSync(fakeClaude, fakeClaudePromptRecorderSource(promptFile))
+  fs.chmodSync(fakeClaude, 0o755)
+  process.env.ORRERY_CLAUDE_BIN = fakeClaude
+
+  const manager = (input) => {
+    const runtime = new RuntimeSessionManager(input)
+    managers.add(runtime)
+    return runtime
+  }
+
+  try {
+    const runtime = manager({ storageFile })
+    const imageDataUrl = 'data:image/png;base64,aW1hZ2UtYnl0ZXM='
+    const created = await runtime.createSession({
+      prompt: 'review attachments',
+      label: 'Attachment Runtime',
+      cwd: process.cwd(),
+      attachments: [
+        {
+          id: 'text-attachment',
+          name: 'notes.md',
+          mediaType: 'text/markdown',
+          size: 12,
+          kind: 'text',
+          text: '# Notes',
+        },
+        {
+          id: 'image-attachment',
+          name: 'screenshot.png',
+          mediaType: 'image/png',
+          size: 17,
+          kind: 'image',
+          dataUrl: imageDataUrl,
+        },
+        {
+          id: 'svg-attachment',
+          name: 'diagram.svg',
+          mediaType: 'image/svg+xml',
+          size: 21,
+          kind: 'image',
+          dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+        },
+      ],
+    })
+    const sessionId = created.sessionId
+
+    await waitFor(
+      'attachment session idle',
+      () => runtime.getState().sessions[sessionId]?.status === 'idle'
+    )
+
+    const session = runtime.getState().sessions[sessionId]
+    const userMessage = session.messages.find((message) => message.role === 'user')
+    assert.equal(userMessage.content, 'review attachments')
+    assert.equal(userMessage.attachments.length, 3)
+    assert.equal(userMessage.attachments[0].kind, 'text')
+    assert.equal(userMessage.attachments[1].kind, 'image')
+    assert.equal(userMessage.attachments[2].kind, 'binary')
+    assert.equal(userMessage.content.includes('data:image/png'), false)
+
+    const providerPrompt = fs.readFileSync(promptFile, 'utf8')
+    assert.match(providerPrompt, /notes.md/)
+    assert.match(providerPrompt, /# Notes/)
+    assert.match(providerPrompt, /screenshot.png/)
+    assert.equal(providerPrompt.includes(imageDataUrl), false)
+
+    const restored = manager({ storageFile })
+    assert.equal(
+      restored.getState().sessions[sessionId].messages[0].attachments[1].name,
+      'screenshot.png'
+    )
+  } finally {
+    for (const runtime of managers) {
+      runtime.killAll()
+    }
+    if (previousClaudeBin === undefined) {
+      delete process.env.ORRERY_CLAUDE_BIN
+    } else {
+      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager reports provider setup diagnostics', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-setup-test-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
+  process.env.ORRERY_CLAUDE_BIN = path.join(tempRoot, 'missing-claude')
+
+  try {
+    const runtime = new RuntimeSessionManager({ storageFile })
+    const status = runtime.getProviderSetupStatus({
+      providerKind: 'legacy-claude-cli',
+      cwd: path.join(tempRoot, 'missing-project'),
+    })
+    const binary = status.checks.find((check) => check.id === 'binary')
+    const cwd = status.checks.find((check) => check.id === 'cwd')
+    const auth = status.checks.find((check) => check.id === 'auth')
+
+    assert.equal(binary.status, 'error')
+    assert.equal(cwd.status, 'error')
+    assert.equal(auth.status, 'unknown')
+  } finally {
     if (previousClaudeBin === undefined) {
       delete process.env.ORRERY_CLAUDE_BIN
     } else {

@@ -166,6 +166,12 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/provider-setup-status$/,
+      handler: async (request) =>
+        runtime.getProviderSetupStatus(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/sessions$/,
       handler: async (request) => runtime.createSession(await readJsonBody(request)),
     },

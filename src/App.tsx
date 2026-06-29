@@ -78,12 +78,6 @@ import {
   termTextareaCls,
 } from '@/components/terminal'
 import { AgentMarkdown } from '@/components/agent-markdown'
-import { ToolRunFeed } from '@/components/tool-run-feed'
-import {
-  parseToolTurns,
-  toolTurnsFromRuntimeActivities,
-  type ToolTurn,
-} from '@/shared/tool-feed'
 import {
   createEmptyGraphState,
   type AgentMessage,
@@ -92,6 +86,7 @@ import {
   type GraphEdgeKind,
   type GraphState,
   type ProjectContext,
+  type ProviderSetupStatus,
   type Report,
   type RuntimeStateDiagnostic,
   type SessionStatus,
@@ -100,14 +95,24 @@ import {
   type WorkingTreeDiffResult,
 } from '@/shared/graph-state'
 import type {
+  ChatAttachment,
   NativeProviderEvent,
   ProviderKind,
   ProviderReasoningEffort,
   ProviderRuntimeEvent,
   ProviderRuntimeMode,
   ProviderRuntimeSettings,
+  RuntimeActivity,
+  RuntimePlan,
   RuntimeRequest,
+  SessionTimelineEntry,
+  TurnDiffSummary,
   UserInputRequest,
+} from '@/shared/provider-runtime'
+import {
+  chatAttachmentImageMaxBytes,
+  chatAttachmentTextMaxLength,
+  isSupportedChatAttachmentImageMimeType,
 } from '@/shared/provider-runtime'
 import { projectSession } from '@/shared/session-projection'
 import { createDemoGraphState } from '@/shared/demo-state'
@@ -160,17 +165,6 @@ type ActivityEvent = {
   reason?: string
 }
 
-type ComposerAttachment = {
-  id: string
-  name: string
-  type: string
-  size: number
-  kind: 'file' | 'image'
-  text?: string
-  dataUrl?: string
-  truncated?: boolean
-}
-
 type ClusterNodeData = {
   label: string
   nodeCount: number
@@ -201,8 +195,7 @@ const defaultChatPanelWidth = 440
 const chatPanelMinWidth = 360
 const canvasPanelMinWidth = 520
 const chatCanvasSeparatorWidth = 8
-const attachmentTextPreviewLimit = 12_000
-const attachmentDataUrlPromptLimit = 180_000
+const attachmentTextPreviewLimit = chatAttachmentTextMaxLength
 
 function initialChatPanelWidth() {
   if (typeof window === 'undefined') {
@@ -276,12 +269,20 @@ function readBlobAsDataUrl(blob: Blob) {
   })
 }
 
-async function composerAttachmentFromFile(file: File): Promise<ComposerAttachment> {
-  const kind = file.type.startsWith('image/') ? 'image' : 'file'
-  const attachment: ComposerAttachment = {
+async function composerAttachmentFromFile(file: File): Promise<ChatAttachment> {
+  const canUseNativeImage =
+    file.type.startsWith('image/') &&
+    isSupportedChatAttachmentImageMimeType(file.type) &&
+    file.size <= chatAttachmentImageMaxBytes
+  const kind = canUseNativeImage
+    ? 'image'
+    : fileLooksText(file)
+      ? 'text'
+      : 'binary'
+  const attachment: ChatAttachment = {
     id: createAttachmentId(),
     name: file.name || (kind === 'image' ? 'pasted-image.png' : 'attachment'),
-    type: file.type || 'application/octet-stream',
+    mediaType: file.type || 'application/octet-stream',
     size: file.size,
     kind,
   }
@@ -293,7 +294,7 @@ async function composerAttachmentFromFile(file: File): Promise<ComposerAttachmen
     }
   }
 
-  if (fileLooksText(file)) {
+  if (kind === 'text') {
     const slice = file.slice(0, attachmentTextPreviewLimit)
     return {
       ...attachment,
@@ -303,40 +304,6 @@ async function composerAttachmentFromFile(file: File): Promise<ComposerAttachmen
   }
 
   return attachment
-}
-
-function composerAttachmentsContext(attachments: ComposerAttachment[]) {
-  if (attachments.length === 0) {
-    return undefined
-  }
-
-  return [
-    'Attached files:',
-    ...attachments.map((attachment, index) => {
-      const header = [
-        `Attachment ${index + 1}: ${attachment.name}`,
-        `Type: ${attachment.type}`,
-        `Size: ${formatFileSize(attachment.size)}`,
-      ].join('\n')
-
-      if (attachment.kind === 'image') {
-        const imageData =
-          attachment.dataUrl &&
-          attachment.dataUrl.length <= attachmentDataUrlPromptLimit
-            ? `Image data URL:\n${attachment.dataUrl}`
-            : 'Image data was omitted because it is too large to inline safely.'
-        return `${header}\nKind: image\n${imageData}`
-      }
-
-      if (attachment.text !== undefined) {
-        return `${header}\nKind: file\nText content${
-          attachment.truncated ? ' (truncated)' : ''
-        }:\n${attachment.text}`
-      }
-
-      return `${header}\nKind: file\nContent not inlined; only metadata is available.`
-    }),
-  ].join('\n\n')
 }
 
 function insertPlainTextAtCaret(text: string) {
@@ -2290,18 +2257,56 @@ function assistantLabel(agent?: string) {
   return agent?.toLowerCase().includes('codex') ? 'codex' : 'assistant'
 }
 
+function MessageAttachmentStrip({ attachments }: { attachments?: ChatAttachment[] }) {
+  if (!attachments?.length) {
+    return null
+  }
+
+  return (
+    <div className="mt-2 grid gap-1.5">
+      {attachments.map((attachment) => (
+        <div
+          key={attachment.id}
+          className="grid min-w-0 grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-ink-line bg-foreground/[0.04] px-2 py-1.5 text-[11px]"
+        >
+          <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded border border-ink-line bg-ink-soft text-term-cyan">
+            {attachment.kind === 'image' && attachment.dataUrl ? (
+              <img
+                className="size-full object-cover"
+                src={attachment.dataUrl}
+                alt=""
+              />
+            ) : attachment.kind === 'image' ? (
+              <ImageIcon className="size-3.5" />
+            ) : (
+              <FileText className="size-3.5" />
+            )}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate text-term-name">{attachment.name}</span>
+            <span className="block truncate text-[10px] text-term-dim2">
+              {attachment.mediaType} · {formatFileSize(attachment.size)}
+              {attachment.truncated ? ' · truncated' : ''}
+            </span>
+          </span>
+          <span className="rounded border border-ink-line bg-background/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-term-dim2">
+            {attachment.kind}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ChatMessage({
   message,
-  turn,
   agent,
 }: {
   message: AgentMessage
-  turn?: ToolTurn
   agent?: string
 }) {
   const isUser = message.role === 'user'
   const isStreaming = message.status === 'streaming'
-  const hasFeed = !isUser && Boolean(turn && turn.toolRuns.length > 0)
   const hasText = message.content.trim().length > 0
   const senderLabel = assistantLabel(agent)
 
@@ -2328,24 +2333,19 @@ function ChatMessage({
         </span>
       </div>
       {isUser ? (
-        <div className="flex gap-2 text-[13px] leading-6">
-          <span className="shrink-0 text-lime-hi">❯</span>
-          <span className="whitespace-pre-wrap break-words text-term-name">
-            {message.content}
-          </span>
-        </div>
+        <>
+          <div className="flex gap-2 text-[13px] leading-6">
+            <span className="shrink-0 text-lime-hi">❯</span>
+            <span className="whitespace-pre-wrap break-words text-term-name">
+              {message.content}
+            </span>
+          </div>
+          <MessageAttachmentStrip attachments={message.attachments} />
+        </>
       ) : (
         <>
-          {hasFeed && turn ? (
-            <ToolRunFeed turn={turn} agent={agent} />
-          ) : null}
-          {hasText || (isStreaming && !hasFeed) ? (
-            <div
-              className={cn(
-                'text-[13px] leading-6 text-term-name',
-                hasFeed && 'mt-2'
-              )}
-            >
+          {hasText || isStreaming ? (
+            <div className="text-[13px] leading-6 text-term-name">
               <AgentMarkdown text={message.content} streaming={isStreaming} />
               {isStreaming ? <span className="orrery-caret ml-1" /> : null}
             </div>
@@ -2353,6 +2353,366 @@ function ChatMessage({
         </>
       )}
     </div>
+  )
+}
+
+function TurnBoundaryRow({
+  entry,
+}: {
+  entry: Extract<SessionTimelineEntry, { kind: 'turn' }>
+}) {
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2 font-mono first:border-t-0">
+      <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.12em] text-term-faint">
+        <span className="h-px flex-1 bg-ink-line" />
+        <span>{entry.status === 'started' ? 'Turn started' : 'Turn completed'}</span>
+        <span className="text-term-dim2">{formatClock(entry.ts)}</span>
+        <span className="h-px flex-1 bg-ink-line" />
+      </div>
+    </div>
+  )
+}
+
+function ActivityTimelineRow({ activity }: { activity: RuntimeActivity }) {
+  const hasDetails =
+    Boolean(activity.output && activity.output.trim().length > 0) ||
+    Boolean(activity.error && activity.error.trim().length > 0) ||
+    Boolean(activity.sublines?.length)
+  const statusClassName =
+    activity.status === 'failed'
+      ? 'border-term-rose/35 bg-term-rose/10 text-term-rose'
+      : activity.status === 'completed'
+        ? 'border-term-green/30 bg-term-green/10 text-term-green'
+        : 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <details
+        className="rounded-lg border border-ink-line bg-background/35 px-3 py-2"
+        open={!hasDetails ? true : undefined}
+      >
+        <summary className="flex cursor-pointer list-none items-start gap-2">
+          <Terminal className="mt-0.5 size-3.5 shrink-0 text-term-cyan" />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-medium text-term-name">
+              {activity.title}
+            </span>
+            <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10.5px] text-term-dim2">
+              <span
+                className={cn(
+                  'rounded border px-1.5 py-0.5 uppercase tracking-[0.08em]',
+                  statusClassName
+                )}
+              >
+                {activity.status}
+              </span>
+              <span>{activity.kind}</span>
+              {activity.startedAt ? <span>{formatClock(activity.startedAt)}</span> : null}
+            </span>
+          </span>
+          <ChevronDown className="mt-0.5 size-3 shrink-0 text-term-dim2" />
+        </summary>
+        {hasDetails ? (
+          <div className="mt-2 space-y-2">
+            {activity.sublines?.length ? (
+              <div className="grid gap-1">
+                {activity.sublines.slice(0, 8).map((line, index) => (
+                  <div
+                    key={`${line.key ?? index}:${line.value.slice(0, 20)}`}
+                    className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md bg-ink px-2 py-1 text-[11px] leading-4"
+                  >
+                    <span className="truncate text-term-dim2">
+                      {line.key ?? 'output'}
+                    </span>
+                    <span className="truncate text-term-dim">{line.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {activity.output ? (
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink px-2.5 py-2 text-[11px] leading-5 text-term-dim">
+                {activity.output}
+              </pre>
+            ) : null}
+            {activity.error ? (
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-term-rose/10 px-2.5 py-2 text-[11px] leading-5 text-term-rose">
+                {activity.error}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
+      </details>
+    </div>
+  )
+}
+
+function PlanTimelineRow({
+  plan,
+  onContinue,
+  onRevise,
+  canAct,
+}: {
+  plan: RuntimePlan
+  onContinue: (plan: RuntimePlan) => void
+  onRevise: (plan: RuntimePlan) => void
+  canAct: boolean
+}) {
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <div className="rounded-lg border border-term-cyan/30 bg-term-cyan/10 p-3">
+        <div className="mb-2 flex min-w-0 items-center gap-2">
+          <ClipboardCheck className="size-3.5 shrink-0 text-term-cyan" />
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+            {plan.title ?? 'Proposed plan'}
+          </span>
+          <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
+            {formatClock(plan.updatedAt)}
+          </span>
+        </div>
+        {plan.items.length ? (
+          <ol className="space-y-1.5">
+            {plan.items.map((item, index) => (
+              <li
+                key={item.id}
+                className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2 rounded-md bg-ink px-2 py-1.5 text-[11.5px] leading-4"
+              >
+                <span className="text-term-dim2 tabular-nums">
+                  {index + 1}.
+                </span>
+                <span className="min-w-0 break-words text-term-dim">
+                  {item.title}
+                </span>
+                <span className="rounded border border-ink-line bg-background/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-term-dim2">
+                  {item.status.replace('_', ' ')}
+                </span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <div className="rounded-md border border-dashed border-term-cyan/25 p-3 text-[11.5px] text-term-dim2">
+            No plan items were provided.
+          </div>
+        )}
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Button
+            className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+            disabled={!canAct}
+            onClick={() => onContinue(plan)}
+          >
+            <Check className="size-3.5" />
+            Continue
+          </Button>
+          <Button
+            className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+            variant="outline"
+            disabled={!canAct}
+            onClick={() => onRevise(plan)}
+          >
+            <RefreshCw className="size-3.5" />
+            Revise
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RequestTimelineRow({
+  entry,
+}: {
+  entry:
+    | Extract<SessionTimelineEntry, { kind: 'request' }>
+    | Extract<SessionTimelineEntry, { kind: 'user-input' }>
+}) {
+  const isUserInput = entry.kind === 'user-input'
+  const title = isUserInput ? 'Input requested' : entry.request.title
+  const body = isUserInput ? entry.request.prompt : entry.request.body
+  const status = entry.request.status
+
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <div className="rounded-lg border border-term-amber/30 bg-term-amber/10 p-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <TriangleAlert className="size-3.5 shrink-0 text-term-amber" />
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+            {title}
+          </span>
+          <span className="rounded border border-term-amber/30 bg-term-amber/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-term-amber">
+            {status}
+          </span>
+        </div>
+        {body ? (
+          <p className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
+            {body}
+          </p>
+        ) : null}
+        <div className="mt-1 text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
+          {isUserInput ? 'User input' : requestKindLabels[entry.request.kind]} ·{' '}
+          {formatClock(entry.ts)}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TurnDiffTimelineRow({
+  diff,
+  onOpen,
+}: {
+  diff: TurnDiffSummary
+  onOpen: (turnId: string) => void
+}) {
+  const hasChanges = diff.totals.files > 0
+
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <div
+        className={cn(
+          'rounded-lg border p-3',
+          diff.error
+            ? 'border-term-amber/35 bg-term-amber/10'
+            : 'border-term-green/25 bg-term-green/10'
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <FileText
+            className={cn(
+              'size-3.5 shrink-0',
+              diff.error ? 'text-term-amber' : 'text-term-green'
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+            Turn changed files
+          </span>
+          <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
+            {formatClock(diff.generatedAt)}
+          </span>
+        </div>
+        {diff.error ? (
+          <p className="mt-2 whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-amber">
+            {diff.error}
+          </p>
+        ) : (
+          <>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[10.5px]">
+              <span className="rounded border border-ink-line bg-ink px-1.5 py-0.5 text-term-dim">
+                {diff.totals.files} files
+              </span>
+              <span className="rounded border border-term-green/25 bg-term-green/10 px-1.5 py-0.5 text-term-green">
+                +{diff.totals.additions}
+              </span>
+              <span className="rounded border border-term-rose/25 bg-term-rose/10 px-1.5 py-0.5 text-term-rose">
+                -{diff.totals.deletions}
+              </span>
+            </div>
+            {hasChanges ? (
+              <div className="mt-2 grid gap-1.5">
+                {diff.files.slice(0, 6).map((file) => (
+                  <button
+                    key={`${file.changeType}:${file.path}`}
+                    type="button"
+                    className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-ink-line bg-ink px-2 py-1.5 text-left text-[11.5px] transition hover:border-foreground/20"
+                    onClick={() => onOpen(diff.turnId)}
+                  >
+                    <span className="min-w-0 truncate text-term-name">
+                      {file.path}
+                    </span>
+                    <span className="tabular-nums text-term-green">
+                      +{file.additions}
+                    </span>
+                    <span className="tabular-nums text-term-rose">
+                      -{file.deletions}
+                    </span>
+                  </button>
+                ))}
+                {diff.files.length > 6 ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-dashed border-ink-line px-2 py-1.5 text-left text-[11.5px] text-term-dim2 transition hover:border-foreground/20 hover:text-term-name"
+                    onClick={() => onOpen(diff.turnId)}
+                  >
+                    {diff.files.length - 6} more files
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <div className="mt-2 rounded-md border border-dashed border-ink-line bg-ink p-3 text-[11.5px] text-term-dim2">
+                No file changes in this turn.
+              </div>
+            )}
+            <Button
+              className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+              variant="outline"
+              onClick={() => onOpen(diff.turnId)}
+            >
+              <FileText className="size-3.5" />
+              Open patch
+            </Button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SessionTimeline({
+  entries,
+  agent,
+  canActOnPlan,
+  onContinuePlan,
+  onRevisePlan,
+  onOpenTurnDiff,
+}: {
+  entries: SessionTimelineEntry[]
+  agent?: string
+  canActOnPlan: boolean
+  onContinuePlan: (plan: RuntimePlan) => void
+  onRevisePlan: (plan: RuntimePlan) => void
+  onOpenTurnDiff: (turnId: string) => void
+}) {
+  return (
+    <>
+      {entries.map((entry) => {
+        if (entry.kind === 'turn') {
+          return <TurnBoundaryRow key={entry.id} entry={entry} />
+        }
+        if (entry.kind === 'message') {
+          return (
+            <ChatMessage
+              key={entry.id}
+              message={entry.message}
+              agent={agent}
+            />
+          )
+        }
+        if (entry.kind === 'activity') {
+          return (
+            <ActivityTimelineRow key={entry.id} activity={entry.activity} />
+          )
+        }
+        if (entry.kind === 'plan') {
+          return (
+            <PlanTimelineRow
+              key={entry.id}
+              plan={entry.plan}
+              canAct={canActOnPlan}
+              onContinue={onContinuePlan}
+              onRevise={onRevisePlan}
+            />
+          )
+        }
+        if (entry.kind === 'request' || entry.kind === 'user-input') {
+          return <RequestTimelineRow key={entry.id} entry={entry} />
+        }
+        return (
+          <TurnDiffTimelineRow
+            key={entry.id}
+            diff={entry.diff}
+            onOpen={onOpenTurnDiff}
+          />
+        )
+      })}
+    </>
   )
 }
 
@@ -2619,6 +2979,7 @@ function WorkingTreeDiffPanel({
 }) {
   const hasChanges = Boolean(diff && diff.files.length > 0)
   const patchLines = diff?.patch ? diff.patch.split('\n') : []
+  const title = diff?.range.kind === 'checkpoint' ? 'Turn changes' : 'Uncommitted changes'
 
   return (
     <aside className="flex h-full w-[min(460px,38vw)] min-w-[360px] shrink-0 flex-col border-l border-border bg-sidebar font-mono">
@@ -2627,7 +2988,7 @@ function WorkingTreeDiffPanel({
           <div className="flex min-w-0 items-center gap-2">
             <FileText className="size-3.5 shrink-0 text-accent-ink" />
             <h2 className="truncate text-[12px] font-semibold text-foreground">
-              Uncommitted changes
+              {title}
             </h2>
           </div>
           <p
@@ -2846,16 +3207,33 @@ function providerSetupHints(providerKind: ProviderKind) {
   }
 }
 
+function providerSetupCheckClassName(status: ProviderSetupStatus['checks'][number]['status']) {
+  switch (status) {
+    case 'ok':
+      return 'border-term-green/30 bg-term-green/10 text-term-green'
+    case 'warning':
+      return 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+    case 'error':
+      return 'border-term-rose/35 bg-term-rose/10 text-term-rose'
+    default:
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim2'
+  }
+}
+
 function ProviderSetupDiagnostics({
   isRuntimeAvailable,
   runtimeStatusText,
   providerKind,
   runtimeError,
+  setupStatus,
+  isLoadingSetupStatus,
 }: {
   isRuntimeAvailable: boolean
   runtimeStatusText: string
   providerKind: ProviderKind
   runtimeError?: string
+  setupStatus?: ProviderSetupStatus
+  isLoadingSetupStatus?: boolean
 }) {
   const provider = providerOption(providerKind)
   const hints = providerSetupHints(providerKind)
@@ -2901,8 +3279,44 @@ function ProviderSetupDiagnostics({
           <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-dim2">
             Setup checks
           </div>
-          <div className="space-y-1">
-            {hints.map((hint, index) => (
+          {setupStatus?.checks.length ? (
+            <div className="space-y-1.5">
+              {setupStatus.checks.map((check) => (
+                <div
+                  key={check.id}
+                  className="grid grid-cols-[76px_minmax(0,1fr)] gap-2 rounded-md bg-ink px-2 py-1.5 text-[11.5px] leading-5"
+                >
+                  <span
+                    className={cn(
+                      'rounded border px-1.5 py-0.5 text-center text-[10px] uppercase tracking-[0.06em]',
+                      providerSetupCheckClassName(check.status)
+                    )}
+                  >
+                    {check.status}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-term-name">
+                      {check.label}
+                    </span>
+                    <span className="block break-words text-term-dim">
+                      {check.message}
+                    </span>
+                    {check.detail ? (
+                      <span className="mt-0.5 block truncate text-[10.5px] text-term-faint">
+                        {check.detail}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : isLoadingSetupStatus ? (
+            <div className="rounded-md border border-dashed border-ink-line p-3 text-[11.5px] text-term-dim2">
+              Loading setup checks...
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {hints.map((hint, index) => (
               <div
                 key={hint}
                 className="grid grid-cols-[18px_minmax(0,1fr)] gap-2 text-[11.5px] leading-5"
@@ -2912,8 +3326,9 @@ function ProviderSetupDiagnostics({
                 </span>
                 <span className="min-w-0 text-term-dim">{hint}</span>
               </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {runtimeError ? (
@@ -2936,7 +3351,7 @@ function ComposerAttachmentPill({
   disabled,
   onRemove,
 }: {
-  attachment: ComposerAttachment
+  attachment: ChatAttachment
   disabled?: boolean
   onRemove: (id: string) => void
 }) {
@@ -2960,7 +3375,7 @@ function ComposerAttachmentPill({
           {attachment.name}
         </span>
         <span className="mt-0.5 block truncate text-[10.5px] text-term-dim2">
-          {attachment.type} · {formatFileSize(attachment.size)}
+          {attachment.mediaType} · {formatFileSize(attachment.size)}
           {attachment.truncated ? ' · truncated' : ''}
         </span>
       </span>
@@ -3027,9 +3442,13 @@ function App() {
   const [newReasoningEffort, setNewReasoningEffort] =
     useState<ProviderReasoningEffort>('medium')
   const [newProjectContext, setNewProjectContext] = useState<ProjectContext>()
+  const [providerSetupStatus, setProviderSetupStatus] =
+    useState<ProviderSetupStatus>()
+  const [isLoadingProviderSetupStatus, setIsLoadingProviderSetupStatus] =
+    useState(false)
   const [message, setMessage] = useState('')
   const [composerAttachments, setComposerAttachments] = useState<
-    ComposerAttachment[]
+    ChatAttachment[]
   >([])
   const [isComposerDragActive, setIsComposerDragActive] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
@@ -3056,6 +3475,7 @@ function App() {
   const [isLoadingDiff, setIsLoadingDiff] = useState(false)
   const [workingTreeDiff, setWorkingTreeDiff] =
     useState<WorkingTreeDiffResult>()
+  const [diffTurnId, setDiffTurnId] = useState<string>()
   const [diffPanelError, setDiffPanelError] = useState<string>()
   const [runtimeError, setRuntimeError] = useState<string>()
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
@@ -3116,6 +3536,7 @@ function App() {
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const diffRequestSeqRef = useRef(0)
   const projectContextSeqRef = useRef(0)
+  const providerSetupSeqRef = useRef(0)
 
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
@@ -3210,42 +3631,6 @@ function App() {
     () => activityEvents(runtimeState),
     [runtimeState]
   )
-  // Parse tool runs from the selected session's stream-json chunks and zip them
-  // to assistant messages. Aligned from the END so chunk truncation (oldest
-  // turns dropped) keeps recent turns matched to their messages.
-  const transcript = useMemo(() => {
-    const messages = selectedSessionProjection?.messages ?? []
-    const runtimeTurnsByRunId = selectedSessionProjection?.activities.length
-      ? toolTurnsFromRuntimeActivities(selectedSessionProjection.activities)
-      : new Map<string, ToolTurn>()
-    const turns =
-      selectedSession && runtimeTurnsByRunId.size === 0
-        ? parseToolTurns(selectedSession.chunks)
-        : []
-    const assistantPositions: number[] = []
-    messages.forEach((item, index) => {
-      if (item.role === 'assistant') {
-        assistantPositions.push(index)
-      }
-    })
-    const offset = assistantPositions.length - turns.length
-    const turnByIndex = new Map<number, ToolTurn>()
-    turns.forEach((turn, turnIndex) => {
-      const position = assistantPositions[offset + turnIndex]
-      if (position !== undefined) {
-        turnByIndex.set(position, turn)
-      }
-    })
-    return messages.map((message, index) => {
-      const runtimeTurn = message.runId
-        ? runtimeTurnsByRunId.get(message.runId)
-        : undefined
-      return {
-        message,
-        turn: runtimeTurn ?? turnByIndex.get(index),
-      }
-    })
-  }, [selectedSession, selectedSessionProjection])
   const selectedManagedNodeIds = useMemo(() => {
     const canvasSelection = selectedCanvasNodeIds.filter((nodeId) => {
       const session = runtimeState.sessions[nodeId]
@@ -3327,6 +3712,7 @@ function App() {
   const canFreezeActiveCluster =
     Boolean(activeCluster) && activeCluster?.frozen !== true
   const canOpenDiffPanel = Boolean(isRuntimeAvailable && selectedSession)
+  const canActOnPlan = Boolean(isRuntimeAvailable && selectedSession && canResume)
   const hasWorkerSelection = workflowManagedNodeIds.length > 0
   const setupSteps = [
     {
@@ -3386,13 +3772,17 @@ function App() {
     status: WorkflowStepStatus
   }[]
 
-  const clearComposer = useCallback(() => {
-    setMessage('')
-    setComposerAttachments([])
+  const setComposerText = useCallback((text: string) => {
+    setMessage(text)
     if (composerEditorRef.current) {
-      composerEditorRef.current.textContent = ''
+      composerEditorRef.current.textContent = text
     }
   }, [])
+
+  const clearComposer = useCallback(() => {
+    setComposerText('')
+    setComposerAttachments([])
+  }, [setComposerText])
 
   const addComposerFiles = useCallback(async (files: FileList | File[]) => {
     const fileList = Array.from(files).filter((file) => file.size >= 0)
@@ -3553,7 +3943,7 @@ function App() {
           data: {
             label: node.label,
             description: lastMessagePreview(session),
-            agent: node.agent,
+            agent: session ? sessionProviderLabel(session) : node.agent,
             role: node.role,
             status: node.status,
             messageCount: session?.messages.length ?? 0,
@@ -3781,6 +4171,61 @@ function App() {
   }, [newCwd, newCwdValidation.ok, runtimeApi])
 
   useEffect(() => {
+    if (!showRawEvents || selectedSession || !runtimeApi) {
+      setProviderSetupStatus(undefined)
+      setIsLoadingProviderSetupStatus(false)
+      return
+    }
+
+    const requestId = providerSetupSeqRef.current + 1
+    providerSetupSeqRef.current = requestId
+    let isMounted = true
+    setIsLoadingProviderSetupStatus(true)
+
+    runtimeApi
+      .getProviderSetupStatus({
+        providerKind: newProviderKind,
+        cwd: newCwd.trim() || undefined,
+      })
+      .then((status) => {
+        if (isMounted && providerSetupSeqRef.current === requestId) {
+          setProviderSetupStatus(status)
+        }
+      })
+      .catch((error: unknown) => {
+        if (isMounted && providerSetupSeqRef.current === requestId) {
+          setProviderSetupStatus({
+            providerKind: newProviderKind,
+            generatedAt: new Date().toISOString(),
+            checks: [
+              {
+                id: 'setup-status',
+                label: 'Setup status',
+                status: 'error',
+                message: error instanceof Error ? error.message : String(error),
+              },
+            ],
+          })
+        }
+      })
+      .finally(() => {
+        if (isMounted && providerSetupSeqRef.current === requestId) {
+          setIsLoadingProviderSetupStatus(false)
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [
+    newCwd,
+    newProviderKind,
+    runtimeApi,
+    selectedSession,
+    showRawEvents,
+  ])
+
+  useEffect(() => {
     if (
       newWorkMode === 'worktree' &&
       newProjectContext?.cwd === newCwd.trim() &&
@@ -3790,6 +4235,12 @@ function App() {
       setNewBranch('')
     }
   }, [newCwd, newProjectContext, newWorkMode])
+
+  useEffect(() => {
+    setDiffTurnId(undefined)
+    setWorkingTreeDiff(undefined)
+    setDiffPanelError(undefined)
+  }, [selectedSessionId])
 
   useEffect(() => {
     if (!activeCluster) {
@@ -3848,7 +4299,11 @@ function App() {
   const createSessionFromPrompt = useCallback(
     async (
       prompt: string,
-      options: { sourceSessionId?: string | null; context?: string } = {}
+      options: {
+        sourceSessionId?: string | null
+        context?: string
+        attachments?: ChatAttachment[]
+      } = {}
     ) => {
       if (!runtimeApi) {
         setRuntimeError(runtimeUnavailableText)
@@ -3885,6 +4340,7 @@ function App() {
         const result = await runtimeApi.createSession({
           prompt: trimmedPrompt,
           context: options.context,
+          attachments: options.attachments,
           cwd,
           workMode: newWorkMode,
           ...(newWorkMode === 'worktree' && newBranch.trim().length > 0
@@ -3941,8 +4397,7 @@ function App() {
     }
 
     const trimmed = message.trim()
-    const attachmentContext = composerAttachmentsContext(composerAttachments)
-    if (trimmed.length === 0 && !attachmentContext) {
+    if (trimmed.length === 0 && composerAttachments.length === 0) {
       return
     }
     const prompt = trimmed.length > 0 ? trimmed : 'Please review the attached files.'
@@ -3950,7 +4405,7 @@ function App() {
     if (!selectedSession || !selectedSessionId) {
       const created = await createSessionFromPrompt(prompt, {
         sourceSessionId: pendingLinkedSourceId,
-        context: attachmentContext,
+        attachments: composerAttachments,
       })
       if (created) {
         clearComposer()
@@ -3965,7 +4420,7 @@ function App() {
       const result = await runtimeApi.resumeSession({
         sessionId: selectedSessionId,
         message: prompt,
-        context: attachmentContext,
+        attachments: composerAttachments,
       })
       setRuntimeState(result.state)
       clearComposer()
@@ -4109,6 +4564,56 @@ function App() {
       }
     },
     [runtimeApi, runtimeUnavailableText, userInputDrafts]
+  )
+
+  const continueRuntimePlan = useCallback(
+    async (plan: RuntimePlan) => {
+      if (!runtimeApi || !selectedSessionId) {
+        setRuntimeError(runtimeUnavailableText)
+        return
+      }
+
+      const planText = plan.items
+        .map((item, index) => `${index + 1}. ${item.title}`)
+        .join('\n')
+      const messageText = [
+        'Proceed with this proposed plan.',
+        planText ? `\nPlan:\n${planText}` : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n')
+
+      setIsResuming(true)
+      setRuntimeError(undefined)
+
+      try {
+        const result = await runtimeApi.resumeSession({
+          sessionId: selectedSessionId,
+          message: messageText,
+        })
+        setRuntimeState(result.state)
+        clearComposer()
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setIsResuming(false)
+      }
+    },
+    [
+      clearComposer,
+      runtimeApi,
+      runtimeUnavailableText,
+      selectedSessionId,
+    ]
+  )
+
+  const reviseRuntimePlan = useCallback(
+    (plan: RuntimePlan) => {
+      const title = plan.title ?? 'this plan'
+      setComposerText(`Revise ${title}: `)
+      composerEditorRef.current?.focus()
+    },
+    [setComposerText]
   )
 
   const currentLoopPolicy = useCallback(() => {
@@ -4350,62 +4855,87 @@ function App() {
     }
   }, [activeCluster, activeClusterId, activeMasterSession, runtimeApi])
 
-  const loadSelectedWorkingTreeDiff = useCallback(async () => {
-    if (!selectedSessionId) {
-      diffRequestSeqRef.current += 1
-      setWorkingTreeDiff(undefined)
-      setDiffPanelError(undefined)
-      setIsLoadingDiff(false)
-      return
-    }
-
-    if (!runtimeApi) {
-      diffRequestSeqRef.current += 1
-      setWorkingTreeDiff(undefined)
-      setIsLoadingDiff(false)
-      setDiffPanelError(runtimeUnavailableText)
-      return
-    }
-
-    const requestSeq = diffRequestSeqRef.current + 1
-    diffRequestSeqRef.current = requestSeq
-    const requestedSessionId = selectedSessionId
-    setWorkingTreeDiff((current) =>
-      current?.sessionId === requestedSessionId ? current : undefined
-    )
-    setIsLoadingDiff(true)
-    setDiffPanelError(undefined)
-
-    try {
-      const result = await runtimeApi.getWorkingTreeDiff({
-        sessionId: requestedSessionId,
-      })
-      if (
-        diffRequestSeqRef.current !== requestSeq ||
-        result.sessionId !== requestedSessionId
-      ) {
-        return
-      }
-      setWorkingTreeDiff(result)
-    } catch (error) {
-      if (diffRequestSeqRef.current !== requestSeq) {
-        return
-      }
-      setDiffPanelError(error instanceof Error ? error.message : String(error))
-    } finally {
-      if (diffRequestSeqRef.current === requestSeq) {
+  const loadSelectedWorkingTreeDiff = useCallback(
+    async (requestedTurnId = diffTurnId) => {
+      if (!selectedSessionId) {
+        diffRequestSeqRef.current += 1
+        setWorkingTreeDiff(undefined)
+        setDiffPanelError(undefined)
         setIsLoadingDiff(false)
+        return
       }
-    }
-  }, [runtimeApi, runtimeUnavailableText, selectedSessionId])
+
+      if (!runtimeApi) {
+        diffRequestSeqRef.current += 1
+        setWorkingTreeDiff(undefined)
+        setIsLoadingDiff(false)
+        setDiffPanelError(runtimeUnavailableText)
+        return
+      }
+
+      const requestSeq = diffRequestSeqRef.current + 1
+      diffRequestSeqRef.current = requestSeq
+      const requestedSessionId = selectedSessionId
+      setWorkingTreeDiff((current) =>
+        current?.sessionId === requestedSessionId ? current : undefined
+      )
+      setIsLoadingDiff(true)
+      setDiffPanelError(undefined)
+
+      try {
+        const result = await runtimeApi.getWorkingTreeDiff({
+          sessionId: requestedSessionId,
+          ...(requestedTurnId ? { turnId: requestedTurnId } : {}),
+        })
+        if (
+          diffRequestSeqRef.current !== requestSeq ||
+          result.sessionId !== requestedSessionId
+        ) {
+          return
+        }
+        setWorkingTreeDiff(result)
+      } catch (error) {
+        if (diffRequestSeqRef.current !== requestSeq) {
+          return
+        }
+        setDiffPanelError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (diffRequestSeqRef.current === requestSeq) {
+          setIsLoadingDiff(false)
+        }
+      }
+    },
+    [diffTurnId, runtimeApi, runtimeUnavailableText, selectedSessionId]
+  )
 
   useEffect(() => {
     if (!isDiffPanelOpen) {
       return
     }
 
-    void loadSelectedWorkingTreeDiff()
+    void loadSelectedWorkingTreeDiff(diffTurnId)
+  }, [diffTurnId, isDiffPanelOpen, loadSelectedWorkingTreeDiff])
+
+  const openWorkingTreeDiff = useCallback(() => {
+    setDiffTurnId(undefined)
+    if (isDiffPanelOpen) {
+      void loadSelectedWorkingTreeDiff(undefined)
+      return
+    }
+    setIsDiffPanelOpen(true)
   }, [isDiffPanelOpen, loadSelectedWorkingTreeDiff])
+
+  const openTurnDiff = useCallback(
+    (turnId: string) => {
+      setDiffTurnId(turnId)
+      if (isDiffPanelOpen) {
+        void loadSelectedWorkingTreeDiff(turnId)
+        return
+      }
+      setIsDiffPanelOpen(true)
+    },
+    [isDiffPanelOpen, loadSelectedWorkingTreeDiff]
+  )
 
   const updateCanvasNodePositions = useCallback((changes: NodeChange[]) => {
     setCanvasNodes((current) => applyNodeChanges(changes, current))
@@ -5531,6 +6061,8 @@ function App() {
                       runtimeStatusText={runtimeStatusText}
                       providerKind={newProviderKind}
                       runtimeError={runtimeError}
+                      setupStatus={providerSetupStatus}
+                      isLoadingSetupStatus={isLoadingProviderSetupStatus}
                     />
                   )
                 ) : null}
@@ -5538,21 +6070,21 @@ function App() {
                 <div className="min-h-0 flex-1 overflow-y-auto bg-ink">
                   <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">
                     <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-term-dim2">
-                      Messages
+                      Timeline
                     </span>
                     <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">
-                      {selectedSessionProjection?.messages.length ?? 0} messages
+                      {selectedSessionProjection?.timeline.length ?? 0} entries
                     </span>
                   </div>
-                  {selectedSessionProjection?.messages.length ? (
-                    transcript.map(({ message, turn }) => (
-                      <ChatMessage
-                        key={message.id}
-                        message={message}
-                        turn={turn}
-                        agent={selectedSession?.agent ?? 'claude-code'}
-                      />
-                    ))
+                  {selectedSessionProjection?.timeline.length ? (
+                    <SessionTimeline
+                      entries={selectedSessionProjection.timeline}
+                      agent={selectedSession?.agent ?? 'claude-code'}
+                      canActOnPlan={canActOnPlan}
+                      onContinuePlan={continueRuntimePlan}
+                      onRevisePlan={reviseRuntimePlan}
+                      onOpenTurnDiff={openTurnDiff}
+                    />
                   ) : (
                     <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">
                       {selectedSession ? 'No messages yet.' : 'New Chat'}
@@ -5815,14 +6347,7 @@ function App() {
                 variant={isDiffPanelOpen ? 'secondary' : 'outline'}
                 size="sm"
                 disabled={!canOpenDiffPanel}
-                onClick={() => {
-                  if (isDiffPanelOpen) {
-                    void loadSelectedWorkingTreeDiff()
-                    return
-                  }
-
-                  setIsDiffPanelOpen(true)
-                }}
+                onClick={openWorkingTreeDiff}
               >
                 <FileText className="size-3.5" />
                 <span className="truncate">Diff</span>

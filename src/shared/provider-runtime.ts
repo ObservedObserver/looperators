@@ -1,4 +1,10 @@
-import type { AgentMessage, SessionId, SessionStatus } from './graph-state'
+import type {
+  AgentMessage,
+  DiffRange,
+  SessionId,
+  SessionStatus,
+  WorkingTreeDiffFile,
+} from './graph-state'
 
 export type ProviderKind = 'claude-code' | 'codex' | 'legacy-claude-cli'
 
@@ -26,6 +32,34 @@ export type ProviderRuntimeSettings = {
   reasoningEffort?: ProviderReasoningEffort
   serviceTier?: string
   interactionMode?: ProviderInteractionMode
+}
+
+export type ChatAttachmentKind = 'text' | 'image' | 'binary'
+
+export const chatAttachmentTextMaxLength = 12_000
+export const chatAttachmentImageMaxBytes = 1_500_000
+export const chatAttachmentSupportedImageMimeTypes = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+] as const
+
+export function isSupportedChatAttachmentImageMimeType(value: string) {
+  return chatAttachmentSupportedImageMimeTypes.includes(
+    value as (typeof chatAttachmentSupportedImageMimeTypes)[number]
+  )
+}
+
+export type ChatAttachment = {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  kind: ChatAttachmentKind
+  text?: string
+  dataUrl?: string
+  truncated?: boolean
 }
 
 export const defaultProviderRuntimeSettings: ProviderRuntimeSettings = {
@@ -148,6 +182,23 @@ export type RuntimePlan = {
   raw?: RawEnvelope
 }
 
+export type TurnDiffSummary = {
+  sessionId: SessionId
+  turnId: string
+  cwd: string
+  repoRoot?: string
+  generatedAt: string
+  range?: Extract<DiffRange, { kind: 'checkpoint' }>
+  files: WorkingTreeDiffFile[]
+  totals: {
+    files: number
+    additions: number
+    deletions: number
+  }
+  truncated?: boolean
+  error?: string
+}
+
 export type ProviderRuntimeEvent =
   | {
       id: string
@@ -163,6 +214,15 @@ export type ProviderRuntimeEvent =
       type: 'turn.completed'
       sessionId: SessionId
       turnId: string
+      raw?: RawEnvelope
+    }
+  | {
+      id: string
+      ts: string
+      type: 'turn.diff.updated'
+      sessionId: SessionId
+      turnId: string
+      diff: TurnDiffSummary
       raw?: RawEnvelope
     }
   | {
@@ -261,6 +321,57 @@ export type ProviderRuntimeEvent =
       raw?: RawEnvelope
     }
 
+export type SessionTimelineEntry =
+  | {
+      id: string
+      kind: 'turn'
+      status: 'started' | 'completed'
+      ts: string
+      turnId: string
+    }
+  | {
+      id: string
+      kind: 'message'
+      ts: string
+      turnId?: string
+      message: AgentMessage
+    }
+  | {
+      id: string
+      kind: 'activity'
+      ts: string
+      turnId?: string
+      activity: RuntimeActivity
+    }
+  | {
+      id: string
+      kind: 'plan'
+      ts: string
+      turnId?: string
+      plan: RuntimePlan
+    }
+  | {
+      id: string
+      kind: 'request'
+      ts: string
+      turnId?: string
+      request: RuntimeRequest
+    }
+  | {
+      id: string
+      kind: 'user-input'
+      ts: string
+      turnId?: string
+      request: UserInputRequest
+    }
+  | {
+      id: string
+      kind: 'turn-diff'
+      ts: string
+      turnId: string
+      diff: TurnDiffSummary
+    }
+
 export type NativeProviderEvent = {
   id: string
   ts: string
@@ -279,6 +390,9 @@ export type SessionProjection = {
   staleRequests: RuntimeRequest[]
   staleUserInputRequests: UserInputRequest[]
   plans: RuntimePlan[]
+  activePlan?: RuntimePlan
+  turnDiffs: TurnDiffSummary[]
+  timeline: SessionTimelineEntry[]
   status: SessionStatus
   runtimeSettings?: ProviderRuntimeSettings
 }

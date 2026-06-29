@@ -87,6 +87,8 @@ export const graphStateSchema = {
           'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
         linkLabel:
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+        attachments:
+          'ChatAttachment[]?; structured provider-native attachments for the first turn',
         runtimeSettings:
           'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
       },
@@ -122,9 +124,19 @@ export const graphStateSchema = {
         sessionId:
           'SessionId; resolves the selected chat node to its project cwd',
         ignoreWhitespace: 'boolean?',
+        turnId:
+          'string?; when present returns the checkpoint diff for that provider turn',
       },
       output:
         'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
+    },
+    getProviderSetupStatus: {
+      input: {
+        providerKind: 'ProviderKind; provider selected in the chat setup UI',
+        cwd: 'string?; optional project cwd to validate against provider access',
+      },
+      output:
+        'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
     },
     createMasterForCluster: {
       input: {

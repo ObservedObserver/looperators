@@ -70,11 +70,54 @@ function threadStartParams({ cwd, runtimeSettings }) {
   }
 }
 
-function turnStartParams({ threadId, prompt, cwd, runtimeSettings }) {
+function codexAttachmentText(attachment) {
+  const header = [
+    `Attachment: ${attachment.name}`,
+    `Type: ${attachment.mediaType}`,
+    `Size: ${attachment.size} bytes`,
+    `Kind: ${attachment.kind}`,
+  ].join('\n')
+
+  if (attachment.kind === 'text' && typeof attachment.text === 'string') {
+    return `${header}\nText content${
+      attachment.truncated ? ' (truncated)' : ''
+    }:\n${attachment.text}`
+  }
+
+  return `${header}\nContent not inlined; only metadata is available.`
+}
+
+function codexInputItems({ prompt, attachments = [] }) {
+  const input: any[] = [{ type: 'text', text: prompt, text_elements: [] }]
+
+  for (const attachment of attachments) {
+    if (attachment?.kind === 'image' && typeof attachment.dataUrl === 'string') {
+      input.push({
+        type: 'image',
+        url: attachment.dataUrl,
+      })
+      continue
+    }
+
+    input.push({
+      type: 'text',
+      text: codexAttachmentText(attachment),
+      text_elements: [],
+    })
+  }
+
+  return input
+}
+
+export function codexInputItemsForTest(input) {
+  return codexInputItems(input)
+}
+
+function turnStartParams({ threadId, prompt, attachments, cwd, runtimeSettings }) {
   const config = runtimeModeToCodexConfig(runtimeSettings)
   return {
     threadId,
-    input: [{ type: 'text', text: prompt, text_elements: [] }],
+    input: codexInputItems({ prompt, attachments }),
     cwd,
     approvalPolicy: config.approvalPolicy,
     sandboxPolicy: sandboxPolicyForCodex(config.sandbox, cwd),
@@ -177,12 +220,13 @@ export class CodexAppServerRun extends EventEmitter {
     sessionId,
     turnId,
     runtimeSettings,
+    attachments,
   }) {
     super()
     this.#threadId = backendSessionId
     this.#orreryTurnId = turnId
     this.#sessionId = sessionId
-    void this.#run({ prompt, cwd, runtimeSettings })
+    void this.#run({ prompt, attachments, cwd, runtimeSettings })
   }
 
   kill() {
@@ -228,7 +272,7 @@ export class CodexAppServerRun extends EventEmitter {
     )
   }
 
-  async #run({ prompt, cwd, runtimeSettings }) {
+  async #run({ prompt, attachments, cwd, runtimeSettings }) {
     let code = 0
     let signal = null
 
@@ -272,7 +316,13 @@ export class CodexAppServerRun extends EventEmitter {
 
       const turnResult = await this.#client.request(
         'turn/start',
-        turnStartParams({ threadId: this.#threadId, prompt, cwd, runtimeSettings }),
+        turnStartParams({
+          threadId: this.#threadId,
+          prompt,
+          attachments,
+          cwd,
+          runtimeSettings,
+        }),
         { timeoutMs: 30000 }
       )
       this.#codexTurnId = turnResult?.turn?.id

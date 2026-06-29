@@ -39,13 +39,74 @@ function mcpServersFromHandoff(handoff) {
   return config.mcpServers
 }
 
-function sdkUserMessage(prompt) {
+function dataUrlImageSource(dataUrl, fallbackMediaType) {
+  if (typeof dataUrl !== 'string') {
+    return undefined
+  }
+
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl)
+  if (!match) {
+    return undefined
+  }
+
+  return {
+    type: 'base64',
+    media_type: match[1] || fallbackMediaType || 'image/png',
+    data: match[2],
+  }
+}
+
+function attachmentTextBlock(attachment) {
+  const header = [
+    `Attachment: ${attachment.name}`,
+    `Type: ${attachment.mediaType}`,
+    `Size: ${attachment.size} bytes`,
+    `Kind: ${attachment.kind}`,
+  ].join('\n')
+
+  if (attachment.kind === 'text' && typeof attachment.text === 'string') {
+    return {
+      type: 'text',
+      text: `${header}\nText content${
+        attachment.truncated ? ' (truncated)' : ''
+      }:\n${attachment.text}`,
+    }
+  }
+
+  return {
+    type: 'text',
+    text: `${header}\nContent not inlined; only metadata is available.`,
+  }
+}
+
+function sdkContentBlocks(prompt, attachments = []) {
+  const blocks: any[] = [{ type: 'text', text: prompt }]
+
+  for (const attachment of attachments) {
+    if (attachment?.kind === 'image') {
+      const source = dataUrlImageSource(attachment.dataUrl, attachment.mediaType)
+      if (source) {
+        blocks.push({
+          type: 'image',
+          source,
+        })
+        continue
+      }
+    }
+
+    blocks.push(attachmentTextBlock(attachment))
+  }
+
+  return blocks
+}
+
+function sdkUserMessage(prompt, attachments = []) {
   return {
     type: 'user',
     parent_tool_use_id: null,
     message: {
       role: 'user',
-      content: [{ type: 'text', text: prompt }],
+      content: sdkContentBlocks(prompt, attachments),
     },
     timestamp: new Date().toISOString(),
   }
@@ -594,7 +655,9 @@ class ClaudeAgentSdkSessionController {
         try {
           await this.#queryReady
           await this.#configureMembrane(turn.input.membrane)
-          this.#queue.push(sdkUserMessage(turn.input.prompt))
+          this.#queue.push(
+            sdkUserMessage(turn.input.prompt, turn.input.attachments)
+          )
         } catch (error) {
           if (!this.#closed) {
             this.#emitRunErrorAndClose(turn.run, error)

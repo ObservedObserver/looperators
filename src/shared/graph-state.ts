@@ -1,4 +1,5 @@
 import type {
+  ChatAttachment,
   NativeProviderEvent,
   ProviderKind,
   ProviderRuntimeEvent,
@@ -98,6 +99,8 @@ export const graphStateSchema = {
           'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
         linkLabel:
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+        attachments:
+          'ChatAttachment[]?; structured provider-native attachments for the first turn',
       },
     },
     getProjectContext: {
@@ -131,9 +134,19 @@ export const graphStateSchema = {
         sessionId:
           'SessionId; resolves the selected chat node to its project cwd',
         ignoreWhitespace: 'boolean?',
+        turnId:
+          'string?; when present returns the checkpoint diff for that provider turn',
       },
       output:
         'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
+    },
+    getProviderSetupStatus: {
+      input: {
+        providerKind: 'ProviderKind; provider selected in the chat setup UI',
+        cwd: 'string?; optional project cwd to validate against provider access',
+      },
+      output:
+        'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
     },
     createMasterForCluster: {
       input: {
@@ -321,6 +334,7 @@ export type AgentMessage = {
   sessionId: SessionId
   role: AgentMessageRole
   content: string
+  attachments?: ChatAttachment[]
   ts: string
   runId?: string
   status?: 'streaming' | 'complete' | 'failed'
@@ -402,6 +416,7 @@ export type CreateRuntimeSessionInput = {
   runtimeSettings?: ProviderRuntimeSettings
   label?: string
   context?: string
+  attachments?: ChatAttachment[]
   sourceSessionId?: SessionId
   linkLabel?: string
   cluster?: ClusterId
@@ -427,10 +442,32 @@ export type ProjectContext = {
   error?: string
 }
 
+export type ProviderSetupCheckStatus = 'ok' | 'warning' | 'error' | 'unknown'
+
+export type ProviderSetupCheck = {
+  id: string
+  label: string
+  status: ProviderSetupCheckStatus
+  message: string
+  detail?: string
+}
+
+export type ProviderSetupStatusInput = {
+  providerKind: ProviderKind
+  cwd?: string
+}
+
+export type ProviderSetupStatus = {
+  providerKind: ProviderKind
+  generatedAt: string
+  checks: ProviderSetupCheck[]
+}
+
 export type ResumeRuntimeSessionInput = {
   sessionId: SessionId
   message: string
   context?: string
+  attachments?: ChatAttachment[]
 }
 
 export type RespondRuntimeRequestInput = {
@@ -545,6 +582,7 @@ export type WorkingTreeDiffResult = {
 export type WorkingTreeDiffInput = {
   sessionId: SessionId
   ignoreWhitespace?: boolean
+  turnId?: string
 }
 
 export type RuntimeEvent =

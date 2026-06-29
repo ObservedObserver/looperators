@@ -11,6 +11,7 @@ import {
 } from '../../shared/graph-state.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
+import { buildPath, claudeCommand } from './claudeCliAdapter.js'
 import {
   legacyClaudeRuntimeEventsFromChunk,
   resultSublines,
@@ -81,6 +82,15 @@ const validLoopStatuses = new Set(['running', 'stopped'])
 const emptyGitTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const gitDiffMaxBuffer = 64 * 1024 * 1024
 const uiPatchMaxLength = 2 * 1024 * 1024
+const checkpointGitRefRoot = 'refs/orrery/checkpoints'
+const attachmentTextMaxLength = 12_000
+const attachmentImageMaxBytes = 1_500_000
+const supportedAttachmentImageMimeTypes = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+])
 
 type JsonRecord = Record<string, any>
 type RuntimeEventEmitter = (event: JsonRecord) => void
@@ -151,8 +161,10 @@ function truncateChunks(chunks) {
 
 function truncateEvents(events) {
   if (events.length > 2000) {
-    events.splice(0, events.length - 2000)
+    const removed = events.length - 2000
+    return events.splice(0, removed)
   }
+  return []
 }
 
 function truncateActivities(activities) {
@@ -179,6 +191,86 @@ function boundedText(value, maxLength = 50000) {
   }
 
   return `${value.slice(0, maxLength)}\n\n[truncated by Orrery]`
+}
+
+function normalizeChatAttachments(value) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.filter(isObject).map((attachment) => {
+    const mediaType = nonEmptyString(attachment.mediaType)
+      ? attachment.mediaType.trim()
+      : nonEmptyString(attachment.type)
+        ? attachment.type.trim()
+        : 'application/octet-stream'
+    const requestedKind =
+      attachment.kind === 'image'
+        ? 'image'
+        : attachment.kind === 'text' || attachment.kind === 'file'
+          ? 'text'
+          : 'binary'
+    const size = Number.isFinite(attachment.size) ? Math.max(0, attachment.size) : 0
+    const kind =
+      requestedKind === 'image' &&
+      supportedAttachmentImageMimeTypes.has(mediaType) &&
+      size <= attachmentImageMaxBytes
+        ? 'image'
+        : requestedKind === 'image'
+          ? 'binary'
+          : requestedKind
+    const text =
+      typeof attachment.text === 'string'
+        ? boundedText(attachment.text, attachmentTextMaxLength)
+        : undefined
+    const dataUrl =
+      kind === 'image' &&
+      typeof attachment.dataUrl === 'string' &&
+      attachment.dataUrl.length <= attachmentImageMaxBytes * 2
+        ? attachment.dataUrl
+        : undefined
+
+    return {
+      id: nonEmptyString(attachment.id) ? attachment.id : randomUUID(),
+      name: nonEmptyString(attachment.name) ? attachment.name.trim() : 'attachment',
+      mediaType,
+      size,
+      kind,
+      ...(text !== undefined ? { text } : {}),
+      ...(dataUrl !== undefined ? { dataUrl } : {}),
+      truncated: attachment.truncated === true,
+    }
+  })
+}
+
+function legacyAttachmentContext(attachments = []) {
+  if (!attachments.length) {
+    return undefined
+  }
+
+  return [
+    'Attached files:',
+    ...attachments.map((attachment, index) => {
+      const header = [
+        `Attachment ${index + 1}: ${attachment.name}`,
+        `Type: ${attachment.mediaType}`,
+        `Size: ${attachment.size} bytes`,
+        `Kind: ${attachment.kind}`,
+      ].join('\n')
+
+      if (attachment.kind === 'text' && typeof attachment.text === 'string') {
+        return `${header}\nText content${
+          attachment.truncated ? ' (truncated)' : ''
+        }:\n${attachment.text}`
+      }
+
+      if (attachment.kind === 'image') {
+        return `${header}\nImage data is available as a structured attachment in native providers; legacy CLI receives metadata only.`
+      }
+
+      return `${header}\nContent is not inlined; only metadata is available.`
+    }),
+  ].join('\n\n')
 }
 
 function gitOutput(cwd, args, options: JsonRecord = {}) {
@@ -353,6 +445,38 @@ function branchSlug(value) {
     .replace(/^[-/.]+|[-/.]+$/g, '')
     .replace(/\/+/g, '/')
     .slice(0, 48)
+}
+
+function gitRefSlug(value) {
+  return String(value)
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/[/.]+$/g, '')
+    .replace(/^\.+/g, '')
+    .slice(0, 96) || 'unknown'
+}
+
+function checkpointRef({ sessionId, turnCount, turnId, stage }) {
+  return [
+    checkpointSessionRefRoot(sessionId),
+    'turns',
+    String(turnCount),
+    `${gitRefSlug(turnId)}-${stage}`,
+  ].join('/')
+}
+
+function checkpointSessionRefRoot(sessionId) {
+  return [checkpointGitRefRoot, gitRefSlug(sessionId)].join('/')
+}
+
+function gitCheckpointEnv(tempIndex) {
+  return {
+    ...process.env,
+    GIT_INDEX_FILE: tempIndex,
+    GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? 'Orrery',
+    GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? 'orrery@local',
+    GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? 'Orrery',
+    GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? 'orrery@local',
+  }
 }
 
 function sessionProjectFromContext(context, workMode, branch, baseBranch) {
@@ -575,6 +699,24 @@ function messageContent(message, context) {
   return message
 }
 
+function combinedContext(...values) {
+  const sections = values
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => value.trim())
+  return sections.length > 0 ? sections.join('\n\n') : undefined
+}
+
+function providerPromptContent({ providerKind, message, context, attachments }) {
+  if (providerKind === 'legacy-claude-cli') {
+    return messageContent(
+      message,
+      combinedContext(context, legacyAttachmentContext(attachments))
+    )
+  }
+
+  return messageContent(message, context)
+}
+
 function providerConfig(input: JsonRecord = {}) {
   const requested = input.providerKind ?? (input.agent === 'codex' ? 'codex' : undefined)
 
@@ -605,6 +747,56 @@ function providerConfig(input: JsonRecord = {}) {
     providerInstanceId: 'legacy-claude-cli',
     labelPrefix: 'Claude',
   }
+}
+
+function commandForProvider(providerKind) {
+  if (providerKind === 'codex') {
+    return process.env.ORRERY_CODEX_BIN || 'codex'
+  }
+
+  return claudeCommand()
+}
+
+function commandExists(command) {
+  if (!nonEmptyString(command)) {
+    return { ok: false, detail: 'No binary configured.' }
+  }
+
+  if (command.includes(path.sep)) {
+    try {
+      fs.accessSync(command, fs.constants.X_OK)
+      return { ok: true, detail: command }
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  try {
+    const resolved = execFileSync('which', [command], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: buildPath(),
+      },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return { ok: resolved.length > 0, detail: resolved || command }
+  } catch {
+    return { ok: false, detail: `Could not find ${command} on PATH.` }
+  }
+}
+
+function providerSetupErrorDiagnostic(providerKind, diagnostics = []) {
+  const providerPattern =
+    providerKind === 'codex'
+      ? /codex|auth|login|account|rate.?limit/i
+      : /claude|auth|login|account|rate.?limit/i
+  return diagnostics.find((diagnostic) =>
+    providerPattern.test(`${diagnostic.type} ${diagnostic.message}`)
+  )
 }
 
 function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
@@ -698,6 +890,69 @@ export class RuntimeSessionManager {
     }
   }
 
+  getProviderSetupStatus(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const providerKind = validProviderKinds.has(request.providerKind)
+      ? request.providerKind
+      : 'legacy-claude-cli'
+    const command = commandForProvider(providerKind)
+    const binary = commandExists(command)
+    const cwd = nonEmptyString(request.cwd) ? safeCwd(request.cwd) : process.cwd()
+    const cwdValid = isValidCwd(cwd)
+    const providerDiagnostic = providerSetupErrorDiagnostic(
+      providerKind,
+      this.#state.diagnostics ?? []
+    )
+
+    return {
+      providerKind,
+      generatedAt: now(),
+      checks: [
+        {
+          id: 'runtime',
+          label: 'Runtime',
+          status: 'ok',
+          message: 'Orrery runtime is connected.',
+        },
+        {
+          id: 'binary',
+          label: 'Binary',
+          status: binary.ok ? 'ok' : 'error',
+          message: binary.ok
+            ? `Using ${command}.`
+            : `Provider binary is not available: ${command}.`,
+          detail: binary.detail,
+        },
+        {
+          id: 'cwd',
+          label: 'Project cwd',
+          status: cwdValid ? 'ok' : 'error',
+          message: cwdValid
+            ? `Project folder is available: ${cwd}.`
+            : `Project folder is not available: ${cwd}.`,
+        },
+        {
+          id: 'auth',
+          label: 'Auth/account',
+          status: providerDiagnostic ? 'warning' : 'unknown',
+          message: providerDiagnostic
+            ? providerDiagnostic.message
+            : 'Provider auth and account status are managed by the local CLI; start a chat to verify.',
+          detail: providerDiagnostic?.type,
+        },
+        {
+          id: 'mcp',
+          label: 'MCP / tools',
+          status: providerKind === 'codex' ? 'unknown' : 'ok',
+          message:
+            providerKind === 'codex'
+              ? 'Codex app-server tool/MCP availability is reported through runtime events during a turn.'
+              : 'Orrery membrane MCP bridge is available for Claude sessions.',
+        },
+      ],
+    }
+  }
+
   async createSession(input: JsonRecord = {}) {
     const sessionId = randomUUID()
     const role = input.role === 'master' ? 'master' : 'worker'
@@ -721,8 +976,15 @@ export class RuntimeSessionManager {
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt
         : defaultPrompt
-    const initialContent = messageContent(prompt, input.context)
+    const attachments = normalizeChatAttachments(input.attachments)
     const provider = providerConfig(input)
+    const initialContent = messageContent(prompt, input.context)
+    const providerPrompt = providerPromptContent({
+      providerKind: provider.providerKind,
+      message: prompt,
+      context: input.context,
+      attachments,
+    })
     const runtimeSettings = normalizeProviderRuntimeSettings(input.runtimeSettings)
     const workspace =
       normalizeWorkMode(input.workMode) === 'worktree'
@@ -768,6 +1030,7 @@ export class RuntimeSessionManager {
           sessionId,
           role: 'user',
           content: initialContent,
+          attachments,
           ts,
           runId: undefined,
           status: 'complete',
@@ -812,7 +1075,8 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
     await this.#startRun(sessionId, {
-      prompt: initialContent,
+      prompt: providerPrompt,
+      attachments,
       runKind: 'create',
       userMessageId: this.#state.sessions[sessionId].messages[0].id,
     })
@@ -855,13 +1119,21 @@ export class RuntimeSessionManager {
       throw new Error('Resume message is required')
     }
 
+    const attachments = normalizeChatAttachments(input.attachments)
     const content = messageContent(message, input.context)
+    const providerPrompt = providerPromptContent({
+      providerKind: session.providerKind,
+      message,
+      context: input.context,
+      attachments,
+    })
     const ts = now()
     const userMessage = {
       id: randomUUID(),
       sessionId,
       role: 'user',
       content,
+      attachments,
       ts,
       runId: undefined,
       status: 'complete',
@@ -878,7 +1150,8 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
 
     await this.#startRun(sessionId, {
-      prompt: content,
+      prompt: providerPrompt,
+      attachments,
       runKind: 'resume',
       userMessageId: userMessage.id,
     })
@@ -915,6 +1188,13 @@ export class RuntimeSessionManager {
 
     if (!sessionId || !this.#state.sessions[sessionId]) {
       throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    if (typeof input === 'object' && nonEmptyString(input.turnId)) {
+      return this.#checkpointDiffForSession(sessionId, {
+        turnId: input.turnId.trim(),
+        ignoreWhitespace: input.ignoreWhitespace === true,
+      })
     }
 
     return this.#workingTreeDiffForSession(sessionId, {
@@ -1377,15 +1657,33 @@ export class RuntimeSessionManager {
     throw new Error(`Unknown membrane tool: ${tool}`)
   }
 
-  async #startRun(sessionId, { prompt, runKind, userMessageId }) {
+  async #startRun(sessionId, { prompt, attachments = [], runKind, userMessageId }) {
     const session = this.#state.sessions[sessionId]
     const runId = randomUUID()
     const bridgeUrl = await this.#bridge.start()
     const membraneToken = this.#bridge.createRunToken(sessionId)
+    const fromTurnCount = this.#completedTurnCount(session)
+    let turnCheckpoint
     session.status = 'running'
     session.startedAt = now()
     session.finishedAt = undefined
     session.updatedAt = session.startedAt
+    try {
+      turnCheckpoint = {
+        ...this.#captureTurnCheckpoint({
+          sessionId,
+          turnId: runId,
+          turnCount: fromTurnCount,
+          stage: 'before',
+        }),
+        fromTurnCount,
+      }
+    } catch (error) {
+      turnCheckpoint = {
+        fromTurnCount,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    }
     this.#updateMessageRunId(session, userMessageId, runId)
     this.#updateNodeStatus(sessionId, 'running')
     this.#runContext.set(sessionId, {
@@ -1393,6 +1691,8 @@ export class RuntimeSessionManager {
       runKind,
       assistantMessageId: undefined,
       sawTextDelta: false,
+      turnCheckpoint,
+      turnDiffRecorded: false,
     })
     this.#appendProviderRuntimeEvent(sessionId, {
       id: randomUUID(),
@@ -1418,6 +1718,7 @@ export class RuntimeSessionManager {
         providerInstanceId: session.providerInstanceId,
         turnId: runId,
         prompt,
+        attachments,
         cwd: session.cwd,
         backendSessionId:
           runKind === 'resume'
@@ -1463,6 +1764,7 @@ export class RuntimeSessionManager {
       current.signal = signal
       current.finishedAt = now()
       current.updatedAt = current.finishedAt
+      this.#recordTurnCheckpointDiff(sessionId, current.finishedAt)
       this.#appendTurnCompletedIfMissing(sessionId, current.finishedAt)
       this.#cancelOpenRuntimeInteractions(sessionId, current.finishedAt)
 
@@ -1706,7 +2008,13 @@ export class RuntimeSessionManager {
     session.runtimeEvents ??= []
     session.runtimeEvents.push(event)
     this.#providerService.recordRuntimeEvent(sessionId, event)
-    truncateEvents(session.runtimeEvents)
+    const removedEvents = truncateEvents(session.runtimeEvents)
+    const removedDiffEvent = removedEvents.some(
+      (removedEvent) => removedEvent.type === 'turn.diff.updated'
+    )
+    if (event.type === 'turn.diff.updated' || removedDiffEvent) {
+      this.#pruneTurnCheckpointRefs(sessionId)
+    }
 
     if (
       event.type === 'item.started' ||
@@ -1982,6 +2290,7 @@ export class RuntimeSessionManager {
     session.updatedAt = session.finishedAt
     this.#markActiveAssistant(sessionId, 'failed')
     this.#updateNodeStatus(sessionId, 'failed')
+    this.#recordTurnCheckpointDiff(sessionId, session.finishedAt)
     this.#appendTurnCompletedIfMissing(sessionId, session.finishedAt)
     this.#cancelOpenRuntimeInteractions(sessionId, session.finishedAt)
     this.#appendProviderRuntimeEvent(sessionId, {
@@ -2763,6 +3072,258 @@ export class RuntimeSessionManager {
     ].join('\n')
   }
 
+  #completedTurnCount(session) {
+    return (session.runtimeEvents ?? []).filter(
+      (event) => event.type === 'turn.completed'
+    ).length
+  }
+
+  #captureTurnCheckpoint({ sessionId, turnId, turnCount, stage }) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId}`)
+    }
+
+    const cwd = validateRunnableCwd(session.cwd)
+    let repoRoot
+    try {
+      gitOutput(cwd, ['rev-parse', '--is-inside-work-tree'])
+      repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Project folder is not a Git work tree: ${cwd}. ${message}`)
+    }
+
+    const ref = checkpointRef({ sessionId, turnCount, turnId, stage })
+    const tempIndex = path.join(
+      os.tmpdir(),
+      `orrery-checkpoint-${process.pid}-${randomUUID()}.index`
+    )
+    const env = gitCheckpointEnv(tempIndex)
+
+    try {
+      const hasHead = hasGitHead(cwd, env)
+      const indexTree = hasHead ? gitOutput(cwd, ['write-tree']) : emptyGitTree
+      gitOutput(cwd, ['read-tree', indexTree], { env })
+      gitOutput(cwd, ['add', '-A', '--', '.'], { env })
+      const tree = gitOutput(cwd, ['write-tree'], { env })
+      const commitArgs = ['commit-tree', tree]
+      if (hasHead) {
+        commitArgs.push('-p', gitOutput(cwd, ['rev-parse', 'HEAD']))
+      }
+      const commit = gitOutput(cwd, commitArgs, { env })
+      gitOutput(cwd, ['update-ref', ref, commit])
+
+      return {
+        ref,
+        commit,
+        cwd,
+        repoRoot,
+        turnCount,
+        stage,
+      }
+    } finally {
+      try {
+        fs.rmSync(tempIndex, { force: true })
+        fs.rmSync(`${tempIndex}.lock`, { force: true })
+      } catch {
+        // Best-effort cleanup; the temp index is outside the user's repo.
+      }
+    }
+  }
+
+  #diffSummaryForCheckpointRange({
+    sessionId,
+    turnId,
+    cwd,
+    repoRoot,
+    fromCheckpointRef,
+    toCheckpointRef,
+    fromTurnCount,
+    toTurnCount,
+    ignoreWhitespace = false,
+  }) {
+    const diffArgs = [
+      'diff',
+      '--patch',
+      '--no-color',
+      '--no-ext-diff',
+      '--no-textconv',
+      '--relative',
+    ]
+
+    if (ignoreWhitespace === true) {
+      diffArgs.push('--ignore-all-space')
+    }
+
+    const rawPatch = gitOutput(
+      cwd,
+      [...diffArgs, fromCheckpointRef, toCheckpointRef, '--', '.'],
+      { maxBuffer: gitDiffMaxBuffer }
+    )
+    const files = parseDiffFilesFromPatch(rawPatch)
+
+    return {
+      sessionId,
+      turnId,
+      cwd,
+      repoRoot,
+      generatedAt: now(),
+      range: {
+        kind: 'checkpoint',
+        fromCheckpointRef,
+        toCheckpointRef,
+        fromTurnCount,
+        toTurnCount,
+      },
+      files,
+      totals: totalsForDiffFiles(files),
+      patch: boundedText(rawPatch, uiPatchMaxLength),
+      truncated: rawPatch.length > uiPatchMaxLength,
+    }
+  }
+
+  #recordTurnCheckpointDiff(sessionId, ts) {
+    const session = this.#state.sessions[sessionId]
+    const context = this.#runContext.get(sessionId)
+    if (!session || !context || context.turnDiffRecorded === true) {
+      return
+    }
+
+    context.turnDiffRecorded = true
+    const turnId = context.runId
+    const fromTurnCount = Number.isInteger(context.turnCheckpoint?.fromTurnCount)
+      ? context.turnCheckpoint.fromTurnCount
+      : this.#completedTurnCount(session)
+    const toTurnCount = fromTurnCount + 1
+
+    if (context.turnCheckpoint?.error || !context.turnCheckpoint?.ref) {
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts,
+        type: 'turn.diff.updated',
+        sessionId,
+        turnId,
+        diff: {
+          sessionId,
+          turnId,
+          cwd: session.cwd,
+          generatedAt: ts,
+          files: [],
+          totals: { files: 0, additions: 0, deletions: 0 },
+          error:
+            context.turnCheckpoint?.error ??
+            'No baseline checkpoint was captured for this turn.',
+        },
+      })
+      return
+    }
+
+    try {
+      const after = this.#captureTurnCheckpoint({
+        sessionId,
+        turnId,
+        turnCount: toTurnCount,
+        stage: 'after',
+      })
+      const diff = this.#diffSummaryForCheckpointRange({
+        sessionId,
+        turnId,
+        cwd: after.cwd,
+        repoRoot: after.repoRoot,
+        fromCheckpointRef: context.turnCheckpoint.ref,
+        toCheckpointRef: after.ref,
+        fromTurnCount,
+        toTurnCount,
+      })
+
+      const { patch: _patch, ...summary } = diff
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts,
+        type: 'turn.diff.updated',
+        sessionId,
+        turnId,
+        diff: summary,
+      })
+    } catch (error) {
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts,
+        type: 'turn.diff.updated',
+        sessionId,
+        turnId,
+        diff: {
+          sessionId,
+          turnId,
+          cwd: session.cwd,
+          generatedAt: ts,
+          files: [],
+          totals: { files: 0, additions: 0, deletions: 0 },
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
+
+  #pruneTurnCheckpointRefs(sessionId) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      return
+    }
+
+    let cwd
+    try {
+      cwd = validateRunnableCwd(session.cwd)
+    } catch {
+      return
+    }
+
+    const keepRefs = new Set()
+    const activeContext = this.#runContext.get(sessionId)
+    if (nonEmptyString(activeContext?.turnCheckpoint?.ref)) {
+      keepRefs.add(activeContext.turnCheckpoint.ref)
+    }
+
+    for (const event of session.runtimeEvents ?? []) {
+      if (event.type !== 'turn.diff.updated' || !isObject(event.diff?.range)) {
+        continue
+      }
+      const { fromCheckpointRef, toCheckpointRef } = event.diff.range
+      if (nonEmptyString(fromCheckpointRef)) {
+        keepRefs.add(fromCheckpointRef)
+      }
+      if (nonEmptyString(toCheckpointRef)) {
+        keepRefs.add(toCheckpointRef)
+      }
+    }
+
+    let refs
+    try {
+      refs = gitOutput(cwd, [
+        'for-each-ref',
+        '--format=%(refname)',
+        checkpointSessionRefRoot(sessionId),
+      ])
+        .split('\n')
+        .map((ref) => ref.trim())
+        .filter(Boolean)
+    } catch {
+      return
+    }
+
+    for (const ref of refs) {
+      if (keepRefs.has(ref)) {
+        continue
+      }
+      try {
+        gitOutput(cwd, ['update-ref', '-d', ref])
+      } catch {
+        // Stale checkpoint cleanup is best-effort; the persisted diff event remains authoritative.
+      }
+    }
+  }
+
   #gitDiffForSession(sessionId) {
     try {
       const result = this.#workingTreeDiffForSession(sessionId)
@@ -2780,6 +3341,63 @@ export class RuntimeSessionManager {
       const message = error instanceof Error ? error.message : String(error)
       const cwd = this.#state.sessions[sessionId]?.cwd ?? process.cwd()
       return `Unable to read git diff for ${cwd}: ${message}`
+    }
+  }
+
+  #checkpointDiffForSession(sessionId, options: JsonRecord = {}) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId}`)
+    }
+
+    const turnId = nonEmptyString(options.turnId) ? options.turnId.trim() : undefined
+    if (!turnId) {
+      throw new Error('Turn id is required for checkpoint diff.')
+    }
+
+    const diffEvent = [...(session.runtimeEvents ?? [])]
+      .reverse()
+      .find(
+        (event) =>
+          event.type === 'turn.diff.updated' &&
+          event.turnId === turnId &&
+          isObject(event.diff)
+      )
+    if (!diffEvent) {
+      throw new Error(`No checkpoint diff found for turn: ${turnId}`)
+    }
+    if (nonEmptyString(diffEvent.diff.error)) {
+      throw new Error(diffEvent.diff.error)
+    }
+    if (!isObject(diffEvent.diff.range)) {
+      throw new Error(`Checkpoint diff range is missing for turn: ${turnId}`)
+    }
+
+    const cwd = validateRunnableCwd(diffEvent.diff.cwd ?? session.cwd)
+    const range = diffEvent.diff.range
+    const result = this.#diffSummaryForCheckpointRange({
+      sessionId,
+      turnId,
+      cwd,
+      repoRoot: diffEvent.diff.repoRoot ?? gitRepoRoot(cwd) ?? cwd,
+      fromCheckpointRef: range.fromCheckpointRef,
+      toCheckpointRef: range.toCheckpointRef,
+      fromTurnCount: range.fromTurnCount,
+      toTurnCount: range.toTurnCount,
+      ignoreWhitespace: options.ignoreWhitespace === true,
+    })
+
+    return {
+      sessionId,
+      cwd,
+      repoRoot: result.repoRoot,
+      generatedAt: result.generatedAt,
+      range: result.range,
+      files: result.files,
+      totals: result.totals,
+      statusEntries: [],
+      patch: result.patch,
+      truncated: result.truncated,
     }
   }
 
@@ -3952,6 +4570,7 @@ export class RuntimeSessionManager {
       role:
         message.role === 'assistant' || message.role === 'system' ? message.role : 'user',
       content: typeof message.content === 'string' ? message.content : '',
+      attachments: normalizeChatAttachments(message.attachments),
       ts: nonEmptyString(message.ts) ? message.ts : now(),
       status,
     }
