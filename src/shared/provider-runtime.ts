@@ -2,6 +2,36 @@ import type { AgentMessage, SessionId, SessionStatus } from './graph-state'
 
 export type ProviderKind = 'claude-code' | 'codex' | 'legacy-claude-cli'
 
+export type ProviderRuntimeMode =
+  | 'approval-required'
+  | 'auto-accept-edits'
+  | 'full-access'
+
+export type ProviderApprovalPolicy = 'untrusted' | 'on-request' | 'never'
+
+export type ProviderSandboxMode =
+  | 'read-only'
+  | 'workspace-write'
+  | 'danger-full-access'
+
+export type ProviderReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
+
+export type ProviderInteractionMode = 'default' | 'plan'
+
+export type ProviderRuntimeSettings = {
+  runtimeMode: ProviderRuntimeMode
+  approvalPolicy?: ProviderApprovalPolicy
+  sandbox?: ProviderSandboxMode
+  model?: string
+  reasoningEffort?: ProviderReasoningEffort
+  serviceTier?: string
+  interactionMode?: ProviderInteractionMode
+}
+
+export const defaultProviderRuntimeSettings: ProviderRuntimeSettings = {
+  runtimeMode: 'approval-required',
+}
+
 export type ProviderInstance = {
   providerInstanceId: string
   kind: ProviderKind
@@ -26,6 +56,8 @@ export type ProviderSessionBinding = {
 export type RawEnvelope = {
   source:
     | 'claude.sdk'
+    | 'claude.sdk.permission'
+    | 'claude.sdk.user-dialog'
     | 'codex.app-server.notification'
     | 'codex.app-server.request'
     | 'legacy.claude-cli.stream-json'
@@ -81,7 +113,7 @@ export type RuntimeRequest = {
   kind: 'approval' | 'permission' | 'confirmation'
   title: string
   body?: string
-  status: 'open' | 'approved' | 'denied' | 'resolved'
+  status: 'open' | 'approved' | 'denied' | 'resolved' | 'stale' | 'canceled'
   createdAt: string
   resolvedAt?: string
   raw?: RawEnvelope
@@ -93,7 +125,7 @@ export type UserInputRequest = {
   turnId?: string
   prompt: string
   placeholder?: string
-  status: 'open' | 'answered' | 'resolved'
+  status: 'open' | 'answered' | 'resolved' | 'stale' | 'canceled'
   createdAt: string
   answeredAt?: string
   answer?: string
@@ -206,6 +238,15 @@ export type ProviderRuntimeEvent =
   | {
       id: string
       ts: string
+      type: 'user-input.resolved'
+      sessionId: SessionId
+      requestId: string
+      status?: UserInputRequest['status']
+      raw?: RawEnvelope
+    }
+  | {
+      id: string
+      ts: string
       type: 'plan.updated'
       sessionId: SessionId
       plan: RuntimePlan
@@ -235,6 +276,9 @@ export type SessionProjection = {
   activities: RuntimeActivity[]
   openRequests: RuntimeRequest[]
   userInputRequests: UserInputRequest[]
+  staleRequests: RuntimeRequest[]
+  staleUserInputRequests: UserInputRequest[]
   plans: RuntimePlan[]
   status: SessionStatus
+  runtimeSettings?: ProviderRuntimeSettings
 }

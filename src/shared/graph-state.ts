@@ -2,6 +2,7 @@ import type {
   NativeProviderEvent,
   ProviderKind,
   ProviderRuntimeEvent,
+  ProviderRuntimeSettings,
   RuntimeActivity,
   RuntimePlan,
   RuntimeRequest,
@@ -357,6 +358,7 @@ export type AgentSession = {
   runtimeRequests: RuntimeRequest[]
   runtimeUserInputRequests: UserInputRequest[]
   runtimePlans: RuntimePlan[]
+  runtimeSettings?: ProviderRuntimeSettings
   archived?: boolean
 }
 
@@ -397,6 +399,7 @@ export type CreateRuntimeSessionInput = {
   branch?: string
   agent?: 'claude-code' | 'codex'
   providerKind?: ProviderKind
+  runtimeSettings?: ProviderRuntimeSettings
   label?: string
   context?: string
   sourceSessionId?: SessionId
@@ -460,6 +463,7 @@ export type CreateMasterForClusterInput = {
   cwd?: string
   agent?: 'claude-code' | 'codex'
   providerKind?: ProviderKind
+  runtimeSettings?: ProviderRuntimeSettings
   label?: string
   loopPolicy?: LoopPolicy
 }

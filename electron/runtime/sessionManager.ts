@@ -18,6 +18,9 @@ import {
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming stream-json is working, then stop.'
+const defaultProviderRuntimeSettings = {
+  runtimeMode: 'approval-required',
+}
 
 const storageBackupSuffix = '.bak'
 const recoverableActiveStatuses = new Set(['pending', 'running'])
@@ -41,6 +44,38 @@ const validRuntimeItemStatuses = new Set([
   'failed',
 ])
 const validRuntimeRequestDecisions = new Set(['approved', 'denied'])
+const validRuntimeRequestStatuses = new Set([
+  'open',
+  'approved',
+  'denied',
+  'resolved',
+  'stale',
+  'canceled',
+])
+const validUserInputRequestStatuses = new Set([
+  'open',
+  'answered',
+  'resolved',
+  'stale',
+  'canceled',
+])
+const validProviderRuntimeModes = new Set([
+  'approval-required',
+  'auto-accept-edits',
+  'full-access',
+])
+const validProviderApprovalPolicies = new Set([
+  'untrusted',
+  'on-request',
+  'never',
+])
+const validProviderSandboxModes = new Set([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+])
+const validProviderReasoningEfforts = new Set(['low', 'medium', 'high', 'xhigh'])
+const validProviderInteractionModes = new Set(['default', 'plan'])
 const validGraphEdgeKinds = new Set(graphEdgeKinds)
 const validLoopStatuses = new Set(['running', 'stopped'])
 const emptyGitTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
@@ -572,6 +607,37 @@ function providerConfig(input: JsonRecord = {}) {
   }
 }
 
+function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
+  const input = isObject(value) ? value : {}
+  const runtimeMode = validProviderRuntimeModes.has(input.runtimeMode)
+    ? input.runtimeMode
+    : defaultProviderRuntimeSettings.runtimeMode
+  const settings: JsonRecord = {
+    runtimeMode,
+  }
+
+  if (validProviderApprovalPolicies.has(input.approvalPolicy)) {
+    settings.approvalPolicy = input.approvalPolicy
+  }
+  if (validProviderSandboxModes.has(input.sandbox)) {
+    settings.sandbox = input.sandbox
+  }
+  if (nonEmptyString(input.model)) {
+    settings.model = input.model.trim()
+  }
+  if (validProviderReasoningEfforts.has(input.reasoningEffort)) {
+    settings.reasoningEffort = input.reasoningEffort
+  }
+  if (nonEmptyString(input.serviceTier)) {
+    settings.serviceTier = input.serviceTier.trim()
+  }
+  if (validProviderInteractionModes.has(input.interactionMode)) {
+    settings.interactionMode = input.interactionMode.trim()
+  }
+
+  return settings
+}
+
 export class RuntimeSessionManager {
   #state: JsonRecord = createEmptyGraphState()
   #runs = new Map<string, RuntimeRun>()
@@ -657,6 +723,7 @@ export class RuntimeSessionManager {
         : defaultPrompt
     const initialContent = messageContent(prompt, input.context)
     const provider = providerConfig(input)
+    const runtimeSettings = normalizeProviderRuntimeSettings(input.runtimeSettings)
     const workspace =
       normalizeWorkMode(input.workMode) === 'worktree'
         ? createSessionWorktree(input.cwd, sessionId, input.branch)
@@ -694,6 +761,7 @@ export class RuntimeSessionManager {
       runtimeRequests: [],
       runtimeUserInputRequests: [],
       runtimePlans: [],
+      runtimeSettings,
       messages: [
         {
           id: randomUUID(),
@@ -880,6 +948,7 @@ export class RuntimeSessionManager {
         sessionId,
         status: 'killed',
       })
+      this.#cancelOpenRuntimeInteractions(sessionId, session.updatedAt)
       this.#touch()
       this.#emitRuntimeEvent({
         type: 'session.killed',
@@ -1346,6 +1415,7 @@ export class RuntimeSessionManager {
     try {
       run = this.#providerService.startTurn({
         providerKind: session.providerKind,
+        providerInstanceId: session.providerInstanceId,
         turnId: runId,
         prompt,
         cwd: session.cwd,
@@ -1353,7 +1423,9 @@ export class RuntimeSessionManager {
           runKind === 'resume'
             ? session.providerSessionId ?? session.backendSessionId
             : undefined,
+        providerResumeCursor: session.providerResumeCursor,
         sessionId,
+        runtimeSettings: session.runtimeSettings,
         membrane: {
           bridgeUrl,
           token: membraneToken,
@@ -1392,6 +1464,7 @@ export class RuntimeSessionManager {
       current.finishedAt = now()
       current.updatedAt = current.finishedAt
       this.#appendTurnCompletedIfMissing(sessionId, current.finishedAt)
+      this.#cancelOpenRuntimeInteractions(sessionId, current.finishedAt)
 
       if (killed || current.status === 'killed') {
         current.status = 'killed'
@@ -1486,7 +1559,7 @@ export class RuntimeSessionManager {
     }
 
     session.nativeEvents ??= []
-    session.nativeEvents.push({
+    const event = {
       id: randomUUID(),
       ts: streamChunk.ts,
       sessionId: session.sessionId,
@@ -1497,7 +1570,9 @@ export class RuntimeSessionManager {
         messageType: streamChunk.eventType,
         payload: chunk.event,
       },
-    })
+    }
+    session.nativeEvents.push(event)
+    this.#providerService.recordNativeEvent(event)
     truncateEvents(session.nativeEvents)
   }
 
@@ -1508,7 +1583,7 @@ export class RuntimeSessionManager {
     }
 
     session.nativeEvents ??= []
-    session.nativeEvents.push({
+    const nativeEvent = {
       id: randomUUID(),
       ts: nonEmptyString(event.ts) ? event.ts : now(),
       sessionId,
@@ -1519,7 +1594,9 @@ export class RuntimeSessionManager {
         ? event.turnId
         : this.#runContext.get(sessionId)?.runId,
       raw: event.raw,
-    })
+    }
+    session.nativeEvents.push(nativeEvent)
+    this.#providerService.recordNativeEvent(nativeEvent)
     truncateEvents(session.nativeEvents)
   }
 
@@ -1531,6 +1608,9 @@ export class RuntimeSessionManager {
 
     session.providerSessionId = event.providerSessionId
     session.backendSessionId = event.providerSessionId
+    if (nonEmptyString(event.resumeCursor)) {
+      session.providerResumeCursor = event.resumeCursor
+    }
     session.updatedAt = now()
     this.#touch()
   }
@@ -1625,6 +1705,7 @@ export class RuntimeSessionManager {
 
     session.runtimeEvents ??= []
     session.runtimeEvents.push(event)
+    this.#providerService.recordRuntimeEvent(sessionId, event)
     truncateEvents(session.runtimeEvents)
 
     if (
@@ -1693,6 +1774,18 @@ export class RuntimeSessionManager {
       return
     }
 
+    if (event.type === 'user-input.resolved') {
+      session.runtimeUserInputRequests ??= []
+      const request = session.runtimeUserInputRequests.find(
+        (item) => item.id === event.requestId
+      )
+      if (request) {
+        request.status = event.status ?? 'resolved'
+        request.answeredAt = event.ts
+      }
+      return
+    }
+
     if (event.type === 'plan.updated') {
       session.runtimePlans ??= []
       const index = session.runtimePlans.findIndex(
@@ -1704,6 +1797,41 @@ export class RuntimeSessionManager {
         session.runtimePlans.push(event.plan)
       }
       truncateActivities(session.runtimePlans)
+    }
+  }
+
+  #cancelOpenRuntimeInteractions(sessionId, ts) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      return
+    }
+
+    const openRequests = (session.runtimeRequests ?? []).filter(
+      (request) => request.status === 'open'
+    )
+    for (const request of openRequests) {
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts,
+        type: 'request.resolved',
+        sessionId,
+        requestId: request.id,
+        status: 'canceled',
+      })
+    }
+
+    const openUserInputRequests = (session.runtimeUserInputRequests ?? []).filter(
+      (request) => request.status === 'open'
+    )
+    for (const request of openUserInputRequests) {
+      this.#appendProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts,
+        type: 'user-input.resolved',
+        sessionId,
+        requestId: request.id,
+        status: 'canceled',
+      })
     }
   }
 
@@ -1855,6 +1983,7 @@ export class RuntimeSessionManager {
     this.#markActiveAssistant(sessionId, 'failed')
     this.#updateNodeStatus(sessionId, 'failed')
     this.#appendTurnCompletedIfMissing(sessionId, session.finishedAt)
+    this.#cancelOpenRuntimeInteractions(sessionId, session.finishedAt)
     this.#appendProviderRuntimeEvent(sessionId, {
       id: randomUUID(),
       ts: session.finishedAt,
@@ -3465,6 +3594,7 @@ export class RuntimeSessionManager {
         ? storageKey
         : randomUUID()
     const ts = now()
+    const recoveredActiveSession = recoverableActiveStatuses.has(value.status)
     const status = this.#normalizeSessionStatus(sessionId, value, diagnostics)
     const backend = validAgentBackends.has(value.backend)
       ? value.backend
@@ -3573,14 +3703,25 @@ export class RuntimeSessionManager {
           )
         : [],
       runtimeRequests: Array.isArray(value.runtimeRequests)
-        ? value.runtimeRequests.filter(isObject)
+        ? this.#normalizeRuntimeRequests(
+            sessionId,
+            value.runtimeRequests,
+            recoveredActiveSession,
+            diagnostics
+          )
         : [],
       runtimeUserInputRequests: Array.isArray(value.runtimeUserInputRequests)
-        ? value.runtimeUserInputRequests.filter(isObject)
+        ? this.#normalizeUserInputRequests(
+            sessionId,
+            value.runtimeUserInputRequests,
+            recoveredActiveSession,
+            diagnostics
+          )
         : [],
       runtimePlans: Array.isArray(value.runtimePlans)
         ? value.runtimePlans.filter(isObject)
         : [],
+      runtimeSettings: normalizeProviderRuntimeSettings(value.runtimeSettings),
       archived: value.archived === true,
     }
 
@@ -3729,6 +3870,74 @@ export class RuntimeSessionManager {
     }
   }
 
+  #normalizeRuntimeRequests(sessionId, values, recoveredActiveSession, diagnostics) {
+    return values.filter(isObject).map((value) => {
+      const status = validRuntimeRequestStatuses.has(value.status)
+        ? value.status
+        : 'open'
+      const becameStale = recoveredActiveSession && status === 'open'
+      if (becameStale) {
+        diagnostics.push(
+          diagnostic(
+            'runtime.request_stale',
+            'Marked an open provider approval request as stale after runtime restart.',
+            { sessionId, requestId: value.id }
+          )
+        )
+      }
+
+      return {
+        ...value,
+        id: nonEmptyString(value.id) ? value.id : randomUUID(),
+        sessionId,
+        kind:
+          value.kind === 'permission' || value.kind === 'confirmation'
+            ? value.kind
+            : 'approval',
+        title: nonEmptyString(value.title) ? value.title : 'Runtime request',
+        status: becameStale ? 'stale' : status,
+        createdAt: nonEmptyString(value.createdAt) ? value.createdAt : now(),
+        resolvedAt: becameStale
+          ? now()
+          : nonEmptyString(value.resolvedAt)
+            ? value.resolvedAt
+            : undefined,
+      }
+    })
+  }
+
+  #normalizeUserInputRequests(sessionId, values, recoveredActiveSession, diagnostics) {
+    return values.filter(isObject).map((value) => {
+      const status = validUserInputRequestStatuses.has(value.status)
+        ? value.status
+        : 'open'
+      const becameStale = recoveredActiveSession && status === 'open'
+      if (becameStale) {
+        diagnostics.push(
+          diagnostic(
+            'runtime.user_input_stale',
+            'Marked an open provider user-input request as stale after runtime restart.',
+            { sessionId, requestId: value.id }
+          )
+        )
+      }
+
+      return {
+        ...value,
+        id: nonEmptyString(value.id) ? value.id : randomUUID(),
+        sessionId,
+        prompt: nonEmptyString(value.prompt) ? value.prompt : 'Input requested',
+        status: becameStale ? 'stale' : status,
+        createdAt: nonEmptyString(value.createdAt) ? value.createdAt : now(),
+        answeredAt: becameStale
+          ? now()
+          : nonEmptyString(value.answeredAt)
+            ? value.answeredAt
+            : undefined,
+      }
+    })
+  }
+
   #normalizeMessage(sessionId, value, sessionStatus, diagnostics) {
     const message = isObject(value) ? value : { content: String(value ?? '') }
     const status = validMessageStatuses.has(message.status)
@@ -3850,6 +4059,7 @@ export class RuntimeSessionManager {
       runtimeRequests: [],
       runtimeUserInputRequests: [],
       runtimePlans: [],
+      runtimeSettings: normalizeProviderRuntimeSettings(),
     }
   }
 

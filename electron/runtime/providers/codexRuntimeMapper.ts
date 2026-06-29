@@ -76,6 +76,68 @@ function outputFromItem(item) {
   return undefined
 }
 
+function questionText(question, index) {
+  const header =
+    typeof question?.header === 'string' && question.header.trim().length > 0
+      ? `${question.header.trim()}: `
+      : ''
+  const text =
+    typeof question?.question === 'string' && question.question.trim().length > 0
+      ? question.question.trim()
+      : `Question ${index + 1}`
+  const options = Array.isArray(question?.options)
+    ? question.options
+        .map((option) =>
+          typeof option?.label === 'string' && option.label.trim().length > 0
+            ? option.label.trim()
+            : undefined
+        )
+        .filter(Boolean)
+    : []
+  const optionText = options.length > 0 ? ` Options: ${options.join(', ')}` : ''
+  const secretText = question?.isSecret === true ? ' [secret requested]' : ''
+
+  return `${index + 1}. ${header}${text}${secretText}${optionText}`
+}
+
+function codexUserInputPrompt(params) {
+  if (!Array.isArray(params.questions) || params.questions.length === 0) {
+    return {
+      prompt: 'Codex requested user input.',
+      placeholder: 'Answer for Codex',
+    }
+  }
+
+  const questions = params.questions
+  const lines = questions.map((question, index) => questionText(question, index))
+  const hasOptions = questions.some(
+    (question) => Array.isArray(question?.options) && question.options.length > 0
+  )
+  const hasSecret = questions.some((question) => question?.isSecret === true)
+  const isComplex = questions.length > 1 || hasOptions || hasSecret
+
+  if (!isComplex) {
+    return {
+      prompt: lines[0]?.replace(/^1\. /, '') ?? 'Codex requested user input.',
+      placeholder: 'Answer for Codex',
+    }
+  }
+
+  return {
+    prompt: [
+      `Codex requested ${questions.length} inputs. Orrery v1 supports a single visible text answer; the answer will be sent to every question.`,
+      hasSecret
+        ? 'Do not enter secrets unless you are comfortable storing them in session history.'
+        : undefined,
+      '',
+      ...lines,
+    ]
+      .filter((line) => line !== undefined)
+      .join('\n'),
+    placeholder: 'Single answer applied to all Codex questions',
+  }
+}
+
 function runtimeItemFromThreadItem({ sessionId, turnId, ts, item, raw }) {
   const type = item?.type
   const id = typeof item?.id === 'string' ? item.id : randomUUID()
@@ -351,9 +413,7 @@ export function codexRuntimeEventsFromRequest({ sessionId, turnId, message }) {
   const requestId = String(message?.id ?? randomUUID())
 
   if (message?.method === 'item/tool/requestUserInput') {
-    const question = Array.isArray(params.questions)
-      ? params.questions.map((item) => item.question).join('\n')
-      : 'Codex requested user input.'
+    const inputPrompt = codexUserInputPrompt(params)
     return [
       {
         ...eventBase({ sessionId, turnId, ts, raw }),
@@ -362,7 +422,8 @@ export function codexRuntimeEventsFromRequest({ sessionId, turnId, message }) {
           id: requestId,
           sessionId,
           turnId,
-          prompt: question,
+          prompt: inputPrompt.prompt,
+          placeholder: inputPrompt.placeholder,
           status: 'open',
           createdAt: ts,
           raw,

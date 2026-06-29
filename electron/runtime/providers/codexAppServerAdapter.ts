@@ -6,23 +6,85 @@ import {
   codexRuntimeEventsFromRequest,
 } from './codexRuntimeMapper.js'
 
-function threadStartParams({ cwd }) {
-  return {
-    cwd,
-    approvalPolicy: 'never',
-    sandbox: 'workspace-write',
-    threadSource: 'user',
-    sessionStartSource: 'startup',
-    serviceName: 'Orrery',
+type RuntimeSettings = Record<string, any>
+
+function runtimeModeToCodexConfig(runtimeSettings: RuntimeSettings = {}) {
+  if (runtimeSettings.approvalPolicy && runtimeSettings.sandbox) {
+    return {
+      approvalPolicy: runtimeSettings.approvalPolicy,
+      sandbox: runtimeSettings.sandbox,
+    }
+  }
+
+  switch (runtimeSettings.runtimeMode) {
+    case 'full-access':
+      return {
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+      }
+    case 'auto-accept-edits':
+      return {
+        approvalPolicy: 'on-request',
+        sandbox: 'workspace-write',
+      }
+    case 'approval-required':
+    default:
+      return {
+        approvalPolicy: 'untrusted',
+        sandbox: 'read-only',
+      }
   }
 }
 
-function turnStartParams({ threadId, prompt, cwd }) {
+function sandboxPolicyForCodex(sandbox, cwd) {
+  switch (sandbox) {
+    case 'danger-full-access':
+      return { type: 'dangerFullAccess' }
+    case 'workspace-write':
+      return {
+        type: 'workspaceWrite',
+        writableRoots: [cwd],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      }
+    case 'read-only':
+    default:
+      return { type: 'readOnly', networkAccess: false }
+  }
+}
+
+function threadStartParams({ cwd, runtimeSettings }) {
+  const config = runtimeModeToCodexConfig(runtimeSettings)
+  return {
+    cwd,
+    approvalPolicy: config.approvalPolicy,
+    sandbox: config.sandbox,
+    threadSource: 'user',
+    sessionStartSource: 'startup',
+    serviceName: 'Orrery',
+    ...(runtimeSettings?.model ? { model: runtimeSettings.model } : {}),
+    ...(runtimeSettings?.serviceTier
+      ? { serviceTier: runtimeSettings.serviceTier }
+      : {}),
+  }
+}
+
+function turnStartParams({ threadId, prompt, cwd, runtimeSettings }) {
+  const config = runtimeModeToCodexConfig(runtimeSettings)
   return {
     threadId,
     input: [{ type: 'text', text: prompt, text_elements: [] }],
     cwd,
-    approvalPolicy: 'never',
+    approvalPolicy: config.approvalPolicy,
+    sandboxPolicy: sandboxPolicyForCodex(config.sandbox, cwd),
+    ...(runtimeSettings?.model ? { model: runtimeSettings.model } : {}),
+    ...(runtimeSettings?.serviceTier
+      ? { serviceTier: runtimeSettings.serviceTier }
+      : {}),
+    ...(runtimeSettings?.reasoningEffort
+      ? { effort: runtimeSettings.reasoningEffort }
+      : {}),
   }
 }
 
@@ -108,12 +170,19 @@ export class CodexAppServerRun extends EventEmitter {
   #turnCompleted = false
   #pendingRequests = new Map()
 
-  constructor({ prompt, cwd, backendSessionId, sessionId, turnId }) {
+  constructor({
+    prompt,
+    cwd,
+    backendSessionId,
+    sessionId,
+    turnId,
+    runtimeSettings,
+  }) {
     super()
     this.#threadId = backendSessionId
     this.#orreryTurnId = turnId
     this.#sessionId = sessionId
-    void this.#run({ prompt, cwd })
+    void this.#run({ prompt, cwd, runtimeSettings })
   }
 
   kill() {
@@ -159,7 +228,7 @@ export class CodexAppServerRun extends EventEmitter {
     )
   }
 
-  async #run({ prompt, cwd }) {
+  async #run({ prompt, cwd, runtimeSettings }) {
     let code = 0
     let signal = null
 
@@ -182,12 +251,19 @@ export class CodexAppServerRun extends EventEmitter {
       const threadResult = this.#threadId
         ? await this.#client.request(
             'thread/resume',
-            { ...threadStartParams({ cwd }), threadId: this.#threadId },
+            {
+              ...threadStartParams({ cwd, runtimeSettings }),
+              threadId: this.#threadId,
+            },
             { timeoutMs: 60000 }
           )
-        : await this.#client.request('thread/start', threadStartParams({ cwd }), {
-            timeoutMs: 90000,
-          })
+        : await this.#client.request(
+            'thread/start',
+            threadStartParams({ cwd, runtimeSettings }),
+            {
+              timeoutMs: 90000,
+            }
+          )
 
       this.#threadId = threadResult?.thread?.id ?? this.#threadId
       if (this.#threadId) {
@@ -196,7 +272,7 @@ export class CodexAppServerRun extends EventEmitter {
 
       const turnResult = await this.#client.request(
         'turn/start',
-        turnStartParams({ threadId: this.#threadId, prompt, cwd }),
+        turnStartParams({ threadId: this.#threadId, prompt, cwd, runtimeSettings }),
         { timeoutMs: 30000 }
       )
       this.#codexTurnId = turnResult?.turn?.id

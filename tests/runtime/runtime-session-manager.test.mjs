@@ -252,3 +252,114 @@ test('compiled RuntimeSessionManager repairs restored sessions with missing work
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('compiled RuntimeSessionManager marks open provider interactions stale after restart', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-stale-request-test-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const ts = new Date().toISOString()
+  const sessionId = 'stale-runtime-session'
+  const nullSettingsSessionId = 'null-runtime-settings-session'
+
+  fs.writeFileSync(
+    storageFile,
+    `${JSON.stringify(
+      {
+        version: 5,
+        updatedAt: ts,
+        nodes: [],
+        edges: [],
+        clusters: {},
+        reports: [],
+        sessions: {
+          [sessionId]: {
+            sessionId,
+            label: 'Stale request session',
+            prompt: 'restore stale request',
+            cwd: process.cwd(),
+            status: 'running',
+            createdAt: ts,
+            updatedAt: ts,
+            messages: [
+              {
+                id: 'user-message',
+                sessionId,
+                role: 'user',
+                content: 'hello',
+                ts,
+                status: 'complete',
+              },
+            ],
+            runtimeRequests: [
+              {
+                id: 'approval-1',
+                sessionId,
+                kind: 'approval',
+                title: 'Run command',
+                status: 'open',
+                createdAt: ts,
+              },
+            ],
+            runtimeUserInputRequests: [
+              {
+                id: 'input-1',
+                sessionId,
+                prompt: 'Choose a branch',
+                status: 'open',
+                createdAt: ts,
+              },
+            ],
+            runtimeSettings: {
+              runtimeMode: 'full-access',
+              model: 'gpt-5-codex',
+              reasoningEffort: 'high',
+            },
+          },
+          [nullSettingsSessionId]: {
+            sessionId: nullSettingsSessionId,
+            label: 'Null runtime settings session',
+            prompt: 'restore null runtime settings',
+            cwd: process.cwd(),
+            status: 'idle',
+            createdAt: ts,
+            updatedAt: ts,
+            messages: [],
+            runtimeSettings: null,
+          },
+        },
+      },
+      null,
+      2
+    )}\n`
+  )
+
+  try {
+    const runtime = new RuntimeSessionManager({ storageFile })
+    const session = runtime.getState().sessions[sessionId]
+
+    assert.equal(session.status, 'failed')
+    assert.equal(session.runtimeRequests[0].status, 'stale')
+    assert.equal(session.runtimeUserInputRequests[0].status, 'stale')
+    assert.equal(session.runtimeSettings.runtimeMode, 'full-access')
+    assert.equal(session.runtimeSettings.model, 'gpt-5-codex')
+    assert.equal(session.runtimeSettings.reasoningEffort, 'high')
+    assert.equal(
+      runtime.getState().sessions[nullSettingsSessionId].runtimeSettings.runtimeMode,
+      'approval-required'
+    )
+    assert.equal(
+      runtime
+        .getState()
+        .diagnostics.some((item) => item.type === 'runtime.request_stale'),
+      true
+    )
+    assert.equal(
+      runtime
+        .getState()
+        .diagnostics.some((item) => item.type === 'runtime.user_input_stale'),
+      true
+    )
+    runtime.killAll()
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

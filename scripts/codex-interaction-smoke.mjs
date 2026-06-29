@@ -50,17 +50,41 @@ function sendInteractiveRequest() {
   }
   requestSent = true
 
-  if (mode === 'user-input') {
+  if (mode === 'user-input' || mode === 'complex-user-input') {
     send({
       id: 9001,
       method: 'item/tool/requestUserInput',
       params: {
-        questions: [
-          {
-            id: 'question-1',
-            question: 'Which branch should Codex use?',
-          },
-        ],
+        questions:
+          mode === 'complex-user-input'
+            ? [
+                {
+                  id: 'question-1',
+                  header: 'Branch',
+                  question: 'Which branch should Codex use?',
+                  isOther: true,
+                  isSecret: false,
+                  options: null,
+                },
+                {
+                  id: 'question-2',
+                  header: 'Token',
+                  question: 'Provide a visible token placeholder.',
+                  isOther: false,
+                  isSecret: true,
+                  options: [{ label: 'placeholder', description: 'Visible placeholder' }],
+                },
+              ]
+            : [
+                {
+                  id: 'question-1',
+                  header: 'Branch',
+                  question: 'Which branch should Codex use?',
+                  isOther: true,
+                  isSecret: false,
+                  options: null,
+                },
+              ],
       },
     })
     return
@@ -86,13 +110,24 @@ rl.on('line', (line) => {
   if (message.id === 9001 && Object.hasOwn(message, 'result')) {
     log({ mode, result: message.result })
 
-    if (mode === 'user-input') {
+    if (mode === 'user-input' || mode === 'complex-user-input') {
       const answer = message.result?.answers?.['question-1']?.answers?.[0]
-      if (answer !== 'feature/interactive') {
+      const expectedAnswer =
+        mode === 'complex-user-input'
+          ? 'visible-shared-answer'
+          : 'feature/interactive'
+      if (answer !== expectedAnswer) {
         console.error('unexpected user input response', JSON.stringify(message.result))
         process.exit(2)
       }
-      finishTurn('received branch feature/interactive')
+      if (
+        mode === 'complex-user-input' &&
+        message.result?.answers?.['question-2']?.answers?.[0] !== expectedAnswer
+      ) {
+        console.error('unexpected complex user input response', JSON.stringify(message.result))
+        process.exit(2)
+      }
+      finishTurn('received branch ' + expectedAnswer)
       return
     }
 
@@ -110,14 +145,19 @@ rl.on('line', (line) => {
   }
 
   if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    log({ mode, method: message.method, params: message.params })
     send({ id: message.id, result: { thread: { id: 'fake-thread' } } })
     return
   }
 
   if (message.method === 'turn/start') {
-    mode = promptFromTurnStart(message.params).includes('USER_INPUT')
-      ? 'user-input'
-      : 'approval'
+    const prompt = promptFromTurnStart(message.params)
+    mode = prompt.includes('COMPLEX_USER_INPUT')
+      ? 'complex-user-input'
+      : prompt.includes('USER_INPUT')
+        ? 'user-input'
+        : 'approval'
+    log({ mode, method: message.method, params: message.params })
     send({ id: message.id, result: { turn: { id: 'fake-turn' } } })
     send({ method: 'turn/started', params: { turn: { id: 'fake-turn' } } })
     setTimeout(sendInteractiveRequest, 10)
@@ -169,6 +209,14 @@ function interactionLogs() {
     .map((line) => JSON.parse(line))
 }
 
+function turnStartLogForPrompt(logs, prompt) {
+  return logs.find(
+    (entry) =>
+      entry.method === 'turn/start' &&
+      (entry.params?.input ?? []).some((item) => item?.text?.includes(prompt))
+  )
+}
+
 async function waitIdle(runtime, sessionId, label) {
   await waitFor(label, () => runtime.getState().sessions[sessionId]?.status === 'idle')
 }
@@ -182,6 +230,12 @@ try {
     providerKind: 'codex',
     agent: 'codex',
     cwd: process.cwd(),
+    runtimeSettings: {
+      runtimeMode: 'full-access',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'high',
+      serviceTier: 'flex',
+    },
   })
   const approvalSessionId = approvalSession.sessionId
   const approvalRequest = await waitFor('Codex approval request', () =>
@@ -192,7 +246,7 @@ try {
       )
   )
   assert.equal(
-    interactionLogs().length,
+    interactionLogs().filter((entry) => entry.result).length,
     0,
     'Orrery must not answer Codex approval requests automatically'
   )
@@ -246,12 +300,187 @@ try {
     /feature\/interactive/
   )
 
-  const logs = interactionLogs()
-  assert.deepEqual(logs[0], { mode: 'approval', result: { decision: 'accept' } })
-  assert.equal(logs[1].mode, 'user-input')
+  const autoEditSession = await runtime.createSession({
+    prompt: 'AUTO_EDIT_REQUEST',
+    providerKind: 'codex',
+    agent: 'codex',
+    cwd: process.cwd(),
+    runtimeSettings: {
+      runtimeMode: 'auto-accept-edits',
+    },
+  })
+  const autoEditSessionId = autoEditSession.sessionId
+  const autoEditRequest = await waitFor('Codex auto-edit approval request', () =>
+    runtime
+      .getState()
+      .sessions[autoEditSessionId]?.runtimeRequests.find(
+        (request) => request.status === 'open'
+      )
+  )
+  const autoEditResult = runtime.respondRuntimeRequest({
+    sessionId: autoEditSessionId,
+    requestId: autoEditRequest.id,
+    decision: 'approved',
+  })
+  assert.equal(autoEditResult.ok, true)
+  await waitIdle(runtime, autoEditSessionId, 'auto-edit session idle')
+
+  const validInteractionSession = await runtime.createSession({
+    prompt: 'VALID_INTERACTION_MODE_REQUEST',
+    providerKind: 'codex',
+    agent: 'codex',
+    cwd: process.cwd(),
+    runtimeSettings: {
+      runtimeMode: 'approval-required',
+      interactionMode: 'plan',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'low',
+    },
+  })
+  const validInteractionSessionId = validInteractionSession.sessionId
+  const validInteractionRequest = await waitFor('Codex valid interaction request', () =>
+    runtime
+      .getState()
+      .sessions[validInteractionSessionId]?.runtimeRequests.find(
+        (request) => request.status === 'open'
+      )
+  )
+  const validInteractionResult = runtime.respondRuntimeRequest({
+    sessionId: validInteractionSessionId,
+    requestId: validInteractionRequest.id,
+    decision: 'approved',
+  })
+  assert.equal(validInteractionResult.ok, true)
+  await waitIdle(runtime, validInteractionSessionId, 'valid interaction session idle')
+
+  const invalidInteractionSession = await runtime.createSession({
+    prompt: 'INVALID_INTERACTION_MODE_REQUEST',
+    providerKind: 'codex',
+    agent: 'codex',
+    cwd: process.cwd(),
+    runtimeSettings: {
+      runtimeMode: 'approval-required',
+      interactionMode: 'unsupported-mode',
+    },
+  })
+  const invalidInteractionSessionId = invalidInteractionSession.sessionId
+  const invalidInteractionRequest = await waitFor(
+    'Codex invalid interaction request',
+    () =>
+      runtime
+        .getState()
+        .sessions[invalidInteractionSessionId]?.runtimeRequests.find(
+          (request) => request.status === 'open'
+        )
+  )
+  const invalidInteractionResult = runtime.respondRuntimeRequest({
+    sessionId: invalidInteractionSessionId,
+    requestId: invalidInteractionRequest.id,
+    decision: 'approved',
+  })
+  assert.equal(invalidInteractionResult.ok, true)
+  await waitIdle(runtime, invalidInteractionSessionId, 'invalid interaction session idle')
+
+  const complexInputSession = await runtime.createSession({
+    prompt: 'COMPLEX_USER_INPUT_REQUEST',
+    providerKind: 'codex',
+    agent: 'codex',
+    cwd: process.cwd(),
+  })
+  const complexInputSessionId = complexInputSession.sessionId
+  const complexInputRequest = await waitFor('Codex complex user input request', () =>
+    runtime
+      .getState()
+      .sessions[complexInputSessionId]?.runtimeUserInputRequests.find(
+        (request) => request.status === 'open'
+      )
+  )
+  assert.match(complexInputRequest.prompt, /single visible text answer/)
+  assert.match(complexInputRequest.prompt, /Do not enter secrets/)
   assert.equal(
-    logs[1].result.answers['question-1'].answers[0],
+    complexInputRequest.placeholder,
+    'Single answer applied to all Codex questions'
+  )
+  const complexInputResult = runtime.answerUserInput({
+    sessionId: complexInputSessionId,
+    requestId: complexInputRequest.id,
+    answer: 'visible-shared-answer',
+  })
+  assert.equal(complexInputResult.ok, true)
+  await waitIdle(runtime, complexInputSessionId, 'complex user input session idle')
+
+  const logs = interactionLogs()
+  const approvalThreadStart = logs.find(
+    (entry) => entry.method === 'thread/start' && entry.params?.model === 'gpt-5-codex'
+  )
+  const approvalTurnStart = logs.find(
+    (entry) => entry.method === 'turn/start' && entry.params?.model === 'gpt-5-codex'
+  )
+  assert.equal(approvalThreadStart.params.approvalPolicy, 'never')
+  assert.equal(approvalThreadStart.params.sandbox, 'danger-full-access')
+  assert.equal(approvalThreadStart.params.serviceTier, 'flex')
+  assert.equal(approvalTurnStart.params.approvalPolicy, 'never')
+  assert.deepEqual(approvalTurnStart.params.sandboxPolicy, {
+    type: 'dangerFullAccess',
+  })
+  assert.equal(approvalTurnStart.params.effort, 'high')
+  const inputTurnStart = turnStartLogForPrompt(logs, 'USER_INPUT_REQUEST')
+  assert.deepEqual(inputTurnStart.params.sandboxPolicy, {
+    type: 'readOnly',
+    networkAccess: false,
+  })
+  const autoEditTurnStart = turnStartLogForPrompt(logs, 'AUTO_EDIT_REQUEST')
+  assert.deepEqual(autoEditTurnStart.params.sandboxPolicy, {
+    type: 'workspaceWrite',
+    writableRoots: [process.cwd()],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  })
+  const validInteractionTurnStart = turnStartLogForPrompt(
+    logs,
+    'VALID_INTERACTION_MODE_REQUEST'
+  )
+  assert.equal(
+    Object.hasOwn(validInteractionTurnStart.params, 'collaborationMode'),
+    false
+  )
+  assert.equal(validInteractionTurnStart.params.model, 'gpt-5-codex')
+  assert.equal(validInteractionTurnStart.params.effort, 'low')
+  const invalidInteractionTurnStart = turnStartLogForPrompt(
+    logs,
+    'INVALID_INTERACTION_MODE_REQUEST'
+  )
+  assert.equal(
+    Object.hasOwn(invalidInteractionTurnStart.params, 'collaborationMode'),
+    false
+  )
+
+  const approvalResponse = logs.find(
+    (entry) => entry.mode === 'approval' && entry.result
+  )
+  const inputResponse = logs.find(
+    (entry) => entry.mode === 'user-input' && entry.result
+  )
+  const complexInputResponse = logs.find(
+    (entry) => entry.mode === 'complex-user-input' && entry.result
+  )
+  assert.deepEqual(approvalResponse, {
+    mode: 'approval',
+    result: { decision: 'accept' },
+  })
+  assert.equal(inputResponse.mode, 'user-input')
+  assert.equal(
+    inputResponse.result.answers['question-1'].answers[0],
     'feature/interactive'
+  )
+  assert.equal(
+    complexInputResponse.result.answers['question-1'].answers[0],
+    'visible-shared-answer'
+  )
+  assert.equal(
+    complexInputResponse.result.answers['question-2'].answers[0],
+    'visible-shared-answer'
   )
 
   console.log('[runtime:codex-interaction] approval and user-input round trips passed')

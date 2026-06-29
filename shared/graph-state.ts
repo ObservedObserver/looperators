@@ -87,6 +87,8 @@ export const graphStateSchema = {
           'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
         linkLabel:
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+        runtimeSettings:
+          'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
       },
     },
     getProjectContext: {
@@ -131,6 +133,7 @@ export const graphStateSchema = {
         cwd: 'string?; project cwd selected by the UI for the master session',
         agent: '"claude-code" | "codex"?',
         providerKind: 'ProviderKind?',
+        runtimeSettings: 'ProviderRuntimeSettings?',
         label: 'string?',
         loopPolicy: 'LoopPolicy?',
       },
@@ -166,6 +169,7 @@ export const graphStateSchema = {
       providerKind: '"legacy-claude-cli" | "claude-code" | "codex"',
       providerInstanceId: 'string',
       providerSessionId: 'string?',
+      runtimeSettings: 'ProviderRuntimeSettings?',
       archived: 'boolean?',
       runtimeEvents: 'ProviderRuntimeEvent[]',
       runtimeActivities: 'RuntimeActivity[]',

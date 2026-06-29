@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import {
   buildPath,
@@ -47,6 +48,108 @@ function sdkUserMessage(prompt) {
       content: [{ type: 'text', text: prompt }],
     },
     timestamp: new Date().toISOString(),
+  }
+}
+
+function contentBlocksFromSdkMessage(message) {
+  const content = message?.message?.content
+  return Array.isArray(content) ? content : []
+}
+
+function planItemsFromText(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => line.replace(/^[-*]\s+|^\d+[.)]\s+/, '').trim())
+    .filter(Boolean)
+    .map((title, index) => ({
+      id: `plan-item-${index + 1}`,
+      title,
+      status: 'pending',
+    }))
+}
+
+function questionLabel(question, index) {
+  return typeof question?.question === 'string' && question.question.trim().length > 0
+    ? question.question.trim()
+    : `Question ${index + 1}`
+}
+
+function questionPromptLine(question, index) {
+  const header =
+    typeof question?.header === 'string' && question.header.trim().length > 0
+      ? `${question.header.trim()}: `
+      : ''
+  const options = Array.isArray(question?.options)
+    ? question.options
+        .map((option) =>
+          typeof option?.label === 'string' && option.label.trim().length > 0
+            ? option.label.trim()
+            : undefined
+        )
+        .filter(Boolean)
+    : []
+  const optionText = options.length > 0 ? ` Options: ${options.join(', ')}` : ''
+  const multiSelectText = question?.multiSelect === true ? ' [multi-select]' : ''
+
+  return `${index + 1}. ${header}${questionLabel(question, index)}${multiSelectText}${optionText}`
+}
+
+function askUserQuestions(payload) {
+  return Array.isArray(payload?.questions) ? payload.questions : []
+}
+
+function userDialogPrompt({ request }) {
+  const questions = askUserQuestions(request.payload)
+  if (questions.length === 0) {
+    return {
+      prompt:
+        typeof request.payload?.question === 'string'
+          ? request.payload.question
+          : typeof request.payload?.prompt === 'string'
+            ? request.payload.prompt
+            : `${request.dialogKind} requested input.`,
+      placeholder: 'Answer for Claude',
+    }
+  }
+
+  const lines = questions.map((question, index) => questionPromptLine(question, index))
+  const isComplex =
+    questions.length > 1 ||
+    questions.some(
+      (question) =>
+        question?.multiSelect === true ||
+        (Array.isArray(question?.options) && question.options.length > 0)
+    )
+
+  if (!isComplex) {
+    return {
+      prompt: lines[0]?.replace(/^1\. /, '') ?? 'Claude requested user input.',
+      placeholder: 'Answer for Claude',
+    }
+  }
+
+  return {
+    prompt: [
+      `Claude requested ${questions.length} inputs. Orrery v1 supports a single visible text answer; the answer will be sent to every question.`,
+      '',
+      ...lines,
+    ].join('\n'),
+    placeholder: 'Single answer applied to all Claude questions',
+  }
+}
+
+function userDialogResultForAnswer(request, answer) {
+  const questions = askUserQuestions(request.payload)
+  if (questions.length === 0) {
+    return answer
+  }
+
+  return {
+    questions,
+    answers: Object.fromEntries(
+      questions.map((question, index) => [questionLabel(question, index), answer])
+    ),
+    response: answer,
   }
 }
 
@@ -103,9 +206,11 @@ class PromptQueue {
   }
 }
 
-class ClaudeAgentSdkTurnRun extends EventEmitter {
+export class ClaudeAgentSdkTurnRun extends EventEmitter {
   #controller
   #closed = false
+  #pendingRuntimeRequests = new Map()
+  #pendingUserInputRequests = new Map()
 
   constructor(controller, input) {
     super()
@@ -121,8 +226,226 @@ class ClaudeAgentSdkTurnRun extends EventEmitter {
     return this.#controller.killTurn(this)
   }
 
+  requestPermission({ input, options, toolName, turnId, sessionId }) {
+    if (this.#closed) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'Orrery turn is closed.',
+        interrupt: true,
+        toolUseID: options.toolUseID,
+        decisionClassification: 'user_reject',
+      })
+    }
+
+    const requestId = options.toolUseID || randomUUID()
+    if (options.signal?.aborted) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'Permission request was interrupted.',
+        interrupt: true,
+        toolUseID: options.toolUseID,
+        decisionClassification: 'user_reject',
+      })
+    }
+
+    const title =
+      options.title ||
+      options.displayName ||
+      `Claude wants to use ${toolName}`
+    const body = [
+      options.description,
+      options.decisionReason,
+      options.blockedPath ? `Blocked path: ${options.blockedPath}` : undefined,
+      Object.keys(input ?? {}).length > 0
+        ? JSON.stringify(input, null, 2)
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+
+    const request = {
+      id: requestId,
+      sessionId,
+      turnId,
+      kind: 'permission',
+      title,
+      body,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      raw: {
+        source: 'claude.sdk.permission',
+        messageType: 'canUseTool',
+        payload: {
+          toolName,
+          input,
+          options,
+        },
+      },
+    }
+    this.emit('providerEvent', {
+      id: randomUUID(),
+      ts: request.createdAt,
+      type: 'request.opened',
+      sessionId,
+      request,
+      raw: request.raw,
+    })
+
+    return new Promise((resolve) => {
+      let settled = false
+      const abort = () => {
+        if (settled) {
+          return
+        }
+        settled = true
+        this.#pendingRuntimeRequests.delete(requestId)
+        this.emit('providerEvent', {
+          id: randomUUID(),
+          ts: new Date().toISOString(),
+          type: 'request.resolved',
+          sessionId,
+          requestId,
+          status: 'canceled',
+          raw: request.raw,
+        })
+        resolve({
+          behavior: 'deny',
+          message: 'Permission request was interrupted.',
+          interrupt: true,
+          toolUseID: options.toolUseID,
+          decisionClassification: 'user_reject',
+        })
+      }
+
+      const abortListener = () => abort()
+      options.signal?.addEventListener('abort', abortListener, { once: true })
+      this.#pendingRuntimeRequests.set(requestId, {
+        resolve: (decision) => {
+          if (settled) {
+            return
+          }
+          settled = true
+          options.signal?.removeEventListener('abort', abortListener)
+          if (decision === 'approved') {
+            resolve({
+              behavior: 'allow',
+              toolUseID: options.toolUseID,
+              decisionClassification: 'user_temporary',
+            })
+            return
+          }
+          resolve({
+            behavior: 'deny',
+            message: 'Denied in Orrery.',
+            interrupt: false,
+            toolUseID: options.toolUseID,
+            decisionClassification: 'user_reject',
+          })
+        },
+        cancel: abort,
+      })
+    })
+  }
+
+  requestUserDialog({ request, options, turnId, sessionId }) {
+    if (this.#closed) {
+      return Promise.resolve({ behavior: 'cancelled' })
+    }
+
+    const requestId = request.toolUseID || randomUUID()
+    if (options.signal?.aborted) {
+      return Promise.resolve({ behavior: 'cancelled' })
+    }
+
+    const prompt = userDialogPrompt({ request })
+    const runtimeRequest = {
+      id: requestId,
+      sessionId,
+      turnId,
+      prompt: prompt.prompt,
+      placeholder: prompt.placeholder,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      raw: {
+        source: 'claude.sdk.user-dialog',
+        messageType: request.dialogKind,
+        payload: request,
+      },
+    }
+    this.emit('providerEvent', {
+      id: randomUUID(),
+      ts: runtimeRequest.createdAt,
+      type: 'user-input.requested',
+      sessionId,
+      request: runtimeRequest,
+      raw: runtimeRequest.raw,
+    })
+
+    return new Promise((resolve) => {
+      let settled = false
+      const abort = () => {
+        if (settled) {
+          return
+        }
+        settled = true
+        this.#pendingUserInputRequests.delete(requestId)
+        this.emit('providerEvent', {
+          id: randomUUID(),
+          ts: new Date().toISOString(),
+          type: 'user-input.resolved',
+          sessionId,
+          requestId,
+          status: 'canceled',
+          raw: runtimeRequest.raw,
+        })
+        resolve({ behavior: 'cancelled' })
+      }
+
+      const abortListener = () => abort()
+      options.signal?.addEventListener('abort', abortListener, { once: true })
+      this.#pendingUserInputRequests.set(requestId, {
+        resolve: (answer) => {
+          if (settled) {
+            return
+          }
+          settled = true
+          options.signal?.removeEventListener('abort', abortListener)
+          resolve({
+            behavior: 'completed',
+            result: userDialogResultForAnswer(request, answer),
+          })
+        },
+        cancel: abort,
+      })
+    })
+  }
+
+  respondRuntimeRequest({ requestId, decision }) {
+    const pending = this.#pendingRuntimeRequests.get(String(requestId))
+    if (!pending) {
+      throw new Error(`Unknown Claude SDK runtime request: ${requestId}`)
+    }
+    this.#pendingRuntimeRequests.delete(String(requestId))
+    pending.resolve(decision)
+  }
+
+  answerUserInput({ requestId, answer }) {
+    const pending = this.#pendingUserInputRequests.get(String(requestId))
+    if (!pending) {
+      throw new Error(`Unknown Claude SDK user input request: ${requestId}`)
+    }
+    this.#pendingUserInputRequests.delete(String(requestId))
+    pending.resolve(answer)
+  }
+
   markClosed() {
     this.#closed = true
+    for (const pending of [...this.#pendingRuntimeRequests.values()]) {
+      pending.cancel()
+    }
+    for (const pending of [...this.#pendingUserInputRequests.values()]) {
+      pending.cancel()
+    }
   }
 }
 
@@ -215,6 +538,11 @@ class ClaudeAgentSdkSessionController {
           pathToClaudeCodeExecutable: claudeCommand(),
           includePartialMessages: true,
           strictMcpConfig: false,
+          canUseTool: (toolName, toolInput, options) =>
+            this.#handleCanUseTool(toolName, toolInput, options),
+          onUserDialog: (request, options) =>
+            this.#handleUserDialog(request, options),
+          supportedDialogKinds: ['ask_user_question'],
           systemPrompt: membrane
             ? {
                 type: 'preset',
@@ -283,6 +611,41 @@ class ClaudeAgentSdkSessionController {
     }
   }
 
+  #handleCanUseTool(toolName, toolInput, options) {
+    const current = this.#current
+    if (!current) {
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'No active Orrery turn can answer this permission request.',
+        interrupt: true,
+        toolUseID: options.toolUseID,
+        decisionClassification: 'user_reject',
+      })
+    }
+
+    return current.run.requestPermission({
+      toolName,
+      input: toolInput,
+      options,
+      turnId: current.input.turnId,
+      sessionId: current.input.sessionId,
+    })
+  }
+
+  #handleUserDialog(request, options) {
+    const current = this.#current
+    if (!current || request.dialogKind !== 'ask_user_question') {
+      return Promise.resolve({ behavior: 'cancelled' })
+    }
+
+    return current.run.requestUserDialog({
+      request,
+      options,
+      turnId: current.input.turnId,
+      sessionId: current.input.sessionId,
+    })
+  }
+
   async #configureMembrane(membrane) {
     if (!membrane) {
       return
@@ -330,6 +693,7 @@ class ClaudeAgentSdkSessionController {
         payload: message,
       },
     })
+    this.#emitSemanticToolEvents({ message, input, run, ts })
 
     const legacyEvent = sdkMessageToLegacyEvent(message)
     const events = legacyClaudeRuntimeEventsFromChunk({
@@ -350,6 +714,44 @@ class ClaudeAgentSdkSessionController {
     if (message?.type === 'result') {
       run.emit('result', message)
       this.#finishCurrentTurn()
+    }
+  }
+
+  #emitSemanticToolEvents({ message, input, run, ts }) {
+    for (const block of contentBlocksFromSdkMessage(message)) {
+      if (block?.type !== 'tool_use' || typeof block.name !== 'string') {
+        continue
+      }
+
+      if (block.name === 'ExitPlanMode') {
+        const text =
+          typeof block.input?.plan === 'string'
+            ? block.input.plan
+            : typeof block.input?.summary === 'string'
+              ? block.input.summary
+              : JSON.stringify(block.input ?? {}, null, 2)
+        const plan = {
+          id: block.id ?? `plan-${input.turnId}`,
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          title: 'Proposed plan',
+          items: planItemsFromText(text),
+          updatedAt: ts,
+          raw: {
+            source: 'claude.sdk',
+            messageType: 'ExitPlanMode',
+            payload: block,
+          },
+        }
+        run.emit('providerEvent', {
+          id: randomUUID(),
+          ts,
+          type: 'plan.updated',
+          sessionId: input.sessionId,
+          plan,
+          raw: plan.raw,
+        })
+      }
     }
   }
 

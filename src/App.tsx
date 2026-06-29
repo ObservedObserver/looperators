@@ -102,10 +102,14 @@ import {
 import type {
   NativeProviderEvent,
   ProviderKind,
+  ProviderReasoningEffort,
   ProviderRuntimeEvent,
+  ProviderRuntimeMode,
+  ProviderRuntimeSettings,
   RuntimeRequest,
   UserInputRequest,
 } from '@/shared/provider-runtime'
+import { projectSession } from '@/shared/session-projection'
 import { createDemoGraphState } from '@/shared/demo-state'
 import {
   getActiveRuntimeClient,
@@ -473,6 +477,23 @@ function providerOption(providerKind: ProviderKind) {
   )
 }
 
+function providerRuntimeSettingsDraft({
+  runtimeMode,
+  model,
+  reasoningEffort,
+}: {
+  runtimeMode: ProviderRuntimeMode
+  model: string
+  reasoningEffort: ProviderReasoningEffort
+}): ProviderRuntimeSettings {
+  const trimmedModel = model.trim()
+  return {
+    runtimeMode,
+    reasoningEffort,
+    ...(trimmedModel ? { model: trimmedModel } : {}),
+  }
+}
+
 function ProviderSegmentedControl({
   value,
   disabled,
@@ -694,6 +715,17 @@ type NewChatProjectOption = {
 const workModeOptions: { id: WorkMode; label: string }[] = [
   { id: 'local', label: 'Work locally' },
   { id: 'worktree', label: 'New worktree' },
+]
+const runtimeModeOptions: { id: ProviderRuntimeMode; label: string }[] = [
+  { id: 'approval-required', label: 'Supervised' },
+  { id: 'auto-accept-edits', label: 'Auto edits' },
+  { id: 'full-access', label: 'Full access' },
+]
+const reasoningEffortOptions: { id: ProviderReasoningEffort; label: string }[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'XHigh' },
 ]
 const chooseProjectOptionValue = '__orrery_choose_project__'
 
@@ -1307,24 +1339,36 @@ function NewChatSetupBar({
   validation,
   workMode,
   branch,
+  runtimeMode,
+  model,
+  reasoningEffort,
   disabled,
   canChooseProject,
   onProjectChange,
   onChooseProject,
   onWorkModeChange,
   onBranchChange,
+  onRuntimeModeChange,
+  onModelChange,
+  onReasoningEffortChange,
 }: {
   projects: NewChatProjectOption[]
   projectCwd: string
   validation: ProjectCwdValidation
   workMode: WorkMode
   branch: string
+  runtimeMode: ProviderRuntimeMode
+  model: string
+  reasoningEffort: ProviderReasoningEffort
   disabled?: boolean
   canChooseProject?: boolean
   onProjectChange: (cwd: string) => void
   onChooseProject: () => void
   onWorkModeChange: (workMode: WorkMode) => void
   onBranchChange: (branch: string) => void
+  onRuntimeModeChange: (runtimeMode: ProviderRuntimeMode) => void
+  onModelChange: (model: string) => void
+  onReasoningEffortChange: (reasoningEffort: ProviderReasoningEffort) => void
 }) {
   const selectedProject =
     projects.find((project) => project.cwd === projectCwd.trim()) ?? projects[0]
@@ -1423,6 +1467,59 @@ function NewChatSetupBar({
             </option>
           ))}
         </NewChatSetupPill>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2">
+        <NewChatSetupPill
+          icon={ClipboardCheck}
+          label="Mode"
+          value={runtimeMode}
+          disabled={disabled}
+          onChange={(nextRuntimeMode) =>
+            onRuntimeModeChange(nextRuntimeMode as ProviderRuntimeMode)
+          }
+        >
+          {runtimeModeOptions.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </NewChatSetupPill>
+
+        <NewChatSetupPill
+          icon={Activity}
+          label="Think"
+          value={reasoningEffort}
+          disabled={disabled}
+          onChange={(nextReasoningEffort) =>
+            onReasoningEffortChange(nextReasoningEffort as ProviderReasoningEffort)
+          }
+        >
+          {reasoningEffortOptions.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </NewChatSetupPill>
+
+        <label
+          className={cn(
+            'relative flex min-w-0 items-center gap-2 rounded-full border border-accent-ink/30 bg-ink px-3 py-2 font-mono shadow-sm transition focus-within:border-lime-hi/60 focus-within:ring-1 focus-within:ring-lime-hi/25',
+            disabled && 'opacity-55'
+          )}
+        >
+          <Bot className="size-3.5 shrink-0 text-lime-hi" />
+          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
+            Model
+          </span>
+          <input
+            className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
+            value={model}
+            disabled={disabled}
+            placeholder="provider default"
+            aria-label="Model"
+            onChange={(event) => onModelChange(event.target.value)}
+          />
+        </label>
       </div>
       {!validation.ok ? (
         <div className="flex items-center gap-1.5 px-1 font-mono text-[10.5px] leading-4 text-term-rose">
@@ -2924,6 +3021,11 @@ function App() {
   const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd)
   const [newWorkMode, setNewWorkMode] = useState<WorkMode>('local')
   const [newBranch, setNewBranch] = useState('')
+  const [newRuntimeMode, setNewRuntimeMode] =
+    useState<ProviderRuntimeMode>('approval-required')
+  const [newModel, setNewModel] = useState('')
+  const [newReasoningEffort, setNewReasoningEffort] =
+    useState<ProviderReasoningEffort>('medium')
   const [newProjectContext, setNewProjectContext] = useState<ProjectContext>()
   const [message, setMessage] = useState('')
   const [composerAttachments, setComposerAttachments] = useState<
@@ -3018,6 +3120,10 @@ function App() {
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
+  const selectedSessionProjection = useMemo(
+    () => (selectedSession ? projectSession(selectedSession) : undefined),
+    [selectedSession]
+  )
   const selectedWorkingTreeDiff =
     workingTreeDiff?.sessionId === selectedSessionId ? workingTreeDiff : undefined
   const pendingLinkedSource = pendingLinkedSourceId
@@ -3033,12 +3139,8 @@ function App() {
     : undefined
   const selectedSessionFrozen =
     selectedNode?.frozen === true || selectedManagedCluster?.frozen === true
-  const openRuntimeRequests = (selectedSession?.runtimeRequests ?? []).filter(
-    (request) => request.status === 'open'
-  )
-  const openUserInputRequests = (
-    selectedSession?.runtimeUserInputRequests ?? []
-  ).filter((request) => (request.status ?? 'open') === 'open')
+  const openRuntimeRequests = selectedSessionProjection?.openRequests ?? []
+  const openUserInputRequests = selectedSessionProjection?.userInputRequests ?? []
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
   const runtimeDiagnostics = useMemo(
     () => runtimeState.diagnostics ?? [],
@@ -3112,9 +3214,9 @@ function App() {
   // to assistant messages. Aligned from the END so chunk truncation (oldest
   // turns dropped) keeps recent turns matched to their messages.
   const transcript = useMemo(() => {
-    const messages = selectedSession?.messages ?? []
-    const runtimeTurnsByRunId = selectedSession?.runtimeActivities?.length
-      ? toolTurnsFromRuntimeActivities(selectedSession.runtimeActivities)
+    const messages = selectedSessionProjection?.messages ?? []
+    const runtimeTurnsByRunId = selectedSessionProjection?.activities.length
+      ? toolTurnsFromRuntimeActivities(selectedSessionProjection.activities)
       : new Map<string, ToolTurn>()
     const turns =
       selectedSession && runtimeTurnsByRunId.size === 0
@@ -3143,7 +3245,7 @@ function App() {
         turn: runtimeTurn ?? turnByIndex.get(index),
       }
     })
-  }, [selectedSession])
+  }, [selectedSession, selectedSessionProjection])
   const selectedManagedNodeIds = useMemo(() => {
     const canvasSelection = selectedCanvasNodeIds.filter((nodeId) => {
       const session = runtimeState.sessions[nodeId]
@@ -3790,6 +3892,11 @@ function App() {
             : {}),
           agent: selectedProvider.agent,
           providerKind: selectedProvider.id,
+          runtimeSettings: providerRuntimeSettingsDraft({
+            runtimeMode: newRuntimeMode,
+            model: newModel,
+            reasoningEffort: newReasoningEffort,
+          }),
           label: `${sourceSessionId ? 'Linked Chat' : 'New Chat'} ${
             sessions.length + 1
           }`,
@@ -3815,7 +3922,10 @@ function App() {
     [
       newBranch,
       newCwd,
+      newModel,
       newProviderKind,
+      newReasoningEffort,
+      newRuntimeMode,
       newWorkMode,
       runtimeApi,
       runtimeState.sessions,
@@ -4094,6 +4204,11 @@ function App() {
         cwd,
         agent: selectedProvider.agent,
         providerKind: selectedProvider.id,
+        runtimeSettings: providerRuntimeSettingsDraft({
+          runtimeMode: newRuntimeMode,
+          model: newModel,
+          reasoningEffort: newReasoningEffort,
+        }),
         label: `${runtimeState.clusters[activeClusterId]?.label ?? 'Cluster'} Master`,
         loopPolicy: currentLoopPolicy(),
       })
@@ -4110,7 +4225,10 @@ function App() {
     currentLoopPolicy,
     masterPrompt,
     newCwd,
+    newModel,
     newProviderKind,
+    newReasoningEffort,
+    newRuntimeMode,
     runtimeApi,
     runtimeState.clusters,
   ])
@@ -5423,16 +5541,16 @@ function App() {
                       Messages
                     </span>
                     <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">
-                      {selectedSession?.messages.length ?? 0} messages
+                      {selectedSessionProjection?.messages.length ?? 0} messages
                     </span>
                   </div>
-                  {selectedSession?.messages.length ? (
+                  {selectedSessionProjection?.messages.length ? (
                     transcript.map(({ message, turn }) => (
                       <ChatMessage
                         key={message.id}
                         message={message}
                         turn={turn}
-                        agent={selectedSession.agent}
+                        agent={selectedSession?.agent ?? 'claude-code'}
                       />
                     ))
                   ) : (
@@ -5467,12 +5585,18 @@ function App() {
                         validation={newCwdValidation}
                         workMode={newWorkMode}
                         branch={newBranch}
+                        runtimeMode={newRuntimeMode}
+                        model={newModel}
+                        reasoningEffort={newReasoningEffort}
                         disabled={isCreating || !isRuntimeAvailable}
                         canChooseProject={isElectron}
                         onProjectChange={setNewCwd}
                         onChooseProject={chooseNewChatProject}
                         onWorkModeChange={setNewWorkMode}
                         onBranchChange={setNewBranch}
+                        onRuntimeModeChange={setNewRuntimeMode}
+                        onModelChange={setNewModel}
+                        onReasoningEffortChange={setNewReasoningEffort}
                       />
                     </>
                   ) : null}
