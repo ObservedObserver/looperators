@@ -151,7 +151,13 @@ export function cleanupMcpHandoff(handoff) {
   fs.rmSync(handoff.dir, { recursive: true, force: true })
 }
 
-function buildClaudeArgs({ prompt, backendSessionId, sessionId, mcpConfigPath }) {
+function buildClaudeArgs({
+  prompt,
+  backendSessionId,
+  sessionId,
+  mcpConfigPath,
+  runtimeSettings,
+}) {
   const args = []
 
   if (backendSessionId) {
@@ -167,6 +173,10 @@ function buildClaudeArgs({ prompt, backendSessionId, sessionId, mcpConfigPath })
     '--verbose',
     '--include-partial-messages'
   )
+
+  if (nonEmptyString(runtimeSettings?.model)) {
+    args.push('--model', runtimeSettings.model.trim())
+  }
 
   if (mcpConfigPath) {
     args.push(
@@ -194,7 +204,15 @@ export class ClaudeCliRun extends EventEmitter {
   #killTimer
   #mcpHandoff
 
-  constructor({ prompt, cwd, backendSessionId, sessionId, membrane, providerInstance }) {
+  constructor({
+    prompt,
+    cwd,
+    backendSessionId,
+    sessionId,
+    membrane,
+    providerInstance,
+    runtimeSettings,
+  }) {
     super()
 
     this.#mcpHandoff = membrane ? createMcpHandoff(membrane) : undefined
@@ -209,6 +227,7 @@ export class ClaudeCliRun extends EventEmitter {
             backendSessionId,
             sessionId,
             mcpConfigPath: this.#mcpHandoff?.configPath,
+            runtimeSettings,
           }),
         ],
         {

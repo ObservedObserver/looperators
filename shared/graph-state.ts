@@ -108,6 +108,8 @@ export const graphStateSchema = {
           'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
         attachments:
           'ChatAttachment[]?; structured provider-native attachments for the first turn',
+        providerInstanceId:
+          'string?; selected provider runtime profile for this session',
         runtimeSettings:
           'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
       },
@@ -178,6 +180,7 @@ export const graphStateSchema = {
         cwd: 'string?; project cwd selected by the UI for the master session',
         agent: '"claude-code" | "codex"?',
         providerKind: 'ProviderKind?',
+        providerInstanceId: 'string?',
         runtimeSettings: 'ProviderRuntimeSettings?',
         label: 'string?',
         loopPolicy: 'LoopPolicy?',

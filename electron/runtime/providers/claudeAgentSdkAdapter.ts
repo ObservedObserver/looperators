@@ -38,10 +38,42 @@ function expandHomePath(value) {
   return trimmed
 }
 
-function providerLaunchArgs(providerInstance) {
-  return Array.isArray(providerInstance?.launchArgs)
+function providerExtraArgs(providerInstance) {
+  const args = Array.isArray(providerInstance?.launchArgs)
     ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
     : []
+  const extraArgs = {}
+  const extraArgName = (arg) => {
+    const normalized = arg.replace(/^-+/, '').trim()
+    return normalized.length > 0 ? normalized : undefined
+  }
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    const equalsIndex = arg.indexOf('=')
+    if (equalsIndex > 0) {
+      const name = extraArgName(arg.slice(0, equalsIndex))
+      if (name) {
+        extraArgs[name] = arg.slice(equalsIndex + 1)
+      }
+      continue
+    }
+
+    const name = extraArgName(arg)
+    if (!name) {
+      continue
+    }
+    const nextArg = args[index + 1]
+    if (nextArg && !nextArg.startsWith('-')) {
+      extraArgs[name] = nextArg
+      index += 1
+      continue
+    }
+
+    extraArgs[name] = null
+  }
+
+  return Object.keys(extraArgs).length > 0 ? extraArgs : undefined
 }
 
 function providerEnv(providerInstance) {
@@ -631,7 +663,13 @@ class ClaudeAgentSdkSessionController {
     return true
   }
 
-  async #initialize({ cwd, backendSessionId, membrane, providerInstance }) {
+  async #initialize({
+    cwd,
+    backendSessionId,
+    membrane,
+    providerInstance,
+    runtimeSettings,
+  }) {
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
       this.#query = query({
@@ -640,7 +678,12 @@ class ClaudeAgentSdkSessionController {
           cwd,
           resume: backendSessionId,
           pathToClaudeCodeExecutable: providerClaudeCommand(providerInstance),
-          extraArgs: providerLaunchArgs(providerInstance),
+          ...(providerExtraArgs(providerInstance)
+            ? { extraArgs: providerExtraArgs(providerInstance) }
+            : {}),
+          ...(nonEmptyString(runtimeSettings?.model)
+            ? { model: runtimeSettings.model.trim() }
+            : {}),
           includePartialMessages: true,
           strictMcpConfig: false,
           canUseTool: (toolName, toolInput, options) =>

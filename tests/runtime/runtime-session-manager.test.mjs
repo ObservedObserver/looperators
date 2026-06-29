@@ -64,6 +64,45 @@ emit({
   message: { content: [{ type: 'text', text: 'recorded attachment prompt' }] },
 })
 emit({ type: 'result', session_id: 'fake-attachment-session', result: 'done' })
+  `
+}
+
+function fakeCodexAppServerSource(markerFile) {
+  return `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+function send(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify({
+      method: message.method,
+      params: message.params
+    }))
+    send({ id: message.id, result: { thread: { id: 'fake-codex-thread' } } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    send({ id: message.id, result: { turn: { id: 'fake-codex-turn' } } })
+    send({ method: 'turn/started', params: { turn: { id: 'fake-codex-turn' } } })
+    send({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'assistant-message', delta: 'codex profile inferred' },
+    })
+    send({ method: 'turn/completed', params: { turnId: 'fake-codex-turn' } })
+    setTimeout(() => process.exit(0), 25)
+    return
+  }
+  send({ id: message.id, result: {} })
+})
 `
 }
 
@@ -418,7 +457,7 @@ process.stdout.write(JSON.stringify({
 
   try {
     runtime.upsertProviderInstance({
-      providerInstanceId: 'legacy-claude-cli',
+      providerInstanceId: 'legacy-alt',
       kind: 'legacy-claude-cli',
       label: 'Legacy Profile',
       binaryPath: fakeClaude,
@@ -429,6 +468,11 @@ process.stdout.write(JSON.stringify({
     const created = await runtime.createSession({
       prompt: 'launch through provider profile',
       providerKind: 'legacy-claude-cli',
+      providerInstanceId: 'legacy-alt',
+      runtimeSettings: {
+        runtimeMode: 'approval-required',
+        model: 'claude-test-model',
+      },
       cwd: project,
     })
 
@@ -438,9 +482,171 @@ process.stdout.write(JSON.stringify({
     )
 
     const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    const session = runtime.getState().sessions[created.sessionId]
+    assert.equal(session.providerInstanceId, 'legacy-alt')
+    assert.equal(session.runtimeSettings.model, 'claude-test-model')
     assert.equal(marker.home, tempRoot)
     assert.equal(marker.custom, 'yes')
     assert.equal(marker.argv.includes('--profile-flag'), true)
+    assert.equal(marker.argv.includes('--model'), true)
+    assert.equal(marker.argv[marker.argv.indexOf('--model') + 1], 'claude-test-model')
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager infers provider kind from provider instance id', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-infer-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const markerFile = path.join(tempRoot, 'codex-thread.json')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexAppServerSource(markerFile))
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex Infer',
+      binaryPath: fakeCodex,
+    })
+    const created = await runtime.createSession({
+      prompt: 'infer provider from instance',
+      providerInstanceId: 'default-codex',
+      cwd: project,
+    })
+    await waitFor(
+      'provider instance inferred codex idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const session = runtime.getState().sessions[created.sessionId]
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    assert.equal(session.providerKind, 'codex')
+    assert.equal(session.providerInstanceId, 'default-codex')
+    assert.equal(marker.params.cwd, project)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager passes provider config into master sessions', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-master-config-'))
+  const fakeClaude = path.join(tempRoot, 'claude')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeClaude, fakeClaudeSource())
+  fs.chmodSync(fakeClaude, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'legacy-master',
+      kind: 'legacy-claude-cli',
+      label: 'Legacy Master',
+      binaryPath: fakeClaude,
+    })
+    const worker = await runtime.createSession({
+      prompt: 'worker',
+      providerKind: 'legacy-claude-cli',
+      providerInstanceId: 'legacy-master',
+      cwd: project,
+    })
+    await waitFor(
+      'master config worker idle',
+      () => runtime.getState().sessions[worker.sessionId]?.status === 'idle'
+    )
+
+    const cluster = runtime.upsertCluster({
+      label: 'Config cluster',
+      nodeIds: [worker.sessionId],
+    })
+    const master = await runtime.createMasterForCluster({
+      clusterId: cluster.clusterId,
+      prompt: 'master',
+      providerKind: 'legacy-claude-cli',
+      providerInstanceId: 'legacy-master',
+      runtimeSettings: {
+        runtimeMode: 'full-access',
+        model: 'claude-master-model',
+        reasoningEffort: 'high',
+      },
+      cwd: project,
+    })
+    await waitFor(
+      'master config master idle',
+      () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
+    )
+
+    const masterSession = runtime.getState().sessions[master.sessionId]
+    assert.equal(masterSession.providerInstanceId, 'legacy-master')
+    assert.equal(masterSession.runtimeSettings.runtimeMode, 'full-access')
+    assert.equal(masterSession.runtimeSettings.model, 'claude-master-model')
+    assert.equal(masterSession.runtimeSettings.reasoningEffort, 'high')
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager infers provider kind from master provider instance id', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-master-provider-infer-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const markerFile = path.join(tempRoot, 'codex-thread.json')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexAppServerSource(markerFile))
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex Master Infer',
+      binaryPath: fakeCodex,
+    })
+    const worker = await runtime.createSession({
+      prompt: 'worker',
+      providerInstanceId: 'default-codex',
+      cwd: project,
+    })
+    await waitFor(
+      'master provider infer worker idle',
+      () => runtime.getState().sessions[worker.sessionId]?.status === 'idle'
+    )
+
+    const cluster = runtime.upsertCluster({
+      label: 'Codex inferred master cluster',
+      nodeIds: [worker.sessionId],
+    })
+    const master = await runtime.createMasterForCluster({
+      clusterId: cluster.clusterId,
+      prompt: 'master',
+      providerInstanceId: 'default-codex',
+      cwd: project,
+    })
+    await waitFor(
+      'master provider inferred codex idle',
+      () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
+    )
+
+    const masterSession = runtime.getState().sessions[master.sessionId]
+    assert.equal(masterSession.providerKind, 'codex')
+    assert.equal(masterSession.providerInstanceId, 'default-codex')
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

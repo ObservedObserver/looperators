@@ -734,25 +734,51 @@ function providerPromptContent({ providerKind, message, context, attachments }) 
   return messageContent(message, context)
 }
 
-function providerConfig(input: JsonRecord = {}) {
-  const requested = input.providerKind ?? (input.agent === 'codex' ? 'codex' : undefined)
+function providerConfig(input: JsonRecord = {}, providerInstances: JsonRecord[] = []) {
+  const requestedInstanceId = optionalTrimmedString(input.providerInstanceId)
+  const requestedInstance = requestedInstanceId
+    ? providerInstances.find(
+        (instance) => instance.providerInstanceId === requestedInstanceId
+      )
+    : undefined
+  if (requestedInstanceId && !requestedInstance) {
+    throw new Error(`Unknown provider instance: ${requestedInstanceId}`)
+  }
 
-  if (requested === 'codex') {
+  const requested =
+    input.providerKind ??
+    (input.agent === 'codex' ? 'codex' : undefined) ??
+    requestedInstance?.kind
+  const requestedKind = validProviderKinds.has(requested)
+    ? requested
+    : 'legacy-claude-cli'
+  const providerInstance =
+    requestedInstance ??
+    providerInstances.find((instance) => instance.kind === requestedKind) ??
+    defaultProviderInstanceForKind(requestedKind)
+
+  if (providerInstance.kind !== requestedKind) {
+    throw new Error(
+      `Provider instance ${providerInstance.providerInstanceId} is ${providerInstance.kind}, not ${requestedKind}.`
+    )
+  }
+
+  if (requestedKind === 'codex') {
     return {
       agent: 'codex',
       backend: 'codex-app-server',
       providerKind: 'codex',
-      providerInstanceId: 'default-codex',
+      providerInstanceId: providerInstance.providerInstanceId,
       labelPrefix: 'Codex',
     }
   }
 
-  if (requested === 'claude-code') {
+  if (requestedKind === 'claude-code') {
     return {
       agent: 'claude-code',
       backend: 'claude-agent-sdk',
       providerKind: 'claude-code',
-      providerInstanceId: 'default-claude-sdk',
+      providerInstanceId: providerInstance.providerInstanceId,
       labelPrefix: 'Claude',
     }
   }
@@ -761,7 +787,7 @@ function providerConfig(input: JsonRecord = {}) {
     agent: 'claude-code',
     backend: 'claude-cli',
     providerKind: 'legacy-claude-cli',
-    providerInstanceId: 'legacy-claude-cli',
+    providerInstanceId: providerInstance.providerInstanceId,
     labelPrefix: 'Claude',
   }
 }
@@ -1205,7 +1231,7 @@ export class RuntimeSessionManager {
         ? input.prompt
         : defaultPrompt
     const attachments = normalizeChatAttachments(input.attachments)
-    const provider = providerConfig(input)
+    const provider = providerConfig(input, this.#state.providerInstances)
     const initialContent = messageContent(prompt, input.context)
     const providerPrompt = providerPromptContent({
       providerKind: provider.providerKind,
@@ -1663,12 +1689,14 @@ export class RuntimeSessionManager {
 
     const result = await this.createSession({
       agent: input.agent === 'codex' ? 'codex' : 'claude-code',
-      providerKind: input.providerKind ?? 'claude-code',
+      providerKind: input.providerKind,
+      providerInstanceId: input.providerInstanceId,
       prompt,
       cwd: input.cwd,
       label,
       cluster: clusterId,
       role: 'master',
+      runtimeSettings: input.runtimeSettings,
     })
     this.#assignMaster(clusterId, result.sessionId)
     this.#touch()

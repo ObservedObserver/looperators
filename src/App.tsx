@@ -4603,6 +4603,7 @@ function App() {
             : {}),
           agent: selectedProvider.agent,
           providerKind: selectedProvider.id,
+          providerInstanceId: newProviderInstance.providerInstanceId,
           runtimeSettings: providerRuntimeSettingsDraft({
             runtimeMode: newRuntimeMode,
             model: newModel,
@@ -4634,6 +4635,7 @@ function App() {
       newBranch,
       newCwd,
       newModel,
+      newProviderInstance.providerInstanceId,
       newProviderKind,
       newReasoningEffort,
       newRuntimeMode,
@@ -4964,6 +4966,7 @@ function App() {
         cwd,
         agent: selectedProvider.agent,
         providerKind: selectedProvider.id,
+        providerInstanceId: newProviderInstance.providerInstanceId,
         runtimeSettings: providerRuntimeSettingsDraft({
           runtimeMode: newRuntimeMode,
           model: newModel,
@@ -4986,6 +4989,7 @@ function App() {
     masterPrompt,
     newCwd,
     newModel,
+    newProviderInstance.providerInstanceId,
     newProviderKind,
     newReasoningEffort,
     newRuntimeMode,
