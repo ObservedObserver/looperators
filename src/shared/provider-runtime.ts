@@ -174,12 +174,33 @@ export type UserInputRequest = {
   turnId?: string
   prompt: string
   placeholder?: string
+  questions?: UserInputQuestion[]
   status: 'open' | 'answered' | 'resolved' | 'stale' | 'canceled'
   createdAt: string
   answeredAt?: string
   answer?: string
+  answers?: UserInputAnswerMap
   raw?: RawEnvelope
 }
+
+export type UserInputQuestionOption = {
+  id: string
+  label: string
+  description?: string
+}
+
+export type UserInputQuestion = {
+  id: string
+  label: string
+  header?: string
+  placeholder?: string
+  multiSelect?: boolean
+  isSecret?: boolean
+  options?: UserInputQuestionOption[]
+}
+
+export type UserInputAnswerValue = string | string[]
+export type UserInputAnswerMap = Record<string, UserInputAnswerValue>
 
 export type RuntimePlanItem = {
   id: string
@@ -308,6 +329,7 @@ export type ProviderRuntimeEvent =
       sessionId: SessionId
       requestId: string
       answer?: string
+      answers?: UserInputAnswerMap
       raw?: RawEnvelope
     }
   | {

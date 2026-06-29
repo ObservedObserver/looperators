@@ -161,6 +161,7 @@ function applyRuntimeEvents(input: {
           status: 'answered',
           answeredAt: event.ts,
           answer: event.answer,
+          answers: event.answers,
         })
       }
       continue

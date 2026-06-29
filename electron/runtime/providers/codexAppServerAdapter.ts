@@ -192,23 +192,52 @@ export function codexApprovalResponseForTest(message, decision) {
   return approvalResponseForDecision(message, decision)
 }
 
-function userInputResponseForAnswer(message, answer) {
+function codexQuestionId(question, index) {
+  if (typeof question?.id === 'string' && question.id.length > 0) {
+    return question.id
+  }
+  if (typeof question?.questionId === 'string' && question.questionId.length > 0) {
+    return question.questionId
+  }
+  return String(index)
+}
+
+function codexQuestionLabel(question, index) {
+  return typeof question?.question === 'string' && question.question.trim().length > 0
+    ? question.question.trim()
+    : `Question ${index + 1}`
+}
+
+function userInputAnswerValues(question, index, answer, answers) {
+  const questionId = codexQuestionId(question, index)
+  const value = answers?.[questionId] ?? answers?.[codexQuestionLabel(question, index)] ?? answer
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item))
+  }
+  if (typeof value === 'string') {
+    return [value]
+  }
+  return ['']
+}
+
+function userInputResponseForAnswer(message, answer, answersByQuestion) {
   const questions = Array.isArray(message.params?.questions)
     ? message.params.questions
     : []
   const answers = {}
 
   for (const [index, question] of questions.entries()) {
-    const questionId =
-      typeof question?.id === 'string' && question.id.length > 0
-        ? question.id
-        : typeof question?.questionId === 'string' && question.questionId.length > 0
-          ? question.questionId
-          : String(index)
-    answers[questionId] = { answers: [answer] }
+    const questionId = codexQuestionId(question, index)
+    answers[questionId] = {
+      answers: userInputAnswerValues(question, index, answer, answersByQuestion),
+    }
   }
 
   return { answers }
+}
+
+export function codexUserInputResponseForTest(message, answer, answers) {
+  return userInputResponseForAnswer(message, answer, answers)
 }
 
 function rawEnvelope(message) {
@@ -282,7 +311,7 @@ export class CodexAppServerRun extends EventEmitter {
     )
   }
 
-  answerUserInput({ requestId, answer }) {
+  answerUserInput({ requestId, answer, answers }) {
     const entry = this.#pendingRequests.get(String(requestId))
     if (!entry) {
       throw new Error(`Unknown Codex user input request: ${requestId}`)
@@ -290,7 +319,7 @@ export class CodexAppServerRun extends EventEmitter {
 
     this.#resolvePendingRequest(
       entry,
-      userInputResponseForAnswer(entry.message, answer)
+      userInputResponseForAnswer(entry.message, answer, answers)
     )
   }
 

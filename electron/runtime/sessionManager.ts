@@ -1057,6 +1057,47 @@ function runtimeRequestStatusForDecision(decision, request) {
   }
 }
 
+function normalizeUserInputAnswers(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined
+  }
+
+  const entries = Object.entries(value)
+    .map(([key, answer]) => {
+      const trimmedKey = String(key).trim()
+      if (!trimmedKey) {
+        return undefined
+      }
+      if (Array.isArray(answer)) {
+        return [
+          trimmedKey,
+          answer
+            .filter((item) => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean),
+        ]
+      }
+      if (typeof answer === 'string') {
+        return [trimmedKey, answer]
+      }
+      return undefined
+    })
+    .filter(Boolean)
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+function firstUserInputAnswer(answer, answers) {
+  if (typeof answer === 'string') {
+    return answer
+  }
+  const value = Object.values(answers ?? {})[0]
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+  return typeof value === 'string' ? value : undefined
+}
+
 export class RuntimeSessionManager {
   #state: JsonRecord = createEmptyGraphState()
   #runs = new Map<string, RuntimeRun>()
@@ -1602,6 +1643,8 @@ export class RuntimeSessionManager {
         ? input.requestId.trim()
         : undefined
     const answer = typeof input.answer === 'string' ? input.answer : undefined
+    const answers = normalizeUserInputAnswers(input.answers)
+    const primaryAnswer = firstUserInputAnswer(answer, answers)
 
     if (!sessionId || !this.#state.sessions[sessionId]) {
       throw new Error(`Unknown session: ${sessionId ?? ''}`)
@@ -1609,7 +1652,7 @@ export class RuntimeSessionManager {
     if (!requestId) {
       throw new Error('User input request id is required')
     }
-    if (answer === undefined) {
+    if (primaryAnswer === undefined && !answers) {
       throw new Error('User input answer is required')
     }
 
@@ -1629,14 +1672,15 @@ export class RuntimeSessionManager {
       throw new Error(`Session cannot answer user input requests: ${sessionId}`)
     }
 
-    run.answerUserInput({ requestId, answer })
+    run.answerUserInput({ requestId, answer: primaryAnswer, answers })
     const event = {
       id: randomUUID(),
       ts: now(),
       type: 'user-input.answered',
       sessionId,
       requestId,
-      answer,
+      answer: primaryAnswer,
+      ...(answers ? { answers } : {}),
     }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
     return { ok: true, state: this.getState() }
@@ -2376,6 +2420,7 @@ export class RuntimeSessionManager {
         request.status = 'answered'
         request.answeredAt = event.ts
         request.answer = event.answer
+        request.answers = event.answers
       }
       return
     }

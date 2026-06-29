@@ -100,6 +100,78 @@ function questionText(question, index) {
   return `${index + 1}. ${header}${text}${secretText}${optionText}`
 }
 
+function questionLabel(question, index) {
+  return typeof question?.question === 'string' && question.question.trim().length > 0
+    ? question.question.trim()
+    : `Question ${index + 1}`
+}
+
+function questionId(question, index) {
+  if (typeof question?.id === 'string' && question.id.trim().length > 0) {
+    return question.id.trim()
+  }
+  if (
+    typeof question?.questionId === 'string' &&
+    question.questionId.trim().length > 0
+  ) {
+    return question.questionId.trim()
+  }
+  return String(index)
+}
+
+function questionOptions(question) {
+  if (!Array.isArray(question?.options)) {
+    return undefined
+  }
+
+  const options = question.options
+    .map((option) => {
+      const label =
+        typeof option?.label === 'string' && option.label.trim().length > 0
+          ? option.label.trim()
+          : undefined
+      if (!label) {
+        return undefined
+      }
+
+      return {
+        id:
+          typeof option?.id === 'string' && option.id.trim().length > 0
+            ? option.id.trim()
+            : label,
+        label,
+        ...(typeof option?.description === 'string' &&
+        option.description.trim().length > 0
+          ? { description: option.description.trim() }
+          : {}),
+      }
+    })
+    .filter(Boolean)
+
+  return options.length > 0 ? options : undefined
+}
+
+function normalizedUserInputQuestions(params) {
+  if (!Array.isArray(params.questions)) {
+    return []
+  }
+
+  return params.questions.map((question, index) => ({
+    id: questionId(question, index),
+    label: questionLabel(question, index),
+    ...(typeof question?.header === 'string' && question.header.trim().length > 0
+      ? { header: question.header.trim() }
+      : {}),
+    ...(typeof question?.placeholder === 'string' &&
+    question.placeholder.trim().length > 0
+      ? { placeholder: question.placeholder.trim() }
+      : {}),
+    ...(question?.multiSelect === true ? { multiSelect: true } : {}),
+    ...(question?.isSecret === true ? { isSecret: true } : {}),
+    ...(questionOptions(question) ? { options: questionOptions(question) } : {}),
+  }))
+}
+
 function codexUserInputPrompt(params) {
   if (!Array.isArray(params.questions) || params.questions.length === 0) {
     return {
@@ -125,7 +197,7 @@ function codexUserInputPrompt(params) {
 
   return {
     prompt: [
-      `Codex requested ${questions.length} inputs. Orrery v1 supports a single visible text answer; the answer will be sent to every question.`,
+      `Codex requested ${questions.length} inputs.`,
       hasSecret
         ? 'Do not enter secrets unless you are comfortable storing them in session history.'
         : undefined,
@@ -134,7 +206,7 @@ function codexUserInputPrompt(params) {
     ]
       .filter((line) => line !== undefined)
       .join('\n'),
-    placeholder: 'Single answer applied to all Codex questions',
+    placeholder: 'Answer for Codex',
   }
 }
 
@@ -424,6 +496,7 @@ export function codexRuntimeEventsFromRequest({ sessionId, turnId, message }) {
           turnId,
           prompt: inputPrompt.prompt,
           placeholder: inputPrompt.placeholder,
+          questions: normalizedUserInputQuestions(params),
           status: 'open',
           createdAt: ts,
           raw,

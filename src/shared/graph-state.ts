@@ -10,6 +10,7 @@ import type {
   RuntimePlan,
   RuntimeRequest,
   UserInputRequest,
+  UserInputAnswerMap,
 } from './provider-runtime'
 
 export const graphStateVersion = 5
@@ -527,7 +528,8 @@ export type RespondRuntimeRequestInput = {
 export type AnswerUserInputInput = {
   sessionId: SessionId
   requestId: string
-  answer: string
+  answer?: string
+  answers?: UserInputAnswerMap
 }
 
 export type ArchiveRuntimeSessionInput = {

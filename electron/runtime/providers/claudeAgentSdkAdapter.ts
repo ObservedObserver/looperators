@@ -210,6 +210,51 @@ function questionLabel(question, index) {
     : `Question ${index + 1}`
 }
 
+function questionId(question, index) {
+  if (typeof question?.id === 'string' && question.id.trim().length > 0) {
+    return question.id.trim()
+  }
+  if (
+    typeof question?.questionId === 'string' &&
+    question.questionId.trim().length > 0
+  ) {
+    return question.questionId.trim()
+  }
+  return questionLabel(question, index)
+}
+
+function questionOptions(question) {
+  if (!Array.isArray(question?.options)) {
+    return undefined
+  }
+
+  const options = question.options
+    .map((option) => {
+      const label =
+        typeof option?.label === 'string' && option.label.trim().length > 0
+          ? option.label.trim()
+          : undefined
+      if (!label) {
+        return undefined
+      }
+
+      return {
+        id:
+          typeof option?.id === 'string' && option.id.trim().length > 0
+            ? option.id.trim()
+            : label,
+        label,
+        ...(typeof option?.description === 'string' &&
+        option.description.trim().length > 0
+          ? { description: option.description.trim() }
+          : {}),
+      }
+    })
+    .filter(Boolean)
+
+  return options.length > 0 ? options : undefined
+}
+
 function questionPromptLine(question, index) {
   const header =
     typeof question?.header === 'string' && question.header.trim().length > 0
@@ -232,6 +277,23 @@ function questionPromptLine(question, index) {
 
 function askUserQuestions(payload) {
   return Array.isArray(payload?.questions) ? payload.questions : []
+}
+
+function normalizedUserInputQuestions(payload) {
+  return askUserQuestions(payload).map((question, index) => ({
+    id: questionId(question, index),
+    label: questionLabel(question, index),
+    ...(typeof question?.header === 'string' && question.header.trim().length > 0
+      ? { header: question.header.trim() }
+      : {}),
+    ...(typeof question?.placeholder === 'string' &&
+    question.placeholder.trim().length > 0
+      ? { placeholder: question.placeholder.trim() }
+      : {}),
+    ...(question?.multiSelect === true ? { multiSelect: true } : {}),
+    ...(question?.isSecret === true ? { isSecret: true } : {}),
+    ...(questionOptions(question) ? { options: questionOptions(question) } : {}),
+  }))
 }
 
 function userDialogPrompt({ request }) {
@@ -266,26 +328,47 @@ function userDialogPrompt({ request }) {
 
   return {
     prompt: [
-      `Claude requested ${questions.length} inputs. Orrery v1 supports a single visible text answer; the answer will be sent to every question.`,
+      `Claude requested ${questions.length} inputs.`,
       '',
       ...lines,
     ].join('\n'),
-    placeholder: 'Single answer applied to all Claude questions',
+    placeholder: 'Answer for Claude',
   }
 }
 
-function userDialogResultForAnswer(request, answer) {
+function answerValueForQuestion(question, index, answer, answers) {
+  const id = questionId(question, index)
+  const label = questionLabel(question, index)
+  const value = answers?.[id] ?? answers?.[label] ?? answer ?? ''
+  return Array.isArray(value) ? value.join(', ') : String(value)
+}
+
+function firstAnswerValue(answer, answers) {
+  if (typeof answer === 'string') {
+    return answer
+  }
+  const value = Object.values(answers ?? {})[0]
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+  return typeof value === 'string' ? value : ''
+}
+
+function userDialogResultForAnswer(request, answer, answers) {
   const questions = askUserQuestions(request.payload)
   if (questions.length === 0) {
-    return answer
+    return firstAnswerValue(answer, answers)
   }
 
   return {
     questions,
     answers: Object.fromEntries(
-      questions.map((question, index) => [questionLabel(question, index), answer])
+      questions.map((question, index) => [
+        questionLabel(question, index),
+        answerValueForQuestion(question, index, answer, answers),
+      ])
     ),
-    response: answer,
+    response: firstAnswerValue(answer, answers),
   }
 }
 
@@ -522,6 +605,7 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
       turnId,
       prompt: prompt.prompt,
       placeholder: prompt.placeholder,
+      questions: normalizedUserInputQuestions(request.payload),
       status: 'open',
       createdAt: new Date().toISOString(),
       raw: {
@@ -562,7 +646,7 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
       const abortListener = () => abort()
       options.signal?.addEventListener('abort', abortListener, { once: true })
       this.#pendingUserInputRequests.set(requestId, {
-        resolve: (answer) => {
+        resolve: ({ answer, answers }) => {
           if (settled) {
             return
           }
@@ -570,7 +654,7 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
           options.signal?.removeEventListener('abort', abortListener)
           resolve({
             behavior: 'completed',
-            result: userDialogResultForAnswer(request, answer),
+            result: userDialogResultForAnswer(request, answer, answers),
           })
         },
         cancel: abort,
@@ -587,13 +671,13 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
     pending.resolve(decision)
   }
 
-  answerUserInput({ requestId, answer }) {
+  answerUserInput({ requestId, answer, answers }) {
     const pending = this.#pendingUserInputRequests.get(String(requestId))
     if (!pending) {
       throw new Error(`Unknown Claude SDK user input request: ${requestId}`)
     }
     this.#pendingUserInputRequests.delete(String(requestId))
-    pending.resolve(answer)
+    pending.resolve({ answer, answers })
   }
 
   markClosed() {

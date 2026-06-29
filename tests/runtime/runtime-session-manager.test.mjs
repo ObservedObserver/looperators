@@ -160,6 +160,74 @@ rl.on('line', (line) => {
 `
 }
 
+function fakeCodexUserInputRequestSource(markerFile) {
+  return `#!/usr/bin/env node
+const fs = require('node:fs')
+const readline = require('node:readline')
+let inputRequested = false
+function send(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'thread/start' || message.method === 'thread/resume') {
+    send({ id: message.id, result: { thread: { id: 'fake-codex-thread' } } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    send({ id: message.id, result: { turn: { id: 'fake-codex-turn' } } })
+    send({ method: 'turn/started', params: { turn: { id: 'fake-codex-turn' } } })
+    inputRequested = true
+    send({
+      id: 'codex-input-1',
+      method: 'item/tool/requestUserInput',
+      params: {
+        questions: [
+          {
+            id: 'branch',
+            header: 'Branch',
+            question: 'Which branch?',
+            options: [
+              { id: 'main', label: 'main' },
+              { id: 'feature', label: 'feature' },
+            ],
+          },
+          {
+            id: 'checks',
+            header: 'Checks',
+            question: 'Which checks?',
+            multiSelect: true,
+            options: [
+              { id: 'tests', label: 'tests' },
+              { id: 'build', label: 'build' },
+            ],
+          },
+        ],
+      },
+    })
+    return
+  }
+  if (inputRequested && message.id === 'codex-input-1' && message.result) {
+    fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify(message.result))
+    send({
+      method: 'item/agentMessage/delta',
+      params: { itemId: 'assistant-message', delta: 'input handled' },
+    })
+    send({ method: 'turn/completed', params: { turnId: 'fake-codex-turn' } })
+    setTimeout(() => process.exit(0), 25)
+    return
+  }
+  send({ id: message.id, result: {} })
+})
+`
+}
+
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
@@ -643,6 +711,72 @@ test('compiled RuntimeSessionManager records unsupported Codex permission cancel
       permissions: {},
       scope: 'turn',
       strictAutoReview: false,
+    })
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager persists structured user input answers', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-codex-input-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const markerFile = path.join(tempRoot, 'input-response.json')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexUserInputRequestSource(markerFile))
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex User Input',
+      binaryPath: fakeCodex,
+    })
+    const created = await runtime.createSession({
+      prompt: 'request codex user input',
+      providerInstanceId: 'default-codex',
+      cwd: project,
+    })
+    await waitFor(
+      'codex structured user input open',
+      () =>
+        runtime.getState().sessions[created.sessionId]?.runtimeUserInputRequests?.[0]
+          ?.status === 'open'
+    )
+
+    const result = runtime.answerUserInput({
+      sessionId: created.sessionId,
+      requestId: 'codex-input-1',
+      answers: {
+        branch: 'feature',
+        checks: ['tests', 'build'],
+      },
+    })
+    assert.equal(result.ok, true)
+    const request =
+      result.state.sessions[created.sessionId].runtimeUserInputRequests[0]
+    assert.equal(request.status, 'answered')
+    assert.deepEqual(request.answers, {
+      branch: 'feature',
+      checks: ['tests', 'build'],
+    })
+    await waitFor(
+      'codex structured user input session idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    assert.deepEqual(marker, {
+      answers: {
+        branch: { answers: ['feature'] },
+        checks: { answers: ['tests', 'build'] },
+      },
     })
   } finally {
     runtime.killAll()

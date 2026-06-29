@@ -154,6 +154,8 @@ test('ClaudeAgentSdkTurnRun maps canceled permission approval to SDK denial inte
 
 test('ClaudeAgentSdkTurnRun answers ask_user_question with SDK result shape', async () => {
   const run = testRun()
+  const events = []
+  run.on('providerEvent', (event) => events.push(event))
   const resultPromise = run.requestUserDialog({
     request: {
       dialogKind: 'ask_user_question',
@@ -188,15 +190,22 @@ test('ClaudeAgentSdkTurnRun answers ask_user_question with SDK result shape', as
 
   run.answerUserInput({
     requestId: 'dialog-2',
-    answer: 'feature',
+    answers: {
+      'Which branch should Claude use?': 'feature',
+      'Which checks should run?': ['tests', 'build'],
+    },
   })
 
   const result = await resultPromise
   assert.equal(result.behavior, 'completed')
   assert.deepEqual(result.result.answers, {
     'Which branch should Claude use?': 'feature',
-    'Which checks should run?': 'feature',
+    'Which checks should run?': 'tests, build',
   })
   assert.equal(result.result.response, 'feature')
   assert.equal(result.result.questions.length, 2)
+  const requested = events.find((event) => event.type === 'user-input.requested')
+  assert.equal(requested.request.questions.length, 2)
+  assert.equal(requested.request.questions[0].options[1].label, 'feature')
+  assert.equal(requested.request.questions[1].multiSelect, true)
 })

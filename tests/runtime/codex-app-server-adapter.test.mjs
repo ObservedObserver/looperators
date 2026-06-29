@@ -7,8 +7,10 @@ import test from 'node:test'
 import {
   codexApprovalResponseForTest,
   codexInputItemsForTest,
+  codexUserInputResponseForTest,
 } from '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
 import { CodexJsonRpcClient } from '../../dist-electron/electron/runtime/providers/codexJsonRpcClient.js'
+import { codexRuntimeEventsFromRequest } from '../../dist-electron/electron/runtime/providers/codexRuntimeMapper.js'
 
 test('Codex app-server input uses provider-native image attachment payloads', () => {
   const dataUrl = 'data:image/png;base64,aW1hZ2U='
@@ -94,6 +96,59 @@ test('Codex app-server approval responses preserve provider-style decisions', ()
       },
       scope: 'session',
       strictAutoReview: false,
+    }
+  )
+})
+
+test('Codex app-server user input preserves structured questions and answers', () => {
+  const message = {
+    id: 'input-1',
+    method: 'item/tool/requestUserInput',
+    params: {
+      questions: [
+        {
+          id: 'branch',
+          header: 'Branch',
+          question: 'Which branch?',
+          options: [
+            { id: 'main', label: 'main', description: 'Use main.' },
+            { id: 'feature', label: 'feature', description: 'Use feature.' },
+          ],
+        },
+        {
+          id: 'checks',
+          header: 'Checks',
+          question: 'Which checks?',
+          multiSelect: true,
+          options: [
+            { id: 'tests', label: 'tests' },
+            { id: 'build', label: 'build' },
+          ],
+        },
+      ],
+    },
+  }
+
+  const [event] = codexRuntimeEventsFromRequest({
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    message,
+  })
+  assert.equal(event.type, 'user-input.requested')
+  assert.equal(event.request.questions.length, 2)
+  assert.equal(event.request.questions[0].options[1].label, 'feature')
+  assert.equal(event.request.questions[1].multiSelect, true)
+
+  assert.deepEqual(
+    codexUserInputResponseForTest(message, undefined, {
+      branch: 'feature',
+      checks: ['tests', 'build'],
+    }),
+    {
+      answers: {
+        branch: { answers: ['feature'] },
+        checks: { answers: ['tests', 'build'] },
+      },
     }
   )
 })

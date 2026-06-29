@@ -109,6 +109,8 @@ import type {
   RuntimeRequest,
   SessionTimelineEntry,
   TurnDiffSummary,
+  UserInputAnswerMap,
+  UserInputAnswerValue,
   UserInputRequest,
 } from '@/shared/provider-runtime'
 import {
@@ -2782,13 +2784,13 @@ function SessionTimeline({
 type RuntimeInteractionPanelProps = {
   requests: RuntimeRequest[]
   userInputRequests: UserInputRequest[]
-  userInputDrafts: Record<string, string>
+  userInputDrafts: Record<string, UserInputAnswerValue>
   pendingInteractionIds: Record<string, boolean>
   onRespond: (
     request: RuntimeRequest,
     decision: RuntimeRequestDecision
   ) => void
-  onDraftChange: (requestId: string, value: string) => void
+  onDraftChange: (requestId: string, value: UserInputAnswerValue) => void
   onAnswer: (request: UserInputRequest) => void
 }
 
@@ -2796,6 +2798,14 @@ const requestKindLabels: Record<RuntimeRequest['kind'], string> = {
   approval: 'Approval request',
   permission: 'Permission request',
   confirmation: 'Confirmation request',
+}
+
+function userInputDraftKey(request: UserInputRequest, questionId?: string) {
+  return questionId ? `${request.id}:${questionId}` : request.id
+}
+
+function answerValueAsString(value: UserInputAnswerValue | undefined) {
+  return Array.isArray(value) ? value.join(', ') : (value ?? '')
 }
 
 function RuntimeInteractionPanel({
@@ -2889,7 +2899,9 @@ function RuntimeInteractionPanel({
         })}
 
         {userInputRequests.map((request) => {
-          const draft = userInputDrafts[request.id] ?? ''
+          const questions = request.questions ?? []
+          const hasStructuredQuestions = questions.length > 0
+          const draft = answerValueAsString(userInputDrafts[userInputDraftKey(request)])
           const isPending = pendingInteractionIds[request.id] === true
           return (
             <div
@@ -2902,13 +2914,124 @@ function RuntimeInteractionPanel({
               <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
                 {request.prompt}
               </p>
-              <textarea
-                className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
-                value={draft}
-                placeholder={request.placeholder ?? 'Type an answer'}
-                disabled={isPending}
-                onChange={(event) => onDraftChange(request.id, event.target.value)}
-              />
+              {hasStructuredQuestions ? (
+                <div className="mt-2 space-y-2.5">
+                  {questions.map((question) => {
+                    const draftKey = userInputDraftKey(request, question.id)
+                    const questionDraft = userInputDrafts[draftKey]
+                    const optionValues = Array.isArray(questionDraft)
+                      ? questionDraft
+                      : []
+                    return (
+                      <div
+                        key={question.id}
+                        className="rounded-md border border-ink-line/80 bg-ink/70 p-2.5"
+                      >
+                        <div className="text-[11px] uppercase tracking-[0.08em] text-term-faint">
+                          {question.header ?? 'Question'}
+                        </div>
+                        <div className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-5 text-term-name">
+                          {question.label}
+                        </div>
+                        {question.isSecret ? (
+                          <div className="mt-1 text-[10.5px] leading-4 text-term-amber">
+                            Secret input requested; the answer is stored in session
+                            history.
+                          </div>
+                        ) : null}
+                        {question.options?.length ? (
+                          <div className="mt-2 space-y-1.5">
+                            {question.options.map((option) => {
+                              const checked = question.multiSelect
+                                ? optionValues.includes(option.id)
+                                : questionDraft === option.id
+                              return (
+                                <label
+                                  key={option.id}
+                                  className="flex cursor-pointer items-start gap-2 rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] leading-4 text-term-dim"
+                                >
+                                  <input
+                                    className="mt-0.5 accent-lime-hi"
+                                    type={question.multiSelect ? 'checkbox' : 'radio'}
+                                    name={`${request.id}:${question.id}`}
+                                    disabled={isPending}
+                                    checked={checked}
+                                    onChange={() => {
+                                      if (question.multiSelect) {
+                                        const next = checked
+                                          ? optionValues.filter(
+                                              (item) => item !== option.id
+                                            )
+                                          : [...optionValues, option.id]
+                                        onDraftChange(draftKey, next)
+                                        return
+                                      }
+                                      onDraftChange(draftKey, option.id)
+                                    }}
+                                  />
+                                  <span>
+                                    <span className="block text-term-name">
+                                      {option.label}
+                                    </span>
+                                    {option.description ? (
+                                      <span className="block text-term-faint">
+                                        {option.description}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        ) : (
+                          <>
+                            {question.isSecret ? (
+                              <input
+                                className="mt-2 h-9 w-full rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                type="password"
+                                value={answerValueAsString(questionDraft)}
+                                placeholder={
+                                  question.placeholder ??
+                                  request.placeholder ??
+                                  'Type an answer'
+                                }
+                                disabled={isPending}
+                                onChange={(event) =>
+                                  onDraftChange(draftKey, event.target.value)
+                                }
+                              />
+                            ) : (
+                              <textarea
+                                className="mt-2 max-h-24 min-h-12 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                value={answerValueAsString(questionDraft)}
+                                placeholder={
+                                  question.placeholder ??
+                                  request.placeholder ??
+                                  'Type an answer'
+                                }
+                                disabled={isPending}
+                                onChange={(event) =>
+                                  onDraftChange(draftKey, event.target.value)
+                                }
+                              />
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <textarea
+                  className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                  value={draft}
+                  placeholder={request.placeholder ?? 'Type an answer'}
+                  disabled={isPending}
+                  onChange={(event) =>
+                    onDraftChange(userInputDraftKey(request), event.target.value)
+                  }
+                />
+              )}
               <Button
                 className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
                 disabled={isPending}
@@ -3698,9 +3821,9 @@ function App() {
   const [sessionSearch, setSessionSearch] = useState('')
   const [showArchivedSessions, setShowArchivedSessions] = useState(false)
   const [showRawEvents, setShowRawEvents] = useState(false)
-  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>(
-    {}
-  )
+  const [userInputDrafts, setUserInputDrafts] = useState<
+    Record<string, UserInputAnswerValue>
+  >({})
   const [pendingInteractionIds, setPendingInteractionIds] = useState<
     Record<string, boolean>
   >({})
@@ -4795,12 +4918,15 @@ function App() {
     [runtimeApi, runtimeUnavailableText]
   )
 
-  const setUserInputDraft = useCallback((requestId: string, value: string) => {
-    setUserInputDrafts((current) => ({
-      ...current,
-      [requestId]: value,
-    }))
-  }, [])
+  const setUserInputDraft = useCallback(
+    (requestId: string, value: UserInputAnswerValue) => {
+      setUserInputDrafts((current) => ({
+        ...current,
+        [requestId]: value,
+      }))
+    },
+    []
+  )
 
   const answerRuntimeUserInput = useCallback(
     async (request: UserInputRequest) => {
@@ -4809,7 +4935,22 @@ function App() {
         return
       }
 
-      const answer = userInputDrafts[request.id] ?? ''
+      const questions = request.questions ?? []
+      const answers: UserInputAnswerMap | undefined = questions.length
+        ? Object.fromEntries(
+            questions.map((question) => {
+              const value = userInputDrafts[userInputDraftKey(request, question.id)]
+              if (Array.isArray(value)) {
+                return [question.id, value]
+              }
+              return [question.id, typeof value === 'string' ? value : '']
+            })
+          )
+        : undefined
+      const answer =
+        questions.length > 0
+          ? undefined
+          : answerValueAsString(userInputDrafts[userInputDraftKey(request)])
 
       setPendingInteractionIds((current) => ({
         ...current,
@@ -4821,12 +4962,16 @@ function App() {
         const result = await runtimeApi.answerUserInput({
           sessionId: request.sessionId,
           requestId: request.id,
-          answer,
+          ...(answer !== undefined ? { answer } : {}),
+          ...(answers ? { answers } : {}),
         })
         setRuntimeState(result.state)
         setUserInputDrafts((current) => {
           const next = { ...current }
-          delete next[request.id]
+          delete next[userInputDraftKey(request)]
+          for (const question of questions) {
+            delete next[userInputDraftKey(request, question.id)]
+          }
           return next
         })
       } catch (error) {
