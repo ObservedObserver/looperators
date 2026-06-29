@@ -73,25 +73,25 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* ===== LIGHT: warm-paper chrome, lime identity (ink stages stay dark) ===== */
+/* ===== LIGHT: neutral chrome, lime identity ===== */
 :root {
-    --background: #eef0e7;
-    --foreground: #1a1f1a;
+    --background: #f8fafc;
+    --foreground: #171a1f;
     --card: #ffffff;
-    --card-foreground: #1a1f1a;
+    --card-foreground: #171a1f;
     --popover: #ffffff;
-    --popover-foreground: #1a1f1a;
+    --popover-foreground: #171a1f;
     --primary: #a3e635;
     --primary-foreground: #0c1207;
-    --secondary: #e7e8df;
-    --secondary-foreground: #2a2f29;
-    --muted: #e9eae1;
-    --muted-foreground: #5b6158;
-    --accent: #e6ecd7;
-    --accent-foreground: #3a4a16;
+    --secondary: #eef1f4;
+    --secondary-foreground: #252a31;
+    --muted: #f1f3f5;
+    --muted-foreground: #606772;
+    --accent: #edf0f3;
+    --accent-foreground: #20252d;
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.27 0.03 140 / 14%);
-    --input: oklch(0.27 0.03 140 / 18%);
+    --border: oklch(0.24 0.02 250 / 13%);
+    --input: oklch(0.24 0.02 250 / 18%);
     --ring: #a3e635;
     --accent-ink: #4d7c0f;
     --chart-1: #84cc16;
@@ -100,24 +100,24 @@
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --radius: 0.625rem;
-    --sidebar: #f7f7f1;
-    --sidebar-foreground: #1a1f1a;
+    --sidebar: #ffffff;
+    --sidebar-foreground: #171a1f;
     --sidebar-primary: #a3e635;
     --sidebar-primary-foreground: #0c1207;
-    --sidebar-accent: #e6ecd7;
-    --sidebar-accent-foreground: #3a4a16;
-    --sidebar-border: oklch(0.27 0.03 140 / 14%);
+    --sidebar-accent: #edf0f3;
+    --sidebar-accent-foreground: #20252d;
+    --sidebar-border: oklch(0.24 0.02 250 / 13%);
     --sidebar-ring: #a3e635;
 
-    /* terminal stage palette — LIGHT console (warm near-white, darkened ink). */
-    --ink: #fbfcf7;
-    --ink-soft: #f1f3ea;
-    --ink-line: oklch(0.27 0.03 140 / 13%);
-    --ink-line-2: oklch(0.27 0.03 140 / 7%);
-    --term-name: #1a1f1a;
-    --term-dim: #585e54;
-    --term-dim2: #7c8275;
-    --term-faint: #a4a99c;
+    /* terminal stage palette — LIGHT console (neutral near-white, dark ink). */
+    --ink: #ffffff;
+    --ink-soft: #f3f5f7;
+    --ink-line: oklch(0.24 0.02 250 / 13%);
+    --ink-line-2: oklch(0.24 0.02 250 / 7%);
+    --term-name: #171a1f;
+    --term-dim: #5d6470;
+    --term-dim2: #7b838e;
+    --term-faint: #a5acb5;
     --term-lime: #4d7c0f;
     --term-lime-hi: #4d7c0f;
     --term-emerald: #047857;
@@ -218,6 +218,14 @@
   }
 
   .orrery-sidebar {
+    background-image: radial-gradient(
+      135% 64% at 50% -14%,
+      color-mix(in oklch, var(--primary) 5%, transparent),
+      transparent 70%
+    );
+  }
+
+  .dark .orrery-sidebar {
     background-image: radial-gradient(
       135% 64% at 50% -14%,
       color-mix(in oklch, var(--primary) 12%, transparent),
@@ -446,6 +454,16 @@
     color: var(--term-cyan);
     font-family: var(--font-mono);
     font-size: 0.92em;
+  }
+
+  .orrery-composer-editor:empty::before {
+    content: attr(data-placeholder);
+    color: var(--term-faint);
+    pointer-events: none;
+  }
+
+  .orrery-composer-editor[aria-disabled='true'] {
+    opacity: 0.6;
   }
 }
 

@@ -1,4 +1,3 @@
-import electron from 'electron'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
@@ -16,11 +15,6 @@ import {
   legacyClaudeRuntimeEventsFromChunk,
   resultSublines,
 } from './providers/legacyClaudeRuntimeMapper.js'
-
-const { BrowserWindow } =
-  electron && typeof electron === 'object' && 'BrowserWindow' in electron
-    ? electron
-    : { BrowserWindow: undefined }
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming stream-json is working, then stop.'
@@ -54,6 +48,7 @@ const gitDiffMaxBuffer = 64 * 1024 * 1024
 const uiPatchMaxLength = 2 * 1024 * 1024
 
 type JsonRecord = Record<string, any>
+type RuntimeEventEmitter = (event: JsonRecord) => void
 type RuntimeRun = JsonRecord & {
   kill: () => boolean
   respondRuntimeRequest?: (input: JsonRecord) => void
@@ -172,6 +167,57 @@ function hasGitHead(cwd, env) {
 
 function projectNameFromCwd(cwd) {
   return path.basename(cwd.replace(/\/$/, '')) || 'Project'
+}
+
+function validCwdCandidate(value) {
+  if (!nonEmptyString(value)) {
+    return undefined
+  }
+
+  const cwd = safeCwd(value)
+  return isValidCwd(cwd) ? cwd : undefined
+}
+
+function cwdPathParts(cwd) {
+  return safeCwd(cwd).split(path.sep).filter(Boolean)
+}
+
+function ephemeralWorktreeProjectName(cwd) {
+  const parts = cwdPathParts(cwd)
+  const codexIndex = parts.findIndex(
+    (part, index) => part === '.codex' && parts[index + 1] === 'worktrees'
+  )
+  if (codexIndex >= 0) {
+    return parts[codexIndex + 3]
+  }
+
+  const orreryIndex = parts.indexOf('.orrery-worktrees')
+  if (orreryIndex >= 0) {
+    return parts[orreryIndex + 1]
+  }
+
+  return undefined
+}
+
+function cwdRepairCandidate(cwd, value) {
+  const project = isObject(value.project) ? value.project : undefined
+  const projectCwd =
+    validCwdCandidate(project?.cwd) ?? validCwdCandidate(project?.repoRoot)
+  if (projectCwd) {
+    return { cwd: projectCwd, reason: 'project-cwd' }
+  }
+
+  const runtimeCwd = validCwdCandidate(process.cwd())
+  const ephemeralProjectName = ephemeralWorktreeProjectName(cwd)
+  if (
+    runtimeCwd &&
+    ephemeralProjectName &&
+    ephemeralProjectName === projectNameFromCwd(runtimeCwd)
+  ) {
+    return { cwd: runtimeCwd, reason: 'runtime-workspace' }
+  }
+
+  return undefined
 }
 
 function currentGitBranch(cwd) {
@@ -532,14 +578,31 @@ export class RuntimeSessionManager {
   #runContext = new Map<string, JsonRecord>()
   #loopTasks = new Map<string, Promise<void>>()
   #storageFile: string | undefined
+  #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
   #bridge: MembraneBridge
   #providerService: ProviderService
 
-  constructor({ storageFile }: JsonRecord = {}) {
+  constructor({
+    storageFile,
+    broadcastRuntimeEvent,
+    emitRuntimeEvent,
+    broadcast,
+    emit,
+  }: JsonRecord = {}) {
     this.#storageFile =
       typeof storageFile === 'string' && storageFile.length > 0
         ? storageFile
         : undefined
+    this.#emitRuntimeEventToHost =
+      typeof broadcastRuntimeEvent === 'function'
+        ? broadcastRuntimeEvent
+        : typeof emitRuntimeEvent === 'function'
+          ? emitRuntimeEvent
+          : typeof broadcast === 'function'
+            ? broadcast
+            : typeof emit === 'function'
+              ? emit
+              : undefined
     this.#state = this.#loadState()
     this.#bridge = new MembraneBridge({
       handler: (request) => this.handleMembraneRequest(request),
@@ -3204,13 +3267,7 @@ export class RuntimeSessionManager {
   }
 
   #broadcast(event) {
-    if (!BrowserWindow) {
-      return
-    }
-
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send('orrery:runtime-event', event)
-    }
+    this.#emitRuntimeEventToHost?.(event)
   }
 
   #persistState() {
@@ -3419,7 +3476,24 @@ export class RuntimeSessionManager {
         : backend === 'claude-agent-sdk'
           ? 'claude-code'
           : 'legacy-claude-cli'
-    const cwd = safeCwd(value.cwd)
+    let cwd = safeCwd(value.cwd)
+    const cwdRepair = !isValidCwd(cwd) ? cwdRepairCandidate(cwd, value) : undefined
+    if (cwdRepair) {
+      diagnostics.push(
+        diagnostic(
+          'storage.cwd_repaired',
+          'Repointed a restored session from a missing worktree to an available project folder.',
+          { sessionId, oldCwd: cwd, cwd: cwdRepair.cwd, reason: cwdRepair.reason }
+        )
+      )
+      cwd = cwdRepair.cwd
+      if (
+        typeof value.error === 'string' &&
+        value.error.includes('Project folder is no longer available')
+      ) {
+        delete value.error
+      }
+    }
     if (!isValidCwd(cwd)) {
       diagnostics.push(
         diagnostic(
@@ -3431,6 +3505,20 @@ export class RuntimeSessionManager {
       value.error =
         value.error ??
         `Project folder is no longer available: ${cwd}. Restore the folder or start a linked chat with a valid cwd.`
+    }
+    let project = normalizeSessionProject(value.project, cwd)
+    if (cwdRepair && project?.workMode === 'worktree') {
+      project = {
+        ...project,
+        cwd,
+        repoRoot:
+          nonEmptyString(project.repoRoot) && isValidCwd(project.repoRoot)
+            ? project.repoRoot
+            : undefined,
+        workMode: 'local',
+        baseBranch: undefined,
+        branch: currentGitBranch(cwd) ?? project.baseBranch ?? project.branch,
+      }
     }
     const session = {
       ...value,
@@ -3456,7 +3544,7 @@ export class RuntimeSessionManager {
       label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
       cwd,
-      project: normalizeSessionProject(value.project, cwd),
+      project,
       role: value.role === 'master' ? 'master' : 'worker',
       status,
       createdAt: nonEmptyString(value.createdAt) ? value.createdAt : ts,

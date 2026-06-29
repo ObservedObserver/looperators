@@ -7,6 +7,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 let runtime: RuntimeSessionManager | undefined
 
+function broadcastRuntimeEvent(event) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send('orrery:runtime-event', event)
+  }
+}
+
 function createMainWindow() {
   const mainWindow = new BrowserWindow({
     width: 1440,
@@ -41,6 +47,7 @@ app.whenReady().then(() => {
     storageFile:
       process.env.ORRERY_RUNTIME_STORAGE_FILE ??
       path.join(app.getPath('userData'), 'orrery-runtime-state.json'),
+    broadcastRuntimeEvent,
   })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())

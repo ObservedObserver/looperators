@@ -1,4 +1,7 @@
 import {
+  type ClipboardEvent as ReactClipboardEvent,
+  type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   memo,
   useCallback,
@@ -40,10 +43,12 @@ import {
   FileText,
   FolderOpen,
   GitBranch,
+  Image as ImageIcon,
   MessageSquarePlus,
   MessagesSquare,
   Moon,
   Orbit,
+  Paperclip,
   RefreshCw,
   Search,
   Send,
@@ -102,6 +107,10 @@ import type {
   UserInputRequest,
 } from '@/shared/provider-runtime'
 import { createDemoGraphState } from '@/shared/demo-state'
+import {
+  getActiveRuntimeClient,
+  useRuntimeClient,
+} from '@/runtime-client'
 
 type ColorScheme = 'dark' | 'light'
 
@@ -147,6 +156,17 @@ type ActivityEvent = {
   reason?: string
 }
 
+type ComposerAttachment = {
+  id: string
+  name: string
+  type: string
+  size: number
+  kind: 'file' | 'image'
+  text?: string
+  dataUrl?: string
+  truncated?: boolean
+}
+
 type ClusterNodeData = {
   label: string
   nodeCount: number
@@ -170,6 +190,166 @@ const statusDotClassNames: Record<SessionStatus, string> = {
   idle: 'bg-term-dim2',
   failed: 'bg-term-rose',
   killed: 'bg-term-amber',
+}
+
+const chatPanelWidthStorageKey = 'orrery.chatPanelWidth.v1'
+const defaultChatPanelWidth = 440
+const chatPanelMinWidth = 360
+const canvasPanelMinWidth = 520
+const chatCanvasSeparatorWidth = 8
+const attachmentTextPreviewLimit = 12_000
+const attachmentDataUrlPromptLimit = 180_000
+
+function initialChatPanelWidth() {
+  if (typeof window === 'undefined') {
+    return defaultChatPanelWidth
+  }
+
+  try {
+    const stored = Number(window.localStorage.getItem(chatPanelWidthStorageKey))
+    return Number.isFinite(stored) && stored > 0
+      ? stored
+      : defaultChatPanelWidth
+  } catch {
+    return defaultChatPanelWidth
+  }
+}
+
+function clampChatPanelWidth(width: number, totalWidth?: number) {
+  const maxWidth =
+    totalWidth && totalWidth > 0
+      ? Math.max(
+          chatPanelMinWidth,
+          totalWidth - canvasPanelMinWidth - chatCanvasSeparatorWidth
+        )
+      : Number.POSITIVE_INFINITY
+  return Math.min(Math.max(width, chatPanelMinWidth), maxWidth)
+}
+
+function createAttachmentId() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID()
+  }
+
+  return `att-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) {
+    return `${size} B`
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function fileLooksText(file: File) {
+  if (file.type.startsWith('text/')) {
+    return true
+  }
+
+  return /\.(c|cc|cpp|css|csv|go|h|html|java|js|json|jsx|log|md|mjs|py|rs|sh|sql|ts|tsx|txt|xml|yaml|yml)$/i.test(
+    file.name
+  )
+}
+
+function readBlobAsText(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'))
+    reader.readAsText(blob)
+  })
+}
+
+function readBlobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image.'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+async function composerAttachmentFromFile(file: File): Promise<ComposerAttachment> {
+  const kind = file.type.startsWith('image/') ? 'image' : 'file'
+  const attachment: ComposerAttachment = {
+    id: createAttachmentId(),
+    name: file.name || (kind === 'image' ? 'pasted-image.png' : 'attachment'),
+    type: file.type || 'application/octet-stream',
+    size: file.size,
+    kind,
+  }
+
+  if (kind === 'image') {
+    return {
+      ...attachment,
+      dataUrl: await readBlobAsDataUrl(file),
+    }
+  }
+
+  if (fileLooksText(file)) {
+    const slice = file.slice(0, attachmentTextPreviewLimit)
+    return {
+      ...attachment,
+      text: await readBlobAsText(slice),
+      truncated: file.size > attachmentTextPreviewLimit,
+    }
+  }
+
+  return attachment
+}
+
+function composerAttachmentsContext(attachments: ComposerAttachment[]) {
+  if (attachments.length === 0) {
+    return undefined
+  }
+
+  return [
+    'Attached files:',
+    ...attachments.map((attachment, index) => {
+      const header = [
+        `Attachment ${index + 1}: ${attachment.name}`,
+        `Type: ${attachment.type}`,
+        `Size: ${formatFileSize(attachment.size)}`,
+      ].join('\n')
+
+      if (attachment.kind === 'image') {
+        const imageData =
+          attachment.dataUrl &&
+          attachment.dataUrl.length <= attachmentDataUrlPromptLimit
+            ? `Image data URL:\n${attachment.dataUrl}`
+            : 'Image data was omitted because it is too large to inline safely.'
+        return `${header}\nKind: image\n${imageData}`
+      }
+
+      if (attachment.text !== undefined) {
+        return `${header}\nKind: file\nText content${
+          attachment.truncated ? ' (truncated)' : ''
+        }:\n${attachment.text}`
+      }
+
+      return `${header}\nKind: file\nContent not inlined; only metadata is available.`
+    }),
+  ].join('\n\n')
+}
+
+function insertPlainTextAtCaret(text: string) {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) {
+    return false
+  }
+
+  const range = selection.getRangeAt(0)
+  range.deleteContents()
+  const node = document.createTextNode(text)
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.setEndAfter(node)
+  selection.removeAllRanges()
+  selection.addRange(range)
+  return true
 }
 
 // Terminal status marker (gutter glyph) for a session row.
@@ -531,12 +711,21 @@ type RuntimeDiagnosticNotice = RecoveryState & {
   titleText: string
 }
 
-function defaultWorkspaceCwd() {
+function isDemoModeRequested() {
   if (typeof window === 'undefined') {
+    return false
+  }
+
+  const value = new URLSearchParams(window.location.search).get('demo')
+  return value === '1' || value === 'true'
+}
+
+function defaultWorkspaceCwd() {
+  if (isDemoModeRequested()) {
     return ''
   }
 
-  return window.orrery?.workspace?.defaultCwd ?? ''
+  return getActiveRuntimeClient().workspace.defaultCwd ?? ''
 }
 
 function latestSessionCwd(
@@ -1119,6 +1308,7 @@ function NewChatSetupBar({
   workMode,
   branch,
   disabled,
+  canChooseProject,
   onProjectChange,
   onChooseProject,
   onWorkModeChange,
@@ -1130,6 +1320,7 @@ function NewChatSetupBar({
   workMode: WorkMode
   branch: string
   disabled?: boolean
+  canChooseProject?: boolean
   onProjectChange: (cwd: string) => void
   onChooseProject: () => void
   onWorkModeChange: (workMode: WorkMode) => void
@@ -1152,6 +1343,15 @@ function NewChatSetupBar({
 
   return (
     <div className="app-region-no-drag mb-2 space-y-1.5">
+      <ProjectCwdField
+        value={projectCwd}
+        validation={validation}
+        disabled={disabled}
+        onChange={(nextCwd) => {
+          onProjectChange(nextCwd)
+          onBranchChange('')
+        }}
+      />
       <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-[minmax(0,1.15fr)_minmax(128px,0.85fr)]">
         <NewChatSetupPill
           icon={FolderOpen}
@@ -1177,9 +1377,11 @@ function NewChatSetupBar({
               </option>
             ))
           )}
-          <option value={chooseProjectOptionValue}>
-            Choose project...
-          </option>
+          {canChooseProject ? (
+            <option value={chooseProjectOptionValue}>
+              Choose project...
+            </option>
+          ) : null}
         </NewChatSetupPill>
 
         <NewChatSetupPill
@@ -2528,7 +2730,7 @@ function providerSetupHints(providerKind: ProviderKind) {
   switch (providerKind) {
     case 'claude-code':
       return [
-        'Confirm Claude SDK auth is available to the desktop runtime.',
+        'Confirm Claude SDK auth is available to the runtime.',
         'Check that this app can start @anthropic-ai/claude-agent-sdk.',
         'Use Legacy Claude CLI to isolate SDK setup from account setup.',
       ]
@@ -2536,11 +2738,11 @@ function providerSetupHints(providerKind: ProviderKind) {
       return [
         'Confirm the Codex provider is enabled and authenticated.',
         'Check that the Codex app-server can access this workspace path.',
-        'Restart the desktop runtime after auth or provider changes.',
+        'Restart the runtime after auth or provider changes.',
       ]
     case 'legacy-claude-cli':
       return [
-        'Install the claude CLI and make sure Electron can find it on PATH.',
+        'Install the claude CLI and make sure the runtime can find it on PATH.',
         'Run claude login in the same user environment.',
         'Check shell startup files if Terminal works but Orrery cannot start it.',
       ]
@@ -2549,10 +2751,12 @@ function providerSetupHints(providerKind: ProviderKind) {
 
 function ProviderSetupDiagnostics({
   isRuntimeAvailable,
+  runtimeStatusText,
   providerKind,
   runtimeError,
 }: {
   isRuntimeAvailable: boolean
+  runtimeStatusText: string
   providerKind: ProviderKind
   runtimeError?: string
 }) {
@@ -2585,8 +2789,8 @@ function ProviderSetupDiagnostics({
               <span className="w-20 shrink-0 text-term-dim2">runtime</span>
               <span className="min-w-0 text-term-name">
                 {isRuntimeAvailable
-                  ? 'Electron bridge connected'
-                  : 'Open Orrery in the desktop runtime to create chats'}
+                  ? runtimeStatusText
+                  : 'Start a runtime to create chats'}
               </span>
             </div>
             <div className="flex min-w-0 gap-2">
@@ -2630,6 +2834,52 @@ function ProviderSetupDiagnostics({
   )
 }
 
+function ComposerAttachmentPill({
+  attachment,
+  disabled,
+  onRemove,
+}: {
+  attachment: ComposerAttachment
+  disabled?: boolean
+  onRemove: (id: string) => void
+}) {
+  return (
+    <div className="group/attachment grid min-w-0 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border border-ink-line bg-foreground/[0.04] px-2 py-2 font-mono">
+      <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-md border border-ink-line bg-ink-soft text-term-cyan">
+        {attachment.kind === 'image' && attachment.dataUrl ? (
+          <img
+            className="size-full object-cover"
+            src={attachment.dataUrl}
+            alt=""
+          />
+        ) : attachment.kind === 'image' ? (
+          <ImageIcon className="size-4" />
+        ) : (
+          <FileText className="size-4" />
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-[12px] text-term-name">
+          {attachment.name}
+        </span>
+        <span className="mt-0.5 block truncate text-[10.5px] text-term-dim2">
+          {attachment.type} · {formatFileSize(attachment.size)}
+          {attachment.truncated ? ' · truncated' : ''}
+        </span>
+      </span>
+      <button
+        type="button"
+        className="rounded-md p-1 text-term-dim2 transition hover:bg-foreground/[0.06] hover:text-term-name disabled:pointer-events-none disabled:opacity-40"
+        disabled={disabled}
+        aria-label={`Remove ${attachment.name}`}
+        onClick={() => onRemove(attachment.id)}
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  )
+}
+
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
   { id: 'sessions', label: 'Chats', icon: Terminal },
@@ -2659,10 +2909,7 @@ function OrreryMark({ className }: { className?: string }) {
   )
 }
 
-const demoMode =
-  typeof window !== 'undefined' &&
-  !window.orrery &&
-  new URLSearchParams(window.location.search).has('demo')
+const demoMode = isDemoModeRequested()
 
 function App() {
   const [runtimeState, setRuntimeState] = useState<GraphState>(
@@ -2679,6 +2926,10 @@ function App() {
   const [newBranch, setNewBranch] = useState('')
   const [newProjectContext, setNewProjectContext] = useState<ProjectContext>()
   const [message, setMessage] = useState('')
+  const [composerAttachments, setComposerAttachments] = useState<
+    ComposerAttachment[]
+  >([])
+  const [isComposerDragActive, setIsComposerDragActive] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [showArchivedSessions, setShowArchivedSessions] = useState(false)
   const [showRawEvents, setShowRawEvents] = useState(false)
@@ -2715,6 +2966,8 @@ function App() {
   const [masterPrompt, setMasterPrompt] = useState(
     'You are the Orrery master for this cluster. Help author and later run a review loop: create or resume worker sessions through the Orrery membrane, read verdict reports, and stop when verdict=clean then freeze.'
   )
+  const [chatPanelWidth, setChatPanelWidth] = useState(initialChatPanelWidth)
+  const [isResizingChatPanel, setIsResizingChatPanel] = useState(false)
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
     if (typeof window === 'undefined') {
       return 'dark'
@@ -2724,8 +2977,41 @@ function App() {
       ? 'dark'
       : 'light'
   })
-  const runtimeApi = typeof window === 'undefined' ? undefined : window.orrery
-  const isElectron = useMemo(() => Boolean(runtimeApi), [runtimeApi])
+  const runtimeClient = useRuntimeClient({ disabled: demoMode })
+  const runtimeApi = demoMode ? undefined : runtimeClient.runtime
+  const isRuntimeAvailable = Boolean(runtimeApi)
+  const isElectron = !demoMode && runtimeClient.kind === 'electron'
+  const runtimeModeLabel = demoMode
+    ? 'demo'
+    : runtimeClient.kind === 'electron'
+      ? 'electron'
+      : runtimeClient.kind === 'http'
+        ? 'web runtime'
+        : runtimeClient.kind === 'connecting'
+          ? 'connecting'
+        : 'no runtime'
+  const runtimeStatusText =
+    runtimeClient.kind === 'http'
+      ? `Web runtime ${runtimeClient.runtimeUrl}`
+      : runtimeClient.kind === 'electron'
+        ? 'Electron runtime'
+        : runtimeClient.kind === 'connecting'
+          ? `Connecting to web runtime ${runtimeClient.runtimeUrl}`
+          : runtimeClient.kind === 'unavailable' && runtimeClient.runtimeUrl
+            ? `No runtime at ${runtimeClient.runtimeUrl}`
+        : demoMode
+          ? 'Demo graph'
+          : 'No runtime client'
+  const runtimeUnavailableText = demoMode
+    ? 'Demo mode uses sample data. Remove ?demo=1 to connect to a runtime.'
+    : runtimeClient.kind === 'unavailable' && runtimeClient.error
+      ? runtimeClient.error
+      : runtimeClient.kind === 'connecting'
+        ? `Connecting to web runtime at ${runtimeClient.runtimeUrl}.`
+        : 'Runtime is unavailable. Start the desktop app or the web runtime server.'
+  const splitContainerRef = useRef<HTMLElement | null>(null)
+  const composerEditorRef = useRef<HTMLDivElement | null>(null)
+  const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const diffRequestSeqRef = useRef(0)
   const projectContextSeqRef = useRef(0)
 
@@ -2923,6 +3209,10 @@ function App() {
     !selectedSessionFrozen
   const canKill =
     selectedSession?.status === 'running' || selectedSession?.status === 'pending'
+  const composerDisabled =
+    !isRuntimeAvailable || (selectedSession ? !canResume || isResuming : isCreating)
+  const composerHasPayload =
+    message.trim().length > 0 || composerAttachments.length > 0
   const canStartLoop =
     Boolean(activeCluster) &&
     Boolean(activeCluster?.masterSessionId) &&
@@ -2934,7 +3224,7 @@ function App() {
     Boolean(selectedSession) && !selectedSessionFrozen
   const canFreezeActiveCluster =
     Boolean(activeCluster) && activeCluster?.frozen !== true
-  const canOpenDiffPanel = Boolean(isElectron && selectedSession)
+  const canOpenDiffPanel = Boolean(isRuntimeAvailable && selectedSession)
   const hasWorkerSelection = workflowManagedNodeIds.length > 0
   const setupSteps = [
     {
@@ -2994,6 +3284,93 @@ function App() {
     status: WorkflowStepStatus
   }[]
 
+  const clearComposer = useCallback(() => {
+    setMessage('')
+    setComposerAttachments([])
+    if (composerEditorRef.current) {
+      composerEditorRef.current.textContent = ''
+    }
+  }, [])
+
+  const addComposerFiles = useCallback(async (files: FileList | File[]) => {
+    const fileList = Array.from(files).filter((file) => file.size >= 0)
+    if (fileList.length === 0) {
+      return
+    }
+
+    const results = await Promise.allSettled(
+      fileList.map((file) => composerAttachmentFromFile(file))
+    )
+    const attachments = results.flatMap((result) =>
+      result.status === 'fulfilled' ? [result.value] : []
+    )
+    const firstError = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    )
+
+    if (attachments.length > 0) {
+      setComposerAttachments((current) => [...current, ...attachments])
+    }
+    if (firstError) {
+      setRuntimeError(
+        firstError.reason instanceof Error
+          ? firstError.reason.message
+          : String(firstError.reason)
+      )
+    }
+  }, [])
+
+  const removeComposerAttachment = useCallback((id: string) => {
+    setComposerAttachments((current) =>
+      current.filter((attachment) => attachment.id !== id)
+    )
+  }, [])
+
+  const handleComposerPaste = useCallback(
+    (event: ReactClipboardEvent<HTMLDivElement>) => {
+      const files = Array.from(event.clipboardData.files).filter(
+        (file) => file.size > 0 || file.type.startsWith('image/')
+      )
+      if (files.length > 0) {
+        event.preventDefault()
+        void addComposerFiles(files)
+        return
+      }
+
+      const text = event.clipboardData.getData('text/plain')
+      if (text.length > 0) {
+        event.preventDefault()
+        if (insertPlainTextAtCaret(text)) {
+          setMessage(event.currentTarget.innerText)
+        }
+      }
+    },
+    [addComposerFiles]
+  )
+
+  const handleComposerDrop = useCallback(
+    (event: ReactDragEvent<HTMLDivElement>) => {
+      const files = Array.from(event.dataTransfer.files)
+      if (files.length === 0) {
+        return
+      }
+
+      event.preventDefault()
+      setIsComposerDragActive(false)
+      void addComposerFiles(files)
+    },
+    [addComposerFiles]
+  )
+
+  const adjustChatPanelWidth = useCallback((delta: number) => {
+    const totalWidth =
+      splitContainerRef.current?.getBoundingClientRect().width ??
+      (typeof window !== 'undefined' ? window.innerWidth : undefined)
+    setChatPanelWidth((current) =>
+      clampChatPanelWidth(current + delta, totalWidth)
+    )
+  }, [])
+
   const startNewChat = useCallback(() => {
     setPendingLinkedSourceId(null)
     setSelectedSessionId(null)
@@ -3002,33 +3379,38 @@ function App() {
     setNewBranch('')
     setActiveTab('chat')
     setShowRawEvents(false)
-    setMessage('')
-  }, [invalidProjectCwds, sessions])
+    clearComposer()
+  }, [clearComposer, invalidProjectCwds, sessions])
 
   const startLinkedChat = useCallback(() => {
     if (!selectedSession) {
       return
     }
 
+    const sourceCwd =
+      invalidProjectCwds.has(selectedSession.cwd)
+        ? latestSessionCwd(sessions, invalidProjectCwds) ?? defaultWorkspaceCwd()
+        : selectedSession.cwd
+
     setPendingLinkedSourceId(selectedSession.sessionId)
     setSelectedSessionId(null)
     setNewProviderKind(selectedSession.providerKind)
-    setNewCwd(selectedSession.cwd)
+    setNewCwd(sourceCwd)
     setNewWorkMode('local')
     setNewBranch('')
     setActiveTab('chat')
     setShowRawEvents(false)
-    setMessage('')
-  }, [selectedSession])
+    clearComposer()
+  }, [clearComposer, invalidProjectCwds, selectedSession, sessions])
 
   const chooseNewChatProject = useCallback(async () => {
-    if (!window.orrery?.runtime?.chooseProjectFolder) {
-      setRuntimeError('Project picker is available only inside Electron.')
+    if (!runtimeApi) {
+      setRuntimeError(runtimeUnavailableText)
       return
     }
 
     try {
-      const result = await window.orrery.runtime.chooseProjectFolder()
+      const result = await runtimeApi.chooseProjectFolder()
       if (result.canceled || !result.cwd) {
         return
       }
@@ -3040,7 +3422,7 @@ function App() {
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     }
-  }, [])
+  }, [runtimeApi, runtimeUnavailableText])
 
   const nodes: Node[] = useMemo(
     () => [
@@ -3147,7 +3529,122 @@ function App() {
   }, [colorScheme])
 
   useEffect(() => {
-    if (!window.orrery?.runtime || !newCwdValidation.ok) {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    try {
+      window.localStorage.setItem(
+        chatPanelWidthStorageKey,
+        String(Math.round(chatPanelWidth))
+      )
+    } catch {
+      // Width persistence is best-effort; resizing still works without storage.
+    }
+  }, [chatPanelWidth])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const handleResize = () => {
+      const totalWidth =
+        splitContainerRef.current?.getBoundingClientRect().width ??
+        window.innerWidth
+      setChatPanelWidth((current) =>
+        clampChatPanelWidth(current, totalWidth)
+      )
+    }
+
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    if (!isResizingChatPanel) {
+      return
+    }
+
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const rect = splitContainerRef.current?.getBoundingClientRect()
+      if (!rect) {
+        return
+      }
+
+      setChatPanelWidth(
+        clampChatPanelWidth(event.clientX - rect.left, rect.width)
+      )
+    }
+
+    const stopResizing = () => setIsResizingChatPanel(false)
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResizing, { once: true })
+    window.addEventListener('pointercancel', stopResizing, { once: true })
+
+    return () => {
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResizing)
+      window.removeEventListener('pointercancel', stopResizing)
+    }
+  }, [isResizingChatPanel])
+
+  useEffect(() => {
+    const editor = composerEditorRef.current
+    if (!editor) {
+      return
+    }
+
+    if (
+      message.length === 0 ||
+      (typeof document !== 'undefined' && document.activeElement !== editor)
+    ) {
+      if (editor.textContent !== message) {
+        editor.textContent = message
+      }
+    }
+  }, [message])
+
+  useEffect(() => {
+    if (demoMode || runtimeClient.kind !== 'http') {
+      return
+    }
+
+    let isMounted = true
+    runtimeClient
+      .getConfig()
+      .then((config) => {
+        const defaultCwd = config.workspace?.defaultCwd
+        if (!isMounted || !defaultCwd) {
+          return
+        }
+
+        setNewCwd((current) =>
+          current.trim().length > 0 ? current : defaultCwd
+        )
+      })
+      .catch((error: unknown) => {
+        if (isMounted) {
+          setRuntimeError(error instanceof Error ? error.message : String(error))
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [runtimeClient])
+
+  useEffect(() => {
+    if (!runtimeApi || !newCwdValidation.ok) {
       setNewProjectContext(undefined)
       return
     }
@@ -3157,7 +3654,7 @@ function App() {
     const cwd = newCwd.trim()
     let isMounted = true
 
-    window.orrery.runtime
+    runtimeApi
       .getProjectContext({ cwd })
       .then((context) => {
         if (isMounted && projectContextSeqRef.current === requestId) {
@@ -3179,7 +3676,7 @@ function App() {
     return () => {
       isMounted = false
     }
-  }, [newCwd, newCwdValidation.ok])
+  }, [newCwd, newCwdValidation.ok, runtimeApi])
 
   useEffect(() => {
     if (
@@ -3202,12 +3699,12 @@ function App() {
   }, [activeCluster])
 
   useEffect(() => {
-    if (!window.orrery?.runtime) {
+    if (!runtimeApi) {
       return
     }
 
     let isMounted = true
-    window.orrery.runtime
+    runtimeApi
       .getState()
       .then((state) => {
         if (isMounted) {
@@ -3236,7 +3733,7 @@ function App() {
         }
       })
 
-    const unsubscribe = window.orrery.runtime.onEvent((event) => {
+    const unsubscribe = runtimeApi.onEvent((event) => {
       setRuntimeState(event.state)
     })
 
@@ -3244,15 +3741,15 @@ function App() {
       isMounted = false
       unsubscribe()
     }
-  }, [])
+  }, [runtimeApi])
 
   const createSessionFromPrompt = useCallback(
     async (
       prompt: string,
-      options: { sourceSessionId?: string | null } = {}
+      options: { sourceSessionId?: string | null; context?: string } = {}
     ) => {
-      if (!window.orrery?.runtime) {
-        setRuntimeError('Runtime is available only inside Electron.')
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText)
         return false
       }
 
@@ -3283,8 +3780,9 @@ function App() {
 
       try {
         const selectedProvider = providerOption(newProviderKind)
-        const result = await window.orrery.runtime.createSession({
+        const result = await runtimeApi.createSession({
           prompt: trimmedPrompt,
+          context: options.context,
           cwd,
           workMode: newWorkMode,
           ...(newWorkMode === 'worktree' && newBranch.trim().length > 0
@@ -3319,28 +3817,33 @@ function App() {
       newCwd,
       newProviderKind,
       newWorkMode,
+      runtimeApi,
       runtimeState.sessions,
+      runtimeUnavailableText,
       sessions.length,
     ]
   )
 
   const sendChatMessage = useCallback(async () => {
-    if (!window.orrery?.runtime) {
-      setRuntimeError('Runtime is available only inside Electron.')
+    if (!runtimeApi) {
+      setRuntimeError(runtimeUnavailableText)
       return
     }
 
     const trimmed = message.trim()
-    if (trimmed.length === 0) {
+    const attachmentContext = composerAttachmentsContext(composerAttachments)
+    if (trimmed.length === 0 && !attachmentContext) {
       return
     }
+    const prompt = trimmed.length > 0 ? trimmed : 'Please review the attached files.'
 
     if (!selectedSession || !selectedSessionId) {
-      const created = await createSessionFromPrompt(trimmed, {
+      const created = await createSessionFromPrompt(prompt, {
         sourceSessionId: pendingLinkedSourceId,
+        context: attachmentContext,
       })
       if (created) {
-        setMessage('')
+        clearComposer()
       }
       return
     }
@@ -3349,42 +3852,47 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.resumeSession({
+      const result = await runtimeApi.resumeSession({
         sessionId: selectedSessionId,
-        message: trimmed,
+        message: prompt,
+        context: attachmentContext,
       })
       setRuntimeState(result.state)
-      setMessage('')
+      clearComposer()
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     } finally {
       setIsResuming(false)
     }
   }, [
+    clearComposer,
+    composerAttachments,
     createSessionFromPrompt,
     message,
     pendingLinkedSourceId,
+    runtimeApi,
+    runtimeUnavailableText,
     selectedSession,
     selectedSessionId,
   ])
 
   const killSelectedSession = useCallback(async () => {
-    if (!window.orrery?.runtime || !selectedSessionId) {
+    if (!runtimeApi || !selectedSessionId) {
       return
     }
 
     try {
-      const result = await window.orrery.runtime.killSession(selectedSessionId)
+      const result = await runtimeApi.killSession(selectedSessionId)
       setRuntimeState(result.state)
     } catch (error) {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     }
-  }, [selectedSessionId])
+  }, [runtimeApi, selectedSessionId])
 
   const setSessionArchived = useCallback(
     async (sessionId: string, archived: boolean) => {
-      if (!window.orrery?.runtime) {
-        setRuntimeError('Runtime is available only inside Electron.')
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText)
         return
       }
 
@@ -3395,7 +3903,7 @@ function App() {
       setRuntimeError(undefined)
 
       try {
-        const result = await window.orrery.runtime.archiveSession({
+        const result = await runtimeApi.archiveSession({
           sessionId,
           archived,
         })
@@ -3410,13 +3918,13 @@ function App() {
         })
       }
     },
-    []
+    [runtimeApi, runtimeUnavailableText]
   )
 
   const respondToRuntimeRequest = useCallback(
     async (request: RuntimeRequest, decision: 'approved' | 'denied') => {
-      if (!window.orrery?.runtime) {
-        setRuntimeError('Runtime is available only inside Electron.')
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText)
         return
       }
 
@@ -3427,7 +3935,7 @@ function App() {
       setRuntimeError(undefined)
 
       try {
-        const result = await window.orrery.runtime.respondRuntimeRequest({
+        const result = await runtimeApi.respondRuntimeRequest({
           sessionId: request.sessionId,
           requestId: request.id,
           decision,
@@ -3443,7 +3951,7 @@ function App() {
         })
       }
     },
-    []
+    [runtimeApi, runtimeUnavailableText]
   )
 
   const setUserInputDraft = useCallback((requestId: string, value: string) => {
@@ -3455,8 +3963,8 @@ function App() {
 
   const answerRuntimeUserInput = useCallback(
     async (request: UserInputRequest) => {
-      if (!window.orrery?.runtime) {
-        setRuntimeError('Runtime is available only inside Electron.')
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText)
         return
       }
 
@@ -3469,7 +3977,7 @@ function App() {
       setRuntimeError(undefined)
 
       try {
-        const result = await window.orrery.runtime.answerUserInput({
+        const result = await runtimeApi.answerUserInput({
           sessionId: request.sessionId,
           requestId: request.id,
           answer,
@@ -3490,7 +3998,7 @@ function App() {
         })
       }
     },
-    [userInputDrafts]
+    [runtimeApi, runtimeUnavailableText, userInputDrafts]
   )
 
   const currentLoopPolicy = useCallback(() => {
@@ -3506,8 +4014,8 @@ function App() {
   }, [maxIterations])
 
   const upsertManagedCluster = useCallback(async () => {
-    if (!window.orrery?.runtime) {
-      setRuntimeError('Runtime is available only inside Electron.')
+    if (!runtimeApi) {
+      setRuntimeError(runtimeUnavailableText)
       return
     }
 
@@ -3520,7 +4028,7 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.upsertCluster({
+      const result = await runtimeApi.upsertCluster({
         clusterId: activeClusterId,
         label: clusterLabel,
         nodeIds: workflowManagedNodeIds,
@@ -3537,11 +4045,13 @@ function App() {
     activeClusterId,
     clusterLabel,
     currentLoopPolicy,
+    runtimeApi,
+    runtimeUnavailableText,
     workflowManagedNodeIds,
   ])
 
   const saveLoopPolicy = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId) {
+    if (!runtimeApi || !activeClusterId) {
       return
     }
 
@@ -3549,7 +4059,7 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.setClusterLoopPolicy({
+      const result = await runtimeApi.setClusterLoopPolicy({
         clusterId: activeClusterId,
         loopPolicy: currentLoopPolicy(),
       })
@@ -3559,10 +4069,10 @@ function App() {
     } finally {
       setIsUpdatingCluster(false)
     }
-  }, [activeClusterId, currentLoopPolicy])
+  }, [activeClusterId, currentLoopPolicy, runtimeApi])
 
   const createMasterForCluster = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId) {
+    if (!runtimeApi || !activeClusterId) {
       return
     }
 
@@ -3578,7 +4088,7 @@ function App() {
 
     try {
       const selectedProvider = providerOption(newProviderKind)
-      const result = await window.orrery.runtime.createMasterForCluster({
+      const result = await runtimeApi.createMasterForCluster({
         clusterId: activeClusterId,
         prompt: masterPrompt,
         cwd,
@@ -3601,11 +4111,12 @@ function App() {
     masterPrompt,
     newCwd,
     newProviderKind,
+    runtimeApi,
     runtimeState.clusters,
   ])
 
   const assignSelectedAsMaster = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId || !selectedSessionId) {
+    if (!runtimeApi || !activeClusterId || !selectedSessionId) {
       return
     }
 
@@ -3613,7 +4124,7 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.assignMasterToCluster({
+      const result = await runtimeApi.assignMasterToCluster({
         clusterId: activeClusterId,
         sessionId: selectedSessionId,
       })
@@ -3623,10 +4134,10 @@ function App() {
     } finally {
       setIsCreatingMaster(false)
     }
-  }, [activeClusterId, selectedSessionId])
+  }, [activeClusterId, runtimeApi, selectedSessionId])
 
   const startMasterLoop = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId) {
+    if (!runtimeApi || !activeClusterId) {
       return
     }
 
@@ -3634,7 +4145,7 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.startMasterLoop({
+      const result = await runtimeApi.startMasterLoop({
         clusterId: activeClusterId,
         reason: 'Loop started from Orrery controls.',
       })
@@ -3644,10 +4155,10 @@ function App() {
     } finally {
       setIsStartingLoop(false)
     }
-  }, [activeClusterId])
+  }, [activeClusterId, runtimeApi])
 
   const stopMasterLoop = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId) {
+    if (!runtimeApi || !activeClusterId) {
       return
     }
 
@@ -3655,7 +4166,7 @@ function App() {
     setRuntimeError(undefined)
 
     try {
-      const result = await window.orrery.runtime.stopMasterLoop({
+      const result = await runtimeApi.stopMasterLoop({
         clusterId: activeClusterId,
         reason: 'Loop killed from Orrery controls.',
         killRunning: true,
@@ -3666,10 +4177,10 @@ function App() {
     } finally {
       setIsStoppingLoop(false)
     }
-  }, [activeClusterId])
+  }, [activeClusterId, runtimeApi])
 
   const freezeSelectedSession = useCallback(async () => {
-    if (!window.orrery?.runtime || !selectedSessionId || !selectedSession) {
+    if (!runtimeApi || !selectedSessionId || !selectedSession) {
       return
     }
 
@@ -3683,7 +4194,7 @@ function App() {
         activeMasterSession.sessionId !== selectedSessionId
           ? activeMasterSession.sessionId
           : undefined
-      const result = await window.orrery.runtime.freeze({
+      const result = await runtimeApi.freeze({
         target: selectedSessionId,
         reason,
         source,
@@ -3695,10 +4206,10 @@ function App() {
     } finally {
       setIsFreezingSelected(false)
     }
-  }, [activeMasterSession, selectedSession, selectedSessionId])
+  }, [activeMasterSession, runtimeApi, selectedSession, selectedSessionId])
 
   const freezeActiveCluster = useCallback(async () => {
-    if (!window.orrery?.runtime || !activeClusterId || !activeCluster) {
+    if (!runtimeApi || !activeClusterId || !activeCluster) {
       return
     }
 
@@ -3707,7 +4218,7 @@ function App() {
 
     try {
       const reason = `Frozen from Workflows panel: ${activeCluster.label}`
-      const result = await window.orrery.runtime.freeze({
+      const result = await runtimeApi.freeze({
         target: activeClusterId,
         reason,
         source: activeMasterSession?.sessionId,
@@ -3719,7 +4230,7 @@ function App() {
     } finally {
       setIsFreezingCluster(false)
     }
-  }, [activeCluster, activeClusterId, activeMasterSession])
+  }, [activeCluster, activeClusterId, activeMasterSession, runtimeApi])
 
   const loadSelectedWorkingTreeDiff = useCallback(async () => {
     if (!selectedSessionId) {
@@ -3730,11 +4241,11 @@ function App() {
       return
     }
 
-    if (!window.orrery?.runtime?.getWorkingTreeDiff) {
+    if (!runtimeApi) {
       diffRequestSeqRef.current += 1
       setWorkingTreeDiff(undefined)
       setIsLoadingDiff(false)
-      setDiffPanelError('Runtime diff API is available only inside Electron.')
+      setDiffPanelError(runtimeUnavailableText)
       return
     }
 
@@ -3748,7 +4259,7 @@ function App() {
     setDiffPanelError(undefined)
 
     try {
-      const result = await window.orrery.runtime.getWorkingTreeDiff({
+      const result = await runtimeApi.getWorkingTreeDiff({
         sessionId: requestedSessionId,
       })
       if (
@@ -3768,7 +4279,7 @@ function App() {
         setIsLoadingDiff(false)
       }
     }
-  }, [selectedSessionId])
+  }, [runtimeApi, runtimeUnavailableText, selectedSessionId])
 
   useEffect(() => {
     if (!isDiffPanelOpen) {
@@ -3803,18 +4314,18 @@ function App() {
       setCanvasNodes((current) => applyFlowNodePositionUpdates(current, updates))
       setRuntimeState((current) => applyNodePositionUpdates(current, updates))
 
-      if (!window.orrery?.runtime?.updateNodePositions) {
+      if (!runtimeApi) {
         return
       }
 
-      window.orrery.runtime
+      runtimeApi
         .updateNodePositions({ positions: updates })
         .then((result) => setRuntimeState(result.state))
         .catch((error: unknown) => {
           setRuntimeError(error instanceof Error ? error.message : String(error))
         })
     },
-    []
+    [runtimeApi]
   )
 
   const updateCanvasSelection = useCallback(
@@ -3846,8 +4357,17 @@ function App() {
 
   return (
     <TooltipProvider>
-      <main className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
-        <aside className="orrery-sidebar flex h-dvh min-h-0 w-[min(440px,100vw)] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar">
+      <main
+        ref={splitContainerRef}
+        className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
+      >
+        <aside
+          className="orrery-sidebar flex h-dvh min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar"
+          style={{
+            width: chatPanelWidth,
+            minWidth: chatPanelMinWidth,
+          }}
+        >
           <header
             className={cn(
               'app-region-drag flex shrink-0 items-center justify-between gap-3 px-4 py-3',
@@ -3866,10 +4386,13 @@ function App() {
               </div>
             </div>
             <Badge
-              variant={isElectron ? 'outline' : 'destructive'}
+              variant={isRuntimeAvailable || demoMode ? 'outline' : 'destructive'}
               className="shrink-0"
+              title={
+                runtimeClient.kind === 'http' ? runtimeClient.runtimeUrl : undefined
+              }
             >
-              {isElectron ? 'electron' : 'web only'}
+              {runtimeModeLabel}
             </Badge>
           </header>
 
@@ -4147,7 +4670,7 @@ function App() {
                       className={termActionBtnCls}
                       variant="outline"
                       disabled={
-                        !isElectron ||
+                        !isRuntimeAvailable ||
                         isUpdatingCluster ||
                         workflowManagedNodeIds.length === 0
                       }
@@ -4160,7 +4683,7 @@ function App() {
                       className={termActionBtnCls}
                       variant="outline"
                       disabled={
-                        !isElectron || isUpdatingCluster || !activeClusterId
+                        !isRuntimeAvailable || isUpdatingCluster || !activeClusterId
                       }
                       onClick={saveLoopPolicy}
                     >
@@ -4213,7 +4736,7 @@ function App() {
                     <Button
                       className={termActionBtnCls}
                       disabled={
-                        !isElectron ||
+                        !isRuntimeAvailable ||
                         isCreatingMaster ||
                         !activeClusterId ||
                         !newCwdValidation.ok
@@ -4231,7 +4754,7 @@ function App() {
                       className={termActionBtnCls}
                       variant="outline"
                       disabled={
-                        !isElectron ||
+                        !isRuntimeAvailable ||
                         isCreatingMaster ||
                         !activeClusterId ||
                         !selectedSession ||
@@ -4259,7 +4782,9 @@ function App() {
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       className={termActionBtnCls}
-                      disabled={!isElectron || isStartingLoop || !canStartLoop}
+                      disabled={
+                        !isRuntimeAvailable || isStartingLoop || !canStartLoop
+                      }
                       onClick={startMasterLoop}
                     >
                       <CirclePlay className="size-4 shrink-0" />
@@ -4270,7 +4795,9 @@ function App() {
                     <Button
                       className={termActionBtnCls}
                       variant="outline"
-                      disabled={!isElectron || isStoppingLoop || !canStopLoop}
+                      disabled={
+                        !isRuntimeAvailable || isStoppingLoop || !canStopLoop
+                      }
                       onClick={stopMasterLoop}
                     >
                       <Square className="size-4 shrink-0" />
@@ -4309,7 +4836,7 @@ function App() {
                         className={cn(termActionBtnCls, 'mt-2 w-full')}
                         variant="outline"
                         disabled={
-                          !isElectron ||
+                          !isRuntimeAvailable ||
                           isFreezingSelected ||
                           !canFreezeSelectedSession
                         }
@@ -4350,7 +4877,7 @@ function App() {
                         className={cn(termActionBtnCls, 'mt-2 w-full')}
                         variant="outline"
                         disabled={
-                          !isElectron ||
+                          !isRuntimeAvailable ||
                           isFreezingCluster ||
                           !canFreezeActiveCluster
                         }
@@ -4679,7 +5206,9 @@ function App() {
                                 type="button"
                                 className="shrink-0 rounded-md border border-ink-line bg-background/35 p-1.5 text-term-dim transition hover:border-foreground/20 hover:text-term-name disabled:cursor-not-allowed disabled:opacity-45"
                                 disabled={
-                                  !isElectron || archivePending || !canArchive
+                                  !isRuntimeAvailable ||
+                                  archivePending ||
+                                  !canArchive
                                 }
                                 aria-label={
                                   session.archived ? 'Restore chat' : 'Hide chat'
@@ -4763,7 +5292,7 @@ function App() {
                         {!selectedSession ? (
                           <ProviderInlineSelect
                             value={newProviderKind}
-                            disabled={isCreating || !isElectron}
+                            disabled={isCreating || !isRuntimeAvailable}
                             onChange={setNewProviderKind}
                           />
                         ) : null}
@@ -4835,7 +5364,7 @@ function App() {
                           className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
                           variant="outline"
                           size="sm"
-                          disabled={!isElectron}
+                          disabled={!isRuntimeAvailable}
                           onClick={startLinkedChat}
                         >
                           <GitBranch className="size-3.5" />
@@ -4880,7 +5409,8 @@ function App() {
                     <ProviderEventDrawer session={selectedSession} />
                   ) : (
                     <ProviderSetupDiagnostics
-                      isRuntimeAvailable={isElectron}
+                      isRuntimeAvailable={isRuntimeAvailable}
+                      runtimeStatusText={runtimeStatusText}
                       providerKind={newProviderKind}
                       runtimeError={runtimeError}
                     />
@@ -4915,12 +5445,19 @@ function App() {
                 <div className="shrink-0 border-t border-border bg-card p-2.5">
                   {!selectedSession ? (
                     <>
-                      {!isElectron ? (
+                      {!isRuntimeAvailable ? (
                         <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-term-amber/35 bg-term-amber/10 px-3 py-2 font-mono text-[11px] leading-4 text-term-amber">
                           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
                           <span className="min-w-0">
-                            Project picker and chat creation require the Electron
-                            app. This web preview cannot access local folders.
+                            {runtimeUnavailableText}
+                          </span>
+                        </div>
+                      ) : runtimeClient.kind === 'http' ? (
+                        <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-term-amber/35 bg-term-amber/10 px-3 py-2 font-mono text-[11px] leading-4 text-term-amber">
+                          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                          <span className="min-w-0">
+                            Folder picker is unavailable in web runtime. Enter a
+                            project path manually.
                           </span>
                         </div>
                       ) : null}
@@ -4930,7 +5467,8 @@ function App() {
                         validation={newCwdValidation}
                         workMode={newWorkMode}
                         branch={newBranch}
-                        disabled={isCreating || !isElectron}
+                        disabled={isCreating || !isRuntimeAvailable}
+                        canChooseProject={isElectron}
                         onProjectChange={setNewCwd}
                         onChooseProject={chooseNewChatProject}
                         onWorkModeChange={setNewWorkMode}
@@ -4938,34 +5476,114 @@ function App() {
                       />
                     </>
                   ) : null}
-                  <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-ink-line bg-ink px-3 py-2.5 transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25">
-                    <span className="pt-0.5 font-mono text-lime-hi">❯</span>
-                    <textarea
-                      className="max-h-28 min-h-9 w-full resize-y bg-transparent font-mono text-[13px] leading-6 text-term-name outline-none placeholder:text-term-faint disabled:opacity-60"
-                      placeholder={
-                        selectedSession
-                          ? 'Message this chat'
-                          : pendingLinkedSource
-                            ? 'Start a linked chat'
-                            : 'Start a new chat'
+                  <input
+                    ref={composerFileInputRef}
+                    className="hidden"
+                    type="file"
+                    multiple
+                    onChange={(event) => {
+                      if (event.currentTarget.files) {
+                        void addComposerFiles(event.currentTarget.files)
                       }
-                      value={message}
-                      disabled={
-                        !isElectron ||
-                        (selectedSession ? !canResume || isResuming : isCreating)
+                      event.currentTarget.value = ''
+                    }}
+                  />
+                  <div
+                    className={cn(
+                      'app-region-no-drag mb-2 rounded-lg border border-ink-line bg-ink transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
+                      isComposerDragActive &&
+                        'border-lime-hi/60 ring-1 ring-lime-hi/25'
+                    )}
+                    onDragEnter={(event) => {
+                      if (event.dataTransfer.types.includes('Files')) {
+                        setIsComposerDragActive(true)
                       }
-                      onChange={(event) => setMessage(event.target.value)}
-                    />
+                    }}
+                    onDragOver={(event) => {
+                      if (event.dataTransfer.types.includes('Files')) {
+                        event.preventDefault()
+                      }
+                    }}
+                    onDragLeave={(event) => {
+                      const nextTarget = event.relatedTarget
+                      if (
+                        !(nextTarget instanceof Node) ||
+                        !event.currentTarget.contains(nextTarget)
+                      ) {
+                        setIsComposerDragActive(false)
+                      }
+                    }}
+                    onDrop={handleComposerDrop}
+                  >
+                    {composerAttachments.length > 0 ? (
+                      <div className="grid gap-1.5 border-b border-ink-line-2 p-2">
+                        {composerAttachments.map((attachment) => (
+                          <ComposerAttachmentPill
+                            key={attachment.id}
+                            attachment={attachment}
+                            disabled={composerDisabled}
+                            onRemove={removeComposerAttachment}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="flex items-start gap-2 px-3 py-2.5">
+                      <span className="pt-1 font-mono text-lime-hi">❯</span>
+                      <div
+                        ref={composerEditorRef}
+                        className="orrery-composer-editor max-h-32 min-h-9 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-0.5 font-mono text-[13px] leading-6 text-term-name outline-none"
+                        role="textbox"
+                        aria-multiline="true"
+                        aria-disabled={composerDisabled}
+                        contentEditable={!composerDisabled}
+                        data-placeholder={
+                          selectedSession
+                            ? 'Message this chat'
+                            : pendingLinkedSource
+                              ? 'Start a linked chat'
+                              : 'Start a new chat'
+                        }
+                        suppressContentEditableWarning
+                        onInput={(event) =>
+                          setMessage(event.currentTarget.innerText)
+                        }
+                        onPaste={handleComposerPaste}
+                        onKeyDown={(event) => {
+                          if (
+                            event.key === 'Enter' &&
+                            (event.metaKey || event.ctrlKey)
+                          ) {
+                            event.preventDefault()
+                            void sendChatMessage()
+                          }
+                        }}
+                      />
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            className="mt-0.5 size-7 shrink-0"
+                            variant="ghost"
+                            size="icon"
+                            disabled={composerDisabled}
+                            aria-label="Attach files"
+                            onClick={() => composerFileInputRef.current?.click()}
+                          >
+                            <Paperclip className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Attach files</TooltipContent>
+                      </Tooltip>
+                    </div>
                   </div>
                   <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                     <Button
                       className="app-region-no-drag min-w-0 justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
                       disabled={
-                        !isElectron ||
+                        !isRuntimeAvailable ||
                         (selectedSession
                           ? !canResume || isResuming
                           : isCreating || !newCwdValidation.ok) ||
-                        message.trim().length === 0
+                        !composerHasPayload
                       }
                       onClick={sendChatMessage}
                     >
@@ -4982,7 +5600,7 @@ function App() {
                           className="app-region-no-drag"
                           variant="destructive"
                           size="icon"
-                          disabled={!selectedSession || !canKill}
+                          disabled={!isRuntimeAvailable || !selectedSession || !canKill}
                           aria-label="Stop"
                           onClick={killSelectedSession}
                         >
@@ -5024,7 +5642,38 @@ function App() {
           </footer>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col bg-background">
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat panel"
+          tabIndex={0}
+          className={cn(
+            'app-region-no-drag group/split relative z-20 flex w-2 shrink-0 cursor-col-resize touch-none items-center justify-center bg-background outline-none transition focus-visible:bg-accent',
+            isResizingChatPanel && 'bg-accent'
+          )}
+          onPointerDown={(event) => {
+            event.preventDefault()
+            setIsResizingChatPanel(true)
+          }}
+          onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+            const step = event.shiftKey ? 48 : 24
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault()
+              adjustChatPanelWidth(-step)
+            }
+            if (event.key === 'ArrowRight') {
+              event.preventDefault()
+              adjustChatPanelWidth(step)
+            }
+          }}
+        >
+          <span className="h-10 w-px rounded-full bg-border transition group-hover/split:bg-accent-ink group-focus-visible/split:bg-accent-ink" />
+        </div>
+
+        <section
+          className="flex min-w-0 flex-1 flex-col bg-background"
+          style={{ minWidth: canvasPanelMinWidth }}
+        >
           <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 font-mono">
             <div className="flex min-w-0 items-center gap-3">
               <span className="flex shrink-0 items-center gap-2 text-[12px] text-foreground">

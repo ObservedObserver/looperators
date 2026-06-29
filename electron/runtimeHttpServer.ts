@@ -1,0 +1,510 @@
+import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
+import { URL } from 'node:url'
+import { RuntimeSessionManager } from './runtime/sessionManager.js'
+
+const loopbackHost = '127.0.0.1'
+const defaultPort = 5174
+const maxRequestBodyBytes = 2 * 1024 * 1024
+const sseKeepAliveMs = 25000
+
+type JsonRecord = Record<string, any>
+type RouteParams = Record<string, string>
+type RuntimeRouteHandler = (
+  request: http.IncomingMessage,
+  params: RouteParams
+) => unknown | Promise<unknown>
+
+type RuntimeRoute = {
+  method: string
+  pattern: RegExp
+  handler: RuntimeRouteHandler
+}
+
+type RuntimeHttpServerOptions = {
+  runtime?: RuntimeSessionManager
+  storageFile?: string
+  port?: number
+  corsOrigins?: string[]
+}
+
+type RuntimeHttpServer = {
+  server: http.Server
+  runtime: RuntimeSessionManager
+  host: typeof loopbackHost
+  port: number
+  listen: () => Promise<{ host: typeof loopbackHost; port: number }>
+  close: () => Promise<void>
+}
+
+type SseClient = {
+  id: number
+  response: http.ServerResponse
+  keepAlive: NodeJS.Timeout
+}
+
+class RuntimeHttpError extends Error {
+  statusCode: number
+
+  constructor(statusCode: number, message: string) {
+    super(message)
+    this.statusCode = statusCode
+  }
+}
+
+function defaultStorageFile() {
+  return path.join(os.homedir(), '.orrery', 'orrery-runtime-state.json')
+}
+
+function runtimePort(value: unknown) {
+  const port = Number(value)
+  if (Number.isInteger(port) && port >= 0 && port <= 65535) {
+    return port
+  }
+
+  return defaultPort
+}
+
+function corsOriginsFromEnv() {
+  const configured = process.env.ORRERY_RUNTIME_CORS_ORIGINS
+  const origins = configured
+    ? configured
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean)
+    : []
+
+  return [
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+    ...origins,
+  ]
+}
+
+function isObject(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requestOrigin(request: http.IncomingMessage) {
+  const origin = request.headers.origin
+  return typeof origin === 'string' ? origin : undefined
+}
+
+function isAllowedOrigin(
+  request: http.IncomingMessage,
+  allowedOrigins: Set<string>
+) {
+  const origin = requestOrigin(request)
+  return !origin || allowedOrigins.has(origin)
+}
+
+function applyCors(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  allowedOrigins: Set<string>
+) {
+  const origin = requestOrigin(request)
+  if (origin && allowedOrigins.has(origin)) {
+    response.setHeader('Access-Control-Allow-Origin', origin)
+    response.setHeader('Vary', 'Origin')
+  }
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+  response.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type,Last-Event-ID'
+  )
+  response.setHeader('Access-Control-Max-Age', '600')
+}
+
+function sendJson(
+  response: http.ServerResponse,
+  statusCode: number,
+  value: unknown
+) {
+  response.writeHead(statusCode, { 'Content-Type': 'application/json' })
+  response.end(`${JSON.stringify(value)}\n`)
+}
+
+function sendError(
+  response: http.ServerResponse,
+  statusCode: number,
+  error: unknown
+) {
+  const message = error instanceof Error ? error.message : String(error)
+  sendJson(response, statusCode, { error: message })
+}
+
+function routePath(request: http.IncomingMessage) {
+  const parsed = new URL(request.url ?? '/', 'http://127.0.0.1')
+  return parsed.pathname
+}
+
+function decodeParam(value: string | undefined) {
+  return decodeURIComponent(value ?? '')
+}
+
+function compileRoutes(
+  runtime: RuntimeSessionManager,
+  config: JsonRecord
+): RuntimeRoute[] {
+  return [
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/config$/,
+      handler: () => config,
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/state$/,
+      handler: () => runtime.getState(),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/project-context$/,
+      handler: async (request) => runtime.getProjectContext(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions$/,
+      handler: async (request) => runtime.createSession(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/resume$/,
+      handler: async (request, params) =>
+        runtime.resumeSession({
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/archive$/,
+      handler: async (request, params) =>
+        runtime.archiveSession({
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/kill$/,
+      handler: (_request, params) => runtime.killSession(params.sessionId),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/requests\/([^/]+)\/respond$/,
+      handler: async (request, params) =>
+        runtime.respondRuntimeRequest({
+          ...(await readJsonBody(request)),
+          requestId: params.requestId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/user-input\/([^/]+)\/answer$/,
+      handler: async (request, params) =>
+        runtime.answerUserInput({
+          ...(await readJsonBody(request)),
+          requestId: params.requestId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters$/,
+      handler: async (request) => runtime.upsertCluster(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters\/([^/]+)\/master$/,
+      handler: async (request, params) =>
+        runtime.createMasterForCluster({
+          ...(await readJsonBody(request)),
+          clusterId: params.clusterId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters\/([^/]+)\/assign-master$/,
+      handler: async (request, params) =>
+        runtime.assignMasterToCluster({
+          ...(await readJsonBody(request)),
+          clusterId: params.clusterId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters\/([^/]+)\/loop-policy$/,
+      handler: async (request, params) =>
+        runtime.setClusterLoopPolicy({
+          ...(await readJsonBody(request)),
+          clusterId: params.clusterId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters\/([^/]+)\/start-loop$/,
+      handler: async (request, params) =>
+        runtime.startMasterLoop({
+          ...(await readJsonBody(request)),
+          clusterId: params.clusterId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/clusters\/([^/]+)\/stop-loop$/,
+      handler: async (request, params) =>
+        runtime.stopMasterLoop({
+          ...(await readJsonBody(request)),
+          clusterId: params.clusterId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/freeze$/,
+      handler: async (request) => runtime.freeze(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/node-positions$/,
+      handler: async (request) =>
+        runtime.updateNodePositions(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/working-tree-diff$/,
+      handler: async (request) =>
+        runtime.getWorkingTreeDiff(await readJsonBody(request)),
+    },
+  ]
+}
+
+function routeParams(pattern: RegExp, pathname: string) {
+  const match = pattern.exec(pathname)
+  if (!match) {
+    return undefined
+  }
+
+  if (pathname.includes('/sessions/') && match[1]) {
+    return { sessionId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/requests/') && match[1]) {
+    return { requestId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/user-input/') && match[1]) {
+    return { requestId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/clusters/') && match[1]) {
+    return { clusterId: decodeParam(match[1]) }
+  }
+
+  return {}
+}
+
+async function readJsonBody(request: http.IncomingMessage) {
+  let totalBytes = 0
+  const chunks: Buffer[] = []
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    totalBytes += buffer.byteLength
+    if (totalBytes > maxRequestBodyBytes) {
+      throw new Error('Request body exceeds 2MB')
+    }
+    chunks.push(buffer)
+  }
+
+  if (chunks.length === 0) {
+    return {}
+  }
+
+  const raw = Buffer.concat(chunks).toString('utf8')
+  if (raw.trim().length === 0) {
+    return {}
+  }
+
+  const contentType = request.headers['content-type']
+  if (
+    typeof contentType !== 'string' ||
+    !contentType.toLowerCase().includes('application/json')
+  ) {
+    throw new RuntimeHttpError(415, 'Request body must be application/json')
+  }
+
+  const parsed = JSON.parse(raw)
+  if (!isObject(parsed)) {
+    throw new Error('Request body must be a JSON object')
+  }
+
+  return parsed
+}
+
+function writeSseEvent(client: SseClient, id: number, event: JsonRecord) {
+  client.response.write(`id: ${id}\n`)
+  client.response.write('event: runtime\n')
+  client.response.write(`data: ${JSON.stringify(event)}\n\n`)
+}
+
+export function createRuntimeHttpServer(
+  options: RuntimeHttpServerOptions = {}
+): RuntimeHttpServer {
+  const clients = new Map<number, SseClient>()
+  let nextClientId = 1
+  let nextEventId = 1
+  const port = runtimePort(options.port ?? process.env.ORRERY_RUNTIME_HTTP_PORT)
+  const storageFile =
+    options.storageFile ??
+    process.env.ORRERY_RUNTIME_STORAGE_FILE ??
+    defaultStorageFile()
+  const allowedOrigins = new Set(options.corsOrigins ?? corsOriginsFromEnv())
+
+  const broadcastRuntimeEvent = (event: JsonRecord) => {
+    const eventId = nextEventId
+    nextEventId += 1
+    for (const client of clients.values()) {
+      writeSseEvent(client, eventId, event)
+    }
+  }
+
+  const runtime =
+    options.runtime ??
+    new RuntimeSessionManager({
+      storageFile,
+      broadcastRuntimeEvent,
+    })
+
+  const config = {
+    mode: 'node-http',
+    host: loopbackHost,
+    port,
+    baseUrl: `http://${loopbackHost}:${port}`,
+    eventsUrl: `http://${loopbackHost}:${port}/api/runtime/events`,
+    storageFile,
+    platform: process.platform,
+    workspace: {
+      defaultCwd: process.cwd(),
+    },
+  }
+  const routes = compileRoutes(runtime, config)
+
+  const server = http.createServer(async (request, response) => {
+    applyCors(request, response, allowedOrigins)
+
+    if (!isAllowedOrigin(request, allowedOrigins)) {
+      sendError(response, 403, 'Origin is not allowed')
+      return
+    }
+
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204)
+      response.end()
+      return
+    }
+
+    const pathname = routePath(request)
+    if (request.method === 'GET' && pathname === '/api/runtime/events') {
+      response.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      response.write(': connected\n\n')
+
+      const clientId = nextClientId
+      nextClientId += 1
+      const client: SseClient = {
+        id: clientId,
+        response,
+        keepAlive: setInterval(() => response.write(': keep-alive\n\n'), sseKeepAliveMs),
+      }
+      clients.set(clientId, client)
+      request.on('close', () => {
+        clearInterval(client.keepAlive)
+        clients.delete(client.id)
+      })
+      return
+    }
+
+    const route = routes.find((candidate) => {
+      if (candidate.method !== request.method) {
+        return false
+      }
+
+      return candidate.pattern.test(pathname)
+    })
+
+    if (!route) {
+      sendError(response, 404, 'Not found')
+      return
+    }
+
+    const params = routeParams(route.pattern, pathname) ?? {}
+
+    try {
+      const result = await route.handler(request, params)
+      sendJson(response, 200, result ?? { ok: true })
+    } catch (error) {
+      const statusCode =
+        error instanceof RuntimeHttpError
+          ? error.statusCode
+          : error instanceof SyntaxError ||
+        (error instanceof Error && error.message.includes('Request body'))
+          ? 400
+          : 500
+      sendError(response, statusCode, error)
+    }
+  })
+
+  return {
+    server,
+    runtime,
+    host: loopbackHost,
+    port,
+    listen: () =>
+      new Promise((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(port, loopbackHost, () => {
+          server.off('error', reject)
+          const address = server.address()
+          const actualPort =
+            typeof address === 'object' && address
+              ? address.port
+              : port
+          config.port = actualPort
+          config.baseUrl = `http://${loopbackHost}:${actualPort}`
+          config.eventsUrl = `${config.baseUrl}/api/runtime/events`
+          resolve({
+            host: loopbackHost,
+            port: actualPort,
+          })
+        })
+      }),
+    close: () =>
+      new Promise((resolve, reject) => {
+        for (const client of clients.values()) {
+          clearInterval(client.keepAlive)
+          client.response.end()
+        }
+        clients.clear()
+        server.close((error) => {
+          runtime.killAll()
+          if (error) {
+            reject(error)
+            return
+          }
+          resolve()
+        })
+      }),
+  }
+}
+
+export async function startRuntimeHttpServer(
+  options: RuntimeHttpServerOptions = {}
+) {
+  const runtimeServer = createRuntimeHttpServer(options)
+  const address = await runtimeServer.listen()
+  runtimeServer.port = address.port
+  return runtimeServer
+}
