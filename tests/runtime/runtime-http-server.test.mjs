@@ -28,6 +28,30 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const state = await stateResponse.json()
     assert.equal(state.version, 5)
     assert.deepEqual(state.nodes, [])
+    assert.equal(state.providerInstances.length, 3)
+
+    const providerResponse = await fetch(`${base}/api/runtime/provider-instances`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'http://127.0.0.1:5173',
+      },
+      body: JSON.stringify({
+        providerInstanceId: 'default-claude-sdk',
+        kind: 'claude-code',
+        label: 'Claude Local',
+        binaryPath: process.execPath,
+      }),
+    })
+    assert.equal(providerResponse.status, 200)
+    const providerResult = await providerResponse.json()
+    assert.equal(providerResult.providerInstance.label, 'Claude Local')
+    assert.equal(
+      providerResult.state.providerInstances.find(
+        (instance) => instance.providerInstanceId === 'default-claude-sdk'
+      )?.binaryPath,
+      process.execPath
+    )
 
     const contextResponse = await fetch(`${base}/api/runtime/project-context`, {
       method: 'POST',

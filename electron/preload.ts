@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:get-project-context', input),
     getProviderSetupStatus: (input) =>
       ipcRenderer.invoke('orrery:get-provider-setup-status', input),
+    upsertProviderInstance: (input) =>
+      ipcRenderer.invoke('orrery:upsert-provider-instance', input),
     chooseProjectFolder: () => ipcRenderer.invoke('orrery:choose-project-folder'),
     createSession: (input) => ipcRenderer.invoke('orrery:create-session', input),
     resumeSession: (input) => ipcRenderer.invoke('orrery:resume-session', input),

@@ -1,4 +1,5 @@
 import {
+  defaultGraphProviderInstances,
   graphStateVersion,
   type AgentStreamChunk,
   type GraphState,
@@ -181,6 +182,9 @@ export function createDemoGraphState(): GraphState {
   return {
     version: graphStateVersion,
     updatedAt: `${base}5:36.000Z`,
+    providerInstances: defaultGraphProviderInstances.map((instance) => ({
+      ...instance,
+    })),
     nodes: [
       {
         nodeId: 'sess-p1-accept',

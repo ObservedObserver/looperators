@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import {
   buildPath,
   claudeCommand,
@@ -16,6 +17,48 @@ function sdkMessageType(message) {
   }
 
   return message?.subtype ? `${message.type}:${message.subtype}` : message?.type
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function expandHomePath(value) {
+  if (!nonEmptyString(value)) {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (trimmed === '~') {
+    return os.homedir()
+  }
+  if (trimmed.startsWith('~/')) {
+    return `${os.homedir()}/${trimmed.slice(2)}`
+  }
+  return trimmed
+}
+
+function providerLaunchArgs(providerInstance) {
+  return Array.isArray(providerInstance?.launchArgs)
+    ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
+    : []
+}
+
+function providerEnv(providerInstance) {
+  const homePath = expandHomePath(providerInstance?.homePath)
+  return {
+    ...process.env,
+    ...(providerInstance?.env ?? {}),
+    PATH: buildPath(),
+    NO_COLOR: '1',
+    ...(homePath ? { HOME: homePath } : {}),
+  }
+}
+
+function providerClaudeCommand(providerInstance) {
+  return nonEmptyString(providerInstance?.binaryPath)
+    ? providerInstance.binaryPath.trim()
+    : claudeCommand()
 }
 
 function sdkMessageToLegacyEvent(message) {
@@ -588,7 +631,7 @@ class ClaudeAgentSdkSessionController {
     return true
   }
 
-  async #initialize({ cwd, backendSessionId, membrane }) {
+  async #initialize({ cwd, backendSessionId, membrane, providerInstance }) {
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
       this.#query = query({
@@ -596,7 +639,8 @@ class ClaudeAgentSdkSessionController {
         options: {
           cwd,
           resume: backendSessionId,
-          pathToClaudeCodeExecutable: claudeCommand(),
+          pathToClaudeCodeExecutable: providerClaudeCommand(providerInstance),
+          extraArgs: providerLaunchArgs(providerInstance),
           includePartialMessages: true,
           strictMcpConfig: false,
           canUseTool: (toolName, toolInput, options) =>
@@ -612,11 +656,7 @@ class ClaudeAgentSdkSessionController {
               }
             : undefined,
           abortController: this.#abortController,
-          env: {
-            ...process.env,
-            PATH: buildPath(),
-            NO_COLOR: '1',
-          },
+          env: providerEnv(providerInstance),
         },
       })
 

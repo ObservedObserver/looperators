@@ -219,6 +219,234 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
   }
 })
 
+test('compiled RuntimeSessionManager persists provider instance settings', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-settings-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const fakeCodex = path.join(tempRoot, 'codex')
+  fs.writeFileSync(fakeCodex, '#!/bin/sh\nexit 0\n')
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const manager = new RuntimeSessionManager({ storageFile })
+
+  try {
+    const initialState = manager.getState()
+    assert.equal(initialState.providerInstances.length, 3)
+    assert.ok(
+      initialState.providerInstances.some(
+        (instance) => instance.providerInstanceId === 'default-codex'
+      )
+    )
+
+    const result = manager.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex Local',
+      binaryPath: fakeCodex,
+      homePath: path.join(tempRoot, 'codex-home'),
+      shadowHomePath: path.join(tempRoot, 'codex-shadow-home'),
+      launchArgs: ['app-server', '--experimental'],
+    })
+    assert.equal(result.providerInstance.label, 'Codex Local')
+    assert.equal(result.providerInstance.binaryPath, fakeCodex)
+
+    const setup = manager.getProviderSetupStatus({
+      providerKind: 'codex',
+      providerInstanceId: 'default-codex',
+      cwd: tempRoot,
+    })
+    assert.equal(setup.providerInstanceId, 'default-codex')
+    assert.equal(
+      setup.checks.find((check) => check.id === 'binary')?.status,
+      'ok'
+    )
+    assert.equal(
+      setup.checks.find((check) => check.id === 'binary')?.detail,
+      fakeCodex
+    )
+
+    const restored = new RuntimeSessionManager({ storageFile })
+    const restoredCodex = restored
+      .getState()
+      .providerInstances.find(
+        (instance) => instance.providerInstanceId === 'default-codex'
+      )
+    assert.equal(restoredCodex?.label, 'Codex Local')
+    assert.deepEqual(restoredCodex?.launchArgs, ['app-server', '--experimental'])
+
+    const cleared = restored.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Codex Default',
+    })
+    assert.equal(cleared.providerInstance.binaryPath, undefined)
+    assert.equal(cleared.providerInstance.homePath, undefined)
+    assert.equal(cleared.providerInstance.shadowHomePath, undefined)
+    assert.equal(cleared.providerInstance.launchArgs, undefined)
+    assert.throws(
+      () =>
+        restored.getProviderSetupStatus({
+          providerKind: 'codex',
+          providerInstanceId: 'missing-codex',
+          cwd: tempRoot,
+        }),
+      /Unknown provider instance/
+    )
+    assert.throws(
+      () =>
+        restored.getProviderSetupStatus({
+          providerKind: 'codex',
+          providerInstanceId: 'default-claude-sdk',
+          cwd: tempRoot,
+        }),
+      /not codex/
+    )
+    assert.throws(
+      () =>
+        restored.upsertProviderInstance({
+          providerInstanceId: 'bad-kind',
+          kind: 'not-a-provider',
+          label: 'Bad',
+        }),
+      /Unsupported provider instance kind/
+    )
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager migrates kind-style provider instance ids', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-migration-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  fs.writeFileSync(
+    storageFile,
+    JSON.stringify(
+      {
+        version: 5,
+        updatedAt: '2026-06-29T00:00:00.000Z',
+        providerInstances: [],
+        nodes: [
+          {
+            nodeId: 'sess-old-codex',
+            sessionId: 'sess-old-codex',
+            label: 'Old Codex',
+            role: 'worker',
+            agent: 'codex',
+            status: 'idle',
+            position: { x: 0, y: 0 },
+          },
+        ],
+        edges: [],
+        sessions: {
+          'sess-old-codex': {
+            sessionId: 'sess-old-codex',
+            nodeId: 'sess-old-codex',
+            backend: 'codex-app-server',
+            providerKind: 'codex',
+            providerInstanceId: 'codex',
+            agent: 'codex',
+            label: 'Old Codex',
+            prompt: 'old',
+            cwd: tempRoot,
+            role: 'worker',
+            status: 'idle',
+            createdAt: '2026-06-29T00:00:00.000Z',
+            updatedAt: '2026-06-29T00:00:00.000Z',
+            chunks: [],
+            messages: [],
+            nativeEvents: [],
+            runtimeEvents: [],
+            runtimeActivities: [],
+            runtimeRequests: [],
+            runtimeUserInputRequests: [],
+            runtimePlans: [],
+          },
+        },
+        clusters: {},
+        reports: [],
+      },
+      null,
+      2
+    )
+  )
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    assert.equal(
+      runtime.getState().sessions['sess-old-codex'].providerInstanceId,
+      'default-codex'
+    )
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager launches legacy provider through saved provider instance binary', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-launch-'))
+  const fakeClaude = path.join(tempRoot, 'claude')
+  const markerFile = path.join(tempRoot, 'launched.json')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(
+    fakeClaude,
+    `#!/usr/bin/env node
+const fs = require('node:fs')
+fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify({
+  argv: process.argv.slice(2),
+  home: process.env.HOME,
+  custom: process.env.ORRERY_PROVIDER_TEST
+}))
+process.stdout.write(JSON.stringify({
+  type: 'assistant',
+  session_id: 'provider-profile-session',
+  message: { content: [{ type: 'text', text: 'provider profile launched' }] }
+}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'result',
+  session_id: 'provider-profile-session',
+  result: 'done'
+}) + '\\n')
+`
+  )
+  fs.chmodSync(fakeClaude, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'legacy-claude-cli',
+      kind: 'legacy-claude-cli',
+      label: 'Legacy Profile',
+      binaryPath: fakeClaude,
+      homePath: tempRoot,
+      launchArgs: ['--profile-flag'],
+      env: { ORRERY_PROVIDER_TEST: 'yes' },
+    })
+    const created = await runtime.createSession({
+      prompt: 'launch through provider profile',
+      providerKind: 'legacy-claude-cli',
+      cwd: project,
+    })
+
+    await waitFor(
+      'provider profile session idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
+    assert.equal(marker.home, tempRoot)
+    assert.equal(marker.custom, 'yes')
+    assert.equal(marker.argv.includes('--profile-flag'), true)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-turn-diff-test-'))
   const fakeClaude = path.join(tempRoot, 'claude')

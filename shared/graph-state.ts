@@ -17,6 +17,24 @@ export const graphEdgeKinds = [
   'freeze',
 ]
 
+export const defaultGraphProviderInstances = [
+  {
+    providerInstanceId: 'default-claude-sdk',
+    kind: 'claude-code',
+    label: 'Claude SDK',
+  },
+  {
+    providerInstanceId: 'default-codex',
+    kind: 'codex',
+    label: 'Codex',
+  },
+  {
+    providerInstanceId: 'legacy-claude-cli',
+    kind: 'legacy-claude-cli',
+    label: 'Claude CLI',
+  },
+]
+
 export const graphStateSchema = {
   version: graphStateVersion,
   invariants: ['nodeId === sessionId'],
@@ -29,6 +47,7 @@ export const graphStateSchema = {
     nodes: 'GraphNode[]',
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
+    providerInstances: 'ProviderInstance[]; local provider runtime profiles',
     clusters:
       'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
@@ -133,10 +152,24 @@ export const graphStateSchema = {
     getProviderSetupStatus: {
       input: {
         providerKind: 'ProviderKind; provider selected in the chat setup UI',
+        providerInstanceId:
+          'string?; provider instance selected in provider settings',
         cwd: 'string?; optional project cwd to validate against provider access',
       },
       output:
         'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
+    },
+    upsertProviderInstance: {
+      input: {
+        providerInstanceId: 'string; stable provider instance id',
+        kind: 'ProviderKind',
+        label: 'string',
+        binaryPath: 'string?',
+        homePath: 'string?',
+        shadowHomePath: 'string?',
+        launchArgs: 'string[]?',
+      },
+      output: '{ providerInstance: ProviderInstance; state: GraphState }',
     },
     createMasterForCluster: {
       input: {
@@ -158,6 +191,7 @@ export const graphStateSchema = {
   },
   runtimeEvents: [
     'runtime.state',
+    'provider.instances.updated',
     'session.created',
     'session.resumed',
     'session.stream',
@@ -212,6 +246,9 @@ export function createEmptyGraphState() {
     nodes: [],
     edges: [],
     sessions: {},
+    providerInstances: defaultGraphProviderInstances.map((instance) => ({
+      ...instance,
+    })),
     clusters: {},
     reports: [],
   }

@@ -91,6 +91,23 @@ const supportedAttachmentImageMimeTypes = new Set([
   'image/gif',
   'image/webp',
 ])
+const defaultProviderInstances = [
+  {
+    providerInstanceId: 'default-claude-sdk',
+    kind: 'claude-code',
+    label: 'Claude SDK',
+  },
+  {
+    providerInstanceId: 'default-codex',
+    kind: 'codex',
+    label: 'Codex',
+  },
+  {
+    providerInstanceId: 'legacy-claude-cli',
+    kind: 'legacy-claude-cli',
+    label: 'Claude CLI',
+  },
+]
 
 type JsonRecord = Record<string, any>
 type RuntimeEventEmitter = (event: JsonRecord) => void
@@ -749,12 +766,20 @@ function providerConfig(input: JsonRecord = {}) {
   }
 }
 
-function commandForProvider(providerKind) {
+function defaultCommandForProvider(providerKind) {
   if (providerKind === 'codex') {
     return process.env.ORRERY_CODEX_BIN || 'codex'
   }
 
   return claudeCommand()
+}
+
+function commandForProviderInstance(providerKind, providerInstance) {
+  if (nonEmptyString(providerInstance?.binaryPath)) {
+    return providerInstance.binaryPath.trim()
+  }
+
+  return defaultCommandForProvider(providerKind)
 }
 
 function commandExists(command) {
@@ -797,6 +822,143 @@ function providerSetupErrorDiagnostic(providerKind, diagnostics = []) {
   return diagnostics.find((diagnostic) =>
     providerPattern.test(`${diagnostic.type} ${diagnostic.message}`)
   )
+}
+
+function defaultProviderInstanceForKind(providerKind) {
+  return (
+    defaultProviderInstances.find((instance) => instance.kind === providerKind) ??
+    defaultProviderInstances[0]
+  )
+}
+
+function normalizeSessionProviderInstanceId(providerKind, providerInstanceId) {
+  const id = optionalTrimmedString(providerInstanceId)
+  if (!id) {
+    return defaultProviderInstanceForKind(providerKind).providerInstanceId
+  }
+  if (validProviderKinds.has(id)) {
+    return defaultProviderInstanceForKind(id).providerInstanceId
+  }
+  return id
+}
+
+function normalizeLaunchArgs(value) {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split('\n')
+      : []
+
+  return values
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter(Boolean)
+}
+
+function normalizeEnv(value) {
+  if (!isObject(value)) {
+    return undefined
+  }
+
+  const entries = Object.entries(value)
+    .map(([key, entryValue]) => [
+      key.trim(),
+      typeof entryValue === 'string' ? entryValue : String(entryValue),
+    ])
+    .filter(([key]) => key.length > 0)
+
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+function optionalTrimmedString(value) {
+  return nonEmptyString(value) ? value.trim() : undefined
+}
+
+function normalizeProviderInstance(
+  value: JsonRecord = {},
+  fallback?: JsonRecord,
+  { reuseOptionalFallback = true }: { reuseOptionalFallback?: boolean } = {}
+) {
+  const input = isObject(value) ? value : {}
+  const fallbackInstance = isObject(fallback) ? fallback : undefined
+  const providerInstanceId =
+    optionalTrimmedString(input.providerInstanceId) ??
+    optionalTrimmedString(fallbackInstance?.providerInstanceId)
+  if (!providerInstanceId) {
+    throw new Error('Provider instance id is required.')
+  }
+
+  const kind = validProviderKinds.has(input.kind)
+    ? input.kind
+    : validProviderKinds.has(fallbackInstance?.kind)
+      ? fallbackInstance.kind
+      : defaultProviderInstanceForKind('claude-code').kind
+  if (fallbackInstance && fallbackInstance.kind !== kind) {
+    throw new Error(
+      `Provider instance ${providerInstanceId} is ${fallbackInstance.kind}, not ${kind}.`
+    )
+  }
+
+  const label =
+    optionalTrimmedString(input.label) ??
+    optionalTrimmedString(fallbackInstance?.label) ??
+    providerInstanceId
+  const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(input, key)
+  const optionalValue = (key: string) =>
+    hasOwn(key)
+      ? input[key]
+      : reuseOptionalFallback
+        ? fallbackInstance?.[key]
+        : undefined
+  const launchArgs = normalizeLaunchArgs(optionalValue('launchArgs'))
+  const env = normalizeEnv(optionalValue('env'))
+  const normalized: JsonRecord = {
+    providerInstanceId,
+    kind,
+    label,
+  }
+
+  for (const key of ['binaryPath', 'homePath', 'shadowHomePath']) {
+    const valueForKey = optionalTrimmedString(optionalValue(key))
+    if (valueForKey) {
+      normalized[key] = valueForKey
+    }
+  }
+  if (launchArgs.length > 0) {
+    normalized.launchArgs = launchArgs
+  }
+  if (env) {
+    normalized.env = env
+  }
+
+  return normalized
+}
+
+function normalizeProviderInstances(value) {
+  const byId = new Map<string, JsonRecord>(
+    defaultProviderInstances.map((instance) => [
+      instance.providerInstanceId,
+      { ...instance },
+    ])
+  )
+  const sourceInstances = Array.isArray(value) ? value : []
+
+  for (const sourceInstance of sourceInstances) {
+    if (!isObject(sourceInstance)) {
+      continue
+    }
+    const id = optionalTrimmedString(sourceInstance.providerInstanceId)
+    if (!id) {
+      continue
+    }
+    const existing = byId.get(id)
+    try {
+      byId.set(id, normalizeProviderInstance(sourceInstance, existing))
+    } catch {
+      // Invalid persisted provider instances are ignored; defaults keep the UI usable.
+    }
+  }
+
+  return [...byId.values()]
 }
 
 function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
@@ -865,7 +1027,9 @@ export class RuntimeSessionManager {
     this.#bridge = new MembraneBridge({
       handler: (request) => this.handleMembraneRequest(request),
     })
-    this.#providerService = new ProviderService()
+    this.#providerService = new ProviderService({
+      providerInstances: this.#state.providerInstances,
+    })
     this.#persistState()
     this.#recoverRunningLoops()
   }
@@ -892,10 +1056,28 @@ export class RuntimeSessionManager {
 
   getProviderSetupStatus(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
-    const providerKind = validProviderKinds.has(request.providerKind)
+    const requestedProviderKind = validProviderKinds.has(request.providerKind)
       ? request.providerKind
       : 'legacy-claude-cli'
-    const command = commandForProvider(providerKind)
+    const requestedInstanceId = optionalTrimmedString(request.providerInstanceId)
+    const requestedInstance = requestedInstanceId
+      ? this.#state.providerInstances.find(
+          (instance) => instance.providerInstanceId === requestedInstanceId
+        )
+      : undefined
+    if (requestedInstanceId && !requestedInstance) {
+      throw new Error(`Unknown provider instance: ${requestedInstanceId}`)
+    }
+    if (requestedInstance && requestedInstance.kind !== requestedProviderKind) {
+      throw new Error(
+        `Provider instance ${requestedInstance.providerInstanceId} is ${requestedInstance.kind}, not ${requestedProviderKind}.`
+      )
+    }
+    const providerKind = requestedProviderKind
+    const providerInstance =
+      requestedInstance ??
+      this.#state.providerInstances.find((instance) => instance.kind === providerKind)
+    const command = commandForProviderInstance(providerKind, providerInstance)
     const binary = commandExists(command)
     const cwd = nonEmptyString(request.cwd) ? safeCwd(request.cwd) : process.cwd()
     const cwdValid = isValidCwd(cwd)
@@ -906,6 +1088,7 @@ export class RuntimeSessionManager {
 
     return {
       providerKind,
+      providerInstanceId: providerInstance?.providerInstanceId,
       generatedAt: now(),
       checks: [
         {
@@ -913,6 +1096,15 @@ export class RuntimeSessionManager {
           label: 'Runtime',
           status: 'ok',
           message: 'Orrery runtime is connected.',
+        },
+        {
+          id: 'provider-instance',
+          label: 'Provider profile',
+          status: providerInstance ? 'ok' : 'warning',
+          message: providerInstance
+            ? `Using ${providerInstance.label}.`
+            : `No saved provider profile for ${providerKind}; using runtime defaults.`,
+          detail: providerInstance?.providerInstanceId,
         },
         {
           id: 'binary',
@@ -951,6 +1143,42 @@ export class RuntimeSessionManager {
         },
       ],
     }
+  }
+
+  upsertProviderInstance(input: JsonRecord = {}) {
+    if (!validProviderKinds.has(input.kind)) {
+      throw new Error(`Unsupported provider instance kind: ${String(input.kind)}`)
+    }
+    const requestedId = optionalTrimmedString(input.providerInstanceId)
+    const existing = requestedId
+      ? this.#state.providerInstances.find(
+          (instance) => instance.providerInstanceId === requestedId
+        )
+      : undefined
+    const normalizedInput = {
+      ...input,
+      providerInstanceId:
+        requestedId ??
+        defaultProviderInstanceForKind(input.kind).providerInstanceId,
+    }
+    const providerInstance = normalizeProviderInstance(normalizedInput, existing, {
+      reuseOptionalFallback: false,
+    })
+    const nextInstances = [...this.#state.providerInstances]
+    const index = nextInstances.findIndex(
+      (instance) => instance.providerInstanceId === providerInstance.providerInstanceId
+    )
+    if (index >= 0) {
+      nextInstances[index] = providerInstance
+    } else {
+      nextInstances.push(providerInstance)
+    }
+
+    this.#state.providerInstances = nextInstances
+    this.#providerService.registerProviderInstance(providerInstance)
+    this.#touch()
+    this.#broadcast({ type: 'provider.instances.updated', state: this.getState() })
+    return { providerInstance: clone(providerInstance), state: this.getState() }
   }
 
   async createSession(input: JsonRecord = {}) {
@@ -4089,6 +4317,7 @@ export class RuntimeSessionManager {
         ? source.edges.map((edge) => this.#normalizeEdge(edge))
         : [],
       sessions: {},
+      providerInstances: normalizeProviderInstances(source.providerInstances),
       clusters: isObject(source.clusters) ? this.#normalizeClusters(source.clusters) : {},
       reports: Array.isArray(source.reports)
         ? source.reports.map((report) => this.#normalizeReport(report))
@@ -4277,9 +4506,10 @@ export class RuntimeSessionManager {
         ? value.backendSessionId
         : sessionId,
       providerKind,
-      providerInstanceId: nonEmptyString(value.providerInstanceId)
-        ? value.providerInstanceId
-        : providerKind,
+      providerInstanceId: normalizeSessionProviderInstanceId(
+        providerKind,
+        value.providerInstanceId
+      ),
       providerSessionId: nonEmptyString(value.providerSessionId)
         ? value.providerSessionId
         : nonEmptyString(value.backendSessionId)

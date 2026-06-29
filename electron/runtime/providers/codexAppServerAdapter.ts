@@ -212,6 +212,7 @@ export class CodexAppServerRun extends EventEmitter {
   #sessionId
   #turnCompleted = false
   #pendingRequests = new Map()
+  #providerInstance
 
   constructor({
     prompt,
@@ -221,11 +222,13 @@ export class CodexAppServerRun extends EventEmitter {
     turnId,
     runtimeSettings,
     attachments,
+    providerInstance,
   }) {
     super()
     this.#threadId = backendSessionId
     this.#orreryTurnId = turnId
     this.#sessionId = sessionId
+    this.#providerInstance = providerInstance
     void this.#run({ prompt, attachments, cwd, runtimeSettings })
   }
 
@@ -277,7 +280,10 @@ export class CodexAppServerRun extends EventEmitter {
     let signal = null
 
     try {
-      this.#client = new CodexJsonRpcClient({ cwd })
+      this.#client = new CodexJsonRpcClient({
+        cwd,
+        providerInstance: this.#providerInstance,
+      })
       this.#wireClient()
       await this.#client.request(
         'initialize',

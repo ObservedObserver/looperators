@@ -57,6 +57,9 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:get-provider-setup-status', (_event, input) =>
     runtime.getProviderSetupStatus(input)
   )
+  ipcMain.handle('orrery:upsert-provider-instance', (_event, input) =>
+    runtime.upsertProviderInstance(input)
+  )
   ipcMain.handle('orrery:choose-project-folder', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openDirectory'],

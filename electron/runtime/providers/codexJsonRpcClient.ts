@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
+import os from 'node:os'
 
 function codexCommand() {
   return process.env.ORRERY_CODEX_BIN || 'codex'
@@ -19,6 +20,46 @@ function buildPath() {
     .join(':')
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function expandHomePath(value) {
+  if (!nonEmptyString(value)) {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (trimmed === '~') {
+    return os.homedir()
+  }
+  if (trimmed.startsWith('~/')) {
+    return `${os.homedir()}/${trimmed.slice(2)}`
+  }
+  return trimmed
+}
+
+function launchArgs(providerInstance) {
+  return Array.isArray(providerInstance?.launchArgs)
+    ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
+    : []
+}
+
+function codexEnv(providerInstance) {
+  const homePath = expandHomePath(providerInstance?.homePath)
+  const shadowHomePath = expandHomePath(providerInstance?.shadowHomePath)
+  return {
+    ...process.env,
+    ...(providerInstance?.env ?? {}),
+    PATH: buildPath(),
+    NO_COLOR: '1',
+    ...(homePath ? { ORRERY_CODEX_SHARED_HOME: homePath } : {}),
+    ...(shadowHomePath || homePath
+      ? { CODEX_HOME: shadowHomePath ?? homePath }
+      : {}),
+  }
+}
+
 export class CodexJsonRpcClient extends EventEmitter {
   #child
   #buffer = ''
@@ -26,17 +67,26 @@ export class CodexJsonRpcClient extends EventEmitter {
   #pending = new Map()
   #closed = false
 
-  constructor({ cwd }: { cwd?: string } = {}) {
+  constructor({
+    cwd,
+    providerInstance,
+  }: {
+    cwd?: string
+    providerInstance?: any
+  } = {}) {
     super()
-    this.#child = spawn(codexCommand(), ['app-server', '--listen', 'stdio://'], {
-      cwd,
-      env: {
-        ...process.env,
-        PATH: buildPath(),
-        NO_COLOR: '1',
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+    const command = nonEmptyString(providerInstance?.binaryPath)
+      ? providerInstance.binaryPath.trim()
+      : codexCommand()
+    this.#child = spawn(
+      command,
+      ['app-server', '--listen', 'stdio://', ...launchArgs(providerInstance)],
+      {
+        cwd,
+        env: codexEnv(providerInstance),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }
+    )
 
     this.#child.stdout.setEncoding('utf8')
     this.#child.stderr.setEncoding('utf8')

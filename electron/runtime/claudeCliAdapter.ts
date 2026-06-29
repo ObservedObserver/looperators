@@ -55,6 +55,48 @@ function getEventType(event) {
   return event?.type
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function expandHomePath(value) {
+  if (!nonEmptyString(value)) {
+    return undefined
+  }
+
+  const trimmed = value.trim()
+  if (trimmed === '~') {
+    return os.homedir()
+  }
+  if (trimmed.startsWith('~/')) {
+    return path.join(os.homedir(), trimmed.slice(2))
+  }
+  return trimmed
+}
+
+function providerBinaryPath(providerInstance) {
+  return nonEmptyString(providerInstance?.binaryPath)
+    ? providerInstance.binaryPath.trim()
+    : claudeCommand()
+}
+
+function providerLaunchArgs(providerInstance) {
+  return Array.isArray(providerInstance?.launchArgs)
+    ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
+    : []
+}
+
+function providerEnv(providerInstance) {
+  const homePath = expandHomePath(providerInstance?.homePath)
+  return {
+    ...process.env,
+    ...(providerInstance?.env ?? {}),
+    PATH: buildPath(),
+    NO_COLOR: '1',
+    ...(homePath ? { HOME: homePath } : {}),
+  }
+}
+
 export function membraneSystemPrompt() {
   return [
     'You are running inside Orrery.',
@@ -152,27 +194,26 @@ export class ClaudeCliRun extends EventEmitter {
   #killTimer
   #mcpHandoff
 
-  constructor({ prompt, cwd, backendSessionId, sessionId, membrane }) {
+  constructor({ prompt, cwd, backendSessionId, sessionId, membrane, providerInstance }) {
     super()
 
     this.#mcpHandoff = membrane ? createMcpHandoff(membrane) : undefined
 
     try {
       this.#child = spawn(
-        claudeCommand(),
-        buildClaudeArgs({
-          prompt,
-          backendSessionId,
-          sessionId,
-          mcpConfigPath: this.#mcpHandoff?.configPath,
-        }),
+        providerBinaryPath(providerInstance),
+        [
+          ...providerLaunchArgs(providerInstance),
+          ...buildClaudeArgs({
+            prompt,
+            backendSessionId,
+            sessionId,
+            mcpConfigPath: this.#mcpHandoff?.configPath,
+          }),
+        ],
         {
           cwd,
-          env: {
-            ...process.env,
-            PATH: buildPath(),
-            NO_COLOR: '1',
-          },
+          env: providerEnv(providerInstance),
           stdio: ['ignore', 'pipe', 'pipe'],
         }
       )

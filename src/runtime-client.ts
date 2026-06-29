@@ -21,10 +21,12 @@ import type {
   StartMasterLoopInput,
   StopMasterLoopInput,
   UpdateNodePositionsInput,
+  UpsertProviderInstanceInput,
   UpsertClusterInput,
   WorkingTreeDiffInput,
   WorkingTreeDiffResult,
 } from '@/shared/graph-state'
+import type { ProviderInstance } from '@/shared/provider-runtime'
 
 const defaultRuntimeUrl = 'http://127.0.0.1:5174'
 
@@ -43,6 +45,9 @@ export type RuntimeApi = {
   getProviderSetupStatus: (
     input: ProviderSetupStatusInput
   ) => Promise<ProviderSetupStatus>
+  upsertProviderInstance: (
+    input: UpsertProviderInstanceInput
+  ) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>
   chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>
   createSession: (
     input: CreateRuntimeSessionInput
@@ -150,6 +155,7 @@ let cachedHttpRuntimeClient: HttpRuntimeClient | undefined
 
 const runtimeEventTypes: RuntimeEvent['type'][] = [
   'runtime.state',
+  'provider.instances.updated',
   'session.created',
   'session.resumed',
   'session.stream',
@@ -282,6 +288,13 @@ class HttpRuntimeApi implements RuntimeApi {
 
   getProviderSetupStatus(input: ProviderSetupStatusInput) {
     return this.#post<ProviderSetupStatus>('provider-setup-status', input)
+  }
+
+  upsertProviderInstance(input: UpsertProviderInstanceInput) {
+    return this.#post<{ providerInstance: ProviderInstance; state: GraphState }>(
+      'provider-instances',
+      input
+    )
   }
 
   async chooseProjectFolder() {

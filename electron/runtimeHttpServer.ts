@@ -172,6 +172,12 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/provider-instances$/,
+      handler: async (request) =>
+        runtime.upsertProviderInstance(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/sessions$/,
       handler: async (request) => runtime.createSession(await readJsonBody(request)),
     },

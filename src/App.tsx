@@ -97,6 +97,7 @@ import {
 import type {
   ChatAttachment,
   NativeProviderEvent,
+  ProviderInstance,
   ProviderKind,
   ProviderReasoningEffort,
   ProviderRuntimeEvent,
@@ -442,6 +443,67 @@ function providerOption(providerKind: ProviderKind) {
     providerOptions.find((option) => option.id === providerKind) ??
     providerOptions[0]
   )
+}
+
+function defaultProviderInstanceIdForKind(providerKind: ProviderKind) {
+  switch (providerKind) {
+    case 'codex':
+      return 'default-codex'
+    case 'legacy-claude-cli':
+      return 'legacy-claude-cli'
+    case 'claude-code':
+    default:
+      return 'default-claude-sdk'
+  }
+}
+
+function fallbackProviderInstance(providerKind: ProviderKind): ProviderInstance {
+  const provider = providerOption(providerKind)
+  return {
+    providerInstanceId: defaultProviderInstanceIdForKind(providerKind),
+    kind: providerKind,
+    label: provider.label,
+  }
+}
+
+function providerInstanceForKind(
+  providerInstances: ProviderInstance[],
+  providerKind: ProviderKind
+) {
+  return (
+    providerInstances.find((instance) => instance.kind === providerKind) ??
+    fallbackProviderInstance(providerKind)
+  )
+}
+
+function launchArgsText(instance: ProviderInstance) {
+  return (instance.launchArgs ?? []).join('\n')
+}
+
+function providerInstanceFromDraft(input: {
+  instance: ProviderInstance
+  label: string
+  binaryPath: string
+  homePath: string
+  shadowHomePath: string
+  launchArgs: string
+}): ProviderInstance {
+  const launchArgs = input.launchArgs
+    .split('\n')
+    .map((arg) => arg.trim())
+    .filter(Boolean)
+  return {
+    providerInstanceId: input.instance.providerInstanceId,
+    kind: input.instance.kind,
+    label: input.label.trim() || input.instance.label,
+    ...(input.binaryPath.trim() ? { binaryPath: input.binaryPath.trim() } : {}),
+    ...(input.homePath.trim() ? { homePath: input.homePath.trim() } : {}),
+    ...(input.shadowHomePath.trim()
+      ? { shadowHomePath: input.shadowHomePath.trim() }
+      : {}),
+    ...(launchArgs.length ? { launchArgs } : {}),
+    ...(input.instance.env ? { env: input.instance.env } : {}),
+  }
 }
 
 function providerRuntimeSettingsDraft({
@@ -3220,20 +3282,172 @@ function providerSetupCheckClassName(status: ProviderSetupStatus['checks'][numbe
   }
 }
 
+function ProviderInstanceSettingsPanel({
+  providerKind,
+  providerInstances,
+  disabled,
+  savingInstanceId,
+  error,
+  onSave,
+}: {
+  providerKind: ProviderKind
+  providerInstances: ProviderInstance[]
+  disabled?: boolean
+  savingInstanceId?: string
+  error?: string
+  onSave: (instance: ProviderInstance) => void
+}) {
+  const instance = providerInstanceForKind(providerInstances, providerKind)
+  const instanceId = instance.providerInstanceId
+  const instanceLabel = instance.label
+  const instanceBinaryPath = instance.binaryPath ?? ''
+  const instanceHomePath = instance.homePath ?? ''
+  const instanceShadowHomePath = instance.shadowHomePath ?? ''
+  const instanceLaunchArgs = launchArgsText(instance)
+  const [label, setLabel] = useState(instanceLabel)
+  const [binaryPath, setBinaryPath] = useState(instanceBinaryPath)
+  const [homePath, setHomePath] = useState(instanceHomePath)
+  const [shadowHomePath, setShadowHomePath] = useState(instanceShadowHomePath)
+  const [launchArgs, setLaunchArgs] = useState(instanceLaunchArgs)
+  const isSaving = savingInstanceId === instance.providerInstanceId
+
+  useEffect(() => {
+    setLabel(instanceLabel)
+    setBinaryPath(instanceBinaryPath)
+    setHomePath(instanceHomePath)
+    setShadowHomePath(instanceShadowHomePath)
+    setLaunchArgs(instanceLaunchArgs)
+  }, [
+    instanceBinaryPath,
+    instanceHomePath,
+    instanceId,
+    instanceLabel,
+    instanceLaunchArgs,
+    instanceShadowHomePath,
+  ])
+
+  return (
+    <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
+      <div className="mb-2 flex min-w-0 items-center gap-2">
+        <Bot className="size-3.5 shrink-0 text-lime-hi" />
+        <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-[0.12em] text-term-dim2">
+          Provider profile
+        </span>
+        <span className="truncate text-[10.5px] text-term-faint" title={instance.providerInstanceId}>
+          {instance.providerInstanceId}
+        </span>
+      </div>
+
+      <div className="grid gap-2">
+        <label className="grid gap-1">
+          <TermLabel>label</TermLabel>
+          <input
+            className={termInputCls}
+            value={label}
+            disabled={disabled || isSaving}
+            onChange={(event) => setLabel(event.target.value)}
+          />
+        </label>
+
+        <label className="grid gap-1">
+          <TermLabel>binary path</TermLabel>
+          <input
+            className={termInputCls}
+            value={binaryPath}
+            disabled={disabled || isSaving}
+            placeholder={providerKind === 'codex' ? 'codex' : 'claude'}
+            onChange={(event) => setBinaryPath(event.target.value)}
+          />
+        </label>
+
+        <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2">
+          <label className="grid gap-1">
+            <TermLabel>home path</TermLabel>
+            <input
+              className={termInputCls}
+              value={homePath}
+              disabled={disabled || isSaving}
+              placeholder="provider default"
+              onChange={(event) => setHomePath(event.target.value)}
+            />
+          </label>
+
+          <label className="grid gap-1">
+            <TermLabel>{providerKind === 'codex' ? 'shadow home' : 'state path'}</TermLabel>
+            <input
+              className={termInputCls}
+              value={shadowHomePath}
+              disabled={disabled || isSaving || providerKind !== 'codex'}
+              placeholder={providerKind === 'codex' ? 'optional' : 'Codex only'}
+              onChange={(event) => setShadowHomePath(event.target.value)}
+            />
+          </label>
+        </div>
+
+        <label className="grid gap-1">
+          <TermLabel>launch args</TermLabel>
+          <textarea
+            className={cn(termTextareaCls, 'min-h-16 resize-y text-[11.5px] leading-5')}
+            value={launchArgs}
+            disabled={disabled || isSaving}
+            placeholder="one argument per line"
+            onChange={(event) => setLaunchArgs(event.target.value)}
+          />
+        </label>
+
+        {error ? (
+          <div className="rounded-md border border-term-rose/35 bg-term-rose/10 px-2 py-1.5 text-[11px] leading-4 text-term-rose">
+            {error}
+          </div>
+        ) : null}
+
+        <Button
+          className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
+          size="sm"
+          disabled={disabled || isSaving}
+          onClick={() =>
+            onSave(
+              providerInstanceFromDraft({
+                instance,
+                label,
+                binaryPath,
+                homePath,
+                shadowHomePath: providerKind === 'codex' ? shadowHomePath : '',
+                launchArgs,
+              })
+            )
+          }
+        >
+          <Check className="size-3.5" />
+          <span>{isSaving ? 'Saving...' : 'Save profile'}</span>
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function ProviderSetupDiagnostics({
   isRuntimeAvailable,
   runtimeStatusText,
   providerKind,
+  providerInstances,
   runtimeError,
   setupStatus,
   isLoadingSetupStatus,
+  savingProviderInstanceId,
+  providerInstanceError,
+  onSaveProviderInstance,
 }: {
   isRuntimeAvailable: boolean
   runtimeStatusText: string
   providerKind: ProviderKind
+  providerInstances: ProviderInstance[]
   runtimeError?: string
   setupStatus?: ProviderSetupStatus
   isLoadingSetupStatus?: boolean
+  savingProviderInstanceId?: string
+  providerInstanceError?: string
+  onSaveProviderInstance: (instance: ProviderInstance) => void
 }) {
   const provider = providerOption(providerKind)
   const hints = providerSetupHints(providerKind)
@@ -3258,6 +3472,15 @@ function ProviderSetupDiagnostics({
       </div>
 
       <div className="space-y-2">
+        <ProviderInstanceSettingsPanel
+          providerKind={providerKind}
+          providerInstances={providerInstances}
+          disabled={!isRuntimeAvailable}
+          savingInstanceId={savingProviderInstanceId}
+          error={providerInstanceError}
+          onSave={onSaveProviderInstance}
+        />
+
         <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
           <div className="grid gap-1.5 text-[11.5px] leading-5">
             <div className="flex min-w-0 gap-2">
@@ -3446,6 +3669,8 @@ function App() {
     useState<ProviderSetupStatus>()
   const [isLoadingProviderSetupStatus, setIsLoadingProviderSetupStatus] =
     useState(false)
+  const [savingProviderInstanceId, setSavingProviderInstanceId] = useState<string>()
+  const [providerInstanceError, setProviderInstanceError] = useState<string>()
   const [message, setMessage] = useState('')
   const [composerAttachments, setComposerAttachments] = useState<
     ChatAttachment[]
@@ -3563,6 +3788,11 @@ function App() {
   const openRuntimeRequests = selectedSessionProjection?.openRequests ?? []
   const openUserInputRequests = selectedSessionProjection?.userInputRequests ?? []
   const sessions = Object.values(runtimeState.sessions).sort(sessionSort)
+  const providerInstances = runtimeState.providerInstances ?? []
+  const newProviderInstance = providerInstanceForKind(
+    providerInstances,
+    newProviderKind
+  )
   const runtimeDiagnostics = useMemo(
     () => runtimeState.diagnostics ?? [],
     [runtimeState.diagnostics]
@@ -3916,6 +4146,27 @@ function App() {
     }
   }, [runtimeApi, runtimeUnavailableText])
 
+  const saveProviderInstance = useCallback(
+    async (providerInstance: ProviderInstance) => {
+      if (!runtimeApi) {
+        setProviderInstanceError(runtimeUnavailableText)
+        return
+      }
+
+      setSavingProviderInstanceId(providerInstance.providerInstanceId)
+      setProviderInstanceError(undefined)
+      try {
+        const result = await runtimeApi.upsertProviderInstance(providerInstance)
+        setRuntimeState(result.state)
+      } catch (error) {
+        setProviderInstanceError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setSavingProviderInstanceId(undefined)
+      }
+    },
+    [runtimeApi, runtimeUnavailableText]
+  )
+
   const nodes: Node[] = useMemo(
     () => [
       ...clusterBoundaryNodes(runtimeState),
@@ -4185,6 +4436,7 @@ function App() {
     runtimeApi
       .getProviderSetupStatus({
         providerKind: newProviderKind,
+        providerInstanceId: newProviderInstance.providerInstanceId,
         cwd: newCwd.trim() || undefined,
       })
       .then((status) => {
@@ -4196,6 +4448,7 @@ function App() {
         if (isMounted && providerSetupSeqRef.current === requestId) {
           setProviderSetupStatus({
             providerKind: newProviderKind,
+            providerInstanceId: newProviderInstance.providerInstanceId,
             generatedAt: new Date().toISOString(),
             checks: [
               {
@@ -4219,6 +4472,8 @@ function App() {
     }
   }, [
     newCwd,
+    newProviderInstance.binaryPath,
+    newProviderInstance.providerInstanceId,
     newProviderKind,
     runtimeApi,
     selectedSession,
@@ -6060,9 +6315,13 @@ function App() {
                       isRuntimeAvailable={isRuntimeAvailable}
                       runtimeStatusText={runtimeStatusText}
                       providerKind={newProviderKind}
+                      providerInstances={providerInstances}
                       runtimeError={runtimeError}
                       setupStatus={providerSetupStatus}
                       isLoadingSetupStatus={isLoadingProviderSetupStatus}
+                      savingProviderInstanceId={savingProviderInstanceId}
+                      providerInstanceError={providerInstanceError}
+                      onSaveProviderInstance={saveProviderInstance}
                     />
                   )
                 ) : null}
