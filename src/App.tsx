@@ -48,6 +48,8 @@ import {
   MessagesSquare,
   Moon,
   Orbit,
+  PanelRightClose,
+  PanelRightOpen,
   Paperclip,
   RefreshCw,
   Search,
@@ -204,6 +206,10 @@ const defaultChatPanelWidth = 440
 const chatPanelMinWidth = 360
 const canvasPanelMinWidth = 520
 const chatCanvasSeparatorWidth = 8
+const railSidebarWidth = 264
+const expandedGraphLayoutMinWidth =
+  railSidebarWidth + chatPanelMinWidth + chatCanvasSeparatorWidth + canvasPanelMinWidth
+const graphCollapsedStorageKey = 'orrery.graphCollapsed.v1'
 const attachmentTextPreviewLimit = chatAttachmentTextMaxLength
 
 function initialChatPanelWidth() {
@@ -221,12 +227,35 @@ function initialChatPanelWidth() {
   }
 }
 
+function initialGraphCollapsed() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    return window.localStorage.getItem(graphCollapsedStorageKey) === '1'
+  } catch {
+    return false
+  }
+}
+
+function initialViewportWidth() {
+  if (typeof window === 'undefined') {
+    return expandedGraphLayoutMinWidth
+  }
+
+  return window.innerWidth
+}
+
 function clampChatPanelWidth(width: number, totalWidth?: number) {
   const maxWidth =
     totalWidth && totalWidth > 0
       ? Math.max(
           chatPanelMinWidth,
-          totalWidth - canvasPanelMinWidth - chatCanvasSeparatorWidth
+          totalWidth -
+            railSidebarWidth -
+            canvasPanelMinWidth -
+            chatCanvasSeparatorWidth
         )
       : Number.POSITIVE_INFINITY
   return Math.min(Math.max(width, chatPanelMinWidth), maxWidth)
@@ -705,33 +734,6 @@ function diffRangeLabel(diff: WorkingTreeDiffResult) {
       ? `turn ${diff.range.toTurnCount}`
       : diff.range.toCheckpointRef
   return `${from} -> ${to}`
-}
-
-function SessionMetaPill({
-  label,
-  value,
-  title,
-  className,
-}: {
-  label: string
-  value: string
-  title?: string
-  className?: string
-}) {
-  return (
-    <span
-      className={cn(
-        'inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background/55 px-2 py-1 font-mono text-[10.5px] leading-none',
-        className
-      )}
-      title={title ?? value}
-    >
-      <span className="shrink-0 uppercase tracking-[0.1em] text-muted-foreground">
-        {label}
-      </span>
-      <span className="min-w-0 truncate text-foreground/85">{value}</span>
-    </span>
-  )
 }
 
 type ProjectCwdValidation = {
@@ -3097,11 +3099,6 @@ function RuntimeInteractionPanel({
   )
 }
 
-function clampOneLine(value: string, max = 110) {
-  const oneLine = value.replace(/\s+/g, ' ').trim()
-  return oneLine.length > max ? `${oneLine.slice(0, max - 3)}...` : oneLine
-}
-
 type ProviderEventEntry = {
   id: string
   ts: string
@@ -3808,7 +3805,6 @@ function ComposerAttachmentPill({
 
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
-  { id: 'sessions', label: 'Chats', icon: Terminal },
   { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
 ]
 
@@ -3906,6 +3902,8 @@ function App() {
   )
   const [chatPanelWidth, setChatPanelWidth] = useState(initialChatPanelWidth)
   const [isResizingChatPanel, setIsResizingChatPanel] = useState(false)
+  const [graphCollapsed, setGraphCollapsed] = useState(initialGraphCollapsed)
+  const [viewportWidth, setViewportWidth] = useState(initialViewportWidth)
   const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
     if (typeof window === 'undefined') {
       return 'dark'
@@ -4134,6 +4132,8 @@ function App() {
     Boolean(activeCluster) && activeCluster?.frozen !== true
   const canOpenDiffPanel = Boolean(isRuntimeAvailable && selectedSession)
   const canActOnPlan = Boolean(isRuntimeAvailable && selectedSession && canResume)
+  const graphForcedCollapsed = viewportWidth < expandedGraphLayoutMinWidth
+  const effectiveGraphCollapsed = graphCollapsed || graphForcedCollapsed
   const hasWorkerSelection = workflowManagedNodeIds.length > 0
   const setupSteps = [
     {
@@ -4482,10 +4482,26 @@ function App() {
       return
     }
 
+    try {
+      window.localStorage.setItem(
+        graphCollapsedStorageKey,
+        graphCollapsed ? '1' : '0'
+      )
+    } catch {
+      // Collapse persistence is best-effort.
+    }
+  }, [graphCollapsed])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
     const handleResize = () => {
       const totalWidth =
         splitContainerRef.current?.getBoundingClientRect().width ??
         window.innerWidth
+      setViewportWidth(totalWidth)
       setChatPanelWidth((current) =>
         clampChatPanelWidth(current, totalWidth)
       )
@@ -4513,7 +4529,10 @@ function App() {
       }
 
       setChatPanelWidth(
-        clampChatPanelWidth(event.clientX - rect.left, rect.width)
+        clampChatPanelWidth(
+          event.clientX - rect.left - railSidebarWidth,
+          rect.width
+        )
       )
     }
 
@@ -5481,12 +5500,10 @@ function App() {
         ref={splitContainerRef}
         className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
       >
+        {/* ===== Sidebar: nav + chat list ===== */}
         <aside
           className="orrery-sidebar flex h-dvh min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar"
-          style={{
-            width: chatPanelWidth,
-            minWidth: chatPanelMinWidth,
-          }}
+          style={{ width: railSidebarWidth }}
         >
           <header
             className={cn(
@@ -5515,7 +5532,6 @@ function App() {
               {runtimeModeLabel}
             </Badge>
           </header>
-
           <div className="app-region-no-drag shrink-0 px-3 pb-2">
             <Button
               className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
@@ -5525,11 +5541,8 @@ function App() {
               New Chat
             </Button>
           </div>
-
           <div className="app-region-no-drag shrink-0 px-3 pb-3 pt-1">
-            <div
-              className="grid grid-cols-3 gap-1 rounded-xl border border-border bg-background/60 p-1"
-            >
+            <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-background/60 p-1">
               {railTabs.map((tab) => {
                 const isActive = activeTab === tab.id
                 const TabIcon = tab.icon
@@ -5548,29 +5561,275 @@ function App() {
                   >
                     <TabIcon className="size-3.5 shrink-0" />
                     <span className="truncate">{tab.label}</span>
-                    {tab.id === 'sessions' && sessions.length ? (
-                      <span className="tabular-nums text-[10px] opacity-70">
-                        {sessions.length}
-                      </span>
-                    ) : null}
                   </button>
                 )
               })}
             </div>
           </div>
+          <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 px-4 pb-2.5 pt-3 font-mono">
+                  <div className="flex items-center gap-2 text-[12px]">
+                    <span className="text-lime-hi">❯</span>
+                    <span className="text-foreground">Chats</span>
+                    <span className="ml-auto text-[11px] text-muted-foreground">
+                      {runningSessions.length} running · {sessions.length} total
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-ink-line bg-ink px-2.5 py-1.5">
+                      <Search className="size-3.5 shrink-0 text-term-dim2" />
+                      <input
+                        className="min-w-0 flex-1 bg-transparent text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint"
+                        value={sessionSearch}
+                        spellCheck={false}
+                        placeholder="Search label, id, provider, cwd, status, messages"
+                        onChange={(event) => setSessionSearch(event.target.value)}
+                      />
+                      {sessionSearch.trim().length > 0 ? (
+                        <button
+                          type="button"
+                          className="rounded p-1 text-term-dim2 hover:bg-foreground/[0.06] hover:text-term-name"
+                          aria-label="Clear search"
+                          onClick={() => setSessionSearch('')}
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      aria-pressed={showArchivedSessions}
+                      className={cn(
+                        'shrink-0 rounded-lg border px-2.5 py-2 text-[10.5px] uppercase tracking-[0.08em] transition',
+                        showArchivedSessions
+                          ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
+                          : 'border-ink-line bg-ink text-term-dim hover:border-foreground/20'
+                      )}
+                      onClick={() =>
+                        setShowArchivedSessions((current) => !current)
+                      }
+                    >
+                      {showArchivedSessions
+                        ? 'All'
+                        : `Hidden ${archivedSessionCount}`}
+                    </button>
+                  </div>
+                </div>
 
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
+                  {sessions.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
+                      No chats yet.
+                    </div>
+                  ) : null}
+
+                  {sessions.length > 0 && filteredSessions.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
+                      No chats match the current search.
+                    </div>
+                  ) : null}
+
+                  {filteredSessions.map((session) => {
+                    const node = runtimeState.nodes.find(
+                      (candidate) => candidate.sessionId === session.sessionId
+                    )
+                    const managedCluster = Object.values(
+                      runtimeState.clusters
+                    ).find((cluster) =>
+                      cluster.nodeIds.includes(session.sessionId)
+                    )
+                    const recovery = sessionRecoveryState({
+                      session,
+                      diagnostics: runtimeDiagnostics,
+                      frozen:
+                        node?.frozen === true || managedCluster?.frozen === true,
+                    })
+
+                    const isSel = selectedSessionId === session.sessionId
+                    const marker = sessionMarker(
+                      session.status,
+                      isSel,
+                      session.role
+                    )
+                    const canArchive =
+                      session.status !== 'running' &&
+                      session.status !== 'pending'
+                    const archivePending =
+                      archivingSessionIds[session.sessionId] === true
+
+                    return (
+                      <div
+                        key={session.sessionId}
+                        className={cn(
+                          'group/chat relative rounded-lg border bg-ink font-mono transition',
+                          isSel
+                            ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
+                            : 'border-ink-line hover:border-foreground/20',
+                          session.archived && 'opacity-60'
+                        )}
+                      >
+                        {isSel ? (
+                          <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-full bg-lime-hi" />
+                        ) : null}
+                        <div className="flex items-center gap-1.5 py-2 pl-3 pr-2">
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            onClick={() => {
+                              setPendingLinkedSourceId(null)
+                              setSelectedSessionId(session.sessionId)
+                              setActiveTab('chat')
+                            }}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  'w-3.5 shrink-0 text-center text-[12px] leading-none',
+                                  marker.cls
+                                )}
+                              >
+                                {marker.char}
+                              </span>
+                              <span
+                                className={cn(
+                                  'min-w-0 flex-1 truncate text-[12.5px] font-medium',
+                                  isSel ? 'text-lime-hi' : 'text-lime'
+                                )}
+                              >
+                                {session.label}
+                              </span>
+                              <span
+                                className={cn(
+                                  statePillBase,
+                                  statePillCls(session.status, session.role)
+                                )}
+                              >
+                                {session.role === 'master'
+                                  ? 'master'
+                                  : statusLabels[session.status].toLowerCase()}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5 pl-[1.375rem] text-[11px] text-term-dim2">
+                              <span
+                                className="truncate"
+                                title={`Created ${session.createdAt}`}
+                              >
+                                {formatTimestamp(session.createdAt)}
+                              </span>
+                              <span className="shrink-0 text-term-faint">·</span>
+                              <span className="shrink-0 whitespace-nowrap">
+                                <span className="tabular-nums text-term-dim">
+                                  {session.messages.length}
+                                </span>{' '}
+                                msgs
+                              </span>
+                              {session.archived ? (
+                                <>
+                                  <span className="shrink-0 text-term-faint">
+                                    ·
+                                  </span>
+                                  <span className="shrink-0 uppercase tracking-[0.08em]">
+                                    hidden
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          </button>
+
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="shrink-0 rounded-md border border-ink-line bg-background/35 p-1.5 text-term-dim opacity-0 transition hover:border-foreground/20 hover:text-term-name focus-visible:opacity-100 group-hover/chat:opacity-100 disabled:cursor-not-allowed"
+                                disabled={
+                                  !isRuntimeAvailable ||
+                                  archivePending ||
+                                  !canArchive
+                                }
+                                aria-label={
+                                  session.archived ? 'Restore chat' : 'Hide chat'
+                                }
+                                onClick={() =>
+                                  setSessionArchived(
+                                    session.sessionId,
+                                    !session.archived
+                                  )
+                                }
+                              >
+                                {session.archived ? (
+                                  <ArchiveRestore className="size-3.5" />
+                                ) : (
+                                  <Archive className="size-3.5" />
+                                )}
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {session.archived ? 'Restore chat' : 'Hide chat'}
+                            </TooltipContent>
+                          </Tooltip>
+                        </div>
+
+                        {recovery ? (
+                          <div className="px-2.5 pb-2.5 pl-3">
+                            <RecoveryNotice state={recovery} compact />
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+          </div>
+          <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 font-mono text-[11px] tracking-[0.02em] text-muted-foreground">
+            <span className="flex items-center gap-1.5" title="Running chats">
+              <span
+                className={cn(
+                  'size-1.5 rounded-full',
+                  runningSessions.length
+                    ? 'bg-emerald-500'
+                    : 'bg-muted-foreground/40'
+                )}
+              />
+              <span className="tabular-nums text-foreground/80">
+                {runningSessions.length}
+              </span>
+              running
+            </span>
+            <Separator orientation="vertical" className="h-3" />
+            <span className="flex items-center gap-1" title="Links">
+              <GitBranch className="size-3" />
+              <span className="tabular-nums">{runtimeState.edges.length}</span>
+            </span>
+            <span className="flex items-center gap-1" title="Reports">
+              <FileText className="size-3" />
+              <span className="tabular-nums">{runtimeState.reports.length}</span>
+            </span>
+          </footer>
+        </aside>
+
+        {/* ===== Detail: selected chat or orchestrate ===== */}
+        <section
+          className={cn(
+            'flex min-h-0 flex-col overflow-hidden bg-background',
+            effectiveGraphCollapsed ? 'flex-1' : 'shrink-0'
+          )}
+          style={
+            effectiveGraphCollapsed
+              ? undefined
+              : { width: chatPanelWidth, minWidth: chatPanelMinWidth }
+          }
+        >
           {runtimeError ? (
             <div className="app-region-no-drag mx-3 mb-2 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 font-mono text-[11.5px] leading-5 text-destructive">
               <span className="shrink-0">✗</span>
               <span className="min-w-0 break-words">{runtimeError}</span>
             </div>
           ) : null}
-
           <RuntimeDiagnosticsBanner
             diagnostics={runtimeDiagnostics}
             sessions={sessions}
           />
-
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTab === 'orchestrate' ? (
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-4">
@@ -6110,292 +6369,6 @@ function App() {
                 ) : null}
               </div>
             ) : null}
-
-            {activeTab === 'sessions' ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="shrink-0 px-4 pb-2.5 pt-3 font-mono">
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="text-lime-hi">❯</span>
-                    <span className="text-foreground">Chats</span>
-                    <span className="ml-auto text-[11px] text-muted-foreground">
-                      {runningSessions.length} running · {sessions.length} total
-                    </span>
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-ink-line bg-ink px-2.5 py-1.5">
-                      <Search className="size-3.5 shrink-0 text-term-dim2" />
-                      <input
-                        className="min-w-0 flex-1 bg-transparent text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint"
-                        value={sessionSearch}
-                        spellCheck={false}
-                        placeholder="Search label, id, provider, cwd, status, messages"
-                        onChange={(event) => setSessionSearch(event.target.value)}
-                      />
-                      {sessionSearch.trim().length > 0 ? (
-                        <button
-                          type="button"
-                          className="rounded p-1 text-term-dim2 hover:bg-foreground/[0.06] hover:text-term-name"
-                          aria-label="Clear search"
-                          onClick={() => setSessionSearch('')}
-                        >
-                          <X className="size-3.5" />
-                        </button>
-                      ) : null}
-                    </div>
-                    <button
-                      type="button"
-                      aria-pressed={showArchivedSessions}
-                      className={cn(
-                        'shrink-0 rounded-lg border px-2.5 py-2 text-[10.5px] uppercase tracking-[0.08em] transition',
-                        showArchivedSessions
-                          ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
-                          : 'border-ink-line bg-ink text-term-dim hover:border-foreground/20'
-                      )}
-                      onClick={() =>
-                        setShowArchivedSessions((current) => !current)
-                      }
-                    >
-                      {showArchivedSessions
-                        ? 'All'
-                        : `Hidden ${archivedSessionCount}`}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
-                  {sessions.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
-                      No chats yet.
-                    </div>
-                  ) : null}
-
-                  {sessions.length > 0 && filteredSessions.length === 0 ? (
-                    <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
-                      No chats match the current search.
-                    </div>
-                  ) : null}
-
-                  {filteredSessions.map((session) => {
-                    const latestReport = latestReportForSession(
-                      runtimeState.reports,
-                      session.sessionId
-                    )
-                    const latestVerdict =
-                      latestReport?.payload.type === 'verdict'
-                        ? latestReport.payload.verdict
-                        : undefined
-                    const node = runtimeState.nodes.find(
-                      (candidate) => candidate.sessionId === session.sessionId
-                    )
-                    const managedCluster = Object.values(runtimeState.clusters).find(
-                      (cluster) => cluster.nodeIds.includes(session.sessionId)
-                    )
-                    const recovery = sessionRecoveryState({
-                      session,
-                      diagnostics: runtimeDiagnostics,
-                      frozen: node?.frozen === true || managedCluster?.frozen === true,
-                    })
-
-                    const isSel = selectedSessionId === session.sessionId
-                    const marker = sessionMarker(
-                      session.status,
-                      isSel,
-                      session.role
-                    )
-                    const idLabel = sessionChatId(session)
-                    const preview = clampOneLine(lastMessagePreview(session), 140)
-                    const canArchive =
-                      session.status !== 'running' && session.status !== 'pending'
-                    const archivePending =
-                      archivingSessionIds[session.sessionId] === true
-
-                    return (
-                      <div
-                        key={session.sessionId}
-                        className={cn(
-                          'relative rounded-lg border bg-ink font-mono transition',
-                          isSel
-                            ? 'border-lime-hi/50 ring-1 ring-lime-hi/25'
-                            : 'border-ink-line hover:border-foreground/20'
-                        )}
-                      >
-                        {isSel ? (
-                          <span className="absolute bottom-2.5 left-0 top-2.5 w-0.5 rounded-full bg-lime-hi" />
-                        ) : null}
-                        <div className="flex items-start gap-2 p-3 pl-3.5">
-                          <button
-                            type="button"
-                            className="min-w-0 flex-1 text-left"
-                            onClick={() => {
-                              setPendingLinkedSourceId(null)
-                              setSelectedSessionId(session.sessionId)
-                              setActiveTab('chat')
-                            }}
-                          >
-                            <div className="flex items-center gap-2.5">
-                              <span
-                                className={cn(
-                                  'w-3.5 shrink-0 text-center text-[12px] leading-none',
-                                  marker.cls
-                                )}
-                              >
-                                {marker.char}
-                              </span>
-                              <span
-                                className={cn(
-                                  'flex-1 truncate text-[13px] font-medium',
-                                  isSel ? 'text-lime-hi' : 'text-lime'
-                                )}
-                              >
-                                {session.label}
-                              </span>
-                              {session.archived ? (
-                                <span className="rounded border border-ink-line bg-foreground/[0.04] px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-term-dim">
-                                  hidden
-                                </span>
-                              ) : null}
-                              <span
-                                className={cn(
-                                  statePillBase,
-                                  statePillCls(session.status, session.role)
-                                )}
-                              >
-                                {session.role === 'master'
-                                  ? 'master'
-                                  : statusLabels[session.status].toLowerCase()}
-                              </span>
-                            </div>
-                            <div className="mt-2 grid gap-0.5 text-[11.5px]">
-                              <div className="flex min-w-0 gap-2">
-                                <span className="text-term-faint">├</span>
-                                <span className="w-[58px] shrink-0 text-term-dim2">
-                                  id
-                                </span>
-                                <span className="truncate text-term-cyan">
-                                  {idLabel}
-                                </span>
-                              </div>
-                              <div className="flex min-w-0 gap-2">
-                                <span className="text-term-faint">├</span>
-                                <span className="w-[58px] shrink-0 text-term-dim2">
-                                  provider
-                                </span>
-                                <span className="truncate text-term-dim">
-                                  {sessionProviderLabel(session)}
-                                </span>
-                              </div>
-                              <div className="flex min-w-0 gap-2">
-                                <span className="text-term-faint">├</span>
-                                <span className="w-[58px] shrink-0 text-term-dim2">
-                                  cwd
-                                </span>
-                                <span
-                                  className="truncate text-term-dim"
-                                  title={session.cwd}
-                                >
-                                  {compactPath(session.cwd)}
-                                </span>
-                              </div>
-                              <div className="flex min-w-0 gap-2">
-                                <span className="text-term-faint">├</span>
-                                <span className="w-[58px] shrink-0 text-term-dim2">
-                                  preview
-                                </span>
-                                <span className="truncate text-term-dim">
-                                  {preview}
-                                </span>
-                              </div>
-                              <div className="flex min-w-0 gap-2">
-                                <span className="text-term-faint">└</span>
-                                <span className="w-[58px] shrink-0 text-term-dim2">
-                                  updated
-                                </span>
-                                <span className="truncate text-term-dim">
-                                  <span className="text-term-cyan">
-                                    {session.messages.length}
-                                  </span>{' '}
-                                  msgs · {formatTimestamp(session.updatedAt)}
-                                </span>
-                              </div>
-                            </div>
-                          </button>
-
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button
-                                type="button"
-                                className="shrink-0 rounded-md border border-ink-line bg-background/35 p-1.5 text-term-dim transition hover:border-foreground/20 hover:text-term-name disabled:cursor-not-allowed disabled:opacity-45"
-                                disabled={
-                                  !isRuntimeAvailable ||
-                                  archivePending ||
-                                  !canArchive
-                                }
-                                aria-label={
-                                  session.archived ? 'Restore chat' : 'Hide chat'
-                                }
-                                onClick={() =>
-                                  setSessionArchived(
-                                    session.sessionId,
-                                    !session.archived
-                                  )
-                                }
-                              >
-                                {session.archived ? (
-                                  <ArchiveRestore className="size-3.5" />
-                                ) : (
-                                  <Archive className="size-3.5" />
-                                )}
-                              </button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {session.archived ? 'Restore chat' : 'Hide chat'}
-                            </TooltipContent>
-                          </Tooltip>
-                        </div>
-
-                        <div className="px-3 pb-3">
-                          {recovery ? (
-                            <div className="mb-2">
-                              <RecoveryNotice state={recovery} compact />
-                            </div>
-                          ) : null}
-                          <div className="flex flex-wrap gap-1.5">
-                            <SessionMetaPill
-                              label="created"
-                              value={formatTimestamp(session.createdAt)}
-                              title={session.createdAt}
-                            />
-                            <SessionMetaPill
-                              label="status"
-                              value={statusLabels[session.status]}
-                            />
-                            {session.exitCode !== undefined &&
-                            session.exitCode !== null ? (
-                              <SessionMetaPill
-                                label="exit"
-                                value={String(session.exitCode)}
-                              />
-                            ) : null}
-                          </div>
-                          {latestVerdict ? (
-                            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-[10.5px] text-term-dim2">
-                              <ClipboardCheck className="size-3 shrink-0" />
-                              <span className="truncate">
-                                verdict{' '}
-                                <span className="text-term-green">
-                                  {latestVerdict}
-                                </span>
-                              </span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : null}
-
             {activeTab === 'chat' ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="shrink-0 border-b border-border bg-card px-3.5 py-2">
@@ -6746,34 +6719,10 @@ function App() {
               </div>
             ) : null}
           </div>
+        </section>
 
-          <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 font-mono text-[11px] tracking-[0.02em] text-muted-foreground">
-            <span className="flex items-center gap-1.5" title="Running chats">
-              <span
-                className={cn(
-                  'size-1.5 rounded-full',
-                  runningSessions.length
-                    ? 'bg-emerald-500'
-                    : 'bg-muted-foreground/40'
-                )}
-              />
-              <span className="tabular-nums text-foreground/80">
-                {runningSessions.length}
-              </span>
-              running
-            </span>
-            <Separator orientation="vertical" className="h-3" />
-            <span className="flex items-center gap-1" title="Links">
-              <GitBranch className="size-3" />
-              <span className="tabular-nums">{runtimeState.edges.length}</span>
-            </span>
-            <span className="flex items-center gap-1" title="Reports">
-              <FileText className="size-3" />
-              <span className="tabular-nums">{runtimeState.reports.length}</span>
-            </span>
-          </footer>
-        </aside>
-
+        {/* ===== Resize handle (chat width) — only when graph visible ===== */}
+        {effectiveGraphCollapsed ? null : (
         <div
           role="separator"
           aria-orientation="vertical"
@@ -6801,7 +6750,34 @@ function App() {
         >
           <span className="h-10 w-px rounded-full bg-border transition group-hover/split:bg-accent-ink group-focus-visible/split:bg-accent-ink" />
         </div>
+        )}
 
+        {/* ===== Session graph (collapsible) ===== */}
+        {effectiveGraphCollapsed ? (
+          <div className="flex h-dvh shrink-0 flex-col items-center gap-3 border-l border-border bg-background px-1.5 py-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Show session graph"
+                  onClick={() => setGraphCollapsed(false)}
+                >
+                  <PanelRightOpen className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="left">
+                {graphForcedCollapsed
+                  ? 'Widen window to show session graph'
+                  : 'Show session graph'}
+              </TooltipContent>
+            </Tooltip>
+            <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground [writing-mode:vertical-rl]">
+              <Activity className="size-3.5 text-accent-ink" />
+              Session graph
+            </span>
+          </div>
+        ) : (
         <section
           className="flex min-w-0 flex-1 flex-col bg-background"
           style={{ minWidth: canvasPanelMinWidth }}
@@ -6828,6 +6804,20 @@ function App() {
                 <FileText className="size-3.5" />
                 <span className="truncate">Diff</span>
               </Button>
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Hide session graph"
+                    onClick={() => setGraphCollapsed(true)}
+                  >
+                    <PanelRightClose className="size-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Hide session graph</TooltipContent>
+              </Tooltip>
 
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -6964,6 +6954,7 @@ function App() {
             ) : null}
           </div>
         </section>
+        )}
       </main>
     </TooltipProvider>
   )
