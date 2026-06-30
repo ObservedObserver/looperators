@@ -780,6 +780,7 @@ type RuntimeDiagnosticNotice = RecoveryState & {
   id: string
   ts: string
   titleText: string
+  count?: number
 }
 
 function isDemoModeRequested() {
@@ -1192,11 +1193,23 @@ function runtimeDiagnosticNotices({
     sessions.map((session) => [session.sessionId, session])
   )
   const cwdGroups = new Map<string, RuntimeStateDiagnostic[]>()
+  const repairGroups = new Map<string, RuntimeStateDiagnostic[]>()
   const notices: RuntimeDiagnosticNotice[] = []
 
   diagnostics.forEach((diagnostic) => {
     const cwd = diagnosticCwd(diagnostic)
     if (!cwd) {
+      if (
+        diagnostic.type.includes('repaired') ||
+        diagnostic.type.includes('created')
+      ) {
+        const key = `${diagnostic.type}:${diagnostic.message}`
+        const group = repairGroups.get(key) ?? []
+        group.push(diagnostic)
+        repairGroups.set(key, group)
+        return
+      }
+
       const state = diagnosticDisplay(diagnostic)
       notices.push({
         ...state,
@@ -1210,6 +1223,29 @@ function runtimeDiagnosticNotices({
     const group = cwdGroups.get(cwd) ?? []
     group.push(diagnostic)
     cwdGroups.set(cwd, group)
+  })
+
+  repairGroups.forEach((group) => {
+    const first = group[0]
+    if (!first) {
+      return
+    }
+
+    const state = diagnosticDisplay(first)
+    notices.push({
+      ...state,
+      id: `repair:${first.type}:${first.message}`,
+      ts: latestDiagnosticTs(group),
+      titleText:
+        group.length > 1
+          ? `${first.type} (${group.length} events)`
+          : first.type,
+      detail:
+        group.length > 1
+          ? `${group.length} saved-state repairs completed. ${state.detail}`
+          : state.detail,
+      count: group.length,
+    })
   })
 
   cwdGroups.forEach((group, cwd) => {
@@ -1246,26 +1282,56 @@ function runtimeDiagnosticNotices({
     .slice(0, 3)
 }
 
-function RuntimeDiagnosticsBanner({
+function RuntimeDiagnosticsToast({
   diagnostics,
   sessions,
 }: {
   diagnostics: RuntimeStateDiagnostic[]
   sessions: AgentSession[]
 }) {
-  const visibleNotices = runtimeDiagnosticNotices({ diagnostics, sessions })
+  const notices = useMemo(
+    () => runtimeDiagnosticNotices({ diagnostics, sessions }),
+    [diagnostics, sessions]
+  )
+  const [hiddenNoticeIds, setHiddenNoticeIds] = useState<Set<string>>(
+    () => new Set()
+  )
+  const visibleNotices = notices.filter((notice) => !hiddenNoticeIds.has(notice.id))
+
+  useEffect(() => {
+    if (notices.length === 0) {
+      return
+    }
+
+    const timers = notices.map((notice) =>
+      window.setTimeout(() => {
+        setHiddenNoticeIds((current) => {
+          if (current.has(notice.id)) {
+            return current
+          }
+
+          const next = new Set(current)
+          next.add(notice.id)
+          return next
+        })
+      }, 8000)
+    )
+
+    return () => timers.forEach((timer) => window.clearTimeout(timer))
+  }, [notices])
+
   if (visibleNotices.length === 0) {
     return null
   }
 
   return (
-    <div className="app-region-no-drag mx-3 mb-2 space-y-1.5">
+    <div className="app-region-no-drag pointer-events-none absolute right-4 top-16 z-40 w-[min(380px,calc(100%-2rem))] space-y-2">
       {visibleNotices.map((notice) => {
         return (
           <div
             key={notice.id}
             className={cn(
-              'rounded-lg border px-3 py-2 font-mono',
+              'pointer-events-auto rounded-lg border px-3 py-2 font-mono shadow-lg backdrop-blur',
               recoveryToneClassName(notice.tone)
             )}
             title={notice.titleText}
@@ -1275,9 +1341,28 @@ function RuntimeDiagnosticsBanner({
               <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium">
                 {notice.title}
               </span>
+              {notice.count && notice.count > 1 ? (
+                <span className="shrink-0 rounded border border-current/20 px-1.5 py-0.5 text-[10px] tabular-nums opacity-80">
+                  {notice.count}
+                </span>
+              ) : null}
               <span className="shrink-0 text-[10px] tabular-nums opacity-70">
                 {formatClock(notice.ts)}
               </span>
+              <button
+                type="button"
+                className="rounded p-0.5 opacity-65 transition hover:bg-foreground/[0.08] hover:opacity-100"
+                aria-label={`Dismiss ${notice.title}`}
+                onClick={() =>
+                  setHiddenNoticeIds((current) => {
+                    const next = new Set(current)
+                    next.add(notice.id)
+                    return next
+                  })
+                }
+              >
+                <X className="size-3" />
+              </button>
             </div>
             <p className="mt-1 line-clamp-2 break-words text-[11px] leading-4 text-term-dim">
               {notice.detail}
@@ -5811,7 +5896,7 @@ function App() {
         {/* ===== Detail: selected chat or orchestrate ===== */}
         <section
           className={cn(
-            'flex min-h-0 flex-col overflow-hidden bg-background',
+            'relative flex min-h-0 flex-col overflow-hidden bg-background',
             effectiveGraphCollapsed ? 'flex-1' : 'shrink-0'
           )}
           style={
@@ -5826,7 +5911,7 @@ function App() {
               <span className="min-w-0 break-words">{runtimeError}</span>
             </div>
           ) : null}
-          <RuntimeDiagnosticsBanner
+          <RuntimeDiagnosticsToast
             diagnostics={runtimeDiagnostics}
             sessions={sessions}
           />
