@@ -155,3 +155,6 @@ release
 
 # Local project vision and design notes
 design-docs/
+
+# Local verification screenshots
+acceptance-screenshots/
