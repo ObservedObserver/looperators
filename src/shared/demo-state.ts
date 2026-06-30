@@ -1,178 +1,177 @@
 import {
   defaultGraphProviderInstances,
   graphStateVersion,
-  type AgentStreamChunk,
   type GraphState,
 } from './graph-state'
+import type { RuntimeActivity } from './provider-runtime'
 
 /**
  * Demo runtime state for design / web preview only.
  * Activated via `?demo=1` when NOT running inside Electron (no window.orrery).
  * Never used by the real Electron runtime.
- *
- * The `chunks` below are real Claude CLI `stream-json` lines (tool_use /
- * tool_result / result) so the ToolRunFeed renders end-to-end in the browser.
  */
 
-type ToolInput = Record<string, unknown>
+type DemoActivityInput = {
+  id: string
+  sessionId: string
+  turnId: string
+  providerName: string
+  command: string
+  args?: string
+  status: RuntimeActivity['status']
+  startedAt: string
+  durationMs?: number
+  sublines?: RuntimeActivity['sublines']
+  error?: string
+}
 
-function toolUseChunk(
-  sessionId: string,
-  backendId: string,
-  ts: string,
-  toolId: string,
-  name: string,
-  input: ToolInput
-): AgentStreamChunk {
+function demoActivity(input: DemoActivityInput): RuntimeActivity {
+  const completedAt =
+    input.status === 'running' || input.durationMs === undefined
+      ? undefined
+      : new Date(Date.parse(input.startedAt) + input.durationMs).toISOString()
+
   return {
-    id: `${toolId}-use`,
-    sessionId,
-    ts,
-    stream: 'stdout',
-    eventType: 'assistant',
-    raw: JSON.stringify({
-      type: 'assistant',
-      message: {
-        id: `msg-${toolId}`,
-        role: 'assistant',
-        content: [{ type: 'tool_use', id: toolId, name, input }],
-      },
-      session_id: backendId,
-    }),
+    id: input.id,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    kind: 'tool_call',
+    providerName: input.providerName,
+    command: input.command,
+    args: input.args,
+    title: input.command,
+    status: input.status,
+    startedAt: input.startedAt,
+    updatedAt: completedAt ?? input.startedAt,
+    completedAt,
+    durationMs: input.durationMs,
+    sublines: input.sublines ?? [],
+    error: input.error,
   }
 }
 
-function toolResultChunk(
-  sessionId: string,
-  backendId: string,
-  ts: string,
-  toolId: string,
-  content: string,
-  isError = false
-): AgentStreamChunk {
-  return {
-    id: `${toolId}-res`,
-    sessionId,
-    ts,
-    stream: 'stdout',
-    eventType: 'user',
-    raw: JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [
-          { type: 'tool_result', tool_use_id: toolId, content, is_error: isError },
-        ],
-      },
-      session_id: backendId,
-    }),
-  }
-}
-
-function resultChunk(
-  sessionId: string,
-  backendId: string,
-  ts: string,
-  durationMs: number,
-  numTurns: number,
-  result: string
-): AgentStreamChunk {
-  return {
-    id: `result-${ts}`,
-    sessionId,
-    ts,
-    stream: 'stdout',
-    eventType: 'result',
-    text: result,
-    raw: JSON.stringify({
-      type: 'result',
-      subtype: 'success',
-      is_error: false,
-      duration_ms: durationMs,
-      num_turns: numTurns,
-      result,
-      session_id: backendId,
-    }),
-  }
-}
-
-// P1 acceptance run — read → grep → patch → verify → test(fail) → patch → test(ok).
-function p1AcceptanceChunks(): AgentStreamChunk[] {
-  const sid = 'sess-p1-accept'
-  const bid = '3cce7740-d183-4170-9ee4-0d45e5078234'
+function p1AcceptanceActivities(): RuntimeActivity[] {
+  const sessionId = 'sess-p1-accept'
+  const turnId = 'turn-p1-acceptance'
   const T = '2026-06-24T12:56:'
+
   return [
-    toolUseChunk(sid, bid, `${T}03.000Z`, 'toolu_01', 'Read', {
-      file_path: 'src/runtime/orchestrator.ts',
+    demoActivity({
+      id: 'toolu_01',
+      sessionId,
+      turnId,
+      providerName: 'Read',
+      command: 'read_file',
+      args: 'orchestrator.ts',
+      status: 'completed',
+      startedAt: `${T}03.000Z`,
+      durationMs: 40,
     }),
-    toolResultChunk(sid, bid, `${T}03.040Z`, 'toolu_01', ''),
-    toolUseChunk(sid, bid, `${T}03.100Z`, 'toolu_02', 'Grep', {
-      pattern: 'sessionId === nodeId',
-      output_mode: 'content',
+    demoActivity({
+      id: 'toolu_02',
+      sessionId,
+      turnId,
+      providerName: 'Grep',
+      command: 'grep',
+      args: '"sessionId === nodeId"',
+      status: 'completed',
+      startedAt: `${T}03.100Z`,
+      durationMs: 22,
+      sublines: [{ value: '3 matches' }],
     }),
-    toolResultChunk(sid, bid, `${T}03.122Z`, 'toolu_02', '3 matches'),
-    toolUseChunk(sid, bid, `${T}03.200Z`, 'toolu_03', 'Edit', {
-      file_path: 'src/runtime/orchestrator.ts',
-      old_string: 'x',
-      new_string: 'y',
+    demoActivity({
+      id: 'toolu_03',
+      sessionId,
+      turnId,
+      providerName: 'Edit',
+      command: 'apply_patch',
+      args: 'orchestrator.ts',
+      status: 'completed',
+      startedAt: `${T}03.200Z`,
+      durationMs: 60,
     }),
-    toolResultChunk(sid, bid, `${T}03.260Z`, 'toolu_03', ''),
-    toolUseChunk(sid, bid, `${T}03.300Z`, 'toolu_04', 'Bash', {
-      command: 'npm run verify',
+    demoActivity({
+      id: 'toolu_04',
+      sessionId,
+      turnId,
+      providerName: 'Bash',
+      command: 'bash',
+      args: 'npm run verify',
+      status: 'completed',
+      startedAt: `${T}03.300Z`,
+      durationMs: 1200,
+      sublines: [
+        { value: 'typecheck clean' },
+        { value: 'lint 0 warnings' },
+        { value: 'build 4 routes' },
+      ],
     }),
-    toolResultChunk(
-      sid,
-      bid,
-      `${T}04.500Z`,
-      'toolu_04',
-      'typecheck clean\nlint 0 warnings\nbuild 4 routes'
-    ),
-    toolUseChunk(sid, bid, `${T}04.600Z`, 'toolu_05', 'Bash', {
-      command: 'npm test',
+    demoActivity({
+      id: 'toolu_05',
+      sessionId,
+      turnId,
+      providerName: 'Bash',
+      command: 'bash',
+      args: 'npm test',
+      status: 'failed',
+      startedAt: `${T}04.600Z`,
+      durationMs: 600,
+      sublines: [{ value: 'FAIL src/orchestrator.test.ts - 2 failing' }],
+      error: 'FAIL src/orchestrator.test.ts - 2 failing',
     }),
-    toolResultChunk(
-      sid,
-      bid,
-      `${T}05.200Z`,
-      'toolu_05',
-      'FAIL src/orchestrator.test.ts — 2 failing',
-      true
-    ),
-    toolUseChunk(sid, bid, `${T}05.300Z`, 'toolu_06', 'Edit', {
-      file_path: 'src/runtime/orchestrator.ts',
-      old_string: 'a',
-      new_string: 'b',
+    demoActivity({
+      id: 'toolu_06',
+      sessionId,
+      turnId,
+      providerName: 'Edit',
+      command: 'apply_patch',
+      args: 'orchestrator.ts',
+      status: 'completed',
+      startedAt: `${T}05.300Z`,
+      durationMs: 50,
     }),
-    toolResultChunk(sid, bid, `${T}05.350Z`, 'toolu_06', ''),
-    toolUseChunk(sid, bid, `${T}05.400Z`, 'toolu_07', 'Bash', {
-      command: 'npm test',
+    demoActivity({
+      id: 'toolu_07',
+      sessionId,
+      turnId,
+      providerName: 'Bash',
+      command: 'bash',
+      args: 'npm test',
+      status: 'completed',
+      startedAt: `${T}05.400Z`,
+      durationMs: 900,
+      sublines: [{ value: '48 passed' }],
     }),
-    toolResultChunk(sid, bid, `${T}06.300Z`, 'toolu_07', '48 passed'),
-    resultChunk(
-      sid,
-      bid,
-      `${T}06.420Z`,
-      3420,
-      4,
-      'Checkpointed p1-acceptance@4f2a · 48 green.'
-    ),
   ]
 }
 
-// P2 research run — still streaming: one fetch done, one in flight.
-function p2ResearchChunks(): AgentStreamChunk[] {
-  const sid = 'sess-p2-research'
-  const bid = 'a91f2c08-77bd-4e10-9a2c-1de5079b21aa'
+function p2ResearchActivities(): RuntimeActivity[] {
+  const sessionId = 'sess-p2-research'
+  const turnId = 'turn-p2-research'
   const T = '2026-06-24T12:56:'
+
   return [
-    toolUseChunk(sid, bid, `${T}28.000Z`, 'toolu_r1', 'WebFetch', {
-      url: 'https://orrery.dev/changelog',
-      prompt: 'list regressions',
+    demoActivity({
+      id: 'toolu_r1',
+      sessionId,
+      turnId,
+      providerName: 'WebFetch',
+      command: 'web.fetch',
+      args: 'orrery.dev',
+      status: 'completed',
+      startedAt: `${T}28.000Z`,
+      durationMs: 1500,
+      sublines: [{ value: 'fetched 24kb - 18 entries' }],
     }),
-    toolResultChunk(sid, bid, `${T}29.500Z`, 'toolu_r1', 'fetched 24kb · 18 entries'),
-    toolUseChunk(sid, bid, `${T}30.000Z`, 'toolu_r2', 'WebFetch', {
-      url: 'https://orrery.dev/releases',
-      prompt: 'cluster by component',
+    demoActivity({
+      id: 'toolu_r2',
+      sessionId,
+      turnId,
+      providerName: 'WebFetch',
+      command: 'web.fetch',
+      args: 'orrery.dev',
+      status: 'running',
+      startedAt: `${T}30.000Z`,
     }),
   ]
 }
@@ -251,10 +250,10 @@ export function createDemoGraphState(): GraphState {
         status: 'idle',
         createdAt: `${base}0:00.000Z`,
         updatedAt: `${base}6:12.000Z`,
-        chunks: p1AcceptanceChunks(),
+        chunks: [],
         nativeEvents: [],
         runtimeEvents: [],
-        runtimeActivities: [],
+        runtimeActivities: p1AcceptanceActivities(),
         runtimeRequests: [],
         runtimeUserInputRequests: [],
         runtimePlans: [],
@@ -327,6 +326,7 @@ export function createDemoGraphState(): GraphState {
               'Checkpointed `p1-acceptance@4f2a`.',
             ].join('\n'),
             ts: `${base}6:11.000Z`,
+            runId: 'turn-p1-acceptance',
             status: 'complete',
           },
         ],
@@ -347,10 +347,10 @@ export function createDemoGraphState(): GraphState {
         status: 'running',
         createdAt: `${base}3:10.000Z`,
         updatedAt: `${base}6:30.000Z`,
-        chunks: p2ResearchChunks(),
+        chunks: [],
         nativeEvents: [],
         runtimeEvents: [],
-        runtimeActivities: [],
+        runtimeActivities: p2ResearchActivities(),
         runtimeRequests: [],
         runtimeUserInputRequests: [],
         runtimePlans: [],
@@ -369,6 +369,7 @@ export function createDemoGraphState(): GraphState {
             role: 'assistant',
             content: 'Fetching changelog pages and clustering by component…',
             ts: `${base}6:30.000Z`,
+            runId: 'turn-p2-research',
             status: 'streaming',
           },
         ],

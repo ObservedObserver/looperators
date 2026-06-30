@@ -1,14 +1,8 @@
-import type { AgentStreamChunk } from './graph-state'
 import type { RuntimeActivity } from './provider-runtime'
 
 /**
- * Parses Claude CLI `--output-format=stream-json` chunks (as stored on
- * `AgentSession.chunks[].raw`) into a structured tool run-feed.
- *
- * Only the consolidated `assistant` / `user` / `result` events are inspected;
- * `stream_event` partials are ignored (the tool_use is fully present on the
- * consolidated `assistant` event). The transcript zips the resulting turns to
- * assistant messages in order — see `App.tsx`.
+ * Converts normalized runtime activity items into the terminal tool-call feed.
+ * Provider-specific raw stream parsing belongs in runtime mappers, not the UI.
  */
 
 export type ToolRunStatus = 'running' | 'ok' | 'error'
@@ -33,31 +27,10 @@ export type ToolRun = {
   durationMs?: number
 }
 
-export type ToolTurnResult = {
-  durationMs?: number
-  numTurns?: number
-  isError?: boolean
-  text?: string
-}
-
-/** One `claude -p` invocation worth of tool activity. */
+/** One provider turn worth of tool activity. */
 export type ToolTurn = {
   turnId?: string
   toolRuns: ToolRun[]
-  result?: ToolTurnResult
-}
-
-type ParsedEvent = Record<string, unknown>
-
-function parseRaw(raw: string): ParsedEvent | undefined {
-  if (!raw || raw[0] !== '{') {
-    return undefined
-  }
-  try {
-    return JSON.parse(raw) as ParsedEvent
-  } catch {
-    return undefined
-  }
 }
 
 function basename(value: string): string {
@@ -183,157 +156,11 @@ export function toolArgs(name: string, input: unknown): string | undefined {
   return undefined
 }
 
-/** Flattens a tool_result `content` (string | block[]) to plain text. */
-function toolResultText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((block) => {
-        if (typeof block === 'string') return block
-        if (block && typeof block === 'object') {
-          const text = (block as Record<string, unknown>).text
-          return typeof text === 'string' ? text : ''
-        }
-        return ''
-      })
-      .join('')
-  }
-  return ''
-}
-
-/** Turns a short tool result into at most three tree sublines. */
-function resultSublines(text: string): ToolSubline[] {
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-
-  if (lines.length === 0) {
-    return []
-  }
-  if (lines.length <= 3 && lines.every((line) => line.length <= 60)) {
-    return lines.map((line) => ({ value: line }))
-  }
-  return [{ value: clamp(lines[0], 60) }]
-}
-
-function durationMs(from?: string, to?: string): number | undefined {
-  if (!from || !to) return undefined
-  const start = Date.parse(from)
-  const end = Date.parse(to)
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
-    return undefined
-  }
-  return end - start
-}
-
 /** Formats a duration for display (`40ms`, `1.2s`). */
 export function formatDuration(ms?: number): string | undefined {
   if (ms === undefined) return undefined
   if (ms < 1000) return `${Math.round(ms)}ms`
   return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`
-}
-
-/**
- * Parses a session's chunks into ordered turns (one per `claude -p` run).
- * A turn is closed by its `result` event; a trailing turn with pending tools
- * is left open (its unmatched tools render as `running`).
- */
-export function parseToolTurns(chunks: AgentStreamChunk[]): ToolTurn[] {
-  const turns: ToolTurn[] = []
-  let current: ToolTurn = { toolRuns: [] }
-  // tool_use id -> { run, startedAt } for matching results within the run.
-  let pending = new Map<string, { run: ToolRun; startedAt?: string }>()
-
-  const closeTurn = (result?: ToolTurnResult) => {
-    if (result) current.result = result
-    if (current.toolRuns.length > 0 || result) {
-      turns.push(current)
-    }
-    current = { toolRuns: [] }
-    pending = new Map()
-  }
-
-  for (const chunk of chunks) {
-    if (chunk.stream !== 'stdout') continue
-    const type = chunk.eventType
-    if (type !== 'assistant' && type !== 'user' && type !== 'result') {
-      continue
-    }
-    const event = parseRaw(chunk.raw)
-    if (!event) continue
-
-    if (type === 'assistant') {
-      const message = event.message as ParsedEvent | undefined
-      const content = message?.content
-      if (!Array.isArray(content)) continue
-      for (const item of content) {
-        if (
-          item &&
-          typeof item === 'object' &&
-          (item as ParsedEvent).type === 'tool_use'
-        ) {
-          const block = item as Record<string, unknown>
-          const id = asString(block.id) ?? `tool-${current.toolRuns.length}`
-          const name = asString(block.name) ?? 'tool'
-          const run: ToolRun = {
-            id,
-            name,
-            command: toolCommand(name),
-            args: toolArgs(name, block.input),
-            sublines: [],
-            status: 'running',
-          }
-          current.toolRuns.push(run)
-          pending.set(id, { run, startedAt: chunk.ts })
-        }
-      }
-      continue
-    }
-
-    if (type === 'user') {
-      const message = event.message as ParsedEvent | undefined
-      const content = message?.content
-      if (!Array.isArray(content)) continue
-      for (const item of content) {
-        if (
-          item &&
-          typeof item === 'object' &&
-          (item as ParsedEvent).type === 'tool_result'
-        ) {
-          const block = item as Record<string, unknown>
-          const refId = asString(block.tool_use_id)
-          if (!refId) continue
-          const match = pending.get(refId)
-          if (!match) continue
-          const isError = block.is_error === true
-          match.run.status = isError ? 'error' : 'ok'
-          match.run.durationMs = durationMs(match.startedAt, chunk.ts)
-          match.run.sublines = resultSublines(toolResultText(block.content))
-          pending.delete(refId)
-        }
-      }
-      continue
-    }
-
-    // type === 'result' — closes the turn.
-    closeTurn({
-      durationMs:
-        typeof event.duration_ms === 'number' ? event.duration_ms : undefined,
-      numTurns: typeof event.num_turns === 'number' ? event.num_turns : undefined,
-      isError: event.is_error === true,
-      text: asString(event.result),
-    })
-  }
-
-  // Flush a trailing open turn (still-running tools).
-  if (current.toolRuns.length > 0) {
-    turns.push(current)
-  }
-
-  return turns
 }
 
 function activityStatus(status: RuntimeActivity['status']): ToolRunStatus {
@@ -346,13 +173,21 @@ function activityStatus(status: RuntimeActivity['status']): ToolRunStatus {
   return 'running'
 }
 
+function isToolRunActivity(activity: RuntimeActivity) {
+  return (
+    activity.kind === 'tool_call' ||
+    activity.kind === 'command' ||
+    activity.kind === 'file_change'
+  )
+}
+
 export function toolTurnsFromRuntimeActivities(
   activities: RuntimeActivity[]
 ): Map<string, ToolTurn> {
   const turns = new Map<string, ToolTurn>()
 
   for (const activity of activities) {
-    if (!activity.turnId) {
+    if (!activity.turnId || !isToolRunActivity(activity)) {
       continue
     }
 

@@ -78,6 +78,11 @@ import {
   termTextareaCls,
 } from '@/components/terminal'
 import { AgentMarkdown } from '@/components/agent-markdown'
+import { ToolRunFeed } from '@/components/tool-run-feed'
+import {
+  toolTurnsFromRuntimeActivities,
+  type ToolTurn,
+} from '@/shared/tool-feed'
 import {
   createEmptyGraphState,
   type AgentMessage,
@@ -2443,70 +2448,81 @@ function ActivityTimelineRow({ activity }: { activity: RuntimeActivity }) {
     Boolean(activity.output && activity.output.trim().length > 0) ||
     Boolean(activity.error && activity.error.trim().length > 0) ||
     Boolean(activity.sublines?.length)
-  const statusClassName =
+  const statusMarker =
     activity.status === 'failed'
-      ? 'border-term-rose/35 bg-term-rose/10 text-term-rose'
+      ? { char: '✗', cls: 'text-term-rose' }
       : activity.status === 'completed'
-        ? 'border-term-green/30 bg-term-green/10 text-term-green'
-        : 'border-term-amber/30 bg-term-amber/10 text-term-amber'
+        ? { char: '●', cls: 'text-term-green' }
+        : { char: '◌', cls: 'text-term-amber animate-pulse' }
+  const command = activity.command ?? activity.title
 
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
-      <details
-        className="rounded-lg border border-ink-line bg-background/35 px-3 py-2"
-        open={!hasDetails ? true : undefined}
-      >
-        <summary className="flex cursor-pointer list-none items-start gap-2">
-          <Terminal className="mt-0.5 size-3.5 shrink-0 text-term-cyan" />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12.5px] font-medium text-term-name">
-              {activity.title}
+      <div className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5">
+        <span
+          className={cn('text-center text-[11px] leading-6', statusMarker.cls)}
+        >
+          {statusMarker.char}
+        </span>
+        <span className="min-w-0 leading-6">
+          <span className="font-medium text-lime">{command}</span>
+          {activity.args ? (
+            <span className="ml-2 break-words text-term-dim">
+              {activity.args}
             </span>
-            <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10.5px] text-term-dim2">
-              <span
-                className={cn(
-                  'rounded border px-1.5 py-0.5 uppercase tracking-[0.08em]',
-                  statusClassName
-                )}
-              >
-                {activity.status}
-              </span>
-              <span>{activity.kind}</span>
-              {activity.startedAt ? <span>{formatClock(activity.startedAt)}</span> : null}
-            </span>
+          ) : null}
+          <span className="ml-2 text-[11px] text-term-dim2">
+            {activity.kind}
           </span>
-          <ChevronDown className="mt-0.5 size-3 shrink-0 text-term-dim2" />
-        </summary>
-        {hasDetails ? (
-          <div className="mt-2 space-y-2">
-            {activity.sublines?.length ? (
-              <div className="grid gap-1">
-                {activity.sublines.slice(0, 8).map((line, index) => (
-                  <div
-                    key={`${line.key ?? index}:${line.value.slice(0, 20)}`}
-                    className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md bg-ink px-2 py-1 text-[11px] leading-4"
-                  >
-                    <span className="truncate text-term-dim2">
-                      {line.key ?? 'output'}
-                    </span>
-                    <span className="truncate text-term-dim">{line.value}</span>
-                  </div>
-                ))}
+        </span>
+        <span className="whitespace-nowrap text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
+          {activity.startedAt ? formatClock(activity.startedAt) : activity.status}
+        </span>
+      </div>
+      {hasDetails ? (
+        <details className="mt-1 pl-[26px]" open={activity.status === 'failed'}>
+          <summary className="cursor-pointer list-none text-[10.5px] uppercase tracking-[0.12em] text-term-dim2 transition hover:text-term-name">
+            details
+          </summary>
+          <div className="mt-1.5 grid gap-1 border-l border-ink-line pl-3">
+            {activity.sublines?.slice(0, 8).map((line, index) => (
+              <div
+                key={`${line.key ?? index}:${line.value.slice(0, 20)}`}
+                className="grid grid-cols-[72px_minmax(0,1fr)] gap-2 text-[11px] leading-4"
+              >
+                <span className="truncate text-term-dim2">
+                  {line.key ?? 'output'}
+                </span>
+                <span className="truncate text-term-dim">{line.value}</span>
               </div>
-            ) : null}
+            ))}
             {activity.output ? (
-              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-md bg-ink px-2.5 py-2 text-[11px] leading-5 text-term-dim">
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-term-dim">
                 {activity.output}
               </pre>
             ) : null}
             {activity.error ? (
-              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md bg-term-rose/10 px-2.5 py-2 text-[11px] leading-5 text-term-rose">
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-term-rose">
                 {activity.error}
               </pre>
             ) : null}
           </div>
-        ) : null}
-      </details>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+function ToolRunTimelineRow({
+  turn,
+  agent,
+}: {
+  turn: ToolTurn
+  agent?: string
+}) {
+  return (
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+      <ToolRunFeed turn={turn} agent={agent} />
     </div>
   )
 }
@@ -2524,59 +2540,66 @@ function PlanTimelineRow({
 }) {
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
-      <div className="rounded-lg border border-term-cyan/30 bg-term-cyan/10 p-3">
-        <div className="mb-2 flex min-w-0 items-center gap-2">
-          <ClipboardCheck className="size-3.5 shrink-0 text-term-cyan" />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
-            {plan.title ?? 'Proposed plan'}
-          </span>
-          <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
-            {formatClock(plan.updatedAt)}
-          </span>
+      <div className="flex min-w-0 items-center gap-2">
+        <ClipboardCheck className="size-3.5 shrink-0 text-term-cyan" />
+        <span className="text-[10px] uppercase tracking-[0.14em] text-term-cyan">
+          plan
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+          {plan.title ?? 'Proposed plan'}
+        </span>
+        <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
+          {formatClock(plan.updatedAt)}
+        </span>
+      </div>
+      {plan.items.length ? (
+        <ol className="mt-2 grid gap-1">
+          {plan.items.map((item, index) => (
+            <li
+              key={item.id}
+              className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5 text-[11.5px] leading-5"
+            >
+              <span className="text-term-faint">
+                {index === plan.items.length - 1 ? '└' : '├'}
+              </span>
+              <span className="min-w-0 break-words text-term-dim">
+                {item.title}
+              </span>
+              <span className="text-[10px] uppercase tracking-[0.08em] text-term-dim2">
+                {item.status.replace('_', ' ')}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="mt-2 border-l border-dashed border-ink-line pl-3 text-[11.5px] text-term-dim2">
+          No plan items were provided.
         </div>
-        {plan.items.length ? (
-          <ol className="space-y-1.5">
-            {plan.items.map((item, index) => (
-              <li
-                key={item.id}
-                className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-start gap-2 rounded-md bg-ink px-2 py-1.5 text-[11.5px] leading-4"
-              >
-                <span className="text-term-dim2 tabular-nums">
-                  {index + 1}.
-                </span>
-                <span className="min-w-0 break-words text-term-dim">
-                  {item.title}
-                </span>
-                <span className="rounded border border-ink-line bg-background/45 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em] text-term-dim2">
-                  {item.status.replace('_', ' ')}
-                </span>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <div className="rounded-md border border-dashed border-term-cyan/25 p-3 text-[11.5px] text-term-dim2">
-            No plan items were provided.
-          </div>
-        )}
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <Button
-            className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
-            disabled={!canAct}
-            onClick={() => onContinue(plan)}
-          >
-            <Check className="size-3.5" />
-            Continue
-          </Button>
-          <Button
-            className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
-            variant="outline"
-            disabled={!canAct}
-            onClick={() => onRevise(plan)}
-          >
-            <RefreshCw className="size-3.5" />
-            Revise
-          </Button>
-        </div>
+      )}
+      <div className="mt-2 grid grid-cols-2 gap-2 pl-[26px]">
+        <Button
+          className={cn(
+            termActionBtnCls,
+            'h-8 justify-center text-[11px] tracking-[0.08em]'
+          )}
+          disabled={!canAct}
+          onClick={() => onContinue(plan)}
+        >
+          <Check className="size-3.5" />
+          Continue
+        </Button>
+        <Button
+          className={cn(
+            termActionBtnCls,
+            'h-8 justify-center text-[11px] tracking-[0.08em]'
+          )}
+          variant="outline"
+          disabled={!canAct}
+          onClick={() => onRevise(plan)}
+        >
+          <RefreshCw className="size-3.5" />
+          Revise
+        </Button>
       </div>
     </div>
   )
@@ -2596,25 +2619,25 @@ function RequestTimelineRow({
 
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
-      <div className="rounded-lg border border-term-amber/30 bg-term-amber/10 p-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <TriangleAlert className="size-3.5 shrink-0 text-term-amber" />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
-            {title}
-          </span>
-          <span className="rounded border border-term-amber/30 bg-term-amber/10 px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em] text-term-amber">
-            {status}
-          </span>
-        </div>
-        {body ? (
-          <p className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-dim">
-            {body}
-          </p>
-        ) : null}
-        <div className="mt-1 text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
-          {isUserInput ? 'User input' : requestKindLabels[entry.request.kind]} ·{' '}
-          {formatClock(entry.ts)}
-        </div>
+      <div className="flex min-w-0 items-center gap-2">
+        <TriangleAlert className="size-3.5 shrink-0 text-term-amber" />
+        <span className="text-[10px] uppercase tracking-[0.14em] text-term-amber">
+          {isUserInput ? 'input' : requestKindLabels[entry.request.kind]}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+          {title}
+        </span>
+        <span className="shrink-0 text-[10px] uppercase tracking-[0.08em] text-term-amber">
+          {status}
+        </span>
+      </div>
+      {body ? (
+        <p className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-words border-l border-ink-line pl-3 text-[11.5px] leading-5 text-term-dim">
+          {body}
+        </p>
+      ) : null}
+      <div className="mt-1 pl-[26px] text-[10.5px] uppercase tracking-[0.08em] text-term-faint">
+        {formatClock(entry.ts)}
       </div>
     </div>
   )
@@ -2628,94 +2651,97 @@ function TurnDiffTimelineRow({
   onOpen: (turnId: string) => void
 }) {
   const hasChanges = diff.totals.files > 0
+  const diffTone = diff.error ? 'text-term-amber' : 'text-term-green'
 
   return (
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
-      <div
-        className={cn(
-          'rounded-lg border p-3',
-          diff.error
-            ? 'border-term-amber/35 bg-term-amber/10'
-            : 'border-term-green/25 bg-term-green/10'
-        )}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <FileText
-            className={cn(
-              'size-3.5 shrink-0',
-              diff.error ? 'text-term-amber' : 'text-term-green'
-            )}
-          />
-          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
-            Turn changed files
-          </span>
-          <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
-            {formatClock(diff.generatedAt)}
-          </span>
-        </div>
-        {diff.error ? (
-          <p className="mt-2 whitespace-pre-wrap break-words text-[11.5px] leading-5 text-term-amber">
-            {diff.error}
-          </p>
-        ) : (
-          <>
-            <div className="mt-2 flex flex-wrap gap-1.5 text-[10.5px]">
-              <span className="rounded border border-ink-line bg-ink px-1.5 py-0.5 text-term-dim">
-                {diff.totals.files} files
-              </span>
-              <span className="rounded border border-term-green/25 bg-term-green/10 px-1.5 py-0.5 text-term-green">
-                +{diff.totals.additions}
-              </span>
-              <span className="rounded border border-term-rose/25 bg-term-rose/10 px-1.5 py-0.5 text-term-rose">
-                -{diff.totals.deletions}
-              </span>
-            </div>
-            {hasChanges ? (
-              <div className="mt-2 grid gap-1.5">
-                {diff.files.slice(0, 6).map((file) => (
-                  <button
-                    key={`${file.changeType}:${file.path}`}
-                    type="button"
-                    className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md border border-ink-line bg-ink px-2 py-1.5 text-left text-[11.5px] transition hover:border-foreground/20"
-                    onClick={() => onOpen(diff.turnId)}
-                  >
-                    <span className="min-w-0 truncate text-term-name">
-                      {file.path}
-                    </span>
-                    <span className="tabular-nums text-term-green">
-                      +{file.additions}
-                    </span>
-                    <span className="tabular-nums text-term-rose">
-                      -{file.deletions}
-                    </span>
-                  </button>
-                ))}
-                {diff.files.length > 6 ? (
-                  <button
-                    type="button"
-                    className="rounded-md border border-dashed border-ink-line px-2 py-1.5 text-left text-[11.5px] text-term-dim2 transition hover:border-foreground/20 hover:text-term-name"
-                    onClick={() => onOpen(diff.turnId)}
-                  >
-                    {diff.files.length - 6} more files
-                  </button>
-                ) : null}
-              </div>
-            ) : (
-              <div className="mt-2 rounded-md border border-dashed border-ink-line bg-ink p-3 text-[11.5px] text-term-dim2">
-                No file changes in this turn.
-              </div>
-            )}
-            <Button
-              className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
-              variant="outline"
-              onClick={() => onOpen(diff.turnId)}
-            >
-              <FileText className="size-3.5" />
-              Open patch
-            </Button>
-          </>
-        )}
+      <div className="flex min-w-0 items-center gap-2">
+        <FileText className={cn('size-3.5 shrink-0', diffTone)} />
+        <span
+          className={cn(
+            'text-[10px] uppercase tracking-[0.14em]',
+            diffTone
+          )}
+        >
+          diff
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-term-name">
+          Turn changed files
+        </span>
+        <span className="shrink-0 text-[10.5px] tabular-nums text-term-faint">
+          {formatClock(diff.generatedAt)}
+        </span>
       </div>
+      {diff.error ? (
+        <p className="mt-2 whitespace-pre-wrap break-words border-l border-ink-line pl-3 text-[11.5px] leading-5 text-term-amber">
+          {diff.error}
+        </p>
+      ) : (
+        <>
+          <div className="mt-2 flex flex-wrap gap-3 pl-[26px] text-[10.5px] uppercase tracking-[0.08em]">
+            <span className="text-term-dim">
+              {diff.totals.files} files
+            </span>
+            <span className="text-term-green">
+              +{diff.totals.additions}
+            </span>
+            <span className="text-term-rose">
+              -{diff.totals.deletions}
+            </span>
+          </div>
+          {hasChanges ? (
+            <div className="mt-2 grid gap-1">
+              {diff.files.slice(0, 6).map((file, index) => (
+                <button
+                  key={`${file.changeType}:${file.path}`}
+                  type="button"
+                  className="grid grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5 text-left text-[11.5px] leading-5 transition hover:text-lime"
+                  onClick={() => onOpen(diff.turnId)}
+                >
+                  <span className="text-term-faint">
+                    {index === Math.min(diff.files.length, 6) - 1
+                      ? '└'
+                      : '├'}
+                  </span>
+                  <span className="min-w-0 truncate text-term-name">
+                    {file.path}
+                  </span>
+                  <span className="tabular-nums text-term-green">
+                    +{file.additions}
+                  </span>
+                  <span className="tabular-nums text-term-rose">
+                    -{file.deletions}
+                  </span>
+                </button>
+              ))}
+              {diff.files.length > 6 ? (
+                <button
+                  type="button"
+                  className="pl-[26px] text-left text-[11.5px] leading-5 text-term-dim2 transition hover:text-term-name"
+                  onClick={() => onOpen(diff.turnId)}
+                >
+                  {diff.files.length - 6} more files
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mt-2 border-l border-dashed border-ink-line pl-3 text-[11.5px] text-term-dim2">
+              No file changes in this turn.
+            </div>
+          )}
+          <Button
+            className={cn(
+              termActionBtnCls,
+              'mt-2 h-8 w-full justify-center text-[11px] tracking-[0.08em]'
+            )}
+            variant="outline"
+            onClick={() => onOpen(diff.turnId)}
+          >
+            <FileText className="size-3.5" />
+            Open patch
+          </Button>
+        </>
+      )}
     </div>
   )
 }
@@ -2735,6 +2761,14 @@ function SessionTimeline({
   onRevisePlan: (plan: RuntimePlan) => void
   onOpenTurnDiff: (turnId: string) => void
 }) {
+  const toolTurnsByTurnId = useMemo(() => {
+    const activities = entries.flatMap((entry) =>
+      entry.kind === 'activity' ? [entry.activity] : []
+    )
+    return toolTurnsFromRuntimeActivities(activities)
+  }, [entries])
+  const renderedToolTurnIds = new Set<string>()
+
   return (
     <>
       {entries.map((entry) => {
@@ -2751,6 +2785,21 @@ function SessionTimeline({
           )
         }
         if (entry.kind === 'activity') {
+          const turnId = entry.activity.turnId
+          const turn = turnId ? toolTurnsByTurnId.get(turnId) : undefined
+          if (turnId && turn?.toolRuns.length) {
+            if (renderedToolTurnIds.has(turnId)) {
+              return null
+            }
+            renderedToolTurnIds.add(turnId)
+            return (
+              <ToolRunTimelineRow
+                key={`tool-run:${turnId}`}
+                turn={turn}
+                agent={agent}
+              />
+            )
+          }
           return (
             <ActivityTimelineRow key={entry.id} activity={entry.activity} />
           )

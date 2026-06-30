@@ -19,9 +19,6 @@ const gutterByStatus: Record<ToolRun['status'], { char: string; cls: string }> =
   }
 
 function headElapsed(turn: ToolTurn): string | undefined {
-  if (turn.result?.durationMs !== undefined) {
-    return formatDuration(turn.result.durationMs)
-  }
   const total = turn.toolRuns.reduce(
     (sum, run) => sum + (run.durationMs ?? 0),
     0
@@ -124,28 +121,6 @@ export function ToolRunFeed({
           <ToolRow key={run.id} run={run} />
         ))}
       </div>
-
-      {turn.result?.text || turn.result?.numTurns ? (
-        <div className="mt-1.5 flex items-center gap-2 border-t border-ink-line-2 pt-2 text-[11px] text-term-dim2">
-          <span
-            className={cn(
-              turn.result.isError ? 'text-term-rose' : 'text-term-green'
-            )}
-          >
-            {turn.result.isError ? '✗' : '●'}
-          </span>
-          <span className="min-w-0 flex-1 truncate">
-            {turn.result.text
-              ? turn.result.text
-              : `${turn.result.numTurns} turns`}
-          </span>
-          {turn.result.numTurns && turn.result.text ? (
-            <span className="shrink-0 tabular-nums text-term-faint">
-              {turn.result.numTurns} turns
-            </span>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   )
 }
