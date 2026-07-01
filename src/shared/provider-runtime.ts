@@ -8,6 +8,8 @@ import type {
 
 export type ProviderKind = 'claude-code' | 'codex' | 'legacy-claude-cli'
 
+export type ProviderAgentKind = 'claude-code' | 'codex'
+
 export type ProviderRuntimeMode =
   | 'approval-required'
   | 'auto-accept-edits'
@@ -32,6 +34,100 @@ export type ProviderRuntimeSettings = {
   reasoningEffort?: ProviderReasoningEffort
   serviceTier?: string
   interactionMode?: ProviderInteractionMode
+}
+
+export type ProviderRuntimeModeCapability = {
+  id: ProviderRuntimeMode
+  label: string
+  effectiveLabel: string
+  description: string
+}
+
+export type ProviderCapability = {
+  providerKind: ProviderKind
+  agent: ProviderAgentKind
+  label: string
+  supportsReasoningEffort: boolean
+  runtimeModes: ProviderRuntimeModeCapability[]
+}
+
+export type ProviderEffectiveRuntimeConfig = {
+  providerKind: ProviderKind
+  runtimeMode: ProviderRuntimeMode
+  modeLabel: string
+  model?: string
+  reasoningEffort?: ProviderReasoningEffort
+  native: Record<string, unknown>
+  notes?: string[]
+}
+
+export const providerRuntimeModeOptions: ProviderRuntimeModeCapability[] = [
+  {
+    id: 'approval-required',
+    label: 'Supervised',
+    effectiveLabel: 'Supervised',
+    description: 'Ask before dangerous tool use.',
+  },
+  {
+    id: 'auto-accept-edits',
+    label: 'Auto edits',
+    effectiveLabel: 'Auto edits',
+    description: 'Automatically accept file edits while keeping other approvals gated.',
+  },
+  {
+    id: 'full-access',
+    label: 'Full access',
+    effectiveLabel: 'Full access',
+    description: 'Run with explicitly elevated provider permissions.',
+  },
+]
+
+export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
+  'claude-code': {
+    providerKind: 'claude-code',
+    agent: 'claude-code',
+    label: 'Claude Code',
+    supportsReasoningEffort: false,
+    runtimeModes: providerRuntimeModeOptions,
+  },
+  codex: {
+    providerKind: 'codex',
+    agent: 'codex',
+    label: 'Codex',
+    supportsReasoningEffort: true,
+    runtimeModes: providerRuntimeModeOptions,
+  },
+  'legacy-claude-cli': {
+    providerKind: 'legacy-claude-cli',
+    agent: 'claude-code',
+    label: 'Claude CLI (legacy)',
+    supportsReasoningEffort: false,
+    runtimeModes: [],
+  },
+}
+
+export function providerCapability(providerKind: ProviderKind) {
+  return providerCapabilities[providerKind] ?? providerCapabilities['claude-code']
+}
+
+export function providerRuntimeModeCapability(
+  providerKind: ProviderKind,
+  runtimeMode: ProviderRuntimeMode
+) {
+  return providerCapability(providerKind).runtimeModes.find(
+    (option) => option.id === runtimeMode
+  )
+}
+
+export function providerSupportsRuntimeMode(
+  providerKind: ProviderKind,
+  runtimeMode: ProviderRuntimeMode
+) {
+  return Boolean(providerRuntimeModeCapability(providerKind, runtimeMode))
+}
+
+export function providerSupportsReasoningEffort(providerKind: ProviderKind) {
+  return providerCapability(providerKind).supportsReasoningEffort
 }
 
 export type ChatAttachmentKind = 'text' | 'image' | 'binary'
@@ -239,6 +335,14 @@ export type ProviderRuntimeEvent =
   | {
       id: string
       ts: string
+      type: 'runtime.configured'
+      sessionId: SessionId
+      effectiveRuntimeConfig: ProviderEffectiveRuntimeConfig
+      raw?: RawEnvelope
+    }
+  | {
+      id: string
+      ts: string
       type: 'turn.started'
       sessionId: SessionId
       turnId: string
@@ -432,4 +536,5 @@ export type SessionProjection = {
   timeline: SessionTimelineEntry[]
   status: SessionStatus
   runtimeSettings?: ProviderRuntimeSettings
+  effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig
 }

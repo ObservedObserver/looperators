@@ -641,6 +641,11 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
     const created = await runtime.createSession({
       prompt: 'infer provider from instance',
       providerInstanceId: 'default-codex',
+      runtimeSettings: {
+        runtimeMode: 'full-access',
+        model: 'gpt-5-codex',
+        reasoningEffort: 'high',
+      },
       cwd: project,
     })
     await waitFor(
@@ -652,7 +657,18 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
     const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
     assert.equal(session.providerKind, 'codex')
     assert.equal(session.providerInstanceId, 'default-codex')
+    assert.equal(session.effectiveRuntimeConfig.providerKind, 'codex')
+    assert.equal(session.effectiveRuntimeConfig.modeLabel, 'Full access')
+    assert.equal(session.effectiveRuntimeConfig.model, 'gpt-5-codex')
+    assert.equal(session.effectiveRuntimeConfig.reasoningEffort, 'high')
+    assert.deepEqual(session.effectiveRuntimeConfig.native, {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    })
     assert.equal(marker.params.cwd, project)
+    assert.equal(marker.params.approvalPolicy, 'never')
+    assert.equal(marker.params.sandbox, 'danger-full-access')
+    assert.equal(marker.params.model, 'gpt-5-codex')
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

@@ -36,6 +36,38 @@ function runtimeModeToCodexConfig(runtimeSettings: RuntimeSettings = {}) {
   }
 }
 
+function codexModeLabel(runtimeSettings: RuntimeSettings = {}) {
+  switch (runtimeSettings.runtimeMode) {
+    case 'full-access':
+      return 'Full access'
+    case 'auto-accept-edits':
+      return 'Auto edits'
+    case 'approval-required':
+    default:
+      return 'Supervised'
+  }
+}
+
+function effectiveCodexRuntimeConfig(runtimeSettings: RuntimeSettings = {}) {
+  const config = runtimeModeToCodexConfig(runtimeSettings)
+  return {
+    providerKind: 'codex',
+    runtimeMode: runtimeSettings.runtimeMode ?? 'approval-required',
+    modeLabel: codexModeLabel(runtimeSettings),
+    ...(runtimeSettings?.model ? { model: runtimeSettings.model } : {}),
+    ...(runtimeSettings?.reasoningEffort
+      ? { reasoningEffort: runtimeSettings.reasoningEffort }
+      : {}),
+    native: {
+      approvalPolicy: config.approvalPolicy,
+      sandbox: config.sandbox,
+      ...(runtimeSettings?.serviceTier
+        ? { serviceTier: runtimeSettings.serviceTier }
+        : {}),
+    },
+  }
+}
+
 function sandboxPolicyForCodex(sandbox, cwd) {
   switch (sandbox) {
     case 'danger-full-access':
@@ -345,6 +377,13 @@ export class CodexAppServerRun extends EventEmitter {
         },
         { timeoutMs: 15000 }
       )
+      this.emit('providerEvent', {
+        id: randomUUID(),
+        ts: new Date().toISOString(),
+        type: 'runtime.configured',
+        sessionId: this.#sessionId,
+        effectiveRuntimeConfig: effectiveCodexRuntimeConfig(runtimeSettings),
+      })
 
       const threadResult = this.#threadId
         ? await this.#client.request(

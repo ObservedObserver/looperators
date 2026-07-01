@@ -465,6 +465,14 @@
   .orrery-composer-editor[aria-disabled='true'] {
     opacity: 0.6;
   }
+
+  .orrery-chip-row {
+    scrollbar-width: none;
+  }
+
+  .orrery-chip-row::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 @keyframes orrery-edge-label-pulse {

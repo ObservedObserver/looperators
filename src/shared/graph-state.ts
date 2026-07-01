@@ -2,6 +2,7 @@ import type {
   ChatAttachment,
   NativeProviderEvent,
   ProviderInstance,
+  ProviderEffectiveRuntimeConfig,
   ProviderKind,
   ProviderRuntimeEvent,
   ProviderRuntimeSettings,
@@ -127,6 +128,8 @@ export const graphStateSchema = {
           'string?; selected provider runtime profile for this session',
         runtimeSettings:
           'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
+        effectiveRuntimeConfig:
+          'ProviderEffectiveRuntimeConfig?; provider-native runtime config actually applied by the adapter',
       },
     },
     getProjectContext: {
@@ -416,6 +419,7 @@ export type AgentSession = {
   runtimeUserInputRequests: UserInputRequest[]
   runtimePlans: RuntimePlan[]
   runtimeSettings?: ProviderRuntimeSettings
+  effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig
   archived?: boolean
 }
 

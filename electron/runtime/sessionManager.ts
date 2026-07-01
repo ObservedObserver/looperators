@@ -1026,6 +1026,31 @@ function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
   return settings
 }
 
+function normalizeProviderEffectiveRuntimeConfig(value, providerKind, runtimeSettings) {
+  const input = isObject(value) ? value : {}
+  const native = isObject(input.native) ? input.native : {}
+  const runtimeMode = validProviderRuntimeModes.has(input.runtimeMode)
+    ? input.runtimeMode
+    : runtimeSettings?.runtimeMode ?? defaultProviderRuntimeSettings.runtimeMode
+  return {
+    providerKind: validProviderKinds.has(input.providerKind)
+      ? input.providerKind
+      : providerKind,
+    runtimeMode,
+    modeLabel: nonEmptyString(input.modeLabel)
+      ? input.modeLabel.trim()
+      : runtimeMode,
+    ...(nonEmptyString(input.model) ? { model: input.model.trim() } : {}),
+    ...(validProviderReasoningEfforts.has(input.reasoningEffort)
+      ? { reasoningEffort: input.reasoningEffort }
+      : {}),
+    native,
+    ...(Array.isArray(input.notes)
+      ? { notes: input.notes.filter(nonEmptyString).map((note) => note.trim()) }
+      : {}),
+  }
+}
+
 function normalizeRuntimeRequestDecision(decision) {
   if (decision === 'approved') {
     return 'accept'
@@ -2356,6 +2381,15 @@ export class RuntimeSessionManager {
     )
     if (event.type === 'turn.diff.updated' || removedDiffEvent) {
       this.#pruneTurnCheckpointRefs(sessionId)
+    }
+
+    if (event.type === 'runtime.configured') {
+      session.effectiveRuntimeConfig = normalizeProviderEffectiveRuntimeConfig(
+        event.effectiveRuntimeConfig,
+        session.providerKind,
+        session.runtimeSettings
+      )
+      return
     }
 
     if (
@@ -4612,6 +4646,7 @@ export class RuntimeSessionManager {
         branch: currentGitBranch(cwd) ?? project.baseBranch ?? project.branch,
       }
     }
+    const runtimeSettings = normalizeProviderRuntimeSettings(value.runtimeSettings)
     const session = {
       ...value,
       sessionId,
@@ -4684,7 +4719,14 @@ export class RuntimeSessionManager {
       runtimePlans: Array.isArray(value.runtimePlans)
         ? value.runtimePlans.filter(isObject)
         : [],
-      runtimeSettings: normalizeProviderRuntimeSettings(value.runtimeSettings),
+      runtimeSettings,
+      effectiveRuntimeConfig: isObject(value.effectiveRuntimeConfig)
+        ? normalizeProviderEffectiveRuntimeConfig(
+            value.effectiveRuntimeConfig,
+            providerKind,
+            runtimeSettings
+          )
+        : undefined,
       archived: value.archived === true,
     }
 

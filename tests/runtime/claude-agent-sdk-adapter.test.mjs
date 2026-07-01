@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ClaudeAgentSdkTurnRun } from '../../dist-electron/electron/runtime/providers/claudeAgentSdkAdapter.js'
+import {
+  ClaudeAgentSdkTurnRun,
+  automaticClaudePermissionResult,
+  claudePermissionModeForRuntime,
+  claudeRuntimeOptions,
+  effectiveClaudeRuntimeConfig,
+} from '../../dist-electron/electron/runtime/providers/claudeAgentSdkAdapter.js'
 
 function testRun() {
   const controller = {
@@ -46,6 +52,69 @@ test('ClaudeAgentSdkTurnRun resolves pending permission requests as canceled on 
         event.status === 'canceled'
     ),
     true
+  )
+})
+
+test('Claude runtime mode maps to SDK permissionMode options', () => {
+  assert.equal(
+    claudePermissionModeForRuntime({ runtimeMode: 'approval-required' }),
+    'default'
+  )
+  assert.deepEqual(
+    claudeRuntimeOptions({ runtimeMode: 'auto-accept-edits' }),
+    { permissionMode: 'acceptEdits' }
+  )
+  assert.deepEqual(claudeRuntimeOptions({ runtimeMode: 'full-access' }), {
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+  })
+})
+
+test('Claude effective runtime config records provider-native permission mode', () => {
+  assert.deepEqual(
+    effectiveClaudeRuntimeConfig({
+      runtimeMode: 'full-access',
+      model: 'claude-sonnet-4-6',
+    }).native,
+    {
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    }
+  )
+})
+
+test('Claude runtime mode controls automatic permission decisions', () => {
+  assert.deepEqual(
+    automaticClaudePermissionResult(
+      { runtimeMode: 'full-access' },
+      'Bash',
+      { toolUseID: 'tool-1' }
+    ),
+    {
+      behavior: 'allow',
+      toolUseID: 'tool-1',
+      decisionClassification: 'user_permanent',
+    }
+  )
+  assert.deepEqual(
+    automaticClaudePermissionResult(
+      { runtimeMode: 'auto-accept-edits' },
+      'Edit',
+      { toolUseID: 'tool-2' }
+    ),
+    {
+      behavior: 'allow',
+      toolUseID: 'tool-2',
+      decisionClassification: 'user_permanent',
+    }
+  )
+  assert.equal(
+    automaticClaudePermissionResult(
+      { runtimeMode: 'auto-accept-edits' },
+      'Bash',
+      { toolUseID: 'tool-3' }
+    ),
+    undefined
   )
 })
 

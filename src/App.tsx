@@ -34,6 +34,7 @@ import {
   Activity,
   Archive,
   ArchiveRestore,
+  ArrowUp,
   Bot,
   Braces,
   Check,
@@ -55,6 +56,7 @@ import {
   Search,
   Send,
   Snowflake,
+  Sparkles,
   Square,
   Sun,
   Terminal,
@@ -62,6 +64,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react'
+import { Select as SelectPrimitive } from 'radix-ui'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -104,6 +107,7 @@ import {
 import type {
   ChatAttachment,
   NativeProviderEvent,
+  ProviderAgentKind,
   ProviderInstance,
   ProviderKind,
   ProviderReasoningEffort,
@@ -119,6 +123,11 @@ import type {
   UserInputAnswerMap,
   UserInputAnswerValue,
   UserInputRequest,
+} from '@/shared/provider-runtime'
+import {
+  providerCapability,
+  providerRuntimeModeCapability,
+  providerSupportsReasoningEffort,
 } from '@/shared/provider-runtime'
 import {
   chatAttachmentImageMaxBytes,
@@ -467,18 +476,63 @@ function edgeDisplayLabel(edgeData: GraphEdgeData) {
 
 const providerOptions: {
   id: ProviderKind
-  agent: 'claude-code' | 'codex'
+  agent: ProviderAgentKind
   label: string
 }[] = [
-  { id: 'claude-code', agent: 'claude-code', label: 'Claude SDK' },
-  { id: 'codex', agent: 'codex', label: 'Codex' },
-  { id: 'legacy-claude-cli', agent: 'claude-code', label: 'Claude CLI' },
+  {
+    id: 'claude-code',
+    agent: providerCapability('claude-code').agent,
+    label: providerCapability('claude-code').label,
+  },
+  {
+    id: 'codex',
+    agent: providerCapability('codex').agent,
+    label: providerCapability('codex').label,
+  },
+  {
+    id: 'legacy-claude-cli',
+    agent: providerCapability('legacy-claude-cli').agent,
+    label: providerCapability('legacy-claude-cli').label,
+  },
 ]
 
 function providerOption(providerKind: ProviderKind) {
   return (
     providerOptions.find((option) => option.id === providerKind) ??
     providerOptions[0]
+  )
+}
+
+// Curated, per-agent model presets. Values are the real model ids each runtime
+// accepts (Claude Agent SDK / Codex app-server); the picker also exposes a
+// "Default" (no override — let the provider decide) and a "Custom…" escape
+// hatch for ids not listed here.
+const modelCatalog: Record<ProviderAgentKind, { value: string; label: string }[]> = {
+  'claude-code': [
+    { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+    { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  ],
+  codex: [
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
+  ],
+}
+
+function modelOptionsForKind(providerKind: ProviderKind) {
+  return modelCatalog[providerOption(providerKind).agent] ?? []
+}
+
+function modelLabelForKind(providerKind: ProviderKind, model: string | undefined) {
+  const trimmed = (model ?? '').trim()
+  if (!trimmed) {
+    return 'Default'
+  }
+  return (
+    modelOptionsForKind(providerKind).find((option) => option.value === trimmed)
+      ?.label ?? trimmed
   )
 }
 
@@ -603,36 +657,6 @@ function ProviderSegmentedControl({
   )
 }
 
-function ProviderInlineSelect({
-  value,
-  disabled,
-  onChange,
-}: {
-  value: ProviderKind
-  disabled?: boolean
-  onChange: (value: ProviderKind) => void
-}) {
-  return (
-    <label className="relative shrink-0">
-      <span className="sr-only">Provider</span>
-      <select
-        className="app-region-no-drag h-7 appearance-none rounded-md border border-border bg-background/60 py-1 pl-2 pr-7 font-mono text-[10.5px] text-accent-ink outline-none transition focus:border-lime-hi/55 focus:ring-1 focus:ring-lime-hi/25 disabled:opacity-55"
-        value={value}
-        disabled={disabled}
-        aria-label="Provider"
-        onChange={(event) => onChange(event.target.value as ProviderKind)}
-      >
-        {providerOptions.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
-    </label>
-  )
-}
-
 function sessionProviderLabel(session: AgentSession) {
   return providerOption(session.providerKind).label
 }
@@ -752,13 +776,8 @@ type NewChatProjectOption = {
 }
 
 const workModeOptions: { id: WorkMode; label: string }[] = [
-  { id: 'local', label: 'Work locally' },
-  { id: 'worktree', label: 'New worktree' },
-]
-const runtimeModeOptions: { id: ProviderRuntimeMode; label: string }[] = [
-  { id: 'approval-required', label: 'Supervised' },
-  { id: 'auto-accept-edits', label: 'Auto edits' },
-  { id: 'full-access', label: 'Full access' },
+  { id: 'local', label: 'Local' },
+  { id: 'worktree', label: 'Worktree' },
 ]
 const reasoningEffortOptions: { id: ProviderReasoningEffort; label: string }[] = [
   { id: 'low', label: 'Low' },
@@ -766,6 +785,42 @@ const reasoningEffortOptions: { id: ProviderReasoningEffort; label: string }[] =
   { id: 'high', label: 'High' },
   { id: 'xhigh', label: 'XHigh' },
 ]
+
+// One-line summary of the runtime config (model · [effort] · mode), used in the
+// chat header so the effective agent setup is always visible.
+function runtimeConfigSummary(
+  providerKind: ProviderKind,
+  runtimeSettings?: ProviderRuntimeSettings,
+  effectiveRuntimeConfig?: AgentSession['effectiveRuntimeConfig']
+) {
+  const parts: string[] = [
+    modelLabelForKind(
+      providerKind,
+      effectiveRuntimeConfig?.model ?? runtimeSettings?.model
+    ),
+  ]
+  const effort =
+    effectiveRuntimeConfig?.reasoningEffort ?? runtimeSettings?.reasoningEffort
+  if (providerSupportsReasoningEffort(providerKind) && effort) {
+    const effortLabel = reasoningEffortOptions.find(
+      (option) => option.id === effort
+    )?.label
+    if (effortLabel) {
+      parts.push(effortLabel)
+    }
+  }
+  const modeLabel =
+    effectiveRuntimeConfig?.modeLabel ??
+    providerRuntimeModeCapability(
+      providerKind,
+      runtimeSettings?.runtimeMode ?? 'approval-required'
+    )?.effectiveLabel
+  if (modeLabel) {
+    parts.push(modeLabel)
+  }
+  return parts.join(' · ')
+}
+
 const chooseProjectOptionValue = '__orrery_choose_project__'
 
 type RecoveryTone = 'amber' | 'rose' | 'cyan' | 'muted'
@@ -1386,74 +1441,253 @@ function ProjectCwdField({
   onChange: (value: string) => void
 }) {
   return (
-    <label className="block space-y-1.5 font-mono">
-      <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
-        <FolderOpen className="size-3" />
-        project cwd
-      </span>
+    <label
+      className={cn(
+        'flex h-8 min-w-0 items-center gap-2 rounded-md border border-ink-line bg-ink px-2.5 font-mono transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
+        !validation.ok && 'border-term-rose/45 focus-within:border-term-rose/70',
+        disabled && 'opacity-55'
+      )}
+      title="Project folder"
+    >
+      <FolderOpen className="size-3.5 shrink-0 text-lime-hi" />
       <input
-        className={cn(
-          termInputCls,
-          !validation.ok && 'border-term-rose/45 focus:border-term-rose/70'
-        )}
+        className="min-w-0 flex-1 bg-transparent text-[12px] text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
         value={value}
         spellCheck={false}
         disabled={disabled}
         placeholder="/path/to/project"
+        aria-label="Project folder path"
+        aria-invalid={!validation.ok}
         onChange={(event) => onChange(event.target.value)}
       />
-      <span
-        className={cn(
-          'block text-[10.5px] leading-4',
-          validation.ok ? 'text-term-dim2' : 'text-term-rose'
-        )}
-      >
-        {validation.message}
-      </span>
+      {!validation.ok ? (
+        <TriangleAlert className="size-3.5 shrink-0 text-term-rose" />
+      ) : null}
     </label>
   )
 }
 
-function NewChatSetupPill({
-  icon: Icon,
-  label,
+function ProjectCwdChip({
   value,
+  validation,
+  projects,
   disabled,
-  className,
-  children,
   onChange,
 }: {
-  icon: LucideIcon
-  label: string
   value: string
+  validation: ProjectCwdValidation
+  projects: NewChatProjectOption[]
   disabled?: boolean
-  className?: string
-  children: ReactNode
   onChange: (value: string) => void
 }) {
   return (
     <label
       className={cn(
-        'relative flex min-w-0 items-center gap-2 rounded-full border border-accent-ink/30 bg-ink px-3 py-2 font-mono shadow-sm transition focus-within:border-lime-hi/60 focus-within:ring-1 focus-within:ring-lime-hi/25',
-        disabled && 'opacity-55',
-        className
+        'relative flex h-7 w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md border bg-ink px-2 font-mono transition focus-within:ring-1',
+        validation.ok
+          ? 'border-ink-line focus-within:border-lime-hi/60 focus-within:ring-lime-hi/25'
+          : 'border-term-rose/55 focus-within:border-term-rose/70 focus-within:ring-term-rose/25',
+        disabled && 'opacity-55'
       )}
+      title={validation.ok ? 'Project folder' : validation.message}
     >
-      <Icon className="size-3.5 shrink-0 text-lime-hi" />
-      <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
-        {label}
-      </span>
-      <select
-        className="min-w-0 flex-1 appearance-none bg-transparent pr-5 text-[12px] font-semibold text-term-name outline-none disabled:cursor-not-allowed"
+      <FolderOpen
+        className={cn(
+          'size-3.5 shrink-0',
+          validation.ok ? 'text-lime-hi' : 'text-term-rose'
+        )}
+      />
+      <input
+        list="orrery-project-suggestions"
+        className="min-w-0 flex-1 bg-transparent text-[11.5px] text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
         value={value}
+        spellCheck={false}
         disabled={disabled}
-        aria-label={label}
+        placeholder="/path/to/project"
+        aria-label="Project folder path"
+        aria-invalid={!validation.ok}
         onChange={(event) => onChange(event.target.value)}
-      >
-        {children}
-      </select>
-      <ChevronDown className="pointer-events-none absolute right-3 size-3.5 text-term-dim2" />
+      />
+      <datalist id="orrery-project-suggestions">
+        {projects.map((project) => (
+          <option key={project.id} value={project.cwd}>
+            {project.name}
+          </option>
+        ))}
+      </datalist>
     </label>
+  )
+}
+
+type SetupOption = { value: string; label: string; disabled?: boolean }
+
+function NewChatSetupPill({
+  icon: Icon,
+  label,
+  value,
+  options,
+  placeholder,
+  tone = 'primary',
+  disabled,
+  invalid,
+  hint,
+  className,
+  onChange,
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  options: SetupOption[]
+  placeholder?: string
+  tone?: 'primary' | 'secondary'
+  disabled?: boolean
+  invalid?: boolean
+  hint?: string
+  className?: string
+  onChange: (value: string) => void
+}) {
+  const primary = tone === 'primary'
+  const display =
+    options.find((option) => option.value === value)?.label ??
+    placeholder ??
+    label
+  return (
+    <SelectPrimitive.Root value={value} disabled={disabled} onValueChange={onChange}>
+      <SelectPrimitive.Trigger
+        aria-label={label}
+        title={hint ?? label}
+        className={cn(
+          'group relative flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-md font-mono outline-none transition disabled:cursor-not-allowed disabled:opacity-55',
+          primary
+            ? 'border border-ink-line bg-ink pl-2 pr-1.5 hover:border-ink-line-2 data-[state=open]:border-lime-hi/60 focus-visible:border-lime-hi/60 focus-visible:ring-1 focus-visible:ring-lime-hi/25'
+            : 'border border-transparent px-1.5 hover:bg-white/[0.05] data-[state=open]:bg-white/[0.05] focus-visible:bg-white/[0.05]',
+          invalid &&
+            'border-term-rose/55 data-[state=open]:border-term-rose/70 focus-visible:border-term-rose/70 focus-visible:ring-term-rose/25',
+          className
+        )}
+      >
+        <Icon
+          className={cn(
+            'size-3.5 shrink-0',
+            invalid ? 'text-term-rose' : primary ? 'text-lime-hi' : 'text-term-dim2'
+          )}
+        />
+        <span
+          className={cn(
+            'min-w-0 flex-1 truncate text-left text-[11.5px]',
+            primary ? 'font-medium text-term-name' : 'text-term-dim'
+          )}
+        >
+          {display}
+        </span>
+        <SelectPrimitive.Icon asChild>
+          <ChevronDown
+            className={cn(
+              'size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180',
+              primary ? 'text-term-dim2' : 'text-term-faint'
+            )}
+          />
+        </SelectPrimitive.Icon>
+      </SelectPrimitive.Trigger>
+      <SelectPrimitive.Portal>
+        <SelectPrimitive.Content
+          position="popper"
+          side="top"
+          align="start"
+          sideOffset={6}
+          className="z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-ink-line bg-ink-soft p-1 font-mono shadow-[0_12px_32px_-8px_rgba(0,0,0,0.75)]"
+        >
+          <SelectPrimitive.Viewport className="flex flex-col gap-0.5">
+            {options.map((option) => (
+              <SelectPrimitive.Item
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled}
+                className="relative flex h-7 cursor-pointer select-none items-center gap-2 rounded-md pl-2.5 pr-7 text-[11.5px] text-term-dim outline-none data-[highlighted]:bg-white/[0.06] data-[highlighted]:text-term-name data-[state=checked]:bg-lime-hi/10 data-[state=checked]:font-medium data-[state=checked]:text-term-name data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
+              >
+                <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
+                <SelectPrimitive.ItemIndicator className="absolute right-2 inline-flex">
+                  <Check className="size-3.5 text-lime-hi" />
+                </SelectPrimitive.ItemIndicator>
+              </SelectPrimitive.Item>
+            ))}
+          </SelectPrimitive.Viewport>
+        </SelectPrimitive.Content>
+      </SelectPrimitive.Portal>
+    </SelectPrimitive.Root>
+  )
+}
+
+const modelDefaultOptionValue = '__orrery_model_default__'
+const modelCustomOptionValue = '__orrery_model_custom__'
+
+// Per-agent model picker: a curated dropdown (Default + presets) plus a
+// "Custom…" option that reveals a free-text field for arbitrary model ids.
+function ModelPickerPill({
+  providerKind,
+  model,
+  disabled,
+  onChange,
+}: {
+  providerKind: ProviderKind
+  model: string
+  disabled?: boolean
+  onChange: (model: string) => void
+}) {
+  const options = modelOptionsForKind(providerKind)
+  const trimmed = model.trim()
+  const isCustomValue =
+    trimmed !== '' && !options.some((option) => option.value === trimmed)
+  const [forceCustom, setForceCustom] = useState(false)
+
+  // Switching agent resets to the curated list (the parent also clears the
+  // model so a Codex id can't leak into a Claude session).
+  useEffect(() => {
+    setForceCustom(false)
+  }, [providerKind])
+
+  const showCustom = forceCustom || isCustomValue
+  const selectValue = showCustom
+    ? modelCustomOptionValue
+    : trimmed === ''
+      ? modelDefaultOptionValue
+      : trimmed
+  const selectOptions: SetupOption[] = [
+    { value: modelDefaultOptionValue, label: 'Default' },
+    ...options,
+    { value: modelCustomOptionValue, label: 'Custom…' },
+  ]
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <NewChatSetupPill
+        icon={Bot}
+        label="Model"
+        hint="Model (provider default if unset)"
+        value={selectValue}
+        options={selectOptions}
+        disabled={disabled}
+        className="w-32"
+        onChange={(next) => {
+          if (next === modelCustomOptionValue) {
+            setForceCustom(true)
+            return
+          }
+          setForceCustom(false)
+          onChange(next === modelDefaultOptionValue ? '' : next)
+        }}
+      />
+      {showCustom ? (
+        <input
+          className="h-7 w-28 shrink-0 rounded-md border border-ink-line bg-ink px-2 text-[11.5px] font-medium text-term-name outline-none transition placeholder:text-term-faint focus-visible:border-lime-hi/60 focus-visible:ring-1 focus-visible:ring-lime-hi/25 disabled:cursor-not-allowed disabled:opacity-55"
+          value={model}
+          disabled={disabled}
+          placeholder="model id"
+          aria-label="Custom model id"
+          onChange={(event) => onChange(event.target.value)}
+        />
+      ) : null}
+    </div>
   )
 }
 
@@ -1461,6 +1695,7 @@ function NewChatSetupBar({
   projects,
   projectCwd,
   validation,
+  providerKind,
   workMode,
   branch,
   runtimeMode,
@@ -1470,6 +1705,7 @@ function NewChatSetupBar({
   canChooseProject,
   onProjectChange,
   onChooseProject,
+  onProviderKindChange,
   onWorkModeChange,
   onBranchChange,
   onRuntimeModeChange,
@@ -1479,6 +1715,7 @@ function NewChatSetupBar({
   projects: NewChatProjectOption[]
   projectCwd: string
   validation: ProjectCwdValidation
+  providerKind: ProviderKind
   workMode: WorkMode
   branch: string
   runtimeMode: ProviderRuntimeMode
@@ -1488,6 +1725,7 @@ function NewChatSetupBar({
   canChooseProject?: boolean
   onProjectChange: (cwd: string) => void
   onChooseProject: () => void
+  onProviderKindChange: (providerKind: ProviderKind) => void
   onWorkModeChange: (workMode: WorkMode) => void
   onBranchChange: (branch: string) => void
   onRuntimeModeChange: (runtimeMode: ProviderRuntimeMode) => void
@@ -1508,55 +1746,85 @@ function NewChatSetupBar({
     workMode === 'worktree' ? worktreeBranchValue : localBranchValue
   const isKnownNonGitProject = selectedProject?.isGitRepo === false
   const canPickBranch = workMode === 'worktree' && branchOptions.length > 0
+  const providerRuntimeModes = providerCapability(providerKind).runtimeModes
 
   return (
-    <div className="app-region-no-drag mb-2 space-y-1.5">
-      <ProjectCwdField
-        value={projectCwd}
-        validation={validation}
-        disabled={disabled}
-        onChange={(nextCwd) => {
-          onProjectChange(nextCwd)
-          onBranchChange('')
-        }}
-      />
-      <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-[minmax(0,1.15fr)_minmax(128px,0.85fr)]">
+    <div className="app-region-no-drag mb-2">
+      <div className="orrery-chip-row flex flex-nowrap items-center gap-1.5 overflow-x-auto py-1">
+        {canChooseProject ? (
+          <NewChatSetupPill
+            icon={FolderOpen}
+            label="Project"
+            value={selectedProject?.cwd ?? ''}
+            placeholder="Choose project"
+            options={[
+              ...projects.map((project) => ({
+                value: project.cwd,
+                label: project.name,
+              })),
+              { value: chooseProjectOptionValue, label: 'Choose project…' },
+            ]}
+            disabled={disabled}
+            invalid={!validation.ok}
+            hint={validation.ok ? 'Project' : validation.message}
+            className="max-w-[12rem] shrink-0"
+            onChange={(nextCwd) => {
+              if (nextCwd === chooseProjectOptionValue) {
+                onChooseProject()
+                return
+              }
+              onProjectChange(nextCwd)
+              onBranchChange('')
+            }}
+          />
+        ) : (
+          <ProjectCwdChip
+            value={projectCwd}
+            validation={validation}
+            projects={projects}
+            disabled={disabled}
+            onChange={(nextCwd) => {
+              onProjectChange(nextCwd)
+              onBranchChange('')
+            }}
+          />
+        )}
+
         <NewChatSetupPill
-          icon={FolderOpen}
-          label="Project"
-          value={selectedProject?.cwd ?? ''}
-          disabled={disabled || projects.length === 0}
-          className="min-[380px]:col-span-2"
-          onChange={(nextCwd) => {
-            if (nextCwd === chooseProjectOptionValue) {
-              onChooseProject()
-              return
-            }
-            onProjectChange(nextCwd)
-            onBranchChange('')
+          icon={Sparkles}
+          label="Agent"
+          hint="Agent runtime"
+          value={providerKind}
+          options={providerOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+          }))}
+          disabled={disabled}
+          className="w-36"
+          onChange={(next) => {
+            onProviderKindChange(next as ProviderKind)
           }}
-        >
-          {projects.length === 0 ? (
-            <option value="">Choose project</option>
-          ) : (
-            projects.map((project) => (
-              <option key={project.id} value={project.cwd}>
-                {project.name} - {compactPath(project.cwd)}
-              </option>
-            ))
-          )}
-          {canChooseProject ? (
-            <option value={chooseProjectOptionValue}>
-              Choose project...
-            </option>
-          ) : null}
-        </NewChatSetupPill>
+        />
+
+        <ModelPickerPill
+          providerKind={providerKind}
+          model={model}
+          disabled={disabled}
+          onChange={onModelChange}
+        />
 
         <NewChatSetupPill
           icon={Terminal}
           label="Work"
           value={workMode}
+          tone="secondary"
+          options={workModeOptions.map((option) => ({
+            value: option.id,
+            label: option.label,
+            disabled: option.id === 'worktree' && isKnownNonGitProject,
+          }))}
           disabled={disabled}
+          className="shrink-0"
           onChange={(nextWorkMode) => {
             const normalized =
               nextWorkMode === 'worktree' ? 'worktree' : 'local'
@@ -1565,97 +1833,65 @@ function NewChatSetupBar({
               onBranchChange('')
             }
           }}
-        >
-          {workModeOptions.map((option) => (
-            <option
-              key={option.id}
-              value={option.id}
-              disabled={option.id === 'worktree' && isKnownNonGitProject}
-            >
-              {option.label}
-            </option>
-          ))}
-        </NewChatSetupPill>
+        />
 
         <NewChatSetupPill
           icon={GitBranch}
           label="Branch"
           value={branchValue}
+          placeholder="Branch"
+          tone="secondary"
+          options={branchOptions.map((option) => ({
+            value: option,
+            label: option,
+          }))}
           disabled={disabled || !canPickBranch}
+          className="max-w-[10rem] shrink-0"
           onChange={onBranchChange}
-        >
-          {branchValue ? null : <option value="">Current branch</option>}
-          {branchOptions.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </NewChatSetupPill>
-      </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(150px,1fr))] gap-2">
-        <NewChatSetupPill
-          icon={ClipboardCheck}
-          label="Mode"
-          value={runtimeMode}
-          disabled={disabled}
-          onChange={(nextRuntimeMode) =>
-            onRuntimeModeChange(nextRuntimeMode as ProviderRuntimeMode)
-          }
-        >
-          {runtimeModeOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </NewChatSetupPill>
+        />
 
-        <NewChatSetupPill
-          icon={Activity}
-          label="Think"
-          value={reasoningEffort}
-          disabled={disabled}
-          onChange={(nextReasoningEffort) =>
-            onReasoningEffortChange(nextReasoningEffort as ProviderReasoningEffort)
-          }
-        >
-          {reasoningEffortOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </NewChatSetupPill>
-
-        <label
-          className={cn(
-            'relative flex min-w-0 items-center gap-2 rounded-full border border-accent-ink/30 bg-ink px-3 py-2 font-mono shadow-sm transition focus-within:border-lime-hi/60 focus-within:ring-1 focus-within:ring-lime-hi/25',
-            disabled && 'opacity-55'
-          )}
-        >
-          <Bot className="size-3.5 shrink-0 text-lime-hi" />
-          <span className="shrink-0 text-[10px] uppercase tracking-[0.14em] text-term-dim2">
-            Model
-          </span>
-          <input
-            className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
-            value={model}
+        {providerRuntimeModes.length > 0 ? (
+          <NewChatSetupPill
+            icon={ClipboardCheck}
+            label="Mode"
+            value={
+              providerRuntimeModeCapability(providerKind, runtimeMode)
+                ? runtimeMode
+                : providerRuntimeModes[0]?.id
+            }
+            tone="secondary"
+            options={providerRuntimeModes.map((option) => ({
+              value: option.id,
+              label: option.label,
+            }))}
             disabled={disabled}
-            placeholder="provider default"
-            aria-label="Model"
-            onChange={(event) => onModelChange(event.target.value)}
+            className="shrink-0"
+            onChange={(nextRuntimeMode) =>
+              onRuntimeModeChange(nextRuntimeMode as ProviderRuntimeMode)
+            }
           />
-        </label>
+        ) : null}
+
+        {providerSupportsReasoningEffort(providerKind) ? (
+          <NewChatSetupPill
+            icon={Activity}
+            label="Think"
+            value={reasoningEffort}
+            tone="secondary"
+            options={reasoningEffortOptions.map((option) => ({
+              value: option.id,
+              label: option.label,
+            }))}
+            disabled={disabled}
+            className="shrink-0"
+            onChange={(nextReasoningEffort) =>
+              onReasoningEffortChange(
+                nextReasoningEffort as ProviderReasoningEffort
+              )
+            }
+          />
+        ) : null}
       </div>
-      {!validation.ok ? (
-        <div className="flex items-center gap-1.5 px-1 font-mono text-[10.5px] leading-4 text-term-rose">
-          <TriangleAlert className="size-3 shrink-0" />
-          <span className="min-w-0 truncate">{validation.message}</span>
-        </div>
-      ) : selectedProject?.error ? (
-        <div className="flex items-center gap-1.5 px-1 font-mono text-[10.5px] leading-4 text-term-amber">
-          <TriangleAlert className="size-3 shrink-0" />
-          <span className="min-w-0 truncate">{selectedProject.error}</span>
-        </div>
-      ) : null}
     </div>
   )
 }
@@ -4037,6 +4273,17 @@ function App() {
   const projectContextSeqRef = useRef(0)
   const providerSetupSeqRef = useRef(0)
 
+  const changeNewProviderKind = useCallback((providerKind: ProviderKind) => {
+    setNewProviderKind(providerKind)
+    setNewModel('')
+    const runtimeModes = providerCapability(providerKind).runtimeModes
+    setNewRuntimeMode((current) =>
+      providerRuntimeModeCapability(providerKind, current)
+        ? current
+        : runtimeModes[0]?.id ?? 'approval-required'
+    )
+  }, [])
+
   const selectedSession = selectedSessionId
     ? runtimeState.sessions[selectedSessionId]
     : undefined
@@ -4392,14 +4639,14 @@ function App() {
 
     setPendingLinkedSourceId(selectedSession.sessionId)
     setSelectedSessionId(null)
-    setNewProviderKind(selectedSession.providerKind)
+    changeNewProviderKind(selectedSession.providerKind)
     setNewCwd(sourceCwd)
     setNewWorkMode('local')
     setNewBranch('')
     setActiveTab('chat')
     setShowRawEvents(false)
     clearComposer()
-  }, [clearComposer, invalidProjectCwds, selectedSession, sessions])
+  }, [changeNewProviderKind, clearComposer, invalidProjectCwds, selectedSession, sessions])
 
   const chooseNewChatProject = useCallback(async () => {
     if (!runtimeApi) {
@@ -6180,7 +6427,7 @@ function App() {
                     <ProviderSegmentedControl
                       value={newProviderKind}
                       disabled={isCreatingMaster}
-                      onChange={setNewProviderKind}
+                      onChange={changeNewProviderKind}
                     />
                   </div>
 
@@ -6467,19 +6714,20 @@ function App() {
                           {selectedSession?.label ??
                             (pendingLinkedSource ? 'Linked Chat' : 'New Chat')}
                         </h2>
-                        {!selectedSession ? (
-                          <ProviderInlineSelect
-                            value={newProviderKind}
-                            disabled={isCreating || !isRuntimeAvailable}
-                            onChange={setNewProviderKind}
-                          />
-                        ) : null}
                       </div>
                       <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] leading-4 text-muted-foreground">
                         {selectedSession ? (
                           <>
                             <span className="shrink-0 text-foreground/75">
                               {sessionProviderLabel(selectedSession)}
+                            </span>
+                            <span className="shrink-0 text-term-faint">·</span>
+                            <span className="shrink-0 text-foreground/55">
+                              {runtimeConfigSummary(
+                                selectedSession.providerKind,
+                                selectedSession.runtimeSettings,
+                                selectedSession.effectiveRuntimeConfig
+                              )}
                             </span>
                             <span className="shrink-0 text-term-faint">|</span>
                             <span
@@ -6500,6 +6748,14 @@ function App() {
                           <>
                             <span className="shrink-0 text-foreground/75">
                               {providerOption(newProviderKind).label}
+                            </span>
+                            <span className="shrink-0 text-term-faint">·</span>
+                            <span className="shrink-0 text-foreground/55">
+                              {runtimeConfigSummary(newProviderKind, {
+                                runtimeMode: newRuntimeMode,
+                                model: newModel,
+                                reasoningEffort: newReasoningEffort,
+                              })}
                             </span>
                             <span className="shrink-0 text-term-faint">|</span>
                             <span
@@ -6649,6 +6905,7 @@ function App() {
                         projects={newChatProjects}
                         projectCwd={newCwd}
                         validation={newCwdValidation}
+                        providerKind={newProviderKind}
                         workMode={newWorkMode}
                         branch={newBranch}
                         runtimeMode={newRuntimeMode}
@@ -6658,6 +6915,7 @@ function App() {
                         canChooseProject={isElectron}
                         onProjectChange={setNewCwd}
                         onChooseProject={chooseNewChatProject}
+                        onProviderKindChange={changeNewProviderKind}
                         onWorkModeChange={setNewWorkMode}
                         onBranchChange={setNewBranch}
                         onRuntimeModeChange={setNewRuntimeMode}
@@ -6748,57 +7006,74 @@ function App() {
                           }
                         }}
                       />
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            className="mt-0.5 size-7 shrink-0"
-                            variant="ghost"
-                            size="icon"
-                            disabled={composerDisabled}
-                            aria-label="Attach files"
-                            onClick={() => composerFileInputRef.current?.click()}
-                          >
-                            <Paperclip className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Attach files</TooltipContent>
-                      </Tooltip>
+                      <div className="mt-0.5 flex items-center gap-1">
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              className="size-7 shrink-0"
+                              variant="ghost"
+                              size="icon-sm"
+                              disabled={composerDisabled}
+                              aria-label="Attach files"
+                              onClick={() => composerFileInputRef.current?.click()}
+                            >
+                              <Paperclip className="size-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Attach files</TooltipContent>
+                        </Tooltip>
+                        {canKill ? (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                className="size-7 shrink-0 rounded-full"
+                                variant="destructive"
+                                size="icon-sm"
+                                disabled={
+                                  !isRuntimeAvailable ||
+                                  !selectedSession ||
+                                  !canKill
+                                }
+                                aria-label="Stop"
+                                onClick={killSelectedSession}
+                              >
+                                <Square className="size-3.5" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Stop</TooltipContent>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                className="size-7 shrink-0 rounded-full"
+                                size="icon-sm"
+                                disabled={
+                                  !isRuntimeAvailable ||
+                                  (selectedSession
+                                    ? !canResume || isResuming
+                                    : isCreating || !newCwdValidation.ok) ||
+                                  !composerHasPayload
+                                }
+                                aria-label={
+                                  !selectedSession && pendingLinkedSource
+                                    ? 'Create linked chat'
+                                    : 'Send'
+                                }
+                                onClick={sendChatMessage}
+                              >
+                                <ArrowUp className="size-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {!selectedSession && pendingLinkedSource
+                                ? 'Create linked chat'
+                                : 'Send'}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                    <Button
-                      className="app-region-no-drag min-w-0 justify-center font-mono text-[12px] uppercase tracking-[0.08em]"
-                      disabled={
-                        !isRuntimeAvailable ||
-                        (selectedSession
-                          ? !canResume || isResuming
-                          : isCreating || !newCwdValidation.ok) ||
-                        !composerHasPayload
-                      }
-                      onClick={sendChatMessage}
-                    >
-                      <Send className="size-4 shrink-0" />
-                      <span className="truncate">
-                        {!selectedSession && pendingLinkedSource
-                          ? 'Create Linked Chat'
-                          : 'Send'}
-                      </span>
-                    </Button>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          className="app-region-no-drag"
-                          variant="destructive"
-                          size="icon"
-                          disabled={!isRuntimeAvailable || !selectedSession || !canKill}
-                          aria-label="Stop"
-                          onClick={killSelectedSession}
-                        >
-                          <Square className="size-4" />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Stop</TooltipContent>
-                    </Tooltip>
                   </div>
                 </div>
               </div>

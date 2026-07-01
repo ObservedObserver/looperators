@@ -434,5 +434,6 @@ export function projectSession(session: AgentSession): SessionProjection {
     timeline,
     status: statusFromEvents(events, session.status),
     runtimeSettings: session.runtimeSettings,
+    effectiveRuntimeConfig: session.effectiveRuntimeConfig,
   }
 }

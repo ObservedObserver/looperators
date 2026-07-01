@@ -11,6 +11,10 @@ import {
 } from '../claudeCliAdapter.js'
 import { legacyClaudeRuntimeEventsFromChunk } from './legacyClaudeRuntimeMapper.js'
 
+/**
+ * @typedef {'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'} ClaudePermissionMode
+ */
+
 function sdkMessageType(message) {
   if (message?.type === 'stream_event' && typeof message.event?.type === 'string') {
     return `${message.type}:${message.event.type}`
@@ -91,6 +95,104 @@ function providerClaudeCommand(providerInstance) {
   return nonEmptyString(providerInstance?.binaryPath)
     ? providerInstance.binaryPath.trim()
     : claudeCommand()
+}
+
+/**
+ * @returns {ClaudePermissionMode}
+ */
+export function claudePermissionModeForRuntime(runtimeSettings) {
+  const settings = runtimeSettings ?? {}
+  switch (settings.runtimeMode) {
+    case 'full-access':
+      return 'bypassPermissions'
+    case 'auto-accept-edits':
+      return 'acceptEdits'
+    case 'approval-required':
+    default:
+      return 'default'
+  }
+}
+
+function claudeModeLabel(runtimeSettings) {
+  const settings = runtimeSettings ?? {}
+  switch (settings.runtimeMode) {
+    case 'full-access':
+      return 'Full access'
+    case 'auto-accept-edits':
+      return 'Auto edits'
+    case 'approval-required':
+    default:
+      return 'Supervised'
+  }
+}
+
+/**
+ * @returns {{
+ *   permissionMode: ClaudePermissionMode,
+ *   allowDangerouslySkipPermissions?: boolean
+ * }}
+ */
+export function claudeRuntimeOptions(runtimeSettings) {
+  const permissionMode = claudePermissionModeForRuntime(runtimeSettings)
+  if (permissionMode === 'bypassPermissions') {
+    return /** @type {{ permissionMode: ClaudePermissionMode, allowDangerouslySkipPermissions?: boolean }} */ ({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    })
+  }
+  if (permissionMode === 'acceptEdits') {
+    return /** @type {{ permissionMode: ClaudePermissionMode, allowDangerouslySkipPermissions?: boolean }} */ ({
+      permissionMode: 'acceptEdits',
+    })
+  }
+  return /** @type {{ permissionMode: ClaudePermissionMode, allowDangerouslySkipPermissions?: boolean }} */ ({
+    permissionMode: 'default',
+  })
+}
+
+export function effectiveClaudeRuntimeConfig(runtimeSettings) {
+  const settings = runtimeSettings ?? {}
+  const native = claudeRuntimeOptions(runtimeSettings)
+  return {
+    providerKind: 'claude-code',
+    runtimeMode: settings.runtimeMode ?? 'approval-required',
+    modeLabel: claudeModeLabel(settings),
+    ...(nonEmptyString(settings.model)
+      ? { model: settings.model.trim() }
+      : {}),
+    native,
+    notes: [
+      'Claude Code permissions are implemented through Claude SDK permissionMode.',
+    ],
+  }
+}
+
+function isClaudeEditTool(toolName) {
+  return [
+    'Edit',
+    'MultiEdit',
+    'Write',
+    'NotebookEdit',
+  ].includes(String(toolName))
+}
+
+/**
+ * @param {{ toolUseID?: string }} [options]
+ */
+export function automaticClaudePermissionResult(runtimeSettings, toolName, options) {
+  const sdkOptions = options ?? {}
+  const runtimeMode = runtimeSettings?.runtimeMode ?? 'approval-required'
+  if (
+    runtimeMode === 'full-access' ||
+    (runtimeMode === 'auto-accept-edits' && isClaudeEditTool(toolName))
+  ) {
+    return {
+      behavior: 'allow',
+      toolUseID: sdkOptions.toolUseID,
+      decisionClassification: 'user_permanent',
+    }
+  }
+  return undefined
 }
 
 function sdkMessageToLegacyEvent(message) {
@@ -778,36 +880,48 @@ class ClaudeAgentSdkSessionController {
   }) {
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
-      this.#query = query({
+      const permissionMode = claudePermissionModeForRuntime(runtimeSettings)
+      /** @type {any} */
+      const sdkOptions = {
+        cwd,
+        resume: backendSessionId,
+        pathToClaudeCodeExecutable: providerClaudeCommand(providerInstance),
+        ...(providerExtraArgs(providerInstance)
+          ? { extraArgs: providerExtraArgs(providerInstance) }
+          : {}),
+        ...(nonEmptyString(runtimeSettings?.model)
+          ? { model: runtimeSettings.model.trim() }
+          : {}),
+        permissionMode: /** @type {import('@anthropic-ai/claude-agent-sdk').PermissionMode} */ (
+          permissionMode
+        ),
+        ...(permissionMode === 'bypassPermissions'
+          ? { allowDangerouslySkipPermissions: true }
+          : {}),
+        includePartialMessages: true,
+        strictMcpConfig: false,
+        canUseTool: (toolName, toolInput, options) =>
+          this.#handleCanUseTool(toolName, toolInput, options),
+        onUserDialog: (request, options) =>
+          this.#handleUserDialog(request, options),
+        supportedDialogKinds: ['ask_user_question'],
+        systemPrompt: membrane
+          ? {
+              type: 'preset',
+              preset: 'claude_code',
+              append: membraneSystemPrompt(),
+            }
+          : undefined,
+        abortController: this.#abortController,
+        env: providerEnv(providerInstance),
+      }
+      this.#query = query(/** @type {any} */ ({
         prompt: this.#queue,
-        options: {
-          cwd,
-          resume: backendSessionId,
-          pathToClaudeCodeExecutable: providerClaudeCommand(providerInstance),
-          ...(providerExtraArgs(providerInstance)
-            ? { extraArgs: providerExtraArgs(providerInstance) }
-            : {}),
-          ...(nonEmptyString(runtimeSettings?.model)
-            ? { model: runtimeSettings.model.trim() }
-            : {}),
-          includePartialMessages: true,
-          strictMcpConfig: false,
-          canUseTool: (toolName, toolInput, options) =>
-            this.#handleCanUseTool(toolName, toolInput, options),
-          onUserDialog: (request, options) =>
-            this.#handleUserDialog(request, options),
-          supportedDialogKinds: ['ask_user_question'],
-          systemPrompt: membrane
-            ? {
-                type: 'preset',
-                preset: 'claude_code',
-                append: membraneSystemPrompt(),
-              }
-            : undefined,
-          abortController: this.#abortController,
-          env: providerEnv(providerInstance),
-        },
-      })
+        // checkJs widens permissionMode through object construction; the value is
+        // constrained by claudePermissionModeForRuntime before crossing the SDK boundary.
+        // @ts-expect-error see comment above
+        options: sdkOptions,
+      }))
 
       void this.#consume()
     } catch (error) {
@@ -843,6 +957,7 @@ class ClaudeAgentSdkSessionController {
         this.#current = turn
         try {
           await this.#queryReady
+          await this.#configureRuntimeForTurn(turn)
           await this.#configureMembrane(turn.input.membrane)
           this.#queue.push(
             sdkUserMessage(turn.input.prompt, turn.input.attachments)
@@ -875,6 +990,15 @@ class ClaudeAgentSdkSessionController {
       })
     }
 
+    const automaticDecision = automaticClaudePermissionResult(
+      current.input.runtimeSettings,
+      toolName,
+      options
+    )
+    if (automaticDecision) {
+      return Promise.resolve(automaticDecision)
+    }
+
     return current.run.requestPermission({
       toolName,
       input: toolInput,
@@ -882,6 +1006,26 @@ class ClaudeAgentSdkSessionController {
       turnId: current.input.turnId,
       sessionId: current.input.sessionId,
     })
+  }
+
+  async #configureRuntimeForTurn(turn) {
+    const runtimeSettings = turn.input.runtimeSettings ?? {}
+    const effectiveRuntimeConfig = effectiveClaudeRuntimeConfig(runtimeSettings)
+    turn.run.emit('providerEvent', {
+      id: randomUUID(),
+      ts: new Date().toISOString(),
+      type: 'runtime.configured',
+      sessionId: turn.input.sessionId,
+      effectiveRuntimeConfig,
+    })
+
+    const permissionMode = effectiveRuntimeConfig.native.permissionMode
+    if (
+      typeof permissionMode === 'string' &&
+      typeof this.#query?.setPermissionMode === 'function'
+    ) {
+      await this.#query.setPermissionMode(permissionMode)
+    }
   }
 
   #handleUserDialog(request, options) {
