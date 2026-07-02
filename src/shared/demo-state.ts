@@ -1,9 +1,5 @@
-import {
-  defaultGraphProviderInstances,
-  graphStateVersion,
-  type GraphState,
-} from './graph-state'
-import type { RuntimeActivity } from './provider-runtime'
+import { defaultGraphProviderInstances, graphStateVersion, type GraphState } from './graph-state';
+import type { RuntimeActivity } from './provider-runtime';
 
 /**
  * Demo runtime state for design / web preview only.
@@ -12,24 +8,22 @@ import type { RuntimeActivity } from './provider-runtime'
  */
 
 type DemoActivityInput = {
-  id: string
-  sessionId: string
-  turnId: string
-  providerName: string
-  command: string
-  args?: string
-  status: RuntimeActivity['status']
-  startedAt: string
-  durationMs?: number
-  sublines?: RuntimeActivity['sublines']
-  error?: string
-}
+  id: string;
+  sessionId: string;
+  turnId: string;
+  providerName: string;
+  command: string;
+  args?: string;
+  status: RuntimeActivity['status'];
+  startedAt: string;
+  durationMs?: number;
+  sublines?: RuntimeActivity['sublines'];
+  error?: string;
+};
 
 function demoActivity(input: DemoActivityInput): RuntimeActivity {
   const completedAt =
-    input.status === 'running' || input.durationMs === undefined
-      ? undefined
-      : new Date(Date.parse(input.startedAt) + input.durationMs).toISOString()
+    input.status === 'running' || input.durationMs === undefined ? undefined : new Date(Date.parse(input.startedAt) + input.durationMs).toISOString();
 
   return {
     id: input.id,
@@ -47,13 +41,13 @@ function demoActivity(input: DemoActivityInput): RuntimeActivity {
     durationMs: input.durationMs,
     sublines: input.sublines ?? [],
     error: input.error,
-  }
+  };
 }
 
 function p1AcceptanceActivities(): RuntimeActivity[] {
-  const sessionId = 'sess-p1-accept'
-  const turnId = 'turn-p1-acceptance'
-  const T = '2026-06-24T12:56:'
+  const sessionId = 'sess-p1-accept';
+  const turnId = 'turn-p1-acceptance';
+  const T = '2026-06-24T12:56:';
 
   return [
     demoActivity({
@@ -100,11 +94,7 @@ function p1AcceptanceActivities(): RuntimeActivity[] {
       status: 'completed',
       startedAt: `${T}03.300Z`,
       durationMs: 1200,
-      sublines: [
-        { value: 'typecheck clean' },
-        { value: 'lint 0 warnings' },
-        { value: 'build 4 routes' },
-      ],
+      sublines: [{ value: 'typecheck clean' }, { value: 'lint 0 warnings' }, { value: 'build 4 routes' }],
     }),
     demoActivity({
       id: 'toolu_05',
@@ -142,13 +132,13 @@ function p1AcceptanceActivities(): RuntimeActivity[] {
       durationMs: 900,
       sublines: [{ value: '48 passed' }],
     }),
-  ]
+  ];
 }
 
 function p2ResearchActivities(): RuntimeActivity[] {
-  const sessionId = 'sess-p2-research'
-  const turnId = 'turn-p2-research'
-  const T = '2026-06-24T12:56:'
+  const sessionId = 'sess-p2-research';
+  const turnId = 'turn-p2-research';
+  const T = '2026-06-24T12:56:';
 
   return [
     demoActivity({
@@ -173,11 +163,11 @@ function p2ResearchActivities(): RuntimeActivity[] {
       status: 'running',
       startedAt: `${T}30.000Z`,
     }),
-  ]
+  ];
 }
 
 export function createDemoGraphState(): GraphState {
-  const base = '2026-06-24T12:5'
+  const base = '2026-06-24T12:5';
   return {
     version: graphStateVersion,
     updatedAt: `${base}5:36.000Z`,
@@ -262,8 +252,7 @@ export function createDemoGraphState(): GraphState {
             id: 'm1',
             sessionId: 'sess-p1-accept',
             role: 'user',
-            content:
-              'Remember marker P1_ACCEPT_1782305678623_5453fb. Reply exactly done.',
+            content: 'Remember marker P1_ACCEPT_1782305678623_5453fb. Reply exactly done.',
             ts: `${base}5:30.000Z`,
             status: 'complete',
           },
@@ -436,5 +425,5 @@ export function createDemoGraphState(): GraphState {
         },
       },
     ],
-  }
+  };
 }

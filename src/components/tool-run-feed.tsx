@@ -1,9 +1,5 @@
-import { cn } from '@/lib/utils'
-import {
-  formatDuration,
-  type ToolRun,
-  type ToolTurn,
-} from '@/shared/tool-feed'
+import { cn } from '@/lib/utils';
+import { formatDuration, type ToolRun, type ToolTurn } from '@/shared/tool-feed';
 
 /**
  * Terminal tool-call run-feed (mockup "image-1" language): rows on ink, no
@@ -11,46 +7,31 @@ import {
  * constant `term-*` palette (dark in both themes).
  */
 
-const gutterByStatus: Record<ToolRun['status'], { char: string; cls: string }> =
-  {
-    ok: { char: '●', cls: 'text-term-green' },
-    running: { char: '◌', cls: 'text-term-amber animate-pulse' },
-    error: { char: '✗', cls: 'text-term-rose' },
-  }
+const gutterByStatus: Record<ToolRun['status'], { char: string; cls: string }> = {
+  ok: { char: '●', cls: 'text-term-green' },
+  running: { char: '◌', cls: 'text-term-amber animate-pulse' },
+  error: { char: '✗', cls: 'text-term-rose' },
+};
 
 function headElapsed(turn: ToolTurn): string | undefined {
-  const total = turn.toolRuns.reduce(
-    (sum, run) => sum + (run.durationMs ?? 0),
-    0
-  )
-  return total > 0 ? formatDuration(total) : undefined
+  const total = turn.toolRuns.reduce((sum, run) => sum + (run.durationMs ?? 0), 0);
+  return total > 0 ? formatDuration(total) : undefined;
 }
 
 function ToolRow({ run }: { run: ToolRun }) {
-  const gutter = gutterByStatus[run.status]
+  const gutter = gutterByStatus[run.status];
   return (
     <>
       <div className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5">
-        <span
-          className={cn('text-center text-[11px] leading-6', gutter.cls)}
-        >
-          {gutter.char}
-        </span>
+        <span className={cn('text-center text-[11px] leading-6', gutter.cls)}>{gutter.char}</span>
         <span className="min-w-0 text-[12px] leading-6">
           <span className="font-medium text-lime">{run.command}</span>
-          {run.args ? (
-            <span className="ml-2 break-words text-term-dim">{run.args}</span>
-          ) : null}
+          {run.args ? <span className="ml-2 break-words text-term-dim">{run.args}</span> : null}
         </span>
         <span className="whitespace-nowrap text-[11px] leading-6">
           {run.status === 'ok' ? (
             <span className="text-term-green">
-              ✓
-              {run.durationMs !== undefined ? (
-                <span className="ml-1.5 text-term-faint">
-                  {formatDuration(run.durationMs)}
-                </span>
-              ) : null}
+              ✓{run.durationMs !== undefined ? <span className="ml-1.5 text-term-faint">{formatDuration(run.durationMs)}</span> : null}
             </span>
           ) : run.status === 'error' ? (
             <span className="text-term-rose">✗ error</span>
@@ -65,19 +46,10 @@ function ToolRow({ run }: { run: ToolRun }) {
       {run.sublines.length > 0 ? (
         <div className="grid gap-0.5 py-0.5">
           {run.sublines.map((sub, index) => (
-            <div
-              key={index}
-              className="grid grid-cols-[14px_minmax(0,1fr)] gap-2.5 pl-[26px] text-[11.5px]"
-            >
-              <span className="text-term-faint">
-                {index === run.sublines.length - 1 ? '└' : '├'}
-              </span>
+            <div key={index} className="grid grid-cols-[14px_minmax(0,1fr)] gap-2.5 pl-[26px] text-[11.5px]">
+              <span className="text-term-faint">{index === run.sublines.length - 1 ? '└' : '├'}</span>
               <span className="min-w-0 break-words">
-                {sub.key ? (
-                  <span className="mr-2 inline-block w-[88px] text-term-dim2">
-                    {sub.key}
-                  </span>
-                ) : null}
+                {sub.key ? <span className="mr-2 inline-block w-[88px] text-term-dim2">{sub.key}</span> : null}
                 <span className="text-term-dim">{sub.value}</span>
               </span>
             </div>
@@ -85,33 +57,21 @@ function ToolRow({ run }: { run: ToolRun }) {
         </div>
       ) : null}
     </>
-  )
+  );
 }
 
-export function ToolRunFeed({
-  turn,
-  agent = 'claude-code',
-}: {
-  turn: ToolTurn
-  agent?: string
-}) {
+export function ToolRunFeed({ turn, agent = 'claude-code' }: { turn: ToolTurn; agent?: string }) {
   if (turn.toolRuns.length === 0) {
-    return null
+    return null;
   }
-  const elapsed = headElapsed(turn)
+  const elapsed = headElapsed(turn);
 
   return (
     <div className="my-1 font-mono">
       <div className="flex items-center gap-2.5 pb-2">
         <span className="text-[11px] text-term-faint">ran</span>
-        <span className="rounded-full border border-lime/25 bg-lime/[0.07] px-2 py-0.5 text-[10px] tracking-[0.04em] text-lime">
-          {agent}
-        </span>
-        {elapsed ? (
-          <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
-            {elapsed}
-          </span>
-        ) : null}
+        <span className="rounded-full border border-lime/25 bg-lime/[0.07] px-2 py-0.5 text-[10px] tracking-[0.04em] text-lime">{agent}</span>
+        {elapsed ? <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">{elapsed}</span> : null}
       </div>
 
       <div className="grid gap-0.5">
@@ -120,5 +80,5 @@ export function ToolRunFeed({
         ))}
       </div>
     </div>
-  )
+  );
 }

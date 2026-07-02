@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react';
 
 import type {
   AnswerUserInputInput,
@@ -35,144 +35,106 @@ import type {
   WriteTerminalInput,
   WorkingTreeDiffInput,
   WorkingTreeDiffResult,
-} from '@/shared/graph-state'
-import type { ProviderInstance } from '@/shared/provider-runtime'
+} from '@/shared/graph-state';
+import type { ProviderInstance } from '@/shared/provider-runtime';
 
-const defaultRuntimeUrl = 'http://127.0.0.1:48274'
+const defaultRuntimeUrl = 'http://127.0.0.1:48274';
 
 export type RuntimeWorkspaceMetadata = {
-  defaultCwd?: string
-}
+  defaultCwd?: string;
+};
 
 export type RuntimeConfig = {
-  platform?: string
-  workspace?: RuntimeWorkspaceMetadata
-}
+  platform?: string;
+  workspace?: RuntimeWorkspaceMetadata;
+};
 
 export type RuntimeApi = {
-  getState: () => Promise<GraphState>
-  getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>
-  getProviderSetupStatus: (
-    input: ProviderSetupStatusInput
-  ) => Promise<ProviderSetupStatus>
-  upsertProviderInstance: (
-    input: UpsertProviderInstanceInput
-  ) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>
-  chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>
-  createSession: (
-    input: CreateRuntimeSessionInput
-  ) => Promise<CreateRuntimeSessionResult>
-  resumeSession: (
-    input: ResumeRuntimeSessionInput
-  ) => Promise<{ ok: boolean; state: GraphState }>
-  archiveSession: (
-    input: ArchiveRuntimeSessionInput
-  ) => Promise<{ ok: boolean; state: GraphState }>
-  killSession: (sessionId: SessionId) => Promise<{ ok: boolean; state: GraphState }>
-  respondRuntimeRequest: (
-    input: RespondRuntimeRequestInput
-  ) => Promise<{ ok: boolean; state: GraphState }>
-  answerUserInput: (
-    input: AnswerUserInputInput
-  ) => Promise<{ ok: boolean; state: GraphState }>
-  upsertCluster: (
-    input: UpsertClusterInput
-  ) => Promise<{ clusterId: string; state: GraphState }>
-  createMasterForCluster: (
-    input: CreateMasterForClusterInput
-  ) => Promise<{ sessionId: SessionId; state: GraphState }>
-  assignMasterToCluster: (
-    input: AssignMasterToClusterInput
-  ) => Promise<{ state: GraphState }>
-  setClusterLoopPolicy: (
-    input: SetClusterLoopPolicyInput
-  ) => Promise<{ state: GraphState }>
-  updateNodePositions: (
-    input: UpdateNodePositionsInput
-  ) => Promise<{ state: GraphState }>
-  startMasterLoop: (
-    input: StartMasterLoopInput
-  ) => Promise<{ state: GraphState }>
-  stopMasterLoop: (
-    input: StopMasterLoopInput
-  ) => Promise<{ state: GraphState }>
-  freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>
-  getWorkingTreeDiff: (
-    input: WorkingTreeDiffInput
-  ) => Promise<WorkingTreeDiffResult>
-  openWorkspace: (input: OpenWorkspaceInput) => Promise<OpenWorkspaceResult>
-  createTerminal: (input: CreateTerminalInput) => Promise<RuntimeTerminalResult>
-  getTerminal: (input: GetTerminalInput) => Promise<RuntimeTerminalResult>
-  runTerminalCommand: (
-    input: RunTerminalCommandInput
-  ) => Promise<RunTerminalCommandResult>
-  writeTerminalInput: (
-    input: WriteTerminalInput
-  ) => Promise<RuntimeTerminalResult>
-  clearTerminal: (input: ClearTerminalInput) => Promise<RuntimeTerminalResult>
-  closeTerminal: (input: CloseTerminalInput) => Promise<RuntimeTerminalResult>
-  onEvent: (listener: (event: RuntimeEvent) => void) => () => void
-}
+  getState: () => Promise<GraphState>;
+  getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
+  getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
+  upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
+  chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>;
+  createSession: (input: CreateRuntimeSessionInput) => Promise<CreateRuntimeSessionResult>;
+  resumeSession: (input: ResumeRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
+  archiveSession: (input: ArchiveRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
+  killSession: (sessionId: SessionId) => Promise<{ ok: boolean; state: GraphState }>;
+  respondRuntimeRequest: (input: RespondRuntimeRequestInput) => Promise<{ ok: boolean; state: GraphState }>;
+  answerUserInput: (input: AnswerUserInputInput) => Promise<{ ok: boolean; state: GraphState }>;
+  upsertCluster: (input: UpsertClusterInput) => Promise<{ clusterId: string; state: GraphState }>;
+  createMasterForCluster: (input: CreateMasterForClusterInput) => Promise<{ sessionId: SessionId; state: GraphState }>;
+  assignMasterToCluster: (input: AssignMasterToClusterInput) => Promise<{ state: GraphState }>;
+  setClusterLoopPolicy: (input: SetClusterLoopPolicyInput) => Promise<{ state: GraphState }>;
+  updateNodePositions: (input: UpdateNodePositionsInput) => Promise<{ state: GraphState }>;
+  startMasterLoop: (input: StartMasterLoopInput) => Promise<{ state: GraphState }>;
+  stopMasterLoop: (input: StopMasterLoopInput) => Promise<{ state: GraphState }>;
+  freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
+  getWorkingTreeDiff: (input: WorkingTreeDiffInput) => Promise<WorkingTreeDiffResult>;
+  openWorkspace: (input: OpenWorkspaceInput) => Promise<OpenWorkspaceResult>;
+  createTerminal: (input: CreateTerminalInput) => Promise<RuntimeTerminalResult>;
+  getTerminal: (input: GetTerminalInput) => Promise<RuntimeTerminalResult>;
+  runTerminalCommand: (input: RunTerminalCommandInput) => Promise<RunTerminalCommandResult>;
+  writeTerminalInput: (input: WriteTerminalInput) => Promise<RuntimeTerminalResult>;
+  clearTerminal: (input: ClearTerminalInput) => Promise<RuntimeTerminalResult>;
+  closeTerminal: (input: CloseTerminalInput) => Promise<RuntimeTerminalResult>;
+  onEvent: (listener: (event: RuntimeEvent) => void) => () => void;
+};
 
 export type ElectronOrreryApi = {
-  platform: string
-  workspace?: RuntimeWorkspaceMetadata
-  runtime: RuntimeApi
-}
+  platform: string;
+  workspace?: RuntimeWorkspaceMetadata;
+  runtime: RuntimeApi;
+};
 
 type ElectronRuntimeClient = {
-  kind: 'electron'
-  isAvailable: true
-  platform: string
-  workspace: RuntimeWorkspaceMetadata
-  runtime: RuntimeApi
-}
+  kind: 'electron';
+  isAvailable: true;
+  platform: string;
+  workspace: RuntimeWorkspaceMetadata;
+  runtime: RuntimeApi;
+};
 
 type HttpRuntimeClient = {
-  kind: 'http'
-  isAvailable: true
-  platform: string
-  runtimeUrl: string
-  workspace: RuntimeWorkspaceMetadata
-  runtime: RuntimeApi
-  getConfig: () => Promise<RuntimeConfig>
-}
+  kind: 'http';
+  isAvailable: true;
+  platform: string;
+  runtimeUrl: string;
+  workspace: RuntimeWorkspaceMetadata;
+  runtime: RuntimeApi;
+  getConfig: () => Promise<RuntimeConfig>;
+};
 
 type ConnectingRuntimeClient = {
-  kind: 'connecting'
-  isAvailable: false
-  runtimeUrl: string
-  workspace: RuntimeWorkspaceMetadata
-  runtime?: undefined
-  platform?: undefined
-  error?: undefined
-}
+  kind: 'connecting';
+  isAvailable: false;
+  runtimeUrl: string;
+  workspace: RuntimeWorkspaceMetadata;
+  runtime?: undefined;
+  platform?: undefined;
+  error?: undefined;
+};
 
 type UnavailableRuntimeClient = {
-  kind: 'unavailable'
-  isAvailable: false
-  workspace: RuntimeWorkspaceMetadata
-  runtime?: undefined
-  platform?: undefined
-  runtimeUrl?: string
-  error?: string
-}
+  kind: 'unavailable';
+  isAvailable: false;
+  workspace: RuntimeWorkspaceMetadata;
+  runtime?: undefined;
+  platform?: undefined;
+  runtimeUrl?: string;
+  error?: string;
+};
 
-export type RuntimeClient =
-  | ElectronRuntimeClient
-  | HttpRuntimeClient
-  | ConnectingRuntimeClient
-  | UnavailableRuntimeClient
+export type RuntimeClient = ElectronRuntimeClient | HttpRuntimeClient | ConnectingRuntimeClient | UnavailableRuntimeClient;
 
 const unavailableRuntimeClient: RuntimeClient = {
   kind: 'unavailable',
   isAvailable: false,
   workspace: {},
-}
+};
 
-type JsonRecord = Record<string, unknown>
+type JsonRecord = Record<string, unknown>;
 
-let cachedHttpRuntimeClient: HttpRuntimeClient | undefined
+let cachedHttpRuntimeClient: HttpRuntimeClient | undefined;
 
 const runtimeEventTypes: RuntimeEvent['type'][] = [
   'runtime.state',
@@ -196,382 +158,303 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'terminal.exited',
   'terminal.closed',
   'terminal.cleared',
-]
+];
 
 function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function normalizeRuntimeUrl() {
-  const configured =
-    import.meta.env.VITE_ORRERY_RUNTIME_URL?.trim() ||
-    import.meta.env.VITE_ORRERY_RUNTIME_HTTP_URL?.trim()
-  const rawUrl = configured && configured.length > 0 ? configured : defaultRuntimeUrl
-  const base =
-    typeof window !== 'undefined' ? window.location.href : defaultRuntimeUrl
+  const configured = import.meta.env.VITE_ORRERY_RUNTIME_URL?.trim() || import.meta.env.VITE_ORRERY_RUNTIME_HTTP_URL?.trim();
+  const rawUrl = configured && configured.length > 0 ? configured : defaultRuntimeUrl;
+  const base = typeof window !== 'undefined' ? window.location.href : defaultRuntimeUrl;
 
-  return new URL(rawUrl, base).toString().replace(/\/+$/, '')
+  return new URL(rawUrl, base).toString().replace(/\/+$/, '');
 }
 
 function normalizeRuntimeConfig(value: unknown): RuntimeConfig {
   if (!isRecord(value)) {
-    return {}
+    return {};
   }
 
   const workspace = isRecord(value.workspace)
     ? {
-        defaultCwd:
-          typeof value.workspace.defaultCwd === 'string'
-            ? value.workspace.defaultCwd
-            : undefined,
+        defaultCwd: typeof value.workspace.defaultCwd === 'string' ? value.workspace.defaultCwd : undefined,
       }
     : {
-        defaultCwd:
-          typeof value.defaultCwd === 'string' ? value.defaultCwd : undefined,
-      }
+        defaultCwd: typeof value.defaultCwd === 'string' ? value.defaultCwd : undefined,
+      };
 
   return {
     platform: typeof value.platform === 'string' ? value.platform : undefined,
     workspace,
-  }
+  };
 }
 
 function normalizeGraphState(value: unknown): GraphState {
   if (isRecord(value) && isRecord(value.state)) {
-    return value.state as GraphState
+    return value.state as GraphState;
   }
 
-  return value as GraphState
+  return value as GraphState;
 }
 
-function responseErrorMessage(
-  method: string,
-  path: string,
-  status: number,
-  body: unknown
-) {
-  const prefix = `Orrery runtime ${method} ${path} failed (${status})`
+function responseErrorMessage(method: string, path: string, status: number, body: unknown) {
+  const prefix = `Orrery runtime ${method} ${path} failed (${status})`;
   if (isRecord(body)) {
-    const detail =
-      typeof body.error === 'string'
-        ? body.error
-        : typeof body.message === 'string'
-          ? body.message
-          : undefined
-    return detail ? `${prefix}: ${detail}` : prefix
+    const detail = typeof body.error === 'string' ? body.error : typeof body.message === 'string' ? body.message : undefined;
+    return detail ? `${prefix}: ${detail}` : prefix;
   }
 
   if (typeof body === 'string' && body.trim().length > 0) {
-    return `${prefix}: ${body.trim()}`
+    return `${prefix}: ${body.trim()}`;
   }
 
-  return prefix
+  return prefix;
 }
 
 function parseSseRuntimeEvent(event: MessageEvent<string>): RuntimeEvent | undefined {
   if (!event.data || event.data.trim().length === 0) {
-    return undefined
+    return undefined;
   }
 
-  const value = JSON.parse(event.data) as unknown
+  const value = JSON.parse(event.data) as unknown;
   if (!isRecord(value)) {
-    return undefined
+    return undefined;
   }
 
   if (typeof value.type === 'string') {
-    return value as RuntimeEvent
+    return value as RuntimeEvent;
   }
 
   if (runtimeEventTypes.includes(event.type as RuntimeEvent['type'])) {
-    return { ...value, type: event.type } as RuntimeEvent
+    return { ...value, type: event.type } as RuntimeEvent;
   }
 
-  return undefined
+  return undefined;
 }
 
 class HttpRuntimeApi implements RuntimeApi {
-  readonly #baseUrl: string
-  #configPromise: Promise<RuntimeConfig> | undefined
+  readonly #baseUrl: string;
+  #configPromise: Promise<RuntimeConfig> | undefined;
 
   constructor(baseUrl: string) {
-    this.#baseUrl = baseUrl
+    this.#baseUrl = baseUrl;
   }
 
   getConfig() {
     this.#configPromise ??= this.#get('config')
       .then(normalizeRuntimeConfig)
       .catch((error) => {
-        this.#configPromise = undefined
-        throw error
-      })
-    return this.#configPromise
+        this.#configPromise = undefined;
+        throw error;
+      });
+    return this.#configPromise;
   }
 
   async getState() {
-    return normalizeGraphState(await this.#get('state'))
+    return normalizeGraphState(await this.#get('state'));
   }
 
   getProjectContext(input: ProjectContextInput) {
-    return this.#post<ProjectContext>('project-context', input)
+    return this.#post<ProjectContext>('project-context', input);
   }
 
   getProviderSetupStatus(input: ProviderSetupStatusInput) {
-    return this.#post<ProviderSetupStatus>('provider-setup-status', input)
+    return this.#post<ProviderSetupStatus>('provider-setup-status', input);
   }
 
   upsertProviderInstance(input: UpsertProviderInstanceInput) {
-    return this.#post<{ providerInstance: ProviderInstance; state: GraphState }>(
-      'provider-instances',
-      input
-    )
+    return this.#post<{ providerInstance: ProviderInstance; state: GraphState }>('provider-instances', input);
   }
 
   async chooseProjectFolder() {
-    return { canceled: true }
+    return { canceled: true };
   }
 
   createSession(input: CreateRuntimeSessionInput) {
-    return this.#post<CreateRuntimeSessionResult>('sessions', input)
+    return this.#post<CreateRuntimeSessionResult>('sessions', input);
   }
 
   resumeSession(input: ResumeRuntimeSessionInput) {
-    return this.#post<{ ok: boolean; state: GraphState }>(
-      `sessions/${encodeURIComponent(input.sessionId)}/resume`,
-      input
-    )
+    return this.#post<{ ok: boolean; state: GraphState }>(`sessions/${encodeURIComponent(input.sessionId)}/resume`, input);
   }
 
   archiveSession(input: ArchiveRuntimeSessionInput) {
-    return this.#post<{ ok: boolean; state: GraphState }>(
-      `sessions/${encodeURIComponent(input.sessionId)}/archive`,
-      input
-    )
+    return this.#post<{ ok: boolean; state: GraphState }>(`sessions/${encodeURIComponent(input.sessionId)}/archive`, input);
   }
 
   killSession(sessionId: SessionId) {
-    return this.#post<{ ok: boolean; state: GraphState }>(
-      `sessions/${encodeURIComponent(sessionId)}/kill`
-    )
+    return this.#post<{ ok: boolean; state: GraphState }>(`sessions/${encodeURIComponent(sessionId)}/kill`);
   }
 
   respondRuntimeRequest(input: RespondRuntimeRequestInput) {
-    return this.#post<{ ok: boolean; state: GraphState }>(
-      `requests/${encodeURIComponent(input.requestId)}/respond`,
-      input
-    )
+    return this.#post<{ ok: boolean; state: GraphState }>(`requests/${encodeURIComponent(input.requestId)}/respond`, input);
   }
 
   answerUserInput(input: AnswerUserInputInput) {
-    return this.#post<{ ok: boolean; state: GraphState }>(
-      `user-input/${encodeURIComponent(input.requestId)}/answer`,
-      input
-    )
+    return this.#post<{ ok: boolean; state: GraphState }>(`user-input/${encodeURIComponent(input.requestId)}/answer`, input);
   }
 
   upsertCluster(input: UpsertClusterInput) {
-    return this.#post<{ clusterId: string; state: GraphState }>(
-      'clusters',
-      input
-    )
+    return this.#post<{ clusterId: string; state: GraphState }>('clusters', input);
   }
 
   createMasterForCluster(input: CreateMasterForClusterInput) {
-    return this.#post<{ sessionId: SessionId; state: GraphState }>(
-      `clusters/${encodeURIComponent(input.clusterId)}/master`,
-      input
-    )
+    return this.#post<{ sessionId: SessionId; state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/master`, input);
   }
 
   assignMasterToCluster(input: AssignMasterToClusterInput) {
-    return this.#post<{ state: GraphState }>(
-      `clusters/${encodeURIComponent(input.clusterId)}/assign-master`,
-      input
-    )
+    return this.#post<{ state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/assign-master`, input);
   }
 
   setClusterLoopPolicy(input: SetClusterLoopPolicyInput) {
-    return this.#post<{ state: GraphState }>(
-      `clusters/${encodeURIComponent(input.clusterId)}/loop-policy`,
-      input
-    )
+    return this.#post<{ state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/loop-policy`, input);
   }
 
   updateNodePositions(input: UpdateNodePositionsInput) {
-    return this.#post<{ state: GraphState }>(
-      'node-positions',
-      input
-    )
+    return this.#post<{ state: GraphState }>('node-positions', input);
   }
 
   startMasterLoop(input: StartMasterLoopInput) {
-    return this.#post<{ state: GraphState }>(
-      `clusters/${encodeURIComponent(input.clusterId)}/start-loop`,
-      input
-    )
+    return this.#post<{ state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/start-loop`, input);
   }
 
   stopMasterLoop(input: StopMasterLoopInput) {
-    return this.#post<{ state: GraphState }>(
-      `clusters/${encodeURIComponent(input.clusterId)}/stop-loop`,
-      input
-    )
+    return this.#post<{ state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/stop-loop`, input);
   }
 
   freeze(input: FreezeInput) {
-    return this.#post<{ ok: boolean; state: GraphState }>('freeze', input)
+    return this.#post<{ ok: boolean; state: GraphState }>('freeze', input);
   }
 
   getWorkingTreeDiff(input: WorkingTreeDiffInput) {
-    return this.#post<WorkingTreeDiffResult>(
-      'working-tree-diff',
-      input
-    )
+    return this.#post<WorkingTreeDiffResult>('working-tree-diff', input);
   }
 
   openWorkspace(input: OpenWorkspaceInput) {
-    return this.#post<OpenWorkspaceResult>('open-workspace', input)
+    return this.#post<OpenWorkspaceResult>('open-workspace', input);
   }
 
   createTerminal(input: CreateTerminalInput) {
-    return this.#post<RuntimeTerminalResult>('terminals', input)
+    return this.#post<RuntimeTerminalResult>('terminals', input);
   }
 
   getTerminal(input: GetTerminalInput) {
-    return this.#get<RuntimeTerminalResult>(
-      `terminals/${encodeURIComponent(input.terminalId)}`
-    )
+    return this.#get<RuntimeTerminalResult>(`terminals/${encodeURIComponent(input.terminalId)}`);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {
-    return this.#post<RunTerminalCommandResult>(
-      `terminals/${encodeURIComponent(input.terminalId)}/command`,
-      input
-    )
+    return this.#post<RunTerminalCommandResult>(`terminals/${encodeURIComponent(input.terminalId)}/command`, input);
   }
 
   writeTerminalInput(input: WriteTerminalInput) {
-    return this.#post<RuntimeTerminalResult>(
-      `terminals/${encodeURIComponent(input.terminalId)}/stdin`,
-      input
-    )
+    return this.#post<RuntimeTerminalResult>(`terminals/${encodeURIComponent(input.terminalId)}/stdin`, input);
   }
 
   clearTerminal(input: ClearTerminalInput) {
-    return this.#post<RuntimeTerminalResult>(
-      `terminals/${encodeURIComponent(input.terminalId)}/clear`,
-      input
-    )
+    return this.#post<RuntimeTerminalResult>(`terminals/${encodeURIComponent(input.terminalId)}/clear`, input);
   }
 
   closeTerminal(input: CloseTerminalInput) {
-    return this.#post<RuntimeTerminalResult>(
-      `terminals/${encodeURIComponent(input.terminalId)}/close`,
-      input
-    )
+    return this.#post<RuntimeTerminalResult>(`terminals/${encodeURIComponent(input.terminalId)}/close`, input);
   }
 
   onEvent(listener: (event: RuntimeEvent) => void) {
-    const source = new EventSource(this.#url('events'))
+    const source = new EventSource(this.#url('events'));
     const handleEvent = (event: MessageEvent<string>) => {
       try {
-        const runtimeEvent = parseSseRuntimeEvent(event)
+        const runtimeEvent = parseSseRuntimeEvent(event);
         if (runtimeEvent) {
-          listener(runtimeEvent)
+          listener(runtimeEvent);
         }
       } catch (error) {
-        console.error('Failed to parse Orrery runtime event.', error)
+        console.error('Failed to parse Orrery runtime event.', error);
       }
-    }
+    };
 
-    source.onmessage = handleEvent
-    source.addEventListener('runtime', handleEvent)
-    source.addEventListener('runtime-event', handleEvent)
+    source.onmessage = handleEvent;
+    source.addEventListener('runtime', handleEvent);
+    source.addEventListener('runtime-event', handleEvent);
     for (const type of runtimeEventTypes) {
-      source.addEventListener(type, handleEvent)
+      source.addEventListener(type, handleEvent);
     }
 
     return () => {
-      source.close()
-    }
+      source.close();
+    };
   }
 
   #get<T = unknown>(path: string) {
-    return this.#request<T>('GET', path)
+    return this.#request<T>('GET', path);
   }
 
   #post<T>(path: string, input?: unknown) {
-    return this.#request<T>('POST', path, input)
+    return this.#request<T>('POST', path, input);
   }
 
   async #request<T>(method: 'GET' | 'POST', path: string, body?: unknown) {
-    const headers = new Headers({ Accept: 'application/json' })
+    const headers = new Headers({ Accept: 'application/json' });
     const init: RequestInit = {
       method,
       headers,
-    }
+    };
 
     if (body !== undefined) {
-      headers.set('Content-Type', 'application/json')
-      init.body = JSON.stringify(body)
+      headers.set('Content-Type', 'application/json');
+      init.body = JSON.stringify(body);
     }
 
-    let response: Response
+    let response: Response;
     try {
-      response = await fetch(this.#url(path), init)
+      response = await fetch(this.#url(path), init);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(
-        `Could not reach Orrery runtime at ${this.#baseUrl}: ${reason}`
-      )
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Could not reach Orrery runtime at ${this.#baseUrl}: ${reason}`);
     }
 
-    const parsedBody = await this.#parseBody(response)
+    const parsedBody = await this.#parseBody(response);
     if (!response.ok) {
-      throw new Error(
-        responseErrorMessage(method, `/api/runtime/${path}`, response.status, parsedBody)
-      )
+      throw new Error(responseErrorMessage(method, `/api/runtime/${path}`, response.status, parsedBody));
     }
 
-    return parsedBody as T
+    return parsedBody as T;
   }
 
   async #parseBody(response: Response) {
     if (response.status === 204) {
-      return undefined
+      return undefined;
     }
 
-    const text = await response.text()
+    const text = await response.text();
     if (text.trim().length === 0) {
-      return undefined
+      return undefined;
     }
 
-    const contentType = response.headers.get('content-type') ?? ''
+    const contentType = response.headers.get('content-type') ?? '';
     if (contentType.includes('application/json')) {
-      return JSON.parse(text) as unknown
+      return JSON.parse(text) as unknown;
     }
 
     try {
-      return JSON.parse(text) as unknown
+      return JSON.parse(text) as unknown;
     } catch {
-      return text
+      return text;
     }
   }
 
   #url(path: string) {
-    return `${this.#baseUrl}/api/runtime/${path.replace(/^\/+/, '')}`
+    return `${this.#baseUrl}/api/runtime/${path.replace(/^\/+/, '')}`;
   }
 }
 
-function createHttpRuntimeClient(
-  runtimeUrl: string,
-  config?: RuntimeConfig
-): HttpRuntimeClient {
+function createHttpRuntimeClient(runtimeUrl: string, config?: RuntimeConfig): HttpRuntimeClient {
   if (cachedHttpRuntimeClient?.runtimeUrl === runtimeUrl) {
-    return cachedHttpRuntimeClient
+    return cachedHttpRuntimeClient;
   }
 
-  const runtime = new HttpRuntimeApi(runtimeUrl)
-  const workspace: RuntimeWorkspaceMetadata = { ...(config?.workspace ?? {}) }
+  const runtime = new HttpRuntimeApi(runtimeUrl);
+  const workspace: RuntimeWorkspaceMetadata = { ...(config?.workspace ?? {}) };
 
   cachedHttpRuntimeClient = {
     kind: 'http',
@@ -581,25 +464,25 @@ function createHttpRuntimeClient(
     workspace,
     runtime,
     getConfig: () => runtime.getConfig(),
-  }
+  };
 
-  return cachedHttpRuntimeClient
+  return cachedHttpRuntimeClient;
 }
 
 export function getConfiguredRuntimeUrl() {
-  return normalizeRuntimeUrl()
+  return normalizeRuntimeUrl();
 }
 
 export function createRuntimeProbeClient(runtimeUrl = getConfiguredRuntimeUrl()) {
-  return new HttpRuntimeApi(runtimeUrl)
+  return new HttpRuntimeApi(runtimeUrl);
 }
 
 export function getActiveRuntimeClient(config?: RuntimeConfig): RuntimeClient {
   if (typeof window === 'undefined') {
-    return unavailableRuntimeClient
+    return unavailableRuntimeClient;
   }
 
-  const electronApi = window.orrery
+  const electronApi = window.orrery;
   if (electronApi?.runtime) {
     return {
       kind: 'electron',
@@ -607,11 +490,11 @@ export function getActiveRuntimeClient(config?: RuntimeConfig): RuntimeClient {
       platform: electronApi.platform,
       workspace: electronApi.workspace ?? {},
       runtime: electronApi.runtime,
-    }
+    };
   }
 
   if (config) {
-    return createHttpRuntimeClient(getConfiguredRuntimeUrl(), config)
+    return createHttpRuntimeClient(getConfiguredRuntimeUrl(), config);
   }
 
   return {
@@ -619,20 +502,17 @@ export function getActiveRuntimeClient(config?: RuntimeConfig): RuntimeClient {
     isAvailable: false,
     runtimeUrl: getConfiguredRuntimeUrl(),
     workspace: {},
-  }
+  };
 }
 
 export function hasRuntimeClient() {
-  return getActiveRuntimeClient().isAvailable
+  return getActiveRuntimeClient().isAvailable;
 }
 
 export function useRuntimeClient(options: { disabled?: boolean } = {}) {
-  const disabled = options.disabled === true
-  const electronClient = useMemo(
-    () => (disabled ? unavailableRuntimeClient : getActiveRuntimeClient()),
-    [disabled]
-  )
-  const runtimeUrl = useMemo(() => getConfiguredRuntimeUrl(), [])
+  const disabled = options.disabled === true;
+  const electronClient = useMemo(() => (disabled ? unavailableRuntimeClient : getActiveRuntimeClient()), [disabled]);
+  const runtimeUrl = useMemo(() => getConfiguredRuntimeUrl(), []);
   const [httpState, setHttpState] = useState<RuntimeClient>(() =>
     disabled || electronClient.kind !== 'connecting'
       ? electronClient
@@ -641,36 +521,36 @@ export function useRuntimeClient(options: { disabled?: boolean } = {}) {
           isAvailable: false,
           runtimeUrl,
           workspace: {},
-        }
-  )
+        },
+  );
 
   useEffect(() => {
     if (disabled || electronClient.kind !== 'connecting') {
-      setHttpState(electronClient)
-      return
+      setHttpState(electronClient);
+      return;
     }
 
-    let isMounted = true
-    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let isMounted = true;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     setHttpState({
       kind: 'connecting',
       isAvailable: false,
       runtimeUrl,
       workspace: {},
-    })
+    });
 
     const probeRuntime = () => {
-      const probe = createRuntimeProbeClient(runtimeUrl)
+      const probe = createRuntimeProbeClient(runtimeUrl);
       probe
         .getConfig()
         .then((config) => {
           if (isMounted) {
-            setHttpState(createHttpRuntimeClient(runtimeUrl, config))
+            setHttpState(createHttpRuntimeClient(runtimeUrl, config));
           }
         })
         .catch((error: unknown) => {
           if (!isMounted) {
-            return
+            return;
           }
 
           setHttpState({
@@ -679,20 +559,20 @@ export function useRuntimeClient(options: { disabled?: boolean } = {}) {
             runtimeUrl,
             workspace: {},
             error: error instanceof Error ? error.message : String(error),
-          })
-          retryTimer = setTimeout(probeRuntime, 2000)
-        })
-    }
+          });
+          retryTimer = setTimeout(probeRuntime, 2000);
+        });
+    };
 
-    probeRuntime()
+    probeRuntime();
 
     return () => {
-      isMounted = false
+      isMounted = false;
       if (retryTimer) {
-        clearTimeout(retryTimer)
+        clearTimeout(retryTimer);
       }
-    }
-  }, [disabled, electronClient, runtimeUrl])
+    };
+  }, [disabled, electronClient, runtimeUrl]);
 
-  return electronClient.kind === 'connecting' ? httpState : electronClient
+  return electronClient.kind === 'connecting' ? httpState : electronClient;
 }

@@ -1,15 +1,10 @@
-import {
-  type Dispatch,
-  type SetStateAction,
-  useCallback,
-  useState,
-} from 'react'
+import { type Dispatch, type SetStateAction, useCallback, useState } from 'react';
 
-import type { AgentSession, RuntimeTerminal } from '@/shared/graph-state'
-import type { RuntimeApi } from '@/runtime-client'
+import type { AgentSession, RuntimeTerminal } from '@/shared/graph-state';
+import type { RuntimeApi } from '@/runtime-client';
 
 function wait(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 export function useTerminalPanel({
@@ -19,147 +14,130 @@ export function useTerminalPanel({
   selectedSession,
   isRuntimeAvailable,
 }: {
-  runtimeApi: RuntimeApi | undefined
-  runtimeUnavailableText: string
-  setRuntimeError: Dispatch<SetStateAction<string | undefined>>
-  selectedSession: AgentSession | undefined
-  isRuntimeAvailable: boolean
+  runtimeApi: RuntimeApi | undefined;
+  runtimeUnavailableText: string;
+  setRuntimeError: Dispatch<SetStateAction<string | undefined>>;
+  selectedSession: AgentSession | undefined;
+  isRuntimeAvailable: boolean;
 }) {
-  const [terminalPanel, setTerminalPanel] = useState<RuntimeTerminal>()
-  const [isTerminalPanelOpen, setIsTerminalPanelOpen] = useState(false)
-  const [isOpeningTerminal, setIsOpeningTerminal] = useState(false)
-  const [isSendingTerminalCommand, setIsSendingTerminalCommand] =
-    useState(false)
+  const [terminalPanel, setTerminalPanel] = useState<RuntimeTerminal>();
+  const [isTerminalPanelOpen, setIsTerminalPanelOpen] = useState(false);
+  const [isOpeningTerminal, setIsOpeningTerminal] = useState(false);
+  const [isSendingTerminalCommand, setIsSendingTerminalCommand] = useState(false);
 
-  const selectedTerminal =
-    terminalPanel?.sessionId === selectedSession?.sessionId
-      ? terminalPanel
-      : undefined
-  const canOpenSelectedTerminal = Boolean(
-    isRuntimeAvailable && selectedSession?.sessionId && selectedSession?.cwd.trim()
-  )
+  const selectedTerminal = terminalPanel?.sessionId === selectedSession?.sessionId ? terminalPanel : undefined;
+  const canOpenSelectedTerminal = Boolean(isRuntimeAvailable && selectedSession?.sessionId && selectedSession?.cwd.trim());
 
   const syncTerminalFromEvent = useCallback((terminal: RuntimeTerminal) => {
-    setTerminalPanel((current) =>
-      current?.terminalId === terminal.terminalId ? terminal : current
-    )
-  }, [])
+    setTerminalPanel((current) => (current?.terminalId === terminal.terminalId ? terminal : current));
+  }, []);
 
   const openSelectedTerminal = useCallback(async () => {
     if (!runtimeApi) {
-      setRuntimeError(runtimeUnavailableText)
-      return undefined
+      setRuntimeError(runtimeUnavailableText);
+      return undefined;
     }
     if (!selectedSession) {
-      return undefined
+      return undefined;
     }
 
-    setIsOpeningTerminal(true)
-    setRuntimeError(undefined)
+    setIsOpeningTerminal(true);
+    setRuntimeError(undefined);
 
     try {
       const result = await runtimeApi.createTerminal({
         sessionId: selectedSession.sessionId,
         cwd: selectedSession.cwd,
-      })
-      setTerminalPanel(result.terminal)
-      setIsTerminalPanelOpen(true)
-      return result.terminal
+      });
+      setTerminalPanel(result.terminal);
+      setIsTerminalPanelOpen(true);
+      return result.terminal;
     } catch (error) {
-      setRuntimeError(error instanceof Error ? error.message : String(error))
-      return undefined
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+      return undefined;
     } finally {
-      setIsOpeningTerminal(false)
+      setIsOpeningTerminal(false);
     }
-  }, [runtimeApi, runtimeUnavailableText, selectedSession, setRuntimeError])
+  }, [runtimeApi, runtimeUnavailableText, selectedSession, setRuntimeError]);
 
-  const runSelectedTerminalCommand = useCallback(async (command: string) => {
-    if (!runtimeApi) {
-      setRuntimeError(runtimeUnavailableText)
-      return
-    }
-
-    const terminal =
-      selectedTerminal?.status === 'running'
-        ? selectedTerminal
-        : await openSelectedTerminal()
-    if (!terminal) {
-      return
-    }
-
-    setIsSendingTerminalCommand(true)
-    setRuntimeError(undefined)
-
-    try {
-      const result = await runtimeApi.runTerminalCommand({
-        terminalId: terminal.terminalId,
-        command,
-      })
-      setTerminalPanel(result.terminal)
-      for (let attempt = 0; attempt < 50; attempt += 1) {
-        const currentCommand = result.terminal.currentCommand
-        if (!currentCommand || currentCommand.commandId !== result.commandId) {
-          break
-        }
-
-        await wait(100)
-        const refreshed = await runtimeApi.getTerminal({
-          terminalId: terminal.terminalId,
-        })
-        setTerminalPanel(refreshed.terminal)
-        const finished = refreshed.terminal.lastCommand
-        if (
-          finished?.commandId === result.commandId ||
-          refreshed.terminal.currentCommand?.commandId !== result.commandId
-        ) {
-          break
-        }
+  const runSelectedTerminalCommand = useCallback(
+    async (command: string) => {
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText);
+        return;
       }
-    } catch (error) {
-      setRuntimeError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setIsSendingTerminalCommand(false)
-    }
-  }, [
-    openSelectedTerminal,
-    runtimeApi,
-    runtimeUnavailableText,
-    selectedTerminal,
-    setRuntimeError,
-  ])
+
+      const terminal = selectedTerminal?.status === 'running' ? selectedTerminal : await openSelectedTerminal();
+      if (!terminal) {
+        return;
+      }
+
+      setIsSendingTerminalCommand(true);
+      setRuntimeError(undefined);
+
+      try {
+        const result = await runtimeApi.runTerminalCommand({
+          terminalId: terminal.terminalId,
+          command,
+        });
+        setTerminalPanel(result.terminal);
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const currentCommand = result.terminal.currentCommand;
+          if (!currentCommand || currentCommand.commandId !== result.commandId) {
+            break;
+          }
+
+          await wait(100);
+          const refreshed = await runtimeApi.getTerminal({
+            terminalId: terminal.terminalId,
+          });
+          setTerminalPanel(refreshed.terminal);
+          const finished = refreshed.terminal.lastCommand;
+          if (finished?.commandId === result.commandId || refreshed.terminal.currentCommand?.commandId !== result.commandId) {
+            break;
+          }
+        }
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsSendingTerminalCommand(false);
+      }
+    },
+    [openSelectedTerminal, runtimeApi, runtimeUnavailableText, selectedTerminal, setRuntimeError],
+  );
 
   const clearSelectedTerminal = useCallback(async () => {
     if (!runtimeApi || !selectedTerminal) {
-      return
+      return;
     }
 
     try {
       const result = await runtimeApi.clearTerminal({
         terminalId: selectedTerminal.terminalId,
-      })
-      setTerminalPanel(result.terminal)
+      });
+      setTerminalPanel(result.terminal);
     } catch (error) {
-      setRuntimeError(error instanceof Error ? error.message : String(error))
+      setRuntimeError(error instanceof Error ? error.message : String(error));
     }
-  }, [runtimeApi, selectedTerminal, setRuntimeError])
+  }, [runtimeApi, selectedTerminal, setRuntimeError]);
 
   const closeSelectedTerminal = useCallback(async () => {
     if (!runtimeApi || !selectedTerminal) {
-      setIsTerminalPanelOpen(false)
-      return
+      setIsTerminalPanelOpen(false);
+      return;
     }
 
     try {
       const result = await runtimeApi.closeTerminal({
         terminalId: selectedTerminal.terminalId,
-      })
-      setTerminalPanel(result.terminal)
+      });
+      setTerminalPanel(result.terminal);
     } catch (error) {
-      setRuntimeError(error instanceof Error ? error.message : String(error))
+      setRuntimeError(error instanceof Error ? error.message : String(error));
     } finally {
-      setIsTerminalPanelOpen(false)
+      setIsTerminalPanelOpen(false);
     }
-  }, [runtimeApi, selectedTerminal, setRuntimeError])
+  }, [runtimeApi, selectedTerminal, setRuntimeError]);
 
   return {
     terminalPanel,
@@ -174,7 +152,7 @@ export function useTerminalPanel({
     runSelectedTerminalCommand,
     clearSelectedTerminal,
     closeSelectedTerminal,
-  }
+  };
 }
 
-export type TerminalPanelState = ReturnType<typeof useTerminalPanel>
+export type TerminalPanelState = ReturnType<typeof useTerminalPanel>;

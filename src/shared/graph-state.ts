@@ -12,51 +12,21 @@ import type {
   RuntimeRequest,
   UserInputRequest,
   UserInputAnswerMap,
-} from './provider-runtime'
+} from './provider-runtime';
 
-export const graphStateVersion = 6
+export const graphStateVersion = 6;
 
-export const sessionStatuses = [
-  'pending',
-  'running',
-  'idle',
-  'failed',
-  'killed',
-] as const
+export const sessionStatuses = ['pending', 'running', 'idle', 'failed', 'killed'] as const;
 
-export const reportTypes = ['verdict', 'relationship', 'info'] as const
+export const reportTypes = ['verdict', 'relationship', 'info'] as const;
 
-export const graphEdgeKinds = [
-  'create-session',
-  'resume-session',
-  'report',
-  'freeze',
-  'link',
-] as const
+export const graphEdgeKinds = ['create-session', 'resume-session', 'report', 'freeze', 'link'] as const;
 
-export const openWorkspaceTargetIds = [
-  'vscode',
-  'cursor',
-  'windsurf',
-  'antigravity',
-  'finder',
-  'terminal',
-  'ghostty',
-  'xcode',
-] as const
+export const openWorkspaceTargetIds = ['vscode', 'cursor', 'windsurf', 'antigravity', 'finder', 'terminal', 'ghostty', 'xcode'] as const;
 
-export const runtimeTerminalStatuses = [
-  'running',
-  'exited',
-  'closed',
-] as const
+export const runtimeTerminalStatuses = ['running', 'exited', 'closed'] as const;
 
-export const runtimeTerminalStreams = [
-  'stdin',
-  'stdout',
-  'stderr',
-  'system',
-] as const
+export const runtimeTerminalStreams = ['stdin', 'stdout', 'stderr', 'system'] as const;
 
 export const defaultGraphProviderInstances: ProviderInstance[] = [
   {
@@ -74,7 +44,7 @@ export const defaultGraphProviderInstances: ProviderInstance[] = [
     kind: 'legacy-claude-cli',
     label: 'Claude CLI',
   },
-]
+];
 
 export const graphStateSchema = {
   version: graphStateVersion,
@@ -89,8 +59,7 @@ export const graphStateSchema = {
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
     providerInstances: 'ProviderInstance[]; local provider runtime profiles',
-    clusters:
-      'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
+    clusters: 'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
@@ -130,8 +99,7 @@ export const graphStateSchema = {
       output: { ok: 'boolean' },
     },
     report: {
-      input:
-        'verdict | relationship | info payload; runtime adds envelope and routes upward',
+      input: 'verdict | relationship | info payload; runtime adds envelope and routes upward',
       output: { ok: 'boolean' },
     },
     link_sessions: {
@@ -151,8 +119,7 @@ export const graphStateSchema = {
         label: 'string?; defaults to "link"',
         reason: 'string?; shown as edge detail',
       },
-      output:
-        '{ edge: GraphEdge }; idempotent for same source/target/label, a new reason refreshes the stored summary',
+      output: '{ edge: GraphEdge }; idempotent for same source/target/label, a new reason refreshes the stored summary',
     },
     removeEdge: {
       input: {
@@ -163,35 +130,25 @@ export const graphStateSchema = {
     createSession: {
       input: {
         base: 'CreateRuntimeSessionInput',
-        workMode:
-          '"local" | "worktree"?; UI intent, runtime resolves to final cwd',
-        branch:
-          'string?; existing branch to use locally or as the base for a managed worktree',
-        sourceSessionId:
-          'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
-        linkLabel:
-          'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
-        attachments:
-          'ChatAttachment[]?; structured provider-native attachments for the first turn',
-        providerInstanceId:
-          'string?; selected provider runtime profile for this session',
-        runtimeSettings:
-          'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
-        effectiveRuntimeConfig:
-          'ProviderEffectiveRuntimeConfig?; provider-native runtime config actually applied by the adapter',
+        workMode: '"local" | "worktree"?; UI intent, runtime resolves to final cwd',
+        branch: 'string?; existing branch to use locally or as the base for a managed worktree',
+        sourceSessionId: 'SessionId?; UI/runtime-only linked chat source, not accepted by membrane create_session',
+        linkLabel: 'string?; UI/runtime-only create-session edge label, not accepted by membrane create_session',
+        attachments: 'ChatAttachment[]?; structured provider-native attachments for the first turn',
+        providerInstanceId: 'string?; selected provider runtime profile for this session',
+        runtimeSettings: 'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
+        effectiveRuntimeConfig: 'ProviderEffectiveRuntimeConfig?; provider-native runtime config actually applied by the adapter',
       },
     },
     getProjectContext: {
       input: {
         cwd: 'string?; project cwd selected by the UI',
       },
-      output:
-        'ProjectContext; project name, git repo root, current branch, and local branch list',
+      output: 'ProjectContext; project name, git repo root, current branch, and local branch list',
     },
     chooseProjectFolder: {
       input: {},
-      output:
-        '{ canceled: boolean, cwd?: string }; opens a native folder picker for Project selection',
+      output: '{ canceled: boolean, cwd?: string }; opens a native folder picker for Project selection',
     },
     archiveSession: {
       input: {
@@ -209,31 +166,25 @@ export const graphStateSchema = {
     },
     getWorkingTreeDiff: {
       input: {
-        sessionId:
-          'SessionId; resolves the selected chat node to its project cwd',
+        sessionId: 'SessionId; resolves the selected chat node to its project cwd',
         ignoreWhitespace: 'boolean?',
-        turnId:
-          'string?; when present returns the checkpoint diff for that provider turn',
+        turnId: 'string?; when present returns the checkpoint diff for that provider turn',
       },
-      output:
-        'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
+      output: 'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
     },
     openWorkspace: {
       input: {
         cwd: 'string; project folder to open',
-        target:
-          '"vscode" | "cursor" | "windsurf" | "antigravity" | "finder" | "terminal" | "ghostty" | "xcode"',
+        target: '"vscode" | "cursor" | "windsurf" | "antigravity" | "finder" | "terminal" | "ghostty" | "xcode"',
       },
       output: '{ ok: boolean, cwd: string, target: OpenWorkspaceTarget }',
     },
     createTerminal: {
       input: {
-        sessionId:
-          'SessionId; selected chat this auxiliary terminal is attached to',
+        sessionId: 'SessionId; selected chat this auxiliary terminal is attached to',
         cwd: 'string?; defaults to the selected session cwd',
       },
-      output:
-        'RuntimeTerminal; in-process terminal surface, not a graph session',
+      output: 'RuntimeTerminal; in-process terminal surface, not a graph session',
     },
     getTerminal: {
       input: { terminalId: 'string' },
@@ -244,8 +195,7 @@ export const graphStateSchema = {
         terminalId: 'string',
         command: 'string; shell command line to send to the terminal',
       },
-      output:
-        '{ ok: boolean, terminal: RuntimeTerminal, commandId: string }',
+      output: '{ ok: boolean, terminal: RuntimeTerminal, commandId: string }',
     },
     writeTerminalInput: {
       input: {
@@ -265,12 +215,10 @@ export const graphStateSchema = {
     getProviderSetupStatus: {
       input: {
         providerKind: 'ProviderKind; provider selected in the chat setup UI',
-        providerInstanceId:
-          'string?; provider instance selected in provider settings',
+        providerInstanceId: 'string?; provider instance selected in provider settings',
         cwd: 'string?; optional project cwd to validate against provider access',
       },
-      output:
-        'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
+      output: 'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
     },
     upsertProviderInstance: {
       input: {
@@ -345,486 +293,483 @@ export const graphStateSchema = {
       loopState: 'LoopState?',
     },
   },
-} as const
+} as const;
 
-export type SessionId = string
-export type NodeId = SessionId
-export type ClusterId = string
-export type EdgeId = string
-export type CallId = string
+export type SessionId = string;
+export type NodeId = SessionId;
+export type ClusterId = string;
+export type EdgeId = string;
+export type CallId = string;
 
-export type SessionStatus = (typeof sessionStatuses)[number]
+export type SessionStatus = (typeof sessionStatuses)[number];
 
-export type AgentBackend =
-  | 'claude-cli'
-  | 'claude-agent-sdk'
-  | 'codex-app-server'
-export type SessionRole = 'worker' | 'master'
-export type WorkMode = 'local' | 'worktree'
+export type AgentBackend = 'claude-cli' | 'claude-agent-sdk' | 'codex-app-server';
+export type SessionRole = 'worker' | 'master';
+export type WorkMode = 'local' | 'worktree';
 
 export type SessionProject = {
-  name: string
-  cwd: string
-  repoRoot?: string
-  workMode: WorkMode
-  baseBranch?: string
-  branch?: string
-}
+  name: string;
+  cwd: string;
+  repoRoot?: string;
+  workMode: WorkMode;
+  baseBranch?: string;
+  branch?: string;
+};
 
 export type SkillCallEnvelope = {
-  callId: CallId
-  source: SessionId
-  ts: string
-}
+  callId: CallId;
+  source: SessionId;
+  ts: string;
+};
 
 export type Issue = {
-  message: string
-  file?: string
-  line?: number
-  severity?: 'info' | 'warn' | 'error'
-}
+  message: string;
+  file?: string;
+  line?: number;
+  severity?: 'info' | 'warn' | 'error';
+};
 
 export type ReportPayload =
   | { type: 'verdict'; verdict: string; issues?: Issue[]; summary?: string }
   | {
-      type: 'relationship'
-      target: string
-      nature?: string
-      sessionRef?: SessionId
+      type: 'relationship';
+      target: string;
+      nature?: string;
+      sessionRef?: SessionId;
     }
-  | { type: 'info'; payload: unknown }
+  | { type: 'info'; payload: unknown };
 
 export type Report = {
-  id: string
-  from: SessionId
-  envelope: SkillCallEnvelope
-  payload: ReportPayload
-}
+  id: string;
+  from: SessionId;
+  envelope: SkillCallEnvelope;
+  payload: ReportPayload;
+};
 
 export type FreezeState = {
-  frozen?: boolean
-  freezeReason?: string
-  masterReason?: string
-}
+  frozen?: boolean;
+  freezeReason?: string;
+  masterReason?: string;
+};
 
 export type LoopPolicy = {
-  until?: { whenReport: { verdict: string } }
-  onStop: 'freeze'
-  maxIterations?: number
-}
+  until?: { whenReport: { verdict: string } };
+  onStop: 'freeze';
+  maxIterations?: number;
+};
 
-export type LoopStatus = 'running' | 'stopped'
+export type LoopStatus = 'running' | 'stopped';
 
 export type LoopEvent = {
-  type: string
-  ts: string
-  sessionId?: SessionId
-  from?: SessionId
-  reportId?: string
-  targetId?: string
-  error?: string
-}
+  type: string;
+  ts: string;
+  sessionId?: SessionId;
+  from?: SessionId;
+  reportId?: string;
+  targetId?: string;
+  error?: string;
+};
 
 export type LoopState = {
-  status: LoopStatus
-  iterations: number
-  coderSessionId?: SessionId
-  reviewerSessionId?: SessionId
-  lastEvent?: LoopEvent
-  lastProcessedEventKey?: string
-  reason?: string
-  startedAt?: string
-  stoppedAt?: string
-}
+  status: LoopStatus;
+  iterations: number;
+  coderSessionId?: SessionId;
+  reviewerSessionId?: SessionId;
+  lastEvent?: LoopEvent;
+  lastProcessedEventKey?: string;
+  reason?: string;
+  startedAt?: string;
+  stoppedAt?: string;
+};
 
 export type GraphNode = FreezeState & {
-  nodeId: NodeId
-  sessionId: SessionId
-  label: string
-  role: SessionRole
-  agent: string
-  clusterId?: ClusterId
-  status: SessionStatus
-  position: { x: number; y: number }
-}
+  nodeId: NodeId;
+  sessionId: SessionId;
+  label: string;
+  role: SessionRole;
+  agent: string;
+  clusterId?: ClusterId;
+  status: SessionStatus;
+  position: { x: number; y: number };
+};
 
-export type GraphEdgeKind = (typeof graphEdgeKinds)[number]
-export type OpenWorkspaceTarget = (typeof openWorkspaceTargetIds)[number]
-export type RuntimeTerminalStatus = (typeof runtimeTerminalStatuses)[number]
-export type RuntimeTerminalStream = (typeof runtimeTerminalStreams)[number]
+export type GraphEdgeKind = (typeof graphEdgeKinds)[number];
+export type OpenWorkspaceTarget = (typeof openWorkspaceTargetIds)[number];
+export type RuntimeTerminalStatus = (typeof runtimeTerminalStatuses)[number];
+export type RuntimeTerminalStream = (typeof runtimeTerminalStreams)[number];
 
 export type GraphEdge = FreezeState & {
-  edgeId: EdgeId
-  source: SessionId
-  target: SessionId
-  kind: GraphEdgeKind
-  call?: SkillCallEnvelope
-  label?: string
-  ts: string
-  reportId?: string
-  verdict?: string
-  issueCount?: number
-  summary?: string
-}
+  edgeId: EdgeId;
+  source: SessionId;
+  target: SessionId;
+  kind: GraphEdgeKind;
+  call?: SkillCallEnvelope;
+  label?: string;
+  ts: string;
+  reportId?: string;
+  verdict?: string;
+  issueCount?: number;
+  summary?: string;
+};
 
 export type AgentStreamChunk = {
-  id: string
-  sessionId: SessionId
-  ts: string
-  stream: 'stdout' | 'stderr'
-  raw: string
-  eventType?: string
-  text?: string
-}
+  id: string;
+  sessionId: SessionId;
+  ts: string;
+  stream: 'stdout' | 'stderr';
+  raw: string;
+  eventType?: string;
+  text?: string;
+};
 
-export type AgentMessageRole = 'user' | 'assistant' | 'system'
+export type AgentMessageRole = 'user' | 'assistant' | 'system';
 
 export type AgentMessage = {
-  id: string
-  sessionId: SessionId
-  role: AgentMessageRole
-  content: string
-  attachments?: ChatAttachment[]
-  ts: string
-  runId?: string
-  status?: 'streaming' | 'complete' | 'failed'
-}
+  id: string;
+  sessionId: SessionId;
+  role: AgentMessageRole;
+  content: string;
+  attachments?: ChatAttachment[];
+  ts: string;
+  runId?: string;
+  status?: 'streaming' | 'complete' | 'failed';
+};
 
 export type AgentSession = {
-  sessionId: SessionId
-  nodeId: NodeId
-  backend: AgentBackend
-  backendSessionId?: string
-  providerKind: ProviderKind
-  providerInstanceId: string
-  providerSessionId?: string
-  providerResumeCursor?: string
-  agent: string
-  label: string
-  prompt: string
-  cwd: string
-  project?: SessionProject
-  role: SessionRole
-  status: SessionStatus
-  createdAt: string
-  updatedAt: string
-  startedAt?: string
-  finishedAt?: string
-  exitCode?: number | null
-  signal?: string | null
-  error?: string
-  result?: string
-  chunks: AgentStreamChunk[]
-  messages: AgentMessage[]
-  nativeEvents: NativeProviderEvent[]
-  runtimeEvents: ProviderRuntimeEvent[]
-  runtimeActivities: RuntimeActivity[]
-  runtimeRequests: RuntimeRequest[]
-  runtimeUserInputRequests: UserInputRequest[]
-  runtimePlans: RuntimePlan[]
-  runtimeSettings?: ProviderRuntimeSettings
-  effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig
-  archived?: boolean
-}
+  sessionId: SessionId;
+  nodeId: NodeId;
+  backend: AgentBackend;
+  backendSessionId?: string;
+  providerKind: ProviderKind;
+  providerInstanceId: string;
+  providerSessionId?: string;
+  providerResumeCursor?: string;
+  agent: string;
+  label: string;
+  prompt: string;
+  cwd: string;
+  project?: SessionProject;
+  role: SessionRole;
+  status: SessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  error?: string;
+  result?: string;
+  chunks: AgentStreamChunk[];
+  messages: AgentMessage[];
+  nativeEvents: NativeProviderEvent[];
+  runtimeEvents: ProviderRuntimeEvent[];
+  runtimeActivities: RuntimeActivity[];
+  runtimeRequests: RuntimeRequest[];
+  runtimeUserInputRequests: UserInputRequest[];
+  runtimePlans: RuntimePlan[];
+  runtimeSettings?: ProviderRuntimeSettings;
+  effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig;
+  archived?: boolean;
+};
 
 export type RuntimeTerminalChunk = {
-  id: string
-  terminalId: string
-  sessionId: SessionId
-  ts: string
-  stream: RuntimeTerminalStream
-  text: string
-}
+  id: string;
+  terminalId: string;
+  sessionId: SessionId;
+  ts: string;
+  stream: RuntimeTerminalStream;
+  text: string;
+};
 
 export type RuntimeTerminalCommand = {
-  commandId: string
-  command: string
-  status: 'running' | 'finished'
-  startedAt: string
-  finishedAt?: string
-  exitCode?: number
-}
+  commandId: string;
+  command: string;
+  status: 'running' | 'finished';
+  startedAt: string;
+  finishedAt?: string;
+  exitCode?: number;
+};
 
 export type RuntimeTerminal = {
-  terminalId: string
-  sessionId: SessionId
-  cwd: string
-  shell: string
-  prompt: string
-  status: RuntimeTerminalStatus
-  createdAt: string
-  updatedAt: string
-  exitCode?: number | null
-  signal?: string | null
-  chunks: RuntimeTerminalChunk[]
-  currentCommand?: RuntimeTerminalCommand
-  lastCommand?: RuntimeTerminalCommand
-}
+  terminalId: string;
+  sessionId: SessionId;
+  cwd: string;
+  shell: string;
+  prompt: string;
+  status: RuntimeTerminalStatus;
+  createdAt: string;
+  updatedAt: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  chunks: RuntimeTerminalChunk[];
+  currentCommand?: RuntimeTerminalCommand;
+  lastCommand?: RuntimeTerminalCommand;
+};
 
 export type Cluster = {
-  clusterId: ClusterId
-  label: string
-  nodeIds: NodeId[]
-  masterSessionId?: SessionId
-  loopPolicy?: LoopPolicy
-  loopState?: LoopState
-  frozen?: boolean
-  freezeReason?: string
-}
+  clusterId: ClusterId;
+  label: string;
+  nodeIds: NodeId[];
+  masterSessionId?: SessionId;
+  loopPolicy?: LoopPolicy;
+  loopState?: LoopState;
+  frozen?: boolean;
+  freezeReason?: string;
+};
 
 export type RuntimeStateDiagnostic = {
-  id: string
-  type: string
-  message: string
-  ts: string
-  details?: Record<string, unknown>
-}
+  id: string;
+  type: string;
+  message: string;
+  ts: string;
+  details?: Record<string, unknown>;
+};
 
 export type GraphState = {
-  version: number
-  updatedAt: string
-  nodes: GraphNode[]
-  edges: GraphEdge[]
-  sessions: Record<SessionId, AgentSession>
-  providerInstances: ProviderInstance[]
-  clusters: Record<ClusterId, Cluster>
-  reports: Report[]
-  diagnostics?: RuntimeStateDiagnostic[]
-}
+  version: number;
+  updatedAt: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  sessions: Record<SessionId, AgentSession>;
+  providerInstances: ProviderInstance[];
+  clusters: Record<ClusterId, Cluster>;
+  reports: Report[];
+  diagnostics?: RuntimeStateDiagnostic[];
+};
 
 export type CreateRuntimeSessionInput = {
-  prompt: string
-  cwd?: string
-  workMode?: WorkMode
-  branch?: string
-  agent?: 'claude-code' | 'codex'
-  providerKind?: ProviderKind
-  providerInstanceId?: string
-  runtimeSettings?: ProviderRuntimeSettings
-  label?: string
-  context?: string
-  attachments?: ChatAttachment[]
-  sourceSessionId?: SessionId
-  linkLabel?: string
-  cluster?: ClusterId
-  role?: SessionRole
-}
+  prompt: string;
+  cwd?: string;
+  workMode?: WorkMode;
+  branch?: string;
+  agent?: 'claude-code' | 'codex';
+  providerKind?: ProviderKind;
+  providerInstanceId?: string;
+  runtimeSettings?: ProviderRuntimeSettings;
+  label?: string;
+  context?: string;
+  attachments?: ChatAttachment[];
+  sourceSessionId?: SessionId;
+  linkLabel?: string;
+  cluster?: ClusterId;
+  role?: SessionRole;
+};
 
 export type CreateRuntimeSessionResult = {
-  sessionId: SessionId
-  state: GraphState
-}
+  sessionId: SessionId;
+  state: GraphState;
+};
 
 export type ProjectContextInput = {
-  cwd?: string
-}
+  cwd?: string;
+};
 
 export type ProjectContext = {
-  cwd: string
-  projectName: string
-  isGitRepo: boolean
-  repoRoot?: string
-  currentBranch?: string
-  branches: string[]
-  error?: string
-}
+  cwd: string;
+  projectName: string;
+  isGitRepo: boolean;
+  repoRoot?: string;
+  currentBranch?: string;
+  branches: string[];
+  error?: string;
+};
 
-export type ProviderSetupCheckStatus = 'ok' | 'warning' | 'error' | 'unknown'
+export type ProviderSetupCheckStatus = 'ok' | 'warning' | 'error' | 'unknown';
 
 export type ProviderSetupCheck = {
-  id: string
-  label: string
-  status: ProviderSetupCheckStatus
-  message: string
-  detail?: string
-}
+  id: string;
+  label: string;
+  status: ProviderSetupCheckStatus;
+  message: string;
+  detail?: string;
+};
 
 export type ProviderSetupStatusInput = {
-  providerKind: ProviderKind
-  providerInstanceId?: string
-  cwd?: string
-}
+  providerKind: ProviderKind;
+  providerInstanceId?: string;
+  cwd?: string;
+};
 
 export type ProviderSetupStatus = {
-  providerKind: ProviderKind
-  providerInstanceId?: string
-  generatedAt: string
-  checks: ProviderSetupCheck[]
-}
+  providerKind: ProviderKind;
+  providerInstanceId?: string;
+  generatedAt: string;
+  checks: ProviderSetupCheck[];
+};
 
-export type UpsertProviderInstanceInput = ProviderInstance
+export type UpsertProviderInstanceInput = ProviderInstance;
 
 export type ResumeRuntimeSessionInput = {
-  sessionId: SessionId
-  message: string
-  context?: string
-  attachments?: ChatAttachment[]
-}
+  sessionId: SessionId;
+  message: string;
+  context?: string;
+  attachments?: ChatAttachment[];
+};
 
 export type RespondRuntimeRequestInput = {
-  sessionId: SessionId
-  requestId: string
-  decision: RuntimeRequestDecision
-}
+  sessionId: SessionId;
+  requestId: string;
+  decision: RuntimeRequestDecision;
+};
 
 export type AnswerUserInputInput = {
-  sessionId: SessionId
-  requestId: string
-  answer?: string
-  answers?: UserInputAnswerMap
-}
+  sessionId: SessionId;
+  requestId: string;
+  answer?: string;
+  answers?: UserInputAnswerMap;
+};
 
 export type ArchiveRuntimeSessionInput = {
-  sessionId: SessionId
-  archived?: boolean
-}
+  sessionId: SessionId;
+  archived?: boolean;
+};
 
 export type UpsertClusterInput = {
-  clusterId?: ClusterId
-  label?: string
-  nodeIds: NodeId[]
-  loopPolicy?: LoopPolicy
-}
+  clusterId?: ClusterId;
+  label?: string;
+  nodeIds: NodeId[];
+  loopPolicy?: LoopPolicy;
+};
 
 export type CreateMasterForClusterInput = {
-  clusterId: ClusterId
-  prompt?: string
-  cwd?: string
-  agent?: 'claude-code' | 'codex'
-  providerKind?: ProviderKind
-  providerInstanceId?: string
-  runtimeSettings?: ProviderRuntimeSettings
-  label?: string
-  loopPolicy?: LoopPolicy
-}
+  clusterId: ClusterId;
+  prompt?: string;
+  cwd?: string;
+  agent?: 'claude-code' | 'codex';
+  providerKind?: ProviderKind;
+  providerInstanceId?: string;
+  runtimeSettings?: ProviderRuntimeSettings;
+  label?: string;
+  loopPolicy?: LoopPolicy;
+};
 
 export type AssignMasterToClusterInput = {
-  clusterId: ClusterId
-  sessionId: SessionId
-}
+  clusterId: ClusterId;
+  sessionId: SessionId;
+};
 
 export type SetClusterLoopPolicyInput = {
-  clusterId: ClusterId
-  loopPolicy: LoopPolicy
-}
+  clusterId: ClusterId;
+  loopPolicy: LoopPolicy;
+};
 
 export type UpdateNodePositionsInput = {
   positions: {
-    nodeId: NodeId
-    position: { x: number; y: number }
-  }[]
-}
+    nodeId: NodeId;
+    position: { x: number; y: number };
+  }[];
+};
 
 export type StartMasterLoopInput = {
-  clusterId: ClusterId
-  reason?: string
-}
+  clusterId: ClusterId;
+  reason?: string;
+};
 
 export type StopMasterLoopInput = {
-  clusterId: ClusterId
-  reason?: string
-  killRunning?: boolean
-}
+  clusterId: ClusterId;
+  reason?: string;
+  killRunning?: boolean;
+};
 
 export type FreezeInput = {
-  target: SessionId | ClusterId
-  reason?: string
-  source?: SessionId
-  masterReason?: string
-}
+  target: SessionId | ClusterId;
+  reason?: string;
+  source?: SessionId;
+  masterReason?: string;
+};
 
 export type DiffRange =
   | {
-      kind: 'working-tree'
-      base: 'HEAD'
-      target: 'workspace'
+      kind: 'working-tree';
+      base: 'HEAD';
+      target: 'workspace';
     }
   | {
-      kind: 'checkpoint'
-      fromCheckpointRef: string
-      toCheckpointRef: string
-      fromTurnCount?: number
-      toTurnCount?: number
-    }
+      kind: 'checkpoint';
+      fromCheckpointRef: string;
+      toCheckpointRef: string;
+      fromTurnCount?: number;
+      toTurnCount?: number;
+    };
 
 export type WorkingTreeDiffFile = {
-  path: string
-  previousPath?: string
-  changeType: string
-  additions: number
-  deletions: number
-}
+  path: string;
+  previousPath?: string;
+  changeType: string;
+  additions: number;
+  deletions: number;
+};
 
 export type WorkingTreeDiffResult = {
-  sessionId: SessionId
-  cwd: string
-  repoRoot: string
-  generatedAt: string
-  range: DiffRange
-  files: WorkingTreeDiffFile[]
+  sessionId: SessionId;
+  cwd: string;
+  repoRoot: string;
+  generatedAt: string;
+  range: DiffRange;
+  files: WorkingTreeDiffFile[];
   totals: {
-    files: number
-    additions: number
-    deletions: number
-  }
-  statusEntries: string[]
-  patch: string
-  truncated: boolean
-}
+    files: number;
+    additions: number;
+    deletions: number;
+  };
+  statusEntries: string[];
+  patch: string;
+  truncated: boolean;
+};
 
 export type WorkingTreeDiffInput = {
-  sessionId: SessionId
-  ignoreWhitespace?: boolean
-  turnId?: string
-}
+  sessionId: SessionId;
+  ignoreWhitespace?: boolean;
+  turnId?: string;
+};
 
 export type OpenWorkspaceInput = {
-  cwd: string
-  target: OpenWorkspaceTarget
-}
+  cwd: string;
+  target: OpenWorkspaceTarget;
+};
 
 export type OpenWorkspaceResult = {
-  ok: boolean
-  cwd: string
-  target: OpenWorkspaceTarget
-  platform: string
-}
+  ok: boolean;
+  cwd: string;
+  target: OpenWorkspaceTarget;
+  platform: string;
+};
 
 export type CreateTerminalInput = {
-  sessionId: SessionId
-  cwd?: string
-}
+  sessionId: SessionId;
+  cwd?: string;
+};
 
 export type GetTerminalInput = {
-  terminalId: string
-}
+  terminalId: string;
+};
 
 export type RunTerminalCommandInput = {
-  terminalId: string
-  command: string
-}
+  terminalId: string;
+  command: string;
+};
 
 export type WriteTerminalInput = {
-  terminalId: string
-  input: string
-}
+  terminalId: string;
+  input: string;
+};
 
 export type ClearTerminalInput = {
-  terminalId: string
-}
+  terminalId: string;
+};
 
 export type CloseTerminalInput = {
-  terminalId: string
-}
+  terminalId: string;
+};
 
 export type RuntimeTerminalResult = {
-  ok: boolean
-  terminal: RuntimeTerminal
-}
+  ok: boolean;
+  terminal: RuntimeTerminal;
+};
 
 export type RunTerminalCommandResult = RuntimeTerminalResult & {
-  commandId: string
-}
+  commandId: string;
+};
 
 export type RuntimeEvent =
   | { type: 'runtime.state'; state: GraphState }
@@ -832,23 +777,23 @@ export type RuntimeEvent =
   | { type: 'session.created'; sessionId: SessionId; state: GraphState }
   | { type: 'session.resumed'; sessionId: SessionId; state: GraphState }
   | {
-      type: 'session.stream'
-      sessionId: SessionId
-      chunk: AgentStreamChunk
-      state: GraphState
+      type: 'session.stream';
+      sessionId: SessionId;
+      chunk: AgentStreamChunk;
+      state: GraphState;
     }
   | {
-      type: 'provider.runtime'
-      sessionId: SessionId
-      providerEvent: ProviderRuntimeEvent
-      state: GraphState
+      type: 'provider.runtime';
+      sessionId: SessionId;
+      providerEvent: ProviderRuntimeEvent;
+      state: GraphState;
     }
   | { type: 'session.finished'; sessionId: SessionId; state: GraphState }
   | {
-      type: 'session.failed'
-      sessionId: SessionId
-      error: string
-      state: GraphState
+      type: 'session.failed';
+      sessionId: SessionId;
+      error: string;
+      state: GraphState;
     }
   | { type: 'session.killed'; sessionId: SessionId; state: GraphState }
   | { type: 'report.received'; from: SessionId; report: Report; state: GraphState }
@@ -857,44 +802,44 @@ export type RuntimeEvent =
   | { type: 'edge.removed'; edgeId: string; state: GraphState }
   | { type: 'loop.started'; clusterId: ClusterId; state: GraphState }
   | {
-      type: 'loop.stopped'
-      clusterId: ClusterId
-      reason?: string
-      state: GraphState
+      type: 'loop.stopped';
+      clusterId: ClusterId;
+      reason?: string;
+      state: GraphState;
     }
   | { type: 'terminal.created'; terminal: RuntimeTerminal }
   | {
-      type: 'terminal.output'
-      terminalId: string
-      sessionId: SessionId
-      chunk: RuntimeTerminalChunk
-      terminal: RuntimeTerminal
+      type: 'terminal.output';
+      terminalId: string;
+      sessionId: SessionId;
+      chunk: RuntimeTerminalChunk;
+      terminal: RuntimeTerminal;
     }
   | {
-      type: 'terminal.command.finished'
-      terminalId: string
-      sessionId: SessionId
-      command: RuntimeTerminalCommand
-      terminal: RuntimeTerminal
+      type: 'terminal.command.finished';
+      terminalId: string;
+      sessionId: SessionId;
+      command: RuntimeTerminalCommand;
+      terminal: RuntimeTerminal;
     }
   | {
-      type: 'terminal.exited'
-      terminalId: string
-      sessionId: SessionId
-      terminal: RuntimeTerminal
+      type: 'terminal.exited';
+      terminalId: string;
+      sessionId: SessionId;
+      terminal: RuntimeTerminal;
     }
   | {
-      type: 'terminal.closed'
-      terminalId: string
-      sessionId: SessionId
-      terminal: RuntimeTerminal
+      type: 'terminal.closed';
+      terminalId: string;
+      sessionId: SessionId;
+      terminal: RuntimeTerminal;
     }
   | {
-      type: 'terminal.cleared'
-      terminalId: string
-      sessionId: SessionId
-      terminal: RuntimeTerminal
-    }
+      type: 'terminal.cleared';
+      terminalId: string;
+      sessionId: SessionId;
+      terminal: RuntimeTerminal;
+    };
 
 export function createEmptyGraphState(): GraphState {
   return {
@@ -908,5 +853,5 @@ export function createEmptyGraphState(): GraphState {
     })),
     clusters: {},
     reports: [],
-  }
+  };
 }

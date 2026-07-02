@@ -1,7 +1,4 @@
-import {
-  useEffect,
-  useState,
-} from 'react'
+import { useEffect, useState } from 'react';
 import {
   Activity,
   Bot,
@@ -15,26 +12,12 @@ import {
   Terminal,
   TriangleAlert,
   type LucideIcon,
-} from 'lucide-react'
-import {
-  DropdownMenu as DropdownMenuPrimitive,
-  Select as SelectPrimitive,
-} from 'radix-ui'
-import {
-  Button,
-} from '@/components/ui/button'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import {
-  cn,
-} from '@/lib/utils'
-import {
-  type OpenWorkspaceTarget,
-  type WorkMode,
-} from '@/shared/graph-state'
+} from 'lucide-react';
+import { DropdownMenu as DropdownMenuPrimitive, Select as SelectPrimitive } from 'radix-ui';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
+import { type OpenWorkspaceTarget, type WorkMode } from '@/shared/graph-state';
 import {
   type ProviderKind,
   type ProviderReasoningEffort,
@@ -42,24 +25,10 @@ import {
   providerCapability,
   providerRuntimeModeCapability,
   providerSupportsReasoningEffort,
-} from '@/shared/provider-runtime'
-import {
-  workspaceOpenTargetOptions,
-  workspaceOpenTargetOption,
-  workspaceOpenTargetAvailable,
-} from '@/lib/layout-prefs'
-import {
-  providerOptions,
-  modelOptionsForKind,
-  workModeOptions,
-  reasoningEffortOptions,
-} from '@/lib/provider-catalog'
-import {
-  type ProjectCwdValidation,
-  type NewChatProjectOption,
-  chooseProjectOptionValue,
-  uniqueStrings,
-} from '@/lib/workspace'
+} from '@/shared/provider-runtime';
+import { workspaceOpenTargetOptions, workspaceOpenTargetOption, workspaceOpenTargetAvailable } from '@/lib/layout-prefs';
+import { providerOptions, modelOptionsForKind, workModeOptions, reasoningEffortOptions } from '@/lib/provider-catalog';
+import { type ProjectCwdValidation, type NewChatProjectOption, chooseProjectOptionValue, uniqueStrings } from '@/lib/workspace';
 
 export function ProviderSegmentedControl({
   value,
@@ -67,21 +36,15 @@ export function ProviderSegmentedControl({
   className,
   onChange,
 }: {
-  value: ProviderKind
-  disabled?: boolean
-  className?: string
-  onChange: (value: ProviderKind) => void
+  value: ProviderKind;
+  disabled?: boolean;
+  className?: string;
+  onChange: (value: ProviderKind) => void;
 }) {
   return (
-    <div
-      className={cn(
-        'grid grid-cols-3 gap-1 rounded-lg border border-ink-line bg-ink p-1 font-mono',
-        disabled && 'opacity-60',
-        className
-      )}
-    >
+    <div className={cn('grid grid-cols-3 gap-1 rounded-lg border border-ink-line bg-ink p-1 font-mono', disabled && 'opacity-60', className)}>
       {providerOptions.map((option) => {
-        const isSelected = value === option.id
+        const isSelected = value === option.id;
         return (
           <button
             key={option.id}
@@ -90,18 +53,16 @@ export function ProviderSegmentedControl({
             disabled={disabled}
             className={cn(
               'truncate rounded-md px-2 py-1.5 text-[10.5px] uppercase tracking-[0.06em] transition disabled:cursor-not-allowed',
-              isSelected
-                ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30'
-                : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name'
+              isSelected ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30' : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name',
             )}
             onClick={() => onChange(option.id)}
           >
             {option.label}
           </button>
-        )
+        );
       })}
     </div>
-  )
+  );
 }
 
 export function ProjectCwdField({
@@ -110,17 +71,17 @@ export function ProjectCwdField({
   disabled,
   onChange,
 }: {
-  value: string
-  validation: ProjectCwdValidation
-  disabled?: boolean
-  onChange: (value: string) => void
+  value: string;
+  validation: ProjectCwdValidation;
+  disabled?: boolean;
+  onChange: (value: string) => void;
 }) {
   return (
     <label
       className={cn(
         'flex h-8 min-w-0 items-center gap-2 rounded-md border border-ink-line bg-ink px-2.5 font-mono transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
         !validation.ok && 'border-term-rose/45 focus-within:border-term-rose/70',
-        disabled && 'opacity-55'
+        disabled && 'opacity-55',
       )}
       title="Project folder"
     >
@@ -135,11 +96,9 @@ export function ProjectCwdField({
         aria-invalid={!validation.ok}
         onChange={(event) => onChange(event.target.value)}
       />
-      {!validation.ok ? (
-        <TriangleAlert className="size-3.5 shrink-0 text-term-rose" />
-      ) : null}
+      {!validation.ok ? <TriangleAlert className="size-3.5 shrink-0 text-term-rose" /> : null}
     </label>
-  )
+  );
 }
 
 export function ProjectCwdChip({
@@ -149,11 +108,11 @@ export function ProjectCwdChip({
   disabled,
   onChange,
 }: {
-  value: string
-  validation: ProjectCwdValidation
-  projects: NewChatProjectOption[]
-  disabled?: boolean
-  onChange: (value: string) => void
+  value: string;
+  validation: ProjectCwdValidation;
+  projects: NewChatProjectOption[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
 }) {
   return (
     <label
@@ -162,16 +121,11 @@ export function ProjectCwdChip({
         validation.ok
           ? 'border-ink-line focus-within:border-lime-hi/60 focus-within:ring-lime-hi/25'
           : 'border-term-rose/55 focus-within:border-term-rose/70 focus-within:ring-term-rose/25',
-        disabled && 'opacity-55'
+        disabled && 'opacity-55',
       )}
       title={validation.ok ? 'Project folder' : validation.message}
     >
-      <FolderOpen
-        className={cn(
-          'size-3.5 shrink-0',
-          validation.ok ? 'text-lime-hi' : 'text-term-rose'
-        )}
-      />
+      <FolderOpen className={cn('size-3.5 shrink-0', validation.ok ? 'text-lime-hi' : 'text-term-rose')} />
       <input
         list="orrery-project-suggestions"
         className="min-w-0 flex-1 bg-transparent text-[11.5px] text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
@@ -191,10 +145,10 @@ export function ProjectCwdChip({
         ))}
       </datalist>
     </label>
-  )
+  );
 }
 
-export type SetupOption = { value: string; label: string; disabled?: boolean }
+export type SetupOption = { value: string; label: string; disabled?: boolean };
 
 export function NewChatSetupPill({
   icon: Icon,
@@ -209,23 +163,20 @@ export function NewChatSetupPill({
   className,
   onChange,
 }: {
-  icon: LucideIcon
-  label: string
-  value: string
-  options: SetupOption[]
-  placeholder?: string
-  tone?: 'primary' | 'secondary'
-  disabled?: boolean
-  invalid?: boolean
-  hint?: string
-  className?: string
-  onChange: (value: string) => void
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  options: SetupOption[];
+  placeholder?: string;
+  tone?: 'primary' | 'secondary';
+  disabled?: boolean;
+  invalid?: boolean;
+  hint?: string;
+  className?: string;
+  onChange: (value: string) => void;
 }) {
-  const primary = tone === 'primary'
-  const display =
-    options.find((option) => option.value === value)?.label ??
-    placeholder ??
-    label
+  const primary = tone === 'primary';
+  const display = options.find((option) => option.value === value)?.label ?? placeholder ?? label;
   return (
     <SelectPrimitive.Root value={value} disabled={disabled} onValueChange={onChange}>
       <SelectPrimitive.Trigger
@@ -236,31 +187,15 @@ export function NewChatSetupPill({
           primary
             ? 'border border-ink-line bg-ink pl-2 pr-1.5 hover:border-ink-line-2 data-[state=open]:border-lime-hi/60 focus-visible:border-lime-hi/60 focus-visible:ring-1 focus-visible:ring-lime-hi/25'
             : 'border border-transparent px-1.5 hover:bg-white/[0.05] data-[state=open]:bg-white/[0.05] focus-visible:bg-white/[0.05]',
-          invalid &&
-            'border-term-rose/55 data-[state=open]:border-term-rose/70 focus-visible:border-term-rose/70 focus-visible:ring-term-rose/25',
-          className
+          invalid && 'border-term-rose/55 data-[state=open]:border-term-rose/70 focus-visible:border-term-rose/70 focus-visible:ring-term-rose/25',
+          className,
         )}
       >
-        <Icon
-          className={cn(
-            'size-3.5 shrink-0',
-            invalid ? 'text-term-rose' : primary ? 'text-lime-hi' : 'text-term-dim2'
-          )}
-        />
-        <span
-          className={cn(
-            'min-w-0 flex-1 truncate text-left text-[11.5px]',
-            primary ? 'font-medium text-term-name' : 'text-term-dim'
-          )}
-        >
-          {display}
-        </span>
+        <Icon className={cn('size-3.5 shrink-0', invalid ? 'text-term-rose' : primary ? 'text-lime-hi' : 'text-term-dim2')} />
+        <span className={cn('min-w-0 flex-1 truncate text-left text-[11.5px]', primary ? 'font-medium text-term-name' : 'text-term-dim')}>{display}</span>
         <SelectPrimitive.Icon asChild>
           <ChevronDown
-            className={cn(
-              'size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180',
-              primary ? 'text-term-dim2' : 'text-term-faint'
-            )}
+            className={cn('size-3 shrink-0 transition-transform group-data-[state=open]:rotate-180', primary ? 'text-term-dim2' : 'text-term-faint')}
           />
         </SelectPrimitive.Icon>
       </SelectPrimitive.Trigger>
@@ -290,7 +225,7 @@ export function NewChatSetupPill({
         </SelectPrimitive.Content>
       </SelectPrimitive.Portal>
     </SelectPrimitive.Root>
-  )
+  );
 }
 
 export function OpenWorkspaceSplitButton({
@@ -301,18 +236,18 @@ export function OpenWorkspaceSplitButton({
   onOpen,
   onTargetChange,
 }: {
-  target: OpenWorkspaceTarget
-  platform?: string
-  disabled?: boolean
-  pendingTarget?: OpenWorkspaceTarget
-  onOpen: (target: OpenWorkspaceTarget) => void
-  onTargetChange: (target: OpenWorkspaceTarget) => void
+  target: OpenWorkspaceTarget;
+  platform?: string;
+  disabled?: boolean;
+  pendingTarget?: OpenWorkspaceTarget;
+  onOpen: (target: OpenWorkspaceTarget) => void;
+  onTargetChange: (target: OpenWorkspaceTarget) => void;
 }) {
-  const activeOption = workspaceOpenTargetOption(target)
-  const ActiveIcon = activeOption.icon
-  const isOpening = Boolean(pendingTarget)
-  const activeUnavailable = !workspaceOpenTargetAvailable(activeOption, platform)
-  const mainDisabled = disabled || isOpening || activeUnavailable
+  const activeOption = workspaceOpenTargetOption(target);
+  const ActiveIcon = activeOption.icon;
+  const isOpening = Boolean(pendingTarget);
+  const activeUnavailable = !workspaceOpenTargetAvailable(activeOption, platform);
+  const mainDisabled = disabled || isOpening || activeUnavailable;
 
   return (
     <DropdownMenuPrimitive.Root>
@@ -327,21 +262,11 @@ export function OpenWorkspaceSplitButton({
               aria-label={`Open in ${activeOption.label}`}
               onClick={() => onOpen(target)}
             >
-              {isOpening && pendingTarget === target ? (
-                <RefreshCw className="size-3.5 animate-spin" />
-              ) : (
-                <ActiveIcon className="size-3.5" />
-              )}
-              <span className="hidden max-w-16 truncate @[34rem]:inline">
-                {activeOption.label}
-              </span>
+              {isOpening && pendingTarget === target ? <RefreshCw className="size-3.5 animate-spin" /> : <ActiveIcon className="size-3.5" />}
+              <span className="hidden max-w-16 truncate @[34rem]:inline">{activeOption.label}</span>
             </Button>
           </TooltipTrigger>
-          <TooltipContent>
-            {activeUnavailable
-              ? `${activeOption.label} is unavailable on this platform`
-              : `Open in ${activeOption.label}`}
-          </TooltipContent>
+          <TooltipContent>{activeUnavailable ? `${activeOption.label} is unavailable on this platform` : `Open in ${activeOption.label}`}</TooltipContent>
         </Tooltip>
         <DropdownMenuPrimitive.Trigger asChild>
           <Button
@@ -363,10 +288,10 @@ export function OpenWorkspaceSplitButton({
           className="z-50 w-56 overflow-hidden rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-[0_18px_44px_-16px_rgba(0,0,0,0.55)] data-[side=bottom]:animate-in data-[side=bottom]:slide-in-from-top-1"
         >
           {workspaceOpenTargetOptions.map((option) => {
-            const Icon = option.icon
-            const unavailable = !workspaceOpenTargetAvailable(option, platform)
-            const selected = option.id === target
-            const pending = pendingTarget === option.id
+            const Icon = option.icon;
+            const unavailable = !workspaceOpenTargetAvailable(option, platform);
+            const selected = option.id === target;
+            const pending = pendingTarget === option.id;
 
             return (
               <DropdownMenuPrimitive.Item
@@ -374,36 +299,29 @@ export function OpenWorkspaceSplitButton({
                 disabled={disabled || isOpening || unavailable}
                 className="relative flex h-9 cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 pr-8 text-[13px] outline-none transition data-[disabled]:pointer-events-none data-[disabled]:opacity-35 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
                 onSelect={() => {
-                  onTargetChange(option.id)
-                  onOpen(option.id)
+                  onTargetChange(option.id);
+                  onOpen(option.id);
                 }}
               >
                 {pending ? (
                   <RefreshCw className="size-4 shrink-0 animate-spin text-lime-hi" />
                 ) : (
-                  <Icon
-                    className={cn(
-                      'size-4 shrink-0',
-                      selected ? 'text-lime-hi' : 'text-muted-foreground'
-                    )}
-                  />
+                  <Icon className={cn('size-4 shrink-0', selected ? 'text-lime-hi' : 'text-muted-foreground')} />
                 )}
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                {selected ? (
-                  <Check className="absolute right-2.5 size-3.5 text-lime-hi" />
-                ) : null}
+                {selected ? <Check className="absolute right-2.5 size-3.5 text-lime-hi" /> : null}
               </DropdownMenuPrimitive.Item>
-            )
+            );
           })}
         </DropdownMenuPrimitive.Content>
       </DropdownMenuPrimitive.Portal>
     </DropdownMenuPrimitive.Root>
-  )
+  );
 }
 
-export const modelDefaultOptionValue = '__orrery_model_default__'
+export const modelDefaultOptionValue = '__orrery_model_default__';
 
-export const modelCustomOptionValue = '__orrery_model_custom__'
+export const modelCustomOptionValue = '__orrery_model_custom__';
 
 // Per-agent model picker: a curated dropdown (Default + presets) plus a
 // "Custom…" option that reveals a free-text field for arbitrary model ids.
@@ -414,34 +332,25 @@ export function ModelPickerPill({
   disabled,
   onChange,
 }: {
-  providerKind: ProviderKind
-  model: string
-  disabled?: boolean
-  onChange: (model: string) => void
+  providerKind: ProviderKind;
+  model: string;
+  disabled?: boolean;
+  onChange: (model: string) => void;
 }) {
-  const options = modelOptionsForKind(providerKind)
-  const trimmed = model.trim()
-  const isCustomValue =
-    trimmed !== '' && !options.some((option) => option.value === trimmed)
-  const [forceCustom, setForceCustom] = useState(false)
+  const options = modelOptionsForKind(providerKind);
+  const trimmed = model.trim();
+  const isCustomValue = trimmed !== '' && !options.some((option) => option.value === trimmed);
+  const [forceCustom, setForceCustom] = useState(false);
 
   // Switching agent resets to the curated list (the parent also clears the
   // model so a Codex id can't leak into a Claude session).
   useEffect(() => {
-    setForceCustom(false)
-  }, [providerKind])
+    setForceCustom(false);
+  }, [providerKind]);
 
-  const showCustom = forceCustom || isCustomValue
-  const selectValue = showCustom
-    ? modelCustomOptionValue
-    : trimmed === ''
-      ? modelDefaultOptionValue
-      : trimmed
-  const selectOptions: SetupOption[] = [
-    { value: modelDefaultOptionValue, label: 'Default' },
-    ...options,
-    { value: modelCustomOptionValue, label: 'Custom…' },
-  ]
+  const showCustom = forceCustom || isCustomValue;
+  const selectValue = showCustom ? modelCustomOptionValue : trimmed === '' ? modelDefaultOptionValue : trimmed;
+  const selectOptions: SetupOption[] = [{ value: modelDefaultOptionValue, label: 'Default' }, ...options, { value: modelCustomOptionValue, label: 'Custom…' }];
 
   return (
     <div className="flex shrink-0 items-center gap-1.5">
@@ -455,11 +364,11 @@ export function ModelPickerPill({
         className="w-32"
         onChange={(next) => {
           if (next === modelCustomOptionValue) {
-            setForceCustom(true)
-            return
+            setForceCustom(true);
+            return;
           }
-          setForceCustom(false)
-          onChange(next === modelDefaultOptionValue ? '' : next)
+          setForceCustom(false);
+          onChange(next === modelDefaultOptionValue ? '' : next);
         }}
       />
       {showCustom ? (
@@ -473,7 +382,7 @@ export function ModelPickerPill({
         />
       ) : null}
     </div>
-  )
+  );
 }
 
 export function NewChatSetupBar({
@@ -497,41 +406,35 @@ export function NewChatSetupBar({
   onModelChange,
   onReasoningEffortChange,
 }: {
-  projects: NewChatProjectOption[]
-  projectCwd: string
-  validation: ProjectCwdValidation
-  providerKind: ProviderKind
-  workMode: WorkMode
-  branch: string
-  runtimeMode: ProviderRuntimeMode
-  model: string
-  reasoningEffort: ProviderReasoningEffort
-  disabled?: boolean
-  canChooseProject?: boolean
-  onProjectChange: (cwd: string) => void
-  onChooseProject: () => void
-  onProviderKindChange: (providerKind: ProviderKind) => void
-  onWorkModeChange: (workMode: WorkMode) => void
-  onBranchChange: (branch: string) => void
-  onRuntimeModeChange: (runtimeMode: ProviderRuntimeMode) => void
-  onModelChange: (model: string) => void
-  onReasoningEffortChange: (reasoningEffort: ProviderReasoningEffort) => void
+  projects: NewChatProjectOption[];
+  projectCwd: string;
+  validation: ProjectCwdValidation;
+  providerKind: ProviderKind;
+  workMode: WorkMode;
+  branch: string;
+  runtimeMode: ProviderRuntimeMode;
+  model: string;
+  reasoningEffort: ProviderReasoningEffort;
+  disabled?: boolean;
+  canChooseProject?: boolean;
+  onProjectChange: (cwd: string) => void;
+  onChooseProject: () => void;
+  onProviderKindChange: (providerKind: ProviderKind) => void;
+  onWorkModeChange: (workMode: WorkMode) => void;
+  onBranchChange: (branch: string) => void;
+  onRuntimeModeChange: (runtimeMode: ProviderRuntimeMode) => void;
+  onModelChange: (model: string) => void;
+  onReasoningEffortChange: (reasoningEffort: ProviderReasoningEffort) => void;
 }) {
-  const selectedProject =
-    projects.find((project) => project.cwd === projectCwd.trim()) ?? projects[0]
-  const branchOptions = uniqueStrings([
-    selectedProject?.currentBranch,
-    ...(selectedProject?.branches ?? []),
-  ])
-  const currentBranch = selectedProject?.currentBranch ?? branchOptions[0]
-  const localBranchValue = currentBranch ?? ''
-  const worktreeBranchValue =
-    branch && branchOptions.includes(branch) ? branch : localBranchValue
-  const branchValue =
-    workMode === 'worktree' ? worktreeBranchValue : localBranchValue
-  const isKnownNonGitProject = selectedProject?.isGitRepo === false
-  const canPickBranch = workMode === 'worktree' && branchOptions.length > 0
-  const providerRuntimeModes = providerCapability(providerKind).runtimeModes
+  const selectedProject = projects.find((project) => project.cwd === projectCwd.trim()) ?? projects[0];
+  const branchOptions = uniqueStrings([selectedProject?.currentBranch, ...(selectedProject?.branches ?? [])]);
+  const currentBranch = selectedProject?.currentBranch ?? branchOptions[0];
+  const localBranchValue = currentBranch ?? '';
+  const worktreeBranchValue = branch && branchOptions.includes(branch) ? branch : localBranchValue;
+  const branchValue = workMode === 'worktree' ? worktreeBranchValue : localBranchValue;
+  const isKnownNonGitProject = selectedProject?.isGitRepo === false;
+  const canPickBranch = workMode === 'worktree' && branchOptions.length > 0;
+  const providerRuntimeModes = providerCapability(providerKind).runtimeModes;
 
   return (
     <div className="app-region-no-drag mb-2">
@@ -555,11 +458,11 @@ export function NewChatSetupBar({
             className="max-w-[12rem] shrink-0"
             onChange={(nextCwd) => {
               if (nextCwd === chooseProjectOptionValue) {
-                onChooseProject()
-                return
+                onChooseProject();
+                return;
               }
-              onProjectChange(nextCwd)
-              onBranchChange('')
+              onProjectChange(nextCwd);
+              onBranchChange('');
             }}
           />
         ) : (
@@ -569,8 +472,8 @@ export function NewChatSetupBar({
             projects={projects}
             disabled={disabled}
             onChange={(nextCwd) => {
-              onProjectChange(nextCwd)
-              onBranchChange('')
+              onProjectChange(nextCwd);
+              onBranchChange('');
             }}
           />
         )}
@@ -587,16 +490,11 @@ export function NewChatSetupBar({
           disabled={disabled}
           className="w-36"
           onChange={(next) => {
-            onProviderKindChange(next as ProviderKind)
+            onProviderKindChange(next as ProviderKind);
           }}
         />
 
-        <ModelPickerPill
-          providerKind={providerKind}
-          model={model}
-          disabled={disabled}
-          onChange={onModelChange}
-        />
+        <ModelPickerPill providerKind={providerKind} model={model} disabled={disabled} onChange={onModelChange} />
 
         <NewChatSetupPill
           icon={Terminal}
@@ -611,11 +509,10 @@ export function NewChatSetupBar({
           disabled={disabled}
           className="shrink-0"
           onChange={(nextWorkMode) => {
-            const normalized =
-              nextWorkMode === 'worktree' ? 'worktree' : 'local'
-            onWorkModeChange(normalized)
+            const normalized = nextWorkMode === 'worktree' ? 'worktree' : 'local';
+            onWorkModeChange(normalized);
             if (normalized === 'local') {
-              onBranchChange('')
+              onBranchChange('');
             }
           }}
         />
@@ -639,11 +536,7 @@ export function NewChatSetupBar({
           <NewChatSetupPill
             icon={ClipboardCheck}
             label="Mode"
-            value={
-              providerRuntimeModeCapability(providerKind, runtimeMode)
-                ? runtimeMode
-                : providerRuntimeModes[0]?.id
-            }
+            value={providerRuntimeModeCapability(providerKind, runtimeMode) ? runtimeMode : providerRuntimeModes[0]?.id}
             tone="secondary"
             options={providerRuntimeModes.map((option) => ({
               value: option.id,
@@ -651,9 +544,7 @@ export function NewChatSetupBar({
             }))}
             disabled={disabled}
             className="shrink-0"
-            onChange={(nextRuntimeMode) =>
-              onRuntimeModeChange(nextRuntimeMode as ProviderRuntimeMode)
-            }
+            onChange={(nextRuntimeMode) => onRuntimeModeChange(nextRuntimeMode as ProviderRuntimeMode)}
           />
         ) : null}
 
@@ -669,14 +560,10 @@ export function NewChatSetupBar({
             }))}
             disabled={disabled}
             className="shrink-0"
-            onChange={(nextReasoningEffort) =>
-              onReasoningEffortChange(
-                nextReasoningEffort as ProviderReasoningEffort
-              )
-            }
+            onChange={(nextReasoningEffort) => onReasoningEffortChange(nextReasoningEffort as ProviderReasoningEffort)}
           />
         ) : null}
       </div>
     </div>
-  )
+  );
 }

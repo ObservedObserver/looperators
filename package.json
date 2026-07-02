@@ -12,6 +12,8 @@
     "build": "npm run build:electron && tsc -b && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "check:electron": "tsc -p tsconfig.electron.json --noEmit",
+    "format:src": "prettier --write src",
+    "format:check": "prettier --check src",
     "lint": "oxlint",
     "cli": "node scripts/orrery-cli.mjs",
     "runtime:http": "npm run build:electron && node dist-electron/electron/runtimeHttpServerCli.js",
@@ -61,6 +63,7 @@
     "cross-env": "^10.1.0",
     "electron": "^42.5.0",
     "oxlint": "^1.69.0",
+    "prettier": "^3.9.4",
     "typescript": "~6.0.2",
     "vite": "^8.1.0",
     "wait-on": "^9.0.10"

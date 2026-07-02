@@ -1,13 +1,11 @@
-import {
-  cn,
-} from '@/lib/utils'
+import { cn } from '@/lib/utils';
 
 export function OrreryMark({ className }: { className?: string }) {
   return (
     <span
       className={cn(
         'relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-background text-primary',
-        className
+        className,
       )}
     >
       <svg viewBox="0 0 32 32" className="size-6" fill="none" aria-hidden="true">
@@ -22,5 +20,5 @@ export function OrreryMark({ className }: { className?: string }) {
         </g>
       </svg>
     </span>
-  )
+  );
 }

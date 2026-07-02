@@ -1,56 +1,37 @@
-import '@xyflow/react/dist/style.css'
-import {
-  type KeyboardEvent as ReactKeyboardEvent,
-  useState,
-} from 'react'
-import {
-  Activity,
-  PanelRightOpen,
-} from 'lucide-react'
-import {
-  Button,
-} from '@/components/ui/button'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import {
-  cn,
-} from '@/lib/utils'
-import {
-  chatPanelMinWidth,
-} from '@/lib/layout-prefs'
-import {
-  RuntimeDiagnosticsToast,
-} from '@/components/recovery'
+import '@xyflow/react/dist/style.css';
+import { type KeyboardEvent as ReactKeyboardEvent, useState } from 'react';
+import { Activity, PanelRightOpen } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
+import { chatPanelMinWidth } from '@/lib/layout-prefs';
+import { RuntimeDiagnosticsToast } from '@/components/recovery';
 
-import { type RailTab } from '@/lib/layout-prefs'
-import { SidebarRail } from '@/components/sidebar-rail'
-import { OrchestratePanel } from '@/components/orchestrate-panel'
-import { ChatDetail } from '@/components/chat-detail'
-import { SessionGraphPanel } from '@/components/session-graph-panel'
-import { useRuntimeCore } from '@/hooks/use-runtime-core'
-import { useLayoutPrefs } from '@/hooks/use-layout-prefs'
-import { useComposer } from '@/hooks/use-composer'
-import { useNewChatSetup } from '@/hooks/use-new-chat-setup'
-import { useSessionList } from '@/hooks/use-session-list'
-import { useTerminalPanel } from '@/hooks/use-terminal-panel'
-import { useRuntimeSubscription } from '@/hooks/use-runtime-subscription'
-import { useSessionActions } from '@/hooks/use-session-actions'
-import { useInteractions } from '@/hooks/use-interactions'
-import { useDiffPanel } from '@/hooks/use-diff-panel'
-import { useCanvas } from '@/hooks/use-canvas'
-import { useOrchestration } from '@/hooks/use-orchestration'
+import { type RailTab } from '@/lib/layout-prefs';
+import { SidebarRail } from '@/components/sidebar-rail';
+import { OrchestratePanel } from '@/components/orchestrate-panel';
+import { ChatDetail } from '@/components/chat-detail';
+import { SessionGraphPanel } from '@/components/session-graph-panel';
+import { useRuntimeCore } from '@/hooks/use-runtime-core';
+import { useLayoutPrefs } from '@/hooks/use-layout-prefs';
+import { useComposer } from '@/hooks/use-composer';
+import { useNewChatSetup } from '@/hooks/use-new-chat-setup';
+import { useSessionList } from '@/hooks/use-session-list';
+import { useTerminalPanel } from '@/hooks/use-terminal-panel';
+import { useRuntimeSubscription } from '@/hooks/use-runtime-subscription';
+import { useSessionActions } from '@/hooks/use-session-actions';
+import { useInteractions } from '@/hooks/use-interactions';
+import { useDiffPanel } from '@/hooks/use-diff-panel';
+import { useCanvas } from '@/hooks/use-canvas';
+import { useOrchestration } from '@/hooks/use-orchestration';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<RailTab>('chat')
-  const [showRawEvents, setShowRawEvents] = useState(false)
-  const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
-  const [activeClusterId, setActiveClusterId] = useState<string>()
+  const [activeTab, setActiveTab] = useState<RailTab>('chat');
+  const [showRawEvents, setShowRawEvents] = useState(false);
+  const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [activeClusterId, setActiveClusterId] = useState<string>();
 
-  const core = useRuntimeCore()
+  const core = useRuntimeCore();
   const {
     runtimeClient,
     runtimeApi,
@@ -70,9 +51,9 @@ function App() {
     invalidProjectCwds,
     reportsById,
     canResume,
-  } = core
+  } = core;
 
-  const layout = useLayoutPrefs()
+  const layout = useLayoutPrefs();
   const {
     splitContainerRef,
     chatPanelWidth,
@@ -82,16 +63,10 @@ function App() {
     adjustChatPanelWidth,
     graphForcedCollapsed,
     effectiveGraphCollapsed,
-  } = layout
+  } = layout;
 
-  const composer = useComposer({ setRuntimeError })
-  const {
-    message,
-    composerAttachments,
-    composerEditorRef,
-    setComposerText,
-    clearComposer,
-  } = composer
+  const composer = useComposer({ setRuntimeError });
+  const { message, composerAttachments, composerEditorRef, setComposerText, clearComposer } = composer;
 
   const newChat = useNewChatSetup({
     runtimeApi,
@@ -104,7 +79,7 @@ function App() {
     providerInstances,
     selectedSession,
     showRawEvents,
-  })
+  });
   const {
     newProviderKind,
     newCwd,
@@ -119,7 +94,7 @@ function App() {
     newProviderInstance,
     changeNewProviderKind,
     restoreCwdFallback,
-  } = newChat
+  } = newChat;
 
   const sessionList = useSessionList({
     runtimeApi,
@@ -129,7 +104,7 @@ function App() {
     setRuntimeError,
     sessions,
     runtimeDiagnostics,
-  })
+  });
 
   const terminal = useTerminalPanel({
     runtimeApi,
@@ -137,10 +112,8 @@ function App() {
     setRuntimeError,
     selectedSession,
     isRuntimeAvailable,
-  })
-  const {
-    syncTerminalFromEvent,
-  } = terminal
+  });
+  const { syncTerminalFromEvent } = terminal;
 
   useRuntimeSubscription({
     runtimeApi,
@@ -149,7 +122,7 @@ function App() {
     setRuntimeError,
     syncTerminalFromEvent,
     restoreCwdFallback,
-  })
+  });
 
   const actions = useSessionActions({
     runtimeApi,
@@ -187,17 +160,15 @@ function App() {
       newProviderInstance,
       changeNewProviderKind,
     },
-  })
-  const {
-    setPendingLinkedSourceId,
-  } = actions
+  });
+  const { setPendingLinkedSourceId } = actions;
 
   const interactions = useInteractions({
     runtimeApi,
     runtimeUnavailableText,
     setRuntimeState,
     setRuntimeError,
-  })
+  });
 
   const diff = useDiffPanel({
     runtimeApi,
@@ -205,7 +176,7 @@ function App() {
     isRuntimeAvailable,
     selectedSession,
     selectedSessionId,
-  })
+  });
 
   const canvas = useCanvas({
     runtimeApi,
@@ -215,7 +186,7 @@ function App() {
     reportsById,
     setSelectedCanvasNodeIds,
     setActiveClusterId,
-  })
+  });
 
   const orchestration = useOrchestration({
     runtimeApi,
@@ -239,34 +210,18 @@ function App() {
       newReasoningEffort,
       newProviderInstance,
     },
-  })
+  });
 
   return (
     <TooltipProvider>
-      <main
-        ref={splitContainerRef}
-        className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
-      >
+      <main ref={splitContainerRef} className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
         {/* ===== Sidebar: nav + chat list ===== */}
-        <SidebarRail
-          core={core}
-          sessionList={sessionList}
-          actions={actions}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-        />
+        <SidebarRail core={core} sessionList={sessionList} actions={actions} activeTab={activeTab} setActiveTab={setActiveTab} />
 
         {/* ===== Detail: selected chat or orchestrate ===== */}
         <section
-          className={cn(
-            'relative flex min-h-0 flex-col overflow-hidden bg-background',
-            effectiveGraphCollapsed ? 'flex-1' : 'shrink-0'
-          )}
-          style={
-            effectiveGraphCollapsed
-              ? undefined
-              : { width: chatPanelWidth, minWidth: chatPanelMinWidth }
-          }
+          className={cn('relative flex min-h-0 flex-col overflow-hidden bg-background', effectiveGraphCollapsed ? 'flex-1' : 'shrink-0')}
+          style={effectiveGraphCollapsed ? undefined : { width: chatPanelWidth, minWidth: chatPanelMinWidth }}
         >
           {runtimeError ? (
             <div className="app-region-no-drag mx-3 mb-2 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 font-mono text-[11.5px] leading-5 text-destructive">
@@ -274,10 +229,7 @@ function App() {
               <span className="min-w-0 break-words">{runtimeError}</span>
             </div>
           ) : null}
-          <RuntimeDiagnosticsToast
-            diagnostics={runtimeDiagnostics}
-            sessions={sessions}
-          />
+          <RuntimeDiagnosticsToast diagnostics={runtimeDiagnostics} sessions={sessions} />
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
             {activeTab === 'orchestrate' ? (
               <OrchestratePanel
@@ -309,33 +261,33 @@ function App() {
 
         {/* ===== Resize handle (chat width) — only when graph visible ===== */}
         {effectiveGraphCollapsed ? null : (
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize chat panel"
-          tabIndex={0}
-          className={cn(
-            'app-region-no-drag group/split relative z-20 flex w-2 shrink-0 cursor-col-resize touch-none items-center justify-center bg-background outline-none transition focus-visible:bg-accent',
-            isResizingChatPanel && 'bg-accent'
-          )}
-          onPointerDown={(event) => {
-            event.preventDefault()
-            setIsResizingChatPanel(true)
-          }}
-          onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
-            const step = event.shiftKey ? 48 : 24
-            if (event.key === 'ArrowLeft') {
-              event.preventDefault()
-              adjustChatPanelWidth(-step)
-            }
-            if (event.key === 'ArrowRight') {
-              event.preventDefault()
-              adjustChatPanelWidth(step)
-            }
-          }}
-        >
-          <span className="h-10 w-px rounded-full bg-border transition group-hover/split:bg-accent-ink group-focus-visible/split:bg-accent-ink" />
-        </div>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize chat panel"
+            tabIndex={0}
+            className={cn(
+              'app-region-no-drag group/split relative z-20 flex w-2 shrink-0 cursor-col-resize touch-none items-center justify-center bg-background outline-none transition focus-visible:bg-accent',
+              isResizingChatPanel && 'bg-accent',
+            )}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              setIsResizingChatPanel(true);
+            }}
+            onKeyDown={(event: ReactKeyboardEvent<HTMLDivElement>) => {
+              const step = event.shiftKey ? 48 : 24;
+              if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                adjustChatPanelWidth(-step);
+              }
+              if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                adjustChatPanelWidth(step);
+              }
+            }}
+          >
+            <span className="h-10 w-px rounded-full bg-border transition group-hover/split:bg-accent-ink group-focus-visible/split:bg-accent-ink" />
+          </div>
         )}
 
         {/* ===== Session graph (collapsible) ===== */}
@@ -343,20 +295,11 @@ function App() {
           <div className="flex h-dvh shrink-0 flex-col items-center gap-3 border-l border-border bg-background px-1.5 py-3">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Show session graph"
-                  onClick={() => setGraphCollapsed(false)}
-                >
+                <Button variant="ghost" size="icon" aria-label="Show session graph" onClick={() => setGraphCollapsed(false)}>
                   <PanelRightOpen className="size-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="left">
-                {graphForcedCollapsed
-                  ? 'Widen window to show session graph'
-                  : 'Show session graph'}
-              </TooltipContent>
+              <TooltipContent side="left">{graphForcedCollapsed ? 'Widen window to show session graph' : 'Show session graph'}</TooltipContent>
             </Tooltip>
             <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground [writing-mode:vertical-rl]">
               <Activity className="size-3.5 text-accent-ink" />
@@ -376,7 +319,7 @@ function App() {
         )}
       </main>
     </TooltipProvider>
-  )
+  );
 }
 
-export default App
+export default App;
