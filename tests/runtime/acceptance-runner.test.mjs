@@ -162,6 +162,10 @@ test('acceptance runner persists artifacts and reports failures', async () => {
 
     const filtered = await runRunner([...baseArgs, '--filter', 'passing'], env)
     assert.equal(filtered.code, 0, 'filtered run with only passing scenarios must exit 0')
+
+    const badPreset = await runRunner([...baseArgs, '--preset', 'no-such-preset'], env)
+    assert.equal(badPreset.code, 2, 'unknown preset must fail before spawning runtimes')
+    assert.match(badPreset.stderr, /--preset must be one of/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

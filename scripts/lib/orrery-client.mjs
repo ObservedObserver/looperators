@@ -536,6 +536,10 @@ export class OrreryHarness extends OrreryClient {
   }
 
   static async start(options = {}) {
+    // Resolve the preset before spawning: an unknown preset name must fail
+    // here, not in the constructor after the runtime child is already alive
+    // (which would orphan one runtime server per attempt).
+    const modelPreset = resolveModelPreset(options.modelPreset)
     const repoRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       '..',
@@ -619,7 +623,7 @@ export class OrreryHarness extends OrreryClient {
 
     return new OrreryHarness({
       baseUrl,
-      modelPreset: options.modelPreset,
+      modelPreset,
       child,
       tempRoot,
       storageFile,

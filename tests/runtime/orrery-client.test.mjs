@@ -167,6 +167,13 @@ test('named model presets resolve from the shared registry', () => {
   )
 })
 
+test('harness rejects unknown presets before spawning a runtime child', async () => {
+  await assert.rejects(
+    () => OrreryHarness.start({ modelPreset: 'no-such-preset' }),
+    /Unknown model preset: no-such-preset/
+  )
+})
+
 test('wait primitives fail fast when a session dies', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-client-fail-test-'))
   const failingClaude = path.join(tempRoot, 'claude')

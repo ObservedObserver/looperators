@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { OrreryHarness } from './lib/orrery-client.mjs'
+import { modelPresets } from './lib/model-presets.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const defaultScenarioDir = path.join(repoRoot, 'tests', 'acceptance')
@@ -246,6 +247,14 @@ async function main() {
     fail(`--provider must be one of: ${validProviders.join(', ')}`, 2)
   }
   const preset = values.preset ?? 'cheap'
+  if (!Object.hasOwn(modelPresets, preset)) {
+    // The harness would only reject the name after spawning a runtime child
+    // per scenario; fail at parse time like --provider.
+    fail(
+      `--preset must be one of: ${Object.keys(modelPresets).join(', ')}`,
+      2
+    )
+  }
   const timeoutMs = values.timeout ? Number(values.timeout) : defaultScenarioTimeoutMs
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
     fail(`--timeout must be a positive integer, got "${values.timeout}"`, 2)

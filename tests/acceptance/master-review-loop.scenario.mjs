@@ -81,7 +81,24 @@ export async function run({ orrery, provider, modelPreset, workDir, log }) {
   })
   log(`loop stopped: ${loopState.reason}`)
 
+  // The loop stops on the report while the reviewer's turn is still
+  // streaming; settle every session before asserting, so the pass reflects a
+  // final state and harness teardown never kills an active provider run.
+  await orrery.waitForIdle(report.from)
+  for (const session of Object.values((await orrery.state()).sessions)) {
+    if (session.status === 'running' || session.status === 'pending') {
+      await orrery.waitForIdle(session.sessionId)
+    }
+  }
+
   const state = await orrery.state()
+  for (const session of Object.values(state.sessions)) {
+    assert.equal(
+      session.status === 'running' || session.status === 'pending',
+      false,
+      `session ${session.label} must be settled before the scenario passes`
+    )
+  }
   assert.equal(
     state.clusters[cluster.clusterId].loopState.reviewerSessionId,
     report.from,
