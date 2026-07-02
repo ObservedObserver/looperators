@@ -103,9 +103,7 @@ export function ToolRunFeed({
   return (
     <div className="my-1 font-mono">
       <div className="flex items-center gap-2.5 pb-2">
-        <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">
-          agent run
-        </span>
+        <span className="text-[11px] text-term-faint">ran</span>
         <span className="rounded-full border border-lime/25 bg-lime/[0.07] px-2 py-0.5 text-[10px] tracking-[0.04em] text-lime">
           {agent}
         </span>

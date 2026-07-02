@@ -165,6 +165,7 @@ type AgentNodeData = {
   role: 'worker' | 'master'
   status: SessionStatus
   messageCount: number
+  lastActivityTs?: string
   latestVerdict?: string
   latestReportIssueCount?: number
   latestReportSummary?: string
@@ -785,9 +786,73 @@ function formatClock(value?: string) {
   }
 
   return new Intl.DateTimeFormat(undefined, {
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   }).format(date)
+}
+
+function formatClockSeconds(value?: string) {
+  const date = parseTimestamp(value)
+  if (!date) {
+    return value?.slice(11, 19) ?? 'unknown'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+function formatRelativeTime(value?: string) {
+  const date = parseTimestamp(value)
+  if (!date) {
+    return value ?? 'unknown'
+  }
+  const minutes = Math.round((Date.now() - date.getTime()) / 60_000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  if (days < 7) return `${days}d ago`
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+  }).format(date)
+}
+
+// Auto-generated labels ("New Chat 3", "Claude 2", …) carry no identity; derive
+// a display title from the first user message instead. Explicit labels win.
+const defaultSessionLabelPattern = /^(?:new chat|chat|claude|codex)\s*\d*$/i
+
+function firstContentLine(value?: string) {
+  return value
+    ?.split('\n')
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+}
+
+function sessionDisplayLabel(session: AgentSession) {
+  const label = session.label.trim()
+  if (!defaultSessionLabelPattern.test(label)) {
+    return label
+  }
+  const firstUserMessage = session.messages.find(
+    (message) => message.role === 'user' && message.content.trim().length > 0
+  )
+  return firstContentLine(firstUserMessage?.content) ?? label
+}
+
+function shortAgentName(value: string) {
+  const compact = value
+    .replace(/\(.*?\)/g, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+  return compact.length > 0 ? compact : value
 }
 
 function diffPatchLineClassName(line: string) {
@@ -1722,7 +1787,7 @@ function OpenWorkspaceSplitButton({
               ) : (
                 <ActiveIcon className="size-3.5" />
               )}
-              <span className="hidden max-w-16 truncate min-[1280px]:inline">
+              <span className="hidden max-w-16 truncate @[34rem]:inline">
                 {activeOption.label}
               </span>
             </Button>
@@ -2412,7 +2477,7 @@ const AgentNode = memo(function AgentNode({
         position={Position.Left}
         className="!size-2.5 !border-0 !bg-lime-hi"
       />
-      <div className="flex items-center gap-2.5 px-3.5 pb-2.5 pt-3">
+      <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-3">
         <span
           className={cn(
             'w-3.5 shrink-0 text-center text-[12px] leading-none',
@@ -2421,29 +2486,29 @@ const AgentNode = memo(function AgentNode({
         >
           {marker.char}
         </span>
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-accent-ink/25 bg-accent-ink/10 text-accent-ink">
-          {isMaster ? <Bot className="size-4" /> : <Terminal className="size-3.5" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-semibold text-foreground">
-            {data.label}
-          </div>
-          <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-            {data.agent}
-          </div>
-        </div>
-        <span
-          className={cn(
-            statePillBase,
-            nodeStatePillCls(data.status, data.role, data.frozen)
-          )}
+        <div
+          className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground"
+          title={data.label}
         >
-          {data.frozen
-            ? 'frozen'
-            : isMaster
-              ? 'master'
-              : statusLabels[data.status].toLowerCase()}
+          {data.label}
+        </div>
+        <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[9.5px] leading-none text-muted-foreground">
+          {data.agent}
         </span>
+        {data.frozen || isMaster || data.status !== 'idle' ? (
+          <span
+            className={cn(
+              statePillBase,
+              nodeStatePillCls(data.status, data.role, data.frozen)
+            )}
+          >
+            {data.frozen
+              ? 'frozen'
+              : isMaster
+                ? 'master'
+                : statusLabels[data.status].toLowerCase()}
+          </span>
+        ) : null}
       </div>
 
       {data.clusterLabel || data.isManaged ? (
@@ -2460,31 +2525,40 @@ const AgentNode = memo(function AgentNode({
       ) : null}
 
       <div className="px-3.5 pb-3">
-        <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-2">
-          <p className="line-clamp-2 break-words text-[11px] leading-5 text-muted-foreground">
-            {data.description}
-          </p>
-        </div>
-
         {data.latestVerdict ? (
-          <div className="mt-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2">
-            <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.12em]">
-              <span className="text-term-faint">└</span>
-              <span className="text-muted-foreground">verdict</span>
-              <span className="text-term-green">{data.latestVerdict}</span>
-              {data.latestReportIssueCount !== undefined ? (
-                <span className="ml-auto tabular-nums text-muted-foreground">
-                  {data.latestReportIssueCount} issues
-                </span>
-              ) : null}
+          <>
+            <div
+              className={cn(
+                'flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[10.5px] font-semibold tracking-[0.04em]',
+                data.latestVerdict === 'clean'
+                  ? 'border-lime/30 bg-lime/10 text-lime'
+                  : 'border-term-amber/40 bg-term-amber/10 text-term-amber'
+              )}
+            >
+              <span>{data.latestVerdict === 'clean' ? '✓' : '!'}</span>
+              <span className="truncate">
+                {data.latestVerdict}
+                {data.latestReportIssueCount !== undefined
+                  ? ` · ${data.latestReportIssueCount} issues`
+                  : ''}
+              </span>
             </div>
             {data.latestReportSummary ? (
-              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+              <p
+                className="mt-1.5 truncate text-[11px] leading-4 text-muted-foreground"
+                title={data.latestReportSummary}
+              >
                 {data.latestReportSummary}
               </p>
             ) : null}
+          </>
+        ) : (
+          <div className="rounded-lg border border-border bg-muted/40 px-2.5 py-2">
+            <p className="line-clamp-2 break-words text-[11px] leading-5 text-muted-foreground">
+              {data.description}
+            </p>
           </div>
-        ) : null}
+        )}
 
         {data.frozen ? (
           <div className="mt-2 rounded-lg border border-border bg-muted/40 px-2.5 py-2">
@@ -2506,7 +2580,15 @@ const AgentNode = memo(function AgentNode({
         <span className="tabular-nums text-foreground/80">
           {data.messageCount}
         </span>
-        messages
+        msgs
+        {data.lastActivityTs ? (
+          <span
+            className="ml-auto tabular-nums text-term-faint"
+            title="Last activity"
+          >
+            {formatClock(data.lastActivityTs)}
+          </span>
+        ) : null}
       </div>
       <Handle
         type="source"
@@ -3137,7 +3219,10 @@ function WorkflowSummaryRow({
 }
 
 function assistantLabel(agent?: string) {
-  return agent?.toLowerCase().includes('codex') ? 'codex' : 'assistant'
+  const value = agent?.toLowerCase() ?? ''
+  if (value.includes('codex')) return 'codex'
+  if (value.includes('claude')) return 'claude'
+  return 'assistant'
 }
 
 function MessageAttachmentStrip({ attachments }: { attachments?: ChatAttachment[] }) {
@@ -3197,13 +3282,11 @@ function ChatMessage({
     <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
       <div className="mb-1.5 flex items-center gap-2">
         {isUser ? (
-          <span className="text-[10px] uppercase tracking-[0.14em] text-term-dim">
-            you
-          </span>
+          <span className="text-[11px] text-term-faint">you</span>
         ) : (
           <>
             <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_var(--term-green)]" />
-            <span className="text-[10px] uppercase tracking-[0.14em] text-term-emerald">
+            <span className="text-[11px] text-term-emerald">
               {senderLabel}
             </span>
           </>
@@ -3212,7 +3295,7 @@ function ChatMessage({
           <span className="text-[10px] text-term-amber">streaming</span>
         ) : null}
         <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">
-          {message.ts.slice(11, 19)}
+          {formatClockSeconds(message.ts)}
         </span>
       </div>
       {isUser ? (
@@ -4008,7 +4091,7 @@ function ProviderEventDrawer({ session }: { session: AgentSession }) {
                   </span>
                   <span className="truncate text-term-name">{entry.title}</span>
                   <span className="ml-auto shrink-0 tabular-nums text-term-faint">
-                    {entry.ts.slice(11, 19)}
+                    {formatClockSeconds(entry.ts)}
                   </span>
                 </span>
               </summary>
@@ -4644,6 +4727,10 @@ function OrreryMark({ className }: { className?: string }) {
 
 const demoMode = isDemoModeRequested()
 
+const isMacPlatform =
+  typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
+const sendShortcutHint = isMacPlatform ? '⌘⏎' : 'Ctrl+⏎'
+
 function App() {
   const [runtimeState, setRuntimeState] = useState<GraphState>(
     demoMode ? createDemoGraphState : createEmptyGraphState
@@ -5228,12 +5315,15 @@ function App() {
           position: node.position,
           zIndex: node.role === 'master' ? 20 : 10,
           data: {
-            label: node.label,
+            label: session ? sessionDisplayLabel(session) : node.label,
             description: lastMessagePreview(session),
-            agent: session ? sessionProviderLabel(session) : node.agent,
+            agent: shortAgentName(
+              session ? sessionProviderLabel(session) : node.agent
+            ),
             role: node.role,
             status: node.status,
             messageCount: session?.messages.length ?? 0,
+            lastActivityTs: session?.updatedAt,
             latestVerdict,
             latestReportIssueCount: latestIssueCount,
             latestReportSummary: latestReport
@@ -6529,7 +6619,7 @@ function App() {
                   Orrery
                 </h1>
                 <p className="truncate font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">
-                  Code agent workspace
+                  Agent workspace
                 </p>
               </div>
             </div>
@@ -6564,7 +6654,7 @@ function App() {
                     aria-pressed={isActive}
                     onClick={() => setActiveTab(tab.id)}
                     className={cn(
-                      'relative flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 font-mono text-xs font-medium transition-colors',
+                      'relative flex items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 font-mono text-xs font-medium transition-colors',
                       isActive
                         ? 'bg-accent-ink/12 text-accent-ink ring-1 ring-inset ring-accent-ink/30'
                         : 'text-muted-foreground hover:bg-accent hover:text-foreground'
@@ -6594,7 +6684,8 @@ function App() {
                         className="min-w-0 flex-1 bg-transparent text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint"
                         value={sessionSearch}
                         spellCheck={false}
-                        placeholder="Search label, id, provider, cwd, status, messages"
+                        placeholder="Search chats"
+                        title="Search by label, id, provider, cwd, status, or messages"
                         onChange={(event) => setSessionSearch(event.target.value)}
                       />
                       {sessionSearch.trim().length > 0 ? (
@@ -6611,6 +6702,11 @@ function App() {
                     <button
                       type="button"
                       aria-pressed={showArchivedSessions}
+                      title={
+                        showArchivedSessions
+                          ? 'Showing hidden chats — click to hide them again'
+                          : 'Show hidden (archived) chats'
+                      }
                       className={cn(
                         'shrink-0 rounded-lg border px-2.5 py-2 text-[10.5px] uppercase tracking-[0.08em] transition',
                         showArchivedSessions
@@ -6707,26 +6803,38 @@ function App() {
                                   'min-w-0 flex-1 truncate text-[12.5px] font-medium',
                                   isSel ? 'text-lime-hi' : 'text-lime'
                                 )}
+                                title={sessionDisplayLabel(session)}
                               >
-                                {session.label}
+                                {sessionDisplayLabel(session)}
                               </span>
-                              <span
-                                className={cn(
-                                  statePillBase,
-                                  statePillCls(session.status, session.role)
-                                )}
-                              >
-                                {session.role === 'master'
-                                  ? 'master'
-                                  : statusLabels[session.status].toLowerCase()}
-                              </span>
+                              {session.role === 'master' ||
+                              session.status !== 'idle' ? (
+                                <span
+                                  className={cn(
+                                    statePillBase,
+                                    statePillCls(session.status, session.role)
+                                  )}
+                                >
+                                  {session.role === 'master'
+                                    ? 'master'
+                                    : statusLabels[session.status].toLowerCase()}
+                                </span>
+                              ) : null}
                             </div>
-                            <div className="mt-1 flex items-center gap-1.5 pl-[1.375rem] text-[11px] text-term-dim2">
+                            <div className="mt-1 truncate text-[11px] leading-4 text-term-dim">
+                              {firstContentLine(lastMessagePreview(session)) ??
+                                '…'}
+                            </div>
+                            <div className="mt-1 flex items-center gap-1 text-[11px] text-term-dim2">
+                              <span className="shrink-0">
+                                {shortAgentName(sessionProviderLabel(session))}
+                              </span>
+                              <span className="shrink-0 text-term-faint">·</span>
                               <span
                                 className="truncate"
-                                title={`Created ${session.createdAt}`}
+                                title={`Created ${formatTimestamp(session.createdAt)} · updated ${formatTimestamp(session.updatedAt)}`}
                               >
-                                {formatTimestamp(session.createdAt)}
+                                {formatRelativeTime(session.updatedAt)}
                               </span>
                               <span className="shrink-0 text-term-faint">·</span>
                               <span className="shrink-0 whitespace-nowrap">
@@ -7382,18 +7490,118 @@ function App() {
             ) : null}
             {activeTab === 'chat' ? (
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="shrink-0 border-b border-border bg-card px-3.5 py-2">
-                  <div className="flex min-w-0 items-start gap-2.5">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-2">
+                <div className="@container shrink-0 border-b border-border bg-card px-3.5 py-2">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
                         <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
                           Chat
                         </span>
-                        <h2 className="min-w-0 flex-1 truncate text-[14px] font-semibold">
-                          {selectedSession?.label ??
-                            (pendingLinkedSource ? 'Linked Chat' : 'New Chat')}
+                        <h2
+                          className="min-w-0 flex-1 truncate text-[14px] font-semibold"
+                          title={
+                            selectedSession
+                              ? sessionDisplayLabel(selectedSession)
+                              : undefined
+                          }
+                        >
+                          {selectedSession
+                            ? sessionDisplayLabel(selectedSession)
+                            : pendingLinkedSource
+                              ? 'Linked Chat'
+                              : 'New Chat'}
                         </h2>
                       </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      {selectedSession ? (
+                        <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                          <span
+                            className={cn(
+                              'size-1.5 rounded-full',
+                              statusDotClassNames[selectedSession.status]
+                            )}
+                          />
+                          {statusLabels[selectedSession.status]}
+                        </span>
+                      ) : null}
+                      {selectedSession ? (
+                        <OpenWorkspaceSplitButton
+                          target={openWorkspaceTarget}
+                          platform={runtimeHostPlatform}
+                          disabled={!canOpenSelectedWorkspace}
+                          pendingTarget={openingWorkspaceTarget}
+                          onTargetChange={setOpenWorkspaceTarget}
+                          onOpen={openSelectedWorkspace}
+                        />
+                      ) : null}
+                      {selectedSession ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
+                              variant={
+                                isTerminalPanelOpen && selectedTerminal
+                                  ? 'secondary'
+                                  : 'outline'
+                              }
+                              size="sm"
+                              disabled={
+                                !canOpenSelectedTerminal || isOpeningTerminal
+                              }
+                              aria-label="Open Terminal"
+                              onClick={openSelectedTerminal}
+                            >
+                              {isOpeningTerminal ? (
+                                <RefreshCw className="size-3.5 animate-spin" />
+                              ) : (
+                                <Terminal className="size-3.5" />
+                              )}
+                              <span className="hidden @[34rem]:inline">
+                                Terminal
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Open Terminal</TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {selectedSession ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
+                              variant="outline"
+                              size="sm"
+                              disabled={!isRuntimeAvailable}
+                              aria-label="Start linked chat"
+                              onClick={startLinkedChat}
+                            >
+                              <GitBranch className="size-3.5" />
+                              <span className="hidden @[34rem]:inline">
+                                Linked
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Start a linked chat from this chat
+                          </TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            className="app-region-no-drag size-7"
+                            variant={showRawEvents ? 'secondary' : 'ghost'}
+                            size="icon"
+                            aria-label="Diagnostics"
+                            onClick={() => setShowRawEvents((current) => !current)}
+                          >
+                            <Braces className="size-3.5" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Diagnostics</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    </div>
                       <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10.5px] leading-4 text-muted-foreground">
                         {selectedSession ? (
                           <>
@@ -7411,9 +7619,11 @@ function App() {
                             <span className="shrink-0 text-term-faint">|</span>
                             <span
                               className="min-w-0 flex-1 truncate"
-                              title={selectedSession.cwd}
+                              title={selectedSession.cwd || undefined}
                             >
-                              {compactPath(selectedSession.cwd)}
+                              {selectedSession.cwd.trim()
+                                ? compactPath(selectedSession.cwd)
+                                : 'no project'}
                             </span>
                             <span className="shrink-0 text-term-faint">|</span>
                             <span
@@ -7459,86 +7669,6 @@ function App() {
                           </>
                         )}
                       </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {selectedSession ? (
-                        <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                          <span
-                            className={cn(
-                              'size-1.5 rounded-full',
-                              statusDotClassNames[selectedSession.status]
-                            )}
-                          />
-                          {statusLabels[selectedSession.status]}
-                        </span>
-                      ) : null}
-                      {selectedSession ? (
-                        <OpenWorkspaceSplitButton
-                          target={openWorkspaceTarget}
-                          platform={runtimeHostPlatform}
-                          disabled={!canOpenSelectedWorkspace}
-                          pendingTarget={openingWorkspaceTarget}
-                          onTargetChange={setOpenWorkspaceTarget}
-                          onOpen={openSelectedWorkspace}
-                        />
-                      ) : null}
-                      {selectedSession ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
-                              variant={
-                                isTerminalPanelOpen && selectedTerminal
-                                  ? 'secondary'
-                                  : 'outline'
-                              }
-                              size="sm"
-                              disabled={
-                                !canOpenSelectedTerminal || isOpeningTerminal
-                              }
-                              aria-label="Open Terminal"
-                              onClick={openSelectedTerminal}
-                            >
-                              {isOpeningTerminal ? (
-                                <RefreshCw className="size-3.5 animate-spin" />
-                              ) : (
-                                <Terminal className="size-3.5" />
-                              )}
-                              <span className="hidden min-[1280px]:inline">
-                                Terminal
-                              </span>
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Open Terminal</TooltipContent>
-                        </Tooltip>
-                      ) : null}
-                      {selectedSession ? (
-                        <Button
-                          className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
-                          variant="outline"
-                          size="sm"
-                          disabled={!isRuntimeAvailable}
-                          onClick={startLinkedChat}
-                        >
-                          <GitBranch className="size-3.5" />
-                          Linked
-                        </Button>
-                      ) : null}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            className="app-region-no-drag size-7"
-                            variant={showRawEvents ? 'secondary' : 'ghost'}
-                            size="icon"
-                            aria-label="Diagnostics"
-                            onClick={() => setShowRawEvents((current) => !current)}
-                          >
-                            <Braces className="size-3.5" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Diagnostics</TooltipContent>
-                      </Tooltip>
-                    </div>
                   </div>
                   {selectedRecoveryState ? (
                     <div className="mt-2">
@@ -7668,9 +7798,9 @@ function App() {
                   />
                   <div
                     className={cn(
-                      'app-region-no-drag mb-2 rounded-lg border border-ink-line bg-ink transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
+                      'app-region-no-drag @container mb-2 rounded-xl border border-ink-line bg-ink transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
                       isComposerDragActive &&
-                        'border-lime-hi/60 ring-1 ring-lime-hi/25'
+                        'border-lime-hi/60 bg-lime/[0.05] ring-1 ring-lime-hi/25'
                     )}
                     onDragEnter={(event) => {
                       if (event.dataTransfer.types.includes('Files')) {
@@ -7694,7 +7824,7 @@ function App() {
                     onDrop={handleComposerDrop}
                   >
                     {composerAttachments.length > 0 ? (
-                      <div className="grid gap-1.5 border-b border-ink-line-2 p-2">
+                      <div className="grid gap-1.5 border-b border-ink-line-2 px-2.5 py-2">
                         {composerAttachments.map((attachment) => (
                           <ComposerAttachmentPill
                             key={attachment.id}
@@ -7705,11 +7835,22 @@ function App() {
                         ))}
                       </div>
                     ) : null}
-                    <div className="flex items-start gap-2 px-3 py-2.5">
-                      <span className="pt-1 font-mono text-lime-hi">❯</span>
+                    <div
+                      className="flex cursor-text gap-2 px-3.5 pb-1 pt-3"
+                      onClick={() => composerEditorRef.current?.focus()}
+                    >
+                      <span
+                        className={cn(
+                          'select-none font-mono text-[13px] leading-6 transition-colors',
+                          composerDisabled ? 'text-term-faint' : 'text-lime-hi'
+                        )}
+                        aria-hidden="true"
+                      >
+                        ❯
+                      </span>
                       <div
                         ref={composerEditorRef}
-                        className="orrery-composer-editor max-h-32 min-h-9 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent py-0.5 font-mono text-[13px] leading-6 text-term-name outline-none"
+                        className="orrery-composer-editor max-h-40 min-h-6 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent font-mono text-[13px] leading-6 text-term-name outline-none"
                         role="textbox"
                         aria-multiline="true"
                         aria-disabled={composerDisabled}
@@ -7736,27 +7877,36 @@ function App() {
                           }
                         }}
                       />
-                      <div className="mt-0.5 flex items-center gap-1">
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              className="size-7 shrink-0"
-                              variant="ghost"
-                              size="icon-sm"
-                              disabled={composerDisabled}
-                              aria-label="Attach files"
-                              onClick={() => composerFileInputRef.current?.click()}
-                            >
-                              <Paperclip className="size-3.5" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Attach files</TooltipContent>
-                        </Tooltip>
+                    </div>
+                    <div className="flex items-center gap-1 px-2 pb-2 pt-1">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            className="size-8 shrink-0 text-term-dim hover:text-term-name"
+                            variant="ghost"
+                            size="icon-sm"
+                            disabled={composerDisabled}
+                            aria-label="Attach files"
+                            onClick={() => composerFileInputRef.current?.click()}
+                          >
+                            <Paperclip className="size-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Attach files — or drag and drop, or paste
+                        </TooltipContent>
+                      </Tooltip>
+                      <div className="ml-auto flex items-center gap-2">
+                        {composerHasPayload && !canKill ? (
+                          <span className="hidden font-mono text-[10px] text-term-faint @[26rem]:inline">
+                            {sendShortcutHint}
+                          </span>
+                        ) : null}
                         {canKill ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
-                                className="size-7 shrink-0 rounded-full"
+                                className="size-8 shrink-0 rounded-full"
                                 variant="destructive"
                                 size="icon-sm"
                                 disabled={
@@ -7770,13 +7920,13 @@ function App() {
                                 <Square className="size-3.5" />
                               </Button>
                             </TooltipTrigger>
-                            <TooltipContent>Stop</TooltipContent>
+                            <TooltipContent>Stop this run</TooltipContent>
                           </Tooltip>
                         ) : (
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <Button
-                                className="size-7 shrink-0 rounded-full"
+                                className="size-8 shrink-0 rounded-full"
                                 size="icon-sm"
                                 disabled={
                                   !isRuntimeAvailable ||
@@ -7797,8 +7947,8 @@ function App() {
                             </TooltipTrigger>
                             <TooltipContent>
                               {!selectedSession && pendingLinkedSource
-                                ? 'Create linked chat'
-                                : 'Send'}
+                                ? `Create linked chat · ${sendShortcutHint}`
+                                : `Send · ${sendShortcutHint}`}
                             </TooltipContent>
                           </Tooltip>
                         )}
@@ -7940,7 +8090,7 @@ function App() {
           <div className="flex min-h-0 flex-1">
             <div className="relative min-h-0 flex-1">
               {graphActivity.length > 0 ? (
-                <div className="pointer-events-none absolute bottom-3 right-3 z-10 w-[280px] max-w-[calc(100%-1.5rem)] opacity-80 transition-opacity hover:opacity-100">
+                <div className="pointer-events-none absolute bottom-3 left-14 z-10 w-[280px] max-w-[calc(100%-4.5rem)] opacity-80 transition-opacity hover:opacity-100">
                   <div className="pointer-events-auto rounded-lg border border-border bg-background/88 font-mono shadow-sm backdrop-blur">
                     <div className="flex items-center gap-2 border-b border-border/70 px-2.5 py-2">
                       <Activity className="size-3 shrink-0 text-accent-ink" />
@@ -8028,7 +8178,14 @@ function App() {
               >
                 <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} />
                 <Controls />
-                <MiniMap pannable zoomable />
+                <MiniMap
+                  pannable
+                  zoomable
+                  bgColor="var(--card)"
+                  maskColor="color-mix(in oklch, var(--background) 55%, transparent)"
+                  nodeColor="var(--muted)"
+                  nodeStrokeColor="var(--border)"
+                />
               </ReactFlow>
             </div>
 
