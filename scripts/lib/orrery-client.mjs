@@ -141,23 +141,27 @@ export class OrreryClient {
     )
   }
 
-  async createSession(input = {}) {
-    let payload = input
-    if (this.#modelPreset) {
-      const needsInstanceLookup =
-        input.providerKind === undefined &&
-        input.agent !== 'codex' &&
-        input.providerInstanceId !== undefined
-      const providerInstances = needsInstanceLookup
-        ? (await this.state()).providerInstances ?? []
-        : []
-      const preset =
-        this.#modelPreset[resolveRequestedProviderKind(input, providerInstances)]
-      if (preset) {
-        payload = { ...input, runtimeSettings: { ...preset, ...input.runtimeSettings } }
-      }
+  async #withModelPreset(input = {}) {
+    if (!this.#modelPreset) {
+      return input
     }
-    return this.#request('POST', '/api/runtime/sessions', payload)
+    const needsInstanceLookup =
+      input.providerKind === undefined &&
+      input.agent !== 'codex' &&
+      input.providerInstanceId !== undefined
+    const providerInstances = needsInstanceLookup
+      ? (await this.state()).providerInstances ?? []
+      : []
+    const preset =
+      this.#modelPreset[resolveRequestedProviderKind(input, providerInstances)]
+    if (!preset) {
+      return input
+    }
+    return { ...input, runtimeSettings: { ...preset, ...input.runtimeSettings } }
+  }
+
+  async createSession(input = {}) {
+    return this.#request('POST', '/api/runtime/sessions', await this.#withModelPreset(input))
   }
 
   resumeSession(sessionId, input = {}) {
@@ -215,6 +219,10 @@ export class OrreryClient {
     )
   }
 
+  providerSetupStatus(input = {}) {
+    return this.#request('POST', '/api/runtime/provider-setup-status', input)
+  }
+
   upsertProviderInstance(input = {}) {
     return this.#request('POST', '/api/runtime/provider-instances', input)
   }
@@ -223,11 +231,13 @@ export class OrreryClient {
     return this.#request('POST', '/api/runtime/clusters', input)
   }
 
-  createMasterForCluster(clusterId, input = {}) {
+  async createMasterForCluster(clusterId, input = {}) {
+    // Masters spawn real sessions too — without the preset they (and every
+    // loop reviewer created on their behalf) would run on default models.
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/master`,
-      input
+      await this.#withModelPreset(input)
     )
   }
 

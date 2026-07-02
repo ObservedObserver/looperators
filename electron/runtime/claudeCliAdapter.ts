@@ -97,6 +97,13 @@ function providerEnv(providerInstance) {
   }
 }
 
+export const membraneToolNames = [
+  'mcp__orrery_membrane__create_session',
+  'mcp__orrery_membrane__resume_session',
+  'mcp__orrery_membrane__report',
+  'mcp__orrery_membrane__link_sessions',
+]
+
 export function membraneSystemPrompt() {
   return [
     'You are running inside Orrery.',
@@ -104,6 +111,7 @@ export function membraneSystemPrompt() {
     '- mcp__orrery_membrane__create_session creates a real downstream session/node.',
     '- mcp__orrery_membrane__resume_session appends a user message to an existing session/node and resumes it.',
     '- mcp__orrery_membrane__report submits typed verdict, relationship, or info data to the graph blackboard.',
+    '- mcp__orrery_membrane__link_sessions declares a visible relationship edge to another session/node.',
     'Do not invent session ids. Use ids returned by create_session or provided in the user prompt.',
   ].join('\n')
 }
@@ -183,6 +191,13 @@ function buildClaudeArgs({
       '--mcp-config',
       mcpConfigPath,
       '--strict-mcp-config',
+      // Membrane tools are the sanctioned control surface (the bridge token
+      // already authenticates the session) and print-mode runs cannot answer
+      // interactive permission prompts. Without this allowlist, membrane
+      // calls fail in any cwd without prior CLI grants — e.g. every loop
+      // reviewer running in a fresh acceptance workspace.
+      '--allowedTools',
+      membraneToolNames.join(','),
       '--append-system-prompt',
       membraneSystemPrompt()
     )

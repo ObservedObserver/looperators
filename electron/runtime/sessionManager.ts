@@ -4670,6 +4670,9 @@ export class RuntimeSessionManager {
       context: input.context,
       cluster,
       label: input.label,
+      // Children inherit their creator's runtime settings (like cwd), so a
+      // cheap-model master never silently spawns default-model sessions.
+      runtimeSettings: sourceSession?.runtimeSettings,
     })
     this.#addEdge({
       source,

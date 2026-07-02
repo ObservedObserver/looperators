@@ -48,39 +48,60 @@ The default entry point is the Chat tab:
 
 ## Verification
 
+The test taxonomy has three tiers (see
+`design-docs/headless-acceptance-harness.md`): kernel unit tests (fake
+provider binaries allowed — they verify graph-kernel logic and wire
+protocols), headless real-scenario acceptance (real providers on a cheap
+model preset), and final UI acceptance.
+
 Build and lint:
 
 ```sh
 npm run build
 npm run lint
-npm run test:runtime
+npm run test:kernel
 npm run acceptance:electron
 ```
 
-Runtime regression checks:
+Kernel regression checks (fake provider binaries, seconds-fast):
 
 ```sh
-npm run runtime:persistence
-npm run runtime:canvas:orchestration
-npm run runtime:master-loop
-npm run runtime:membrane:validation
-npm run runtime:codex-interaction
+npm run test:kernel:persistence
+npm run test:kernel:orchestration
+npm run test:kernel:master-loop
+npm run test:kernel:membrane
+npm run test:kernel:codex-interaction
 ```
 
-Phase 5 audit coverage:
-
 - Create, resume, restart recovery, invalid cwd diagnostics, and recovered-run
-  resume: `npm run runtime:persistence`
+  resume: `npm run test:kernel:persistence`
 - Node selection model, cluster/master graph state, linked edges, freeze state,
-  and master resume after cluster freeze: `npm run runtime:canvas:orchestration`
+  and master resume after cluster freeze: `npm run test:kernel:orchestration`
 - Loop stop, max-iteration guards, kill handling, and freeze-on-stop behavior:
-  `npm run runtime:master-loop`
+  `npm run test:kernel:master-loop`
 - Provider request/response UI plumbing for approvals and user input:
-  `npm run runtime:codex-interaction`
+  `npm run test:kernel:codex-interaction`
 - Membrane validation and stop cleanup for the Claude CLI bridge:
-  `npm run runtime:membrane:validation`
-- Live agent-controlled create/resume/report through the membrane, when a real
-  Claude environment is available: `npm run runtime:membrane:smoke`
+  `npm run test:kernel:membrane`
+
+Headless real-scenario acceptance (real providers, cheap model preset,
+minutes per scenario; artifacts land in `output/acceptance/<run-id>/`):
+
+```sh
+npm run acceptance:headless                       # all scenarios
+npm run acceptance:headless -- --filter linked    # by name
+npm run acceptance:headless -- --list             # list scenarios
+npm run acceptance:membrane                       # live membrane create/resume/report
+```
+
+Headless debugging against a dev instance:
+
+```sh
+npm run cli -- sessions
+npm run cli -- session show <id-prefix>
+npm run cli -- session tail <id-prefix>
+npm run cli -- graph
+```
 
 Legacy CLI spikes are still available when validating the old Claude CLI path:
 

@@ -158,3 +158,6 @@ design-docs/
 
 # Local verification screenshots
 acceptance-screenshots/
+
+# Headless acceptance run artifacts
+output/acceptance/
