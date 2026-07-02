@@ -11,6 +11,7 @@ import {
   openWorkspaceTargetIds,
   runtimeTerminalStreams,
 } from '../../shared/graph-state.js'
+import { projectSession } from '../../shared/session-projection.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
 import { buildPath, claudeCommand } from './claudeCliAdapter.js'
@@ -1342,6 +1343,107 @@ export class RuntimeSessionManager {
 
   getState() {
     return clone(this.#state)
+  }
+
+  listSessionSummaries() {
+    const sessions = Object.values(this.#state.sessions ?? {})
+      .map((session) => this.#sessionSummary(session))
+      .sort((left, right) =>
+        String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? ''))
+      )
+    return { sessions }
+  }
+
+  getSessionView(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const session = this.#requireSession(request.sessionId)
+    const view = optionalTrimmedString(request.view) ?? 'summary'
+    if (view === 'summary') {
+      return { view, session: this.#sessionSummary(session) }
+    }
+    if (view === 'raw') {
+      return { view, session: clone(session) }
+    }
+    if (view === 'transcript') {
+      return {
+        view,
+        session: this.#sessionSummary(session),
+        projection: projectSession(clone(session)),
+      }
+    }
+    throw new Error(`Unknown session view: ${view}`)
+  }
+
+  getGraphTopology() {
+    return clone({
+      version: this.#state.version,
+      updatedAt: this.#state.updatedAt,
+      nodes: this.#state.nodes,
+      edges: this.#state.edges,
+      clusters: this.#state.clusters,
+    })
+  }
+
+  getSessionEvents(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const session = this.#requireSession(request.sessionId)
+    const events = session.runtimeEvents ?? []
+    const since = optionalTrimmedString(request.since)
+    let startIndex = 0
+    let reset = false
+    if (since) {
+      const sinceIndex = events.findIndex((event) => event.id === since)
+      if (sinceIndex >= 0) {
+        startIndex = sinceIndex + 1
+      } else {
+        // Cursor fell out of the truncated event window (or never existed):
+        // replay from the start and let the caller resynchronize.
+        reset = true
+      }
+    }
+    return {
+      sessionId: session.sessionId,
+      status: session.status,
+      events: clone(events.slice(startIndex)),
+      cursor: events.at(-1)?.id,
+      reset,
+    }
+  }
+
+  #requireSession(sessionId) {
+    const id = optionalTrimmedString(sessionId)
+    const session = id ? this.#state.sessions[id] : undefined
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+    return session
+  }
+
+  #sessionSummary(session) {
+    const node = this.#state.nodes.find(
+      (candidate) => candidate.sessionId === session.sessionId
+    )
+    return {
+      sessionId: session.sessionId,
+      nodeId: session.nodeId,
+      label: session.label,
+      role: session.role,
+      status: session.status,
+      providerKind: session.providerKind,
+      providerInstanceId: session.providerInstanceId,
+      agent: session.agent,
+      cwd: session.cwd,
+      project: clone(session.project),
+      clusterId: node?.clusterId,
+      frozen: node?.frozen,
+      archived: session.archived,
+      error: session.error,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      finishedAt: session.finishedAt,
+      messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
+      runtimeSettings: clone(session.runtimeSettings),
+    }
   }
 
   getProjectContext(input: JsonRecord = {}) {

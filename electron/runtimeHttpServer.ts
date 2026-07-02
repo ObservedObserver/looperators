@@ -140,6 +140,21 @@ function routePath(request: http.IncomingMessage) {
   return parsed.pathname
 }
 
+function queryParams(request: http.IncomingMessage) {
+  return new URL(request.url ?? '/', 'http://127.0.0.1').searchParams
+}
+
+function notFoundOnUnknownSession<T>(read: () => T): T {
+  try {
+    return read()
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Unknown session:')) {
+      throw new RuntimeHttpError(404, error.message)
+    }
+    throw error
+  }
+}
+
 function decodeParam(value: string | undefined) {
   return decodeURIComponent(value ?? '')
 }
@@ -158,6 +173,38 @@ function compileRoutes(
       method: 'GET',
       pattern: /^\/api\/runtime\/state$/,
       handler: () => runtime.getState(),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/graph$/,
+      handler: () => runtime.getGraphTopology(),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/sessions$/,
+      handler: () => runtime.listSessionSummaries(),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)$/,
+      handler: (request, params) =>
+        notFoundOnUnknownSession(() =>
+          runtime.getSessionView({
+            sessionId: params.sessionId,
+            view: queryParams(request).get('view') ?? undefined,
+          })
+        ),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/events$/,
+      handler: (request, params) =>
+        notFoundOnUnknownSession(() =>
+          runtime.getSessionEvents({
+            sessionId: params.sessionId,
+            since: queryParams(request).get('since') ?? undefined,
+          })
+        ),
     },
     {
       method: 'POST',
