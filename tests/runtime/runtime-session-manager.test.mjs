@@ -1126,7 +1126,9 @@ test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async 
     runtime.killAll()
     managers.delete(runtime)
 
-    const persisted = JSON.parse(fs.readFileSync(storageFile, 'utf8'))
+    // Post-G0 the runtime persists to SQLite; write the tampered state as a
+    // legacy JSON file so it loads through the migration path.
+    const persisted = runtime.getState()
     persisted.sessions[sessionId].runtimeEvents = Array.from({ length: 2000 }, (_, index) => ({
       id: `filler-${index}`,
       ts: new Date(index).toISOString(),
@@ -1136,9 +1138,10 @@ test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async 
       streamKind: 'assistant_text',
       text: 'filler',
     }))
-    fs.writeFileSync(storageFile, JSON.stringify(persisted, null, 2))
+    const cappedStorageFile = path.join(tempRoot, 'capped-runtime-state.json')
+    fs.writeFileSync(cappedStorageFile, JSON.stringify(persisted, null, 2))
 
-    const cappedRuntime = manager({ storageFile })
+    const cappedRuntime = manager({ storageFile: cappedStorageFile })
     await cappedRuntime.resumeSession({
       sessionId,
       message: 'edit after event cap',

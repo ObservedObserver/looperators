@@ -141,6 +141,23 @@ export class OrreryClient {
     )
   }
 
+  // Kernel event log (G0): append-only graph-level facts with actor + causeId.
+  // Returns { events, latestSeq }; `since` is an exclusive seq cursor.
+  kernelEvents({ since, limit, type } = {}) {
+    const params = new URLSearchParams()
+    if (since !== undefined) {
+      params.set('since', String(since))
+    }
+    if (limit !== undefined) {
+      params.set('limit', String(limit))
+    }
+    if (type) {
+      params.set('type', type)
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : ''
+    return this.#request('GET', `/api/runtime/kernel-events${query}`)
+  }
+
   async #withModelPreset(input = {}) {
     if (!this.#modelPreset) {
       return input

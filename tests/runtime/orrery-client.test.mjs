@@ -138,11 +138,17 @@ test('headless harness drives an isolated runtime end to end', async () => {
     )
   } finally {
     const storageFile = harness.storageFile
+    const kernelDbFile = `${storageFile.replace(/\.json$/, '')}.sqlite`
     await harness.close()
     assert.equal(
       fs.existsSync(storageFile),
       false,
       'isolated harness must clean up its storage'
+    )
+    assert.equal(
+      fs.existsSync(kernelDbFile),
+      false,
+      'isolated harness must clean up its kernel event store'
     )
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

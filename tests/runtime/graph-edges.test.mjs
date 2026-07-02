@@ -243,14 +243,17 @@ test('link edges survive restart and v5 storage files migrate to v6', async () =
     })
     runtime.killAll()
 
-    // Simulate a pre-link (v5) storage file: the version field must not gate
-    // normalization, and persisted link edges must keep their kind.
-    const persisted = JSON.parse(fs.readFileSync(storageFile, 'utf8'))
+    // Simulate a pre-link (v5) legacy JSON storage file: the version field
+    // must not gate normalization, and persisted link edges must keep their
+    // kind. Post-G0 the runtime persists to SQLite, so a bare JSON file also
+    // exercises the legacy-import path.
+    const persisted = runtime.getState()
     assert.equal(persisted.version, 6)
     persisted.version = 5
-    fs.writeFileSync(storageFile, JSON.stringify(persisted))
+    const legacyStorageFile = path.join(tempRoot, 'legacy-runtime-state.json')
+    fs.writeFileSync(legacyStorageFile, JSON.stringify(persisted))
 
-    const restored = manager({ storageFile })
+    const restored = manager({ storageFile: legacyStorageFile })
     const state = restored.getState()
     assert.equal(state.version, 6, 'v5 storage must migrate to v6 on load')
     assert.equal(Object.keys(state.sessions).length, 2, 'sessions must survive')
@@ -263,6 +266,13 @@ test('link edges survive restart and v5 storage files migrate to v6', async () =
       'persisted link edges must not degrade to another kind on reload'
     )
     assert.equal(restoredEdge?.label, 'reviews')
+
+    // Same-store restart (SQLite snapshot) must also keep the link edge.
+    const sqliteRestored = manager({ storageFile })
+    const sqliteEdge = sqliteRestored
+      .getState()
+      .edges.find((candidate) => candidate.edgeId === edge.edgeId)
+    assert.equal(sqliteEdge?.kind, 'link', 'link edge must survive a SQLite restart')
   } finally {
     for (const runtime of managers) {
       try {

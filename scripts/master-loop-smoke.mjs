@@ -214,6 +214,88 @@ try {
   assert.equal(restoredClean.loopState.reviewerSessionId, cleanReviewerId)
   assert.equal(restoredClean.frozen, true)
 
+  // --- G0 kernel log: loop actions must be attributed to the rule actor and
+  // causally chained to the events that triggered them. ---
+  const kernelLog = runtime.getKernelEvents({ limit: 2000 }).events
+  const kernelById = new Map(kernelLog.map((event) => [event.id, event]))
+
+  const loopStarted = kernelLog.find(
+    (event) =>
+      event.type === 'loop.started' && event.payload.clusterId === clean.clusterId
+  )
+  assert.ok(loopStarted, 'loop.started must be logged')
+  assert.equal(loopStarted.actor.kind, 'human')
+
+  const reviewerCreated = kernelLog.find(
+    (event) =>
+      event.type === 'session.created' &&
+      event.payload.sessionId === cleanReviewerId
+  )
+  assert.ok(reviewerCreated, 'reviewer creation must be logged')
+  assert.equal(reviewerCreated.actor.kind, 'rule')
+  assert.equal(reviewerCreated.actor.ref, `loop:${clean.clusterId}`)
+  const reviewerCause = kernelById.get(reviewerCreated.causeId)
+  assert.ok(
+    reviewerCause &&
+      ['loop.started', 'session.finished'].includes(reviewerCause.type),
+    'reviewer creation must chain to the wakeup event'
+  )
+
+  const issuesReport = kernelLog.find(
+    (event) =>
+      event.type === 'report.received' &&
+      event.payload.from === cleanReviewerId &&
+      event.payload.verdict === 'issues'
+  )
+  assert.ok(issuesReport, 'issues verdict must be logged')
+  assert.equal(issuesReport.actor.kind, 'agent')
+
+  const coderResumed = kernelLog.find(
+    (event) =>
+      event.type === 'session.resumed' &&
+      event.payload.sessionId === clean.coderId &&
+      event.actor.kind === 'rule'
+  )
+  assert.ok(coderResumed, 'loop-driven coder resume must be logged as a rule action')
+  assert.equal(
+    coderResumed.causeId,
+    issuesReport.id,
+    'coder resume must chain to the issues report'
+  )
+
+  const cleanReport = kernelLog.find(
+    (event) =>
+      event.type === 'report.received' &&
+      event.payload.from === cleanReviewerId &&
+      event.payload.verdict === 'clean'
+  )
+  assert.ok(cleanReport, 'clean verdict must be logged')
+
+  const loopStopped = kernelLog.find(
+    (event) =>
+      event.type === 'loop.stopped' && event.payload.clusterId === clean.clusterId
+  )
+  assert.ok(loopStopped, 'loop.stopped must be logged')
+  assert.equal(loopStopped.actor.kind, 'rule')
+  assert.equal(
+    loopStopped.causeId,
+    cleanReport.id,
+    'loop stop must chain to the clean verdict report'
+  )
+
+  const freezeApplied = kernelLog.find(
+    (event) =>
+      event.type === 'freeze.applied' &&
+      event.payload.targetId === clean.clusterId
+  )
+  assert.ok(freezeApplied, 'loop stop must log freeze.applied')
+  assert.equal(freezeApplied.actor.kind, 'rule')
+  assert.equal(
+    freezeApplied.causeId,
+    cleanReport.id,
+    'freeze must chain to the clean verdict report'
+  )
+
   const max = await createCluster(runtime, 'Max guard loop', 1)
   runtime.startMasterLoop({
     clusterId: max.clusterId,

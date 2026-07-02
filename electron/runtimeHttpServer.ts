@@ -193,6 +193,18 @@ function compileRoutes(
     },
     {
       method: 'GET',
+      pattern: /^\/api\/runtime\/kernel-events$/,
+      handler: (request) => {
+        const params = queryParams(request)
+        return runtime.getKernelEvents({
+          since: params.get('since') ?? undefined,
+          limit: params.get('limit') ?? undefined,
+          type: params.get('type') ?? undefined,
+        })
+      },
+    },
+    {
+      method: 'GET',
       pattern: /^\/api\/runtime\/sessions\/([^/]+)$/,
       handler: (request, params) =>
         notFoundOnUnknownSession(() =>

@@ -301,6 +301,10 @@ export const graphStateSchema = {
     'edge.removed',
     'loop.started',
     'loop.stopped',
+    // Kernel event-log fact (G0): { type: 'kernel.event', event: KernelEvent }.
+    // Deliberately carries no state payload; it mirrors the SQLite events row
+    // { seq, id, ts, type, actor{kind,ref}, causeId?, reason?, payload }.
+    'kernel.event',
     'terminal.created',
     'terminal.output',
     'terminal.command.finished',

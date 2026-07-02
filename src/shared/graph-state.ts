@@ -261,6 +261,10 @@ export const graphStateSchema = {
     'edge.removed',
     'loop.started',
     'loop.stopped',
+    // Kernel event-log fact (G0): { type: 'kernel.event', event: KernelEvent }.
+    // Deliberately carries no state payload; it mirrors the SQLite events row
+    // { seq, id, ts, type, actor{kind,ref}, causeId?, reason?, payload }.
+    'kernel.event',
     'terminal.created',
     'terminal.output',
     'terminal.command.finished',
@@ -771,6 +775,22 @@ export type RunTerminalCommandResult = RuntimeTerminalResult & {
   commandId: string;
 };
 
+// One row of the kernel event log (SQLite `events` table, kernel doc §7.1):
+// the append-only record of graph-level facts with actor + causal chain.
+export type KernelEvent = {
+  seq: number;
+  id: string;
+  ts: string;
+  type: string;
+  actor: {
+    kind: 'human' | 'master' | 'agent' | 'rule' | 'provider' | 'runtime';
+    ref?: string;
+  };
+  causeId?: string;
+  reason?: string;
+  payload: Record<string, unknown>;
+};
+
 export type RuntimeEvent =
   | { type: 'runtime.state'; state: GraphState }
   | { type: 'provider.instances.updated'; state: GraphState }
@@ -807,6 +827,7 @@ export type RuntimeEvent =
       reason?: string;
       state: GraphState;
     }
+  | { type: 'kernel.event'; event: KernelEvent }
   | { type: 'terminal.created'; terminal: RuntimeTerminal }
   | {
       type: 'terminal.output';

@@ -31,6 +31,8 @@ Commands:
   session kill <id>
   session archive <id> [--restore]
   events <id> [--since <cursor>]        Incremental provider events as JSON
+  kernel [--since <seq>] [--limit <n>]  Kernel event log (actor + causeId per fact)
+    [--type <eventType>] [--json]
   edge add <source> <target>            Declare a link edge between two sessions
     [--label <text>] [--reason <text>]
   edge remove <edgeId>                  Remove a link edge (other kinds are history)
@@ -147,6 +149,18 @@ function positiveIntFlag(values, name) {
   const value = Number(raw)
   if (!Number.isInteger(value) || value <= 0) {
     fail(`--${name} must be a positive integer, got "${raw}"`, 2)
+  }
+  return value
+}
+
+function nonNegativeIntFlag(values, name) {
+  const raw = values[name]
+  if (raw === undefined) {
+    return undefined
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 0) {
+    fail(`--${name} must be a non-negative integer, got "${raw}"`, 2)
   }
   return value
 }
@@ -479,6 +493,43 @@ async function commandEvents(client, values, idOrPrefix) {
   printJson(result)
 }
 
+function kernelActorLabel(actor) {
+  if (!actor || typeof actor !== 'object') {
+    return 'unknown'
+  }
+  return actor.ref ? `${actor.kind}:${actor.ref}` : `${actor.kind ?? 'unknown'}`
+}
+
+async function commandKernel(client, values) {
+  const result = await client.kernelEvents({
+    since: nonNegativeIntFlag(values, 'since'),
+    limit: positiveIntFlag(values, 'limit'),
+    type: values.type,
+  })
+
+  if (values.json) {
+    printJson(result)
+    return
+  }
+
+  if (result.events.length === 0) {
+    process.stdout.write(`No kernel events (latestSeq=${result.latestSeq}).\n`)
+    return
+  }
+
+  for (const event of result.events) {
+    const cause = event.causeId ? ` cause=${event.causeId.slice(0, 8)}` : ''
+    const reason = event.reason ? ` ${colors.dim(`# ${event.reason}`)}` : ''
+    const payload = colors.dim(JSON.stringify(event.payload))
+    process.stdout.write(
+      `${String(event.seq).padStart(5)} ${colors.dim(event.ts)} ${colors.bold(event.type)} ` +
+        `actor=${kernelActorLabel(event.actor)} id=${event.id.slice(0, 8)}${cause}${reason}\n` +
+        `      ${payload}\n`
+    )
+  }
+  process.stdout.write(colors.dim(`latestSeq=${result.latestSeq}\n`))
+}
+
 async function resolveEdgeId(client, idOrPrefix) {
   if (!idOrPrefix) {
     fail('Missing edge id', 2)
@@ -634,6 +685,8 @@ async function main() {
       timeout: { type: 'string' },
       restore: { type: 'boolean' },
       since: { type: 'string' },
+      limit: { type: 'string' },
+      type: { type: 'string' },
       'max-events': { type: 'string' },
       help: { type: 'boolean' },
     },
@@ -663,6 +716,9 @@ async function main() {
   }
   if (command === 'events') {
     return commandEvents(client, values, subcommand)
+  }
+  if (command === 'kernel') {
+    return commandKernel(client, values)
   }
   if (command === 'edge') {
     switch (subcommand) {

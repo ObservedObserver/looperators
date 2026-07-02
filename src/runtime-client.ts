@@ -152,6 +152,7 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'edge.removed',
   'loop.started',
   'loop.stopped',
+  'kernel.event',
   'terminal.created',
   'terminal.output',
   'terminal.command.finished',

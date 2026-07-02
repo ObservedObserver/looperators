@@ -12,6 +12,11 @@ import {
   runtimeTerminalStreams,
 } from '../../shared/graph-state.js'
 import { projectSession } from '../../shared/session-projection.js'
+import {
+  KernelStore,
+  kernelActorKinds,
+  kernelDatabaseFileFor,
+} from './kernelStore.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
 import { buildPath, claudeCommand } from './claudeCliAdapter.js'
@@ -27,6 +32,29 @@ const defaultProviderRuntimeSettings = {
 }
 
 const storageBackupSuffix = '.bak'
+// The unified command channel (kernel doc §7.5): every state mutation from any
+// actor (human/IPC, master/agent via membrane, rule via loop automation) goes
+// through dispatchCommand → validate → execute → append kernel event.
+const kernelCommandKinds = new Set([
+  'create_session',
+  'resume_session',
+  'archive_session',
+  'kill_session',
+  'respond_runtime_request',
+  'answer_user_input',
+  'upsert_scope',
+  'create_master',
+  'assign_master',
+  'set_loop_policy',
+  'update_node_positions',
+  'start_loop',
+  'stop_loop',
+  'freeze',
+  'link_sessions',
+  'remove_edge',
+  'report',
+  'upsert_provider_instance',
+])
 const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
@@ -829,6 +857,14 @@ function totalsForDiffFiles(files) {
   )
 }
 
+function truncateForLog(value, maxLength = 200) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return undefined
+  }
+
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}…`
+}
+
 function diagnostic(type, message, details = {}) {
   return {
     id: randomUUID(),
@@ -862,31 +898,6 @@ function preserveCorruptFile(storageFile) {
     return corruptFile
   } catch {
     return undefined
-  }
-}
-
-function writeJsonAtomically(storageFile, value) {
-  fs.mkdirSync(path.dirname(storageFile), { recursive: true })
-
-  if (fs.existsSync(storageFile)) {
-    if (readJsonFile(storageFile).ok) {
-      fs.copyFileSync(storageFile, backupFileFor(storageFile))
-    } else {
-      preserveCorruptFile(storageFile)
-    }
-  }
-
-  const tempFile = `${storageFile}.${process.pid}.${Date.now()}.tmp`
-  try {
-    fs.writeFileSync(tempFile, `${JSON.stringify(value, null, 2)}\n`)
-    fs.renameSync(tempFile, storageFile)
-  } catch (error) {
-    try {
-      fs.rmSync(tempFile, { force: true })
-    } catch {
-      // Best-effort cleanup only; the next load ignores orphan temp files.
-    }
-    throw error
   }
 }
 
@@ -1305,6 +1316,9 @@ export class RuntimeSessionManager {
   #terminalRuns = new Map<string, RuntimeTerminalRun>()
   #loopTasks = new Map<string, Promise<void>>()
   #storageFile: string | undefined
+  #kernelStore: KernelStore
+  #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
+  #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
   #bridge: MembraneBridge
   #providerService: ProviderService
@@ -1330,7 +1344,42 @@ export class RuntimeSessionManager {
             : typeof emit === 'function'
               ? emit
               : undefined
+    this.#kernelStore = new KernelStore({
+      databaseFile: this.#storageFile
+        ? kernelDatabaseFileFor(this.#storageFile)
+        : undefined,
+    })
     this.#state = this.#loadState()
+    if (this.#legacyImportKind === 'migration') {
+      this.#appendKernelEvent(
+        'storage.migrated',
+        { fromFile: this.#storageFile },
+        { actor: { kind: 'runtime' } },
+        { reason: 'Imported legacy JSON snapshot into the SQLite kernel store.' }
+      )
+    } else if (this.#legacyImportKind === 'fossil-rollback') {
+      this.#appendKernelEvent(
+        'storage.restored-from-fossil',
+        { fromFile: this.#storageFile },
+        { actor: { kind: 'runtime' } },
+        {
+          reason:
+            'Kernel store was corrupt; restored the legacy JSON snapshot. State may have rolled back to the migration point.',
+        }
+      )
+    }
+    for (const sessionId of this.#restartInterruptedSessionIds) {
+      // Sessions that were mid-run when the previous runtime stopped are
+      // flipped to failed on load; without this fact their causal chain in
+      // the kernel log would simply stop dead.
+      this.#appendKernelEvent(
+        'session.failed',
+        { sessionId, interruptedByRestart: true },
+        { actor: { kind: 'runtime' } },
+        { reason: 'Interrupted by runtime restart.' }
+      )
+    }
+    this.#restartInterruptedSessionIds = []
     this.#bridge = new MembraneBridge({
       handler: (request) => this.handleMembraneRequest(request),
     })
@@ -1343,6 +1392,114 @@ export class RuntimeSessionManager {
 
   getState() {
     return clone(this.#state)
+  }
+
+  // Unified command channel (kernel doc §7.5). All mutating entry points --
+  // human (IPC/HTTP wrappers), master/agent (membrane), rule (loop automation)
+  // -- converge here: validate → execute → append kernel event(s).
+  async dispatchCommand(command: JsonRecord = {}): Promise<any> {
+    const kind = optionalTrimmedString(command.kind)
+    if (!kind || !kernelCommandKinds.has(kind)) {
+      throw new Error(`Unknown kernel command: ${kind ?? ''}`)
+    }
+
+    const actor = isObject(command.actor) ? command.actor : undefined
+    if (!actor || !kernelActorKinds.has(actor.kind)) {
+      throw new Error(
+        `Kernel command requires a valid actor: ${JSON.stringify(command.actor)}`
+      )
+    }
+    if (
+      (actor.kind === 'master' || actor.kind === 'agent') &&
+      !this.#state.sessions[optionalTrimmedString(actor.ref) ?? '']
+    ) {
+      throw new Error(`Kernel command actor session is unknown: ${actor.ref ?? ''}`)
+    }
+
+    const ctx = {
+      actor: { kind: actor.kind, ref: optionalTrimmedString(actor.ref) },
+      causeId: optionalTrimmedString(command.causeId),
+      reason: optionalTrimmedString(command.reason),
+    }
+    const input = isObject(command.input) ? command.input : {}
+
+    switch (kind) {
+      case 'create_session':
+        return this.#cmdCreateSession(input, ctx)
+      case 'resume_session':
+        return this.#cmdResumeSession(input, ctx)
+      case 'archive_session':
+        return this.#cmdArchiveSession(input, ctx)
+      case 'kill_session':
+        return this.#cmdKillSession(input, ctx)
+      case 'respond_runtime_request':
+        return this.#cmdRespondRuntimeRequest(input, ctx)
+      case 'answer_user_input':
+        return this.#cmdAnswerUserInput(input, ctx)
+      case 'upsert_scope':
+        return this.#cmdUpsertCluster(input, ctx)
+      case 'create_master':
+        return this.#cmdCreateMasterForCluster(input, ctx)
+      case 'assign_master':
+        return this.#cmdAssignMaster(input, ctx)
+      case 'set_loop_policy':
+        return this.#cmdSetLoopPolicy(input, ctx)
+      case 'update_node_positions':
+        return this.#cmdUpdateNodePositions(input, ctx)
+      case 'start_loop':
+        return this.#cmdStartLoop(input, ctx)
+      case 'stop_loop':
+        return this.#cmdStopLoop(input, ctx)
+      case 'freeze':
+        return this.#cmdFreeze(input, ctx)
+      case 'link_sessions':
+        return this.#cmdLinkSessions(input, ctx)
+      case 'remove_edge':
+        return this.#cmdRemoveEdge(input, ctx)
+      case 'report':
+        return this.#cmdReport(input, ctx)
+      case 'upsert_provider_instance':
+        return this.#cmdUpsertProviderInstance(input, ctx)
+    }
+
+    throw new Error(`Unhandled kernel command: ${kind}`)
+  }
+
+  getKernelEvents(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const events = this.#kernelStore.listEvents({
+      sinceSeq: Number(request.since ?? request.sinceSeq ?? 0) || 0,
+      limit: Number(request.limit ?? 0) || undefined,
+      type: optionalTrimmedString(request.type),
+    })
+    return { events, latestSeq: this.#kernelStore.latestSeq() }
+  }
+
+  #humanCtx() {
+    return { actor: { kind: 'human' } }
+  }
+
+  #loopRuleCtx(clusterId, causeId) {
+    return {
+      actor: { kind: 'rule', ref: `loop:${clusterId}` },
+      causeId,
+    }
+  }
+
+  #appendKernelEvent(type, payload, ctx, { reason }: JsonRecord = {}) {
+    const event = this.#kernelStore.appendEvent({
+      type,
+      actor: ctx?.actor ?? { kind: 'runtime' },
+      causeId: ctx?.causeId,
+      reason: reason ?? ctx?.reason,
+      payload,
+    })
+    if (event) {
+      // Lightweight broadcast (no state payload); the canvas timeline and
+      // acceptance scenarios can follow the kernel log live.
+      this.#broadcast({ type: 'kernel.event', event })
+    }
+    return event
   }
 
   listSessionSummaries() {
@@ -1744,6 +1901,10 @@ export class RuntimeSessionManager {
   }
 
   upsertProviderInstance(input: JsonRecord = {}) {
+    return this.#cmdUpsertProviderInstance(input, this.#humanCtx())
+  }
+
+  #cmdUpsertProviderInstance(input: JsonRecord = {}, ctx: JsonRecord) {
     if (!validProviderKinds.has(input.kind)) {
       throw new Error(`Unsupported provider instance kind: ${String(input.kind)}`)
     }
@@ -1774,12 +1935,24 @@ export class RuntimeSessionManager {
 
     this.#state.providerInstances = nextInstances
     this.#providerService.registerProviderInstance(providerInstance)
+    this.#appendKernelEvent(
+      'provider.instance-upserted',
+      {
+        providerInstanceId: providerInstance.providerInstanceId,
+        kind: providerInstance.kind,
+      },
+      ctx
+    )
     this.#touch()
     this.#broadcast({ type: 'provider.instances.updated', state: this.getState() })
     return { providerInstance: clone(providerInstance), state: this.getState() }
   }
 
   async createSession(input: JsonRecord = {}) {
+    return this.#cmdCreateSession(input, this.#humanCtx())
+  }
+
+  async #cmdCreateSession(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId = randomUUID()
     const role = input.role === 'master' ? 'master' : 'worker'
     const cluster =
@@ -1897,6 +2070,21 @@ export class RuntimeSessionManager {
         masterReason: this.#masterReasonFromInput(sourceSessionId, input),
       })
     }
+    const createdEvent = this.#appendKernelEvent(
+      'session.created',
+      {
+        sessionId,
+        label,
+        role,
+        providerKind: provider.providerKind,
+        agent: provider.agent,
+        clusterId: cluster,
+        sourceSessionId,
+        cwd,
+      },
+      ctx,
+      { reason: ctx.reason ?? this.#masterReasonFromInput(sourceSessionId, input) }
+    )
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
@@ -1905,12 +2093,17 @@ export class RuntimeSessionManager {
       attachments,
       runKind: 'create',
       userMessageId: this.#state.sessions[sessionId].messages[0].id,
+      activationEventId: createdEvent?.id,
     })
 
     return { sessionId, state: this.getState() }
   }
 
   async resumeSession(input: JsonRecord = {}) {
+    return this.#cmdResumeSession(input, this.#humanCtx())
+  }
+
+  async #cmdResumeSession(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId = input.sessionId
     const session = this.#state.sessions[sessionId]
     if (!session) {
@@ -1933,7 +2126,10 @@ export class RuntimeSessionManager {
       session.cwd = validateRunnableCwd(session.cwd)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.#failSession(sessionId, message)
+      this.#failSession(sessionId, message, {
+        actor: { kind: 'runtime' },
+        causeId: ctx.causeId,
+      })
       throw error
     }
 
@@ -1972,6 +2168,32 @@ export class RuntimeSessionManager {
     session.signal = undefined
     session.updatedAt = ts
     this.#updateNodeStatus(sessionId, 'pending')
+
+    const edgeSourceSessionId = optionalTrimmedString(input.edgeSourceSessionId)
+    if (edgeSourceSessionId && this.#state.sessions[edgeSourceSessionId]) {
+      this.#addEdge({
+        source: edgeSourceSessionId,
+        target: sessionId,
+        kind: 'resume-session',
+        envelope: this.#createEnvelope(edgeSourceSessionId),
+        label: 'resume_session',
+        masterReason: this.#masterReasonFromInput(edgeSourceSessionId, input),
+      })
+    }
+
+    const resumedEvent = this.#appendKernelEvent(
+      'session.resumed',
+      {
+        sessionId,
+        edgeSourceSessionId,
+        messagePreview: truncateForLog(message, 200),
+      },
+      ctx,
+      {
+        reason:
+          ctx.reason ?? this.#masterReasonFromInput(edgeSourceSessionId, input),
+      }
+    )
     this.#touch()
     this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
 
@@ -1980,25 +2202,30 @@ export class RuntimeSessionManager {
       attachments,
       runKind: 'resume',
       userMessageId: userMessage.id,
+      activationEventId: resumedEvent?.id,
     })
 
     return { ok: true, state: this.getState() }
   }
 
   archiveSession(input: JsonRecord | string = {}) {
+    const normalized = typeof input === 'string' ? { sessionId: input } : input
+    return this.#cmdArchiveSession(normalized, this.#humanCtx())
+  }
+
+  #cmdArchiveSession(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId =
-      typeof input === 'string'
-        ? input
-        : typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
-          ? input.sessionId.trim()
-          : undefined
+      typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+        ? input.sessionId.trim()
+        : undefined
 
     if (!sessionId || !this.#state.sessions[sessionId]) {
       throw new Error(`Unknown session: ${sessionId ?? ''}`)
     }
 
-    const archived = typeof input === 'object' && input.archived === false ? false : true
+    const archived = input.archived === false ? false : true
     this.#state.sessions[sessionId].archived = archived
+    this.#appendKernelEvent('session.archived', { sessionId, archived }, ctx)
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { ok: true, state: this.getState() }
@@ -2030,6 +2257,11 @@ export class RuntimeSessionManager {
   }
 
   killSession(sessionId) {
+    return this.#cmdKillSession({ sessionId }, this.#humanCtx())
+  }
+
+  #cmdKillSession(input: JsonRecord = {}, ctx: JsonRecord) {
+    const sessionId = input.sessionId
     const run = this.#runs.get(sessionId)
     const session = this.#state.sessions[sessionId]
 
@@ -2055,11 +2287,23 @@ export class RuntimeSessionManager {
         status: 'killed',
       })
       this.#cancelOpenRuntimeInteractions(sessionId, session.updatedAt)
+      const killedEvent = this.#appendKernelEvent(
+        'session.killed',
+        { sessionId },
+        ctx
+      )
+      const context = this.#runContext.get(sessionId)
+      if (context) {
+        // The provider run's close handler re-broadcasts session.killed once
+        // the process actually exits; point it at this kernel fact.
+        context.killedEventId = killedEvent?.id
+      }
       this.#touch()
       this.#emitRuntimeEvent({
         type: 'session.killed',
         sessionId,
         state: this.getState(),
+        kernelEventId: killedEvent?.id,
       })
     }
 
@@ -2075,9 +2319,18 @@ export class RuntimeSessionManager {
     }
     this.#providerService?.closeAll?.()
     this.#bridge?.close()
+    // The kernel store intentionally stays open: killAll is revivable (the
+    // bridge and provider service relaunch lazily), and a closed store would
+    // silently drop later kernel events. If a newer runtime takes over the
+    // same store, this connection's snapshot writes are dropped by the
+    // snapshot-owner check instead of clobbering the newer state.
   }
 
   respondRuntimeRequest(input: JsonRecord = {}) {
+    return this.#cmdRespondRuntimeRequest(input, this.#humanCtx())
+  }
+
+  #cmdRespondRuntimeRequest(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId =
       typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
         ? input.sessionId.trim()
@@ -2125,10 +2378,19 @@ export class RuntimeSessionManager {
       status: runtimeRequestStatusForDecision(normalizedDecision, request),
     }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    this.#appendKernelEvent(
+      'interaction.responded',
+      { sessionId, requestId, decision: normalizedDecision },
+      ctx
+    )
     return { ok: true, state: this.getState() }
   }
 
   answerUserInput(input: JsonRecord = {}) {
+    return this.#cmdAnswerUserInput(input, this.#humanCtx())
+  }
+
+  #cmdAnswerUserInput(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId =
       typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
         ? input.sessionId.trim()
@@ -2178,10 +2440,19 @@ export class RuntimeSessionManager {
       ...(answers ? { answers } : {}),
     }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    this.#appendKernelEvent(
+      'interaction.answered',
+      { sessionId, requestId },
+      ctx
+    )
     return { ok: true, state: this.getState() }
   }
 
   upsertCluster(input: JsonRecord = {}) {
+    return this.#cmdUpsertCluster(input, this.#humanCtx())
+  }
+
+  #cmdUpsertCluster(input: JsonRecord = {}, ctx: JsonRecord) {
     const nodeIds = this.#normalizeClusterNodeIds(input.nodeIds)
     if (nodeIds.length === 0) {
       throw new Error('Cluster requires at least one managed session node')
@@ -2229,12 +2500,21 @@ export class RuntimeSessionManager {
       this.#removeNodeFromOtherClusters(sessionId, clusterId)
     }
 
+    this.#appendKernelEvent(
+      'scope.upserted',
+      { clusterId, label, nodeIds },
+      ctx
+    )
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { clusterId, state: this.getState() }
   }
 
   async createMasterForCluster(input: JsonRecord = {}) {
+    return this.#cmdCreateMasterForCluster(input, this.#humanCtx())
+  }
+
+  async #cmdCreateMasterForCluster(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2246,11 +2526,16 @@ export class RuntimeSessionManager {
     const cluster = this.#state.clusters[clusterId]
     if (input.loopPolicy !== undefined) {
       cluster.loopPolicy = this.#normalizeLoopPolicy(input.loopPolicy)
+      this.#appendKernelEvent(
+        'loop.policy-set',
+        { clusterId, policy: clone(cluster.loopPolicy) },
+        ctx
+      )
     }
 
     if (cluster.masterSessionId) {
       if (this.#state.sessions[cluster.masterSessionId]) {
-        this.#assignMaster(clusterId, cluster.masterSessionId)
+        this.#assignMaster(clusterId, cluster.masterSessionId, ctx)
         this.#touch()
         this.#broadcast({ type: 'runtime.state', state: this.getState() })
         return { sessionId: cluster.masterSessionId, state: this.getState() }
@@ -2268,24 +2553,31 @@ export class RuntimeSessionManager {
         ? input.label.trim()
         : `${cluster.label} Master`
 
-    const result = await this.createSession({
-      agent: input.agent === 'codex' ? 'codex' : 'claude-code',
-      providerKind: input.providerKind,
-      providerInstanceId: input.providerInstanceId,
-      prompt,
-      cwd: input.cwd,
-      label,
-      cluster: clusterId,
-      role: 'master',
-      runtimeSettings: input.runtimeSettings,
-    })
-    this.#assignMaster(clusterId, result.sessionId)
+    const result = await this.#cmdCreateSession(
+      {
+        agent: input.agent === 'codex' ? 'codex' : 'claude-code',
+        providerKind: input.providerKind,
+        providerInstanceId: input.providerInstanceId,
+        prompt,
+        cwd: input.cwd,
+        label,
+        cluster: clusterId,
+        role: 'master',
+        runtimeSettings: input.runtimeSettings,
+      },
+      ctx
+    )
+    this.#assignMaster(clusterId, result.sessionId, ctx)
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { sessionId: result.sessionId, state: this.getState() }
   }
 
   assignMasterToCluster(input: JsonRecord = {}) {
+    return this.#cmdAssignMaster(input, this.#humanCtx())
+  }
+
+  #cmdAssignMaster(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2302,13 +2594,17 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown session: ${sessionId ?? ''}`)
     }
 
-    this.#assignMaster(clusterId, sessionId)
+    this.#assignMaster(clusterId, sessionId, ctx)
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { state: this.getState() }
   }
 
   setClusterLoopPolicy(input: JsonRecord = {}) {
+    return this.#cmdSetLoopPolicy(input, this.#humanCtx())
+  }
+
+  #cmdSetLoopPolicy(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2320,12 +2616,23 @@ export class RuntimeSessionManager {
     this.#state.clusters[clusterId].loopPolicy = this.#normalizeLoopPolicy(
       input.loopPolicy
     )
+    this.#appendKernelEvent(
+      'loop.policy-set',
+      { clusterId, policy: clone(this.#state.clusters[clusterId].loopPolicy) },
+      ctx
+    )
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { state: this.getState() }
   }
 
   updateNodePositions(input: JsonRecord = {}) {
+    return this.#cmdUpdateNodePositions(input, this.#humanCtx())
+  }
+
+  // Canvas layout is view-layer state, not a kernel fact: the command still
+  // flows through the unified channel, but no kernel event is appended.
+  #cmdUpdateNodePositions(input: JsonRecord = {}, _ctx: JsonRecord) {
     const positions = Array.isArray(input.positions) ? input.positions : []
     let changed = false
 
@@ -2366,6 +2673,10 @@ export class RuntimeSessionManager {
   }
 
   startMasterLoop(input: JsonRecord = {}) {
+    return this.#cmdStartLoop(input, this.#humanCtx())
+  }
+
+  #cmdStartLoop(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2409,17 +2720,36 @@ export class RuntimeSessionManager {
       stoppedAt: undefined,
     }
 
+    const startedEvent = this.#appendKernelEvent(
+      'loop.started',
+      {
+        clusterId,
+        coderSessionId,
+        reviewerSessionId: cluster.loopState.reviewerSessionId,
+      },
+      ctx,
+      { reason: ctx.reason ?? cluster.loopState.reason }
+    )
     this.#touch()
     this.#broadcast({
       type: 'loop.started',
       clusterId,
       state: this.getState(),
+      kernelEventId: startedEvent?.id,
     })
-    this.#queueLoopWakeup(clusterId, { type: 'loop.started', ts })
+    this.#queueLoopWakeup(clusterId, {
+      type: 'loop.started',
+      ts,
+      kernelEventId: startedEvent?.id,
+    })
     return { state: this.getState() }
   }
 
   stopMasterLoop(input: JsonRecord = {}) {
+    return this.#cmdStopLoop(input, this.#humanCtx())
+  }
+
+  #cmdStopLoop(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2435,6 +2765,7 @@ export class RuntimeSessionManager {
     this.#stopLoop(clusterId, reason, {
       event: { type: 'loop.stopped', ts: now() },
       broadcast: true,
+      ctx,
     })
 
     if (input.killRunning === true) {
@@ -2444,7 +2775,7 @@ export class RuntimeSessionManager {
         cluster.masterSessionId,
       ].filter((sessionId) => this.#runs.has(sessionId))
       for (const sessionId of runningIds) {
-        this.killSession(sessionId)
+        this.#cmdKillSession({ sessionId }, ctx)
       }
     }
 
@@ -2452,6 +2783,10 @@ export class RuntimeSessionManager {
   }
 
   freeze(input: JsonRecord = {}) {
+    return this.#cmdFreeze(input, this.#humanCtx())
+  }
+
+  #cmdFreeze(input: JsonRecord = {}, ctx: JsonRecord) {
     const target =
       typeof input.target === 'string' && input.target.trim().length > 0
         ? input.target.trim()
@@ -2466,15 +2801,22 @@ export class RuntimeSessionManager {
       typeof input.reason === 'string' && input.reason.trim().length > 0
         ? input.reason.trim()
         : 'Frozen by user.'
-    return this.#applyFreeze({
-      targetId: target,
-      reason,
-      source: input.source,
-      masterReason: input.masterReason,
-    })
+    return this.#applyFreeze(
+      {
+        targetId: target,
+        reason,
+        source: input.source,
+        masterReason: input.masterReason,
+      },
+      ctx
+    )
   }
 
   linkSessions(input: JsonRecord = {}) {
+    return this.#cmdLinkSessions(input, this.#humanCtx())
+  }
+
+  #cmdLinkSessions(input: JsonRecord = {}, ctx: JsonRecord) {
     const request = isObject(input) ? input : {}
     const source = this.#requireSession(request.source).sessionId
     const target = this.#requireSession(request.target).sessionId
@@ -2497,6 +2839,12 @@ export class RuntimeSessionManager {
       // stored detail so re-declaring a link never silently drops rationale.
       if (reason && existing.summary !== reason) {
         existing.summary = reason
+        this.#appendKernelEvent(
+          'edge.linked',
+          { edgeId: existing.edgeId, source, target, label, refreshedReason: true },
+          ctx,
+          { reason: ctx.reason ?? reason }
+        )
         this.#touch()
         this.#broadcast({ type: 'runtime.state', state: this.getState() })
       }
@@ -2513,6 +2861,12 @@ export class RuntimeSessionManager {
       summary: reason,
     })
     const edge = this.#state.edges.at(-1)
+    this.#appendKernelEvent(
+      'edge.linked',
+      { edgeId: edge.edgeId, source, target, label },
+      ctx,
+      { reason: ctx.reason ?? reason }
+    )
     this.#touch()
     this.#broadcast({
       type: 'edge.created',
@@ -2523,6 +2877,10 @@ export class RuntimeSessionManager {
   }
 
   removeEdge(input: JsonRecord = {}) {
+    return this.#cmdRemoveEdge(input, this.#humanCtx())
+  }
+
+  #cmdRemoveEdge(input: JsonRecord = {}, ctx: JsonRecord) {
     const request = isObject(input) ? input : {}
     const edgeId = nonEmptyString(request.edgeId) ? request.edgeId.trim() : undefined
     if (!edgeId) {
@@ -2542,6 +2900,11 @@ export class RuntimeSessionManager {
     }
 
     this.#state.edges.splice(index, 1)
+    this.#appendKernelEvent(
+      'edge.removed',
+      { edgeId, source: edge.source, target: edge.target },
+      ctx
+    )
     this.#touch()
     this.#broadcast({
       type: 'edge.removed',
@@ -2556,41 +2919,122 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown membrane source session: ${source}`)
     }
 
+    const actor = this.#membraneActor(source)
+    const request = isObject(input) ? input : {}
+
     if (tool === 'create_session') {
-      return this.#membraneCreateSession(source, input)
+      const result = await this.dispatchCommand({
+        kind: 'create_session',
+        actor,
+        input: this.#membraneCreateInput(source, request),
+      })
+      return { sessionId: result.sessionId }
     }
 
     if (tool === 'resume_session') {
-      return this.#membraneResumeSession(source, input)
+      const target = optionalTrimmedString(request.sessionId)
+      if (!target) {
+        throw new Error('resume_session sessionId is required')
+      }
+      const message = optionalTrimmedString(request.message)
+      if (!message) {
+        throw new Error('resume_session message is required')
+      }
+      await this.dispatchCommand({
+        kind: 'resume_session',
+        actor,
+        input: {
+          sessionId: target,
+          message,
+          context: request.context,
+          edgeSourceSessionId: source,
+          masterReason: request.masterReason,
+          reason: request.reason,
+        },
+      })
+      return { ok: true }
     }
 
     if (tool === 'report') {
-      return this.#membraneReport(source, input)
+      return this.dispatchCommand({
+        kind: 'report',
+        actor,
+        input: request,
+      })
     }
 
     if (tool === 'link_sessions') {
-      return this.#membraneLinkSessions(source, input)
+      const target = optionalTrimmedString(request.sessionId)
+      if (!target) {
+        throw new Error('link_sessions sessionId is required')
+      }
+      const { edge } = await this.dispatchCommand({
+        kind: 'link_sessions',
+        actor,
+        input: {
+          source,
+          target,
+          label: request.label,
+          reason: request.reason,
+        },
+      })
+      return { ok: true, edgeId: edge.edgeId }
     }
 
     throw new Error(`Unknown membrane tool: ${tool}`)
   }
 
-  #membraneLinkSessions(source, input: JsonRecord = {}) {
-    const target = input.sessionId
-    if (typeof target !== 'string' || target.trim().length === 0) {
-      throw new Error('link_sessions sessionId is required')
+  #membraneActor(source) {
+    return {
+      kind: this.#state.sessions[source]?.role === 'master' ? 'master' : 'agent',
+      ref: source,
     }
-
-    const { edge } = this.linkSessions({
-      source,
-      target: target.trim(),
-      label: input.label,
-      reason: input.reason,
-    })
-    return { ok: true, edgeId: edge.edgeId }
   }
 
-  async #startRun(sessionId, { prompt, attachments = [], runKind, userMessageId }) {
+  // Maps a membrane create_session request onto the unified command input:
+  // children inherit the creator's cwd and runtime settings (a cheap-model
+  // master never silently spawns default-model sessions), and the creator
+  // becomes the lineage edge source.
+  #membraneCreateInput(source, input: JsonRecord = {}) {
+    const prompt =
+      typeof input.prompt === 'string' && input.prompt.trim().length > 0
+        ? input.prompt.trim()
+        : undefined
+    if (!prompt) {
+      throw new Error('create_session prompt is required')
+    }
+
+    if (input.agent && input.agent !== 'claude-code') {
+      throw new Error(`Unsupported agent for P2 membrane: ${input.agent}`)
+    }
+
+    const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
+    const sourceSession = this.#state.sessions[source]
+    const cluster =
+      typeof input.cluster === 'string' && input.cluster.trim().length > 0
+        ? input.cluster.trim()
+        : sourceNode?.clusterId
+    const label = optionalTrimmedString(input.label)
+
+    return {
+      agent: 'claude-code',
+      prompt,
+      cwd: sourceSession?.cwd,
+      context: input.context,
+      cluster,
+      label: input.label,
+      runtimeSettings: sourceSession?.runtimeSettings,
+      sourceSessionId: source,
+      linkLabel: label ? `create: ${label}` : 'create_session',
+      masterReason: input.masterReason,
+      reason: input.reason,
+    }
+  }
+
+  async #startRun(
+    sessionId,
+    { prompt, attachments = [], runKind, userMessageId, activationEventId }
+  ) {
     const session = this.#state.sessions[sessionId]
     const runId = randomUUID()
     const bridgeUrl = await this.#bridge.start()
@@ -2626,6 +3070,9 @@ export class RuntimeSessionManager {
       sawTextDelta: false,
       turnCheckpoint,
       turnDiffRecorded: false,
+      // Kernel event id of the session.created/session.resumed fact that
+      // started this run; provider lifecycle facts chain to it via causeId.
+      activationEventId,
     })
     this.#appendProviderRuntimeEvent(sessionId, {
       id: randomUUID(),
@@ -2693,6 +3140,7 @@ export class RuntimeSessionManager {
         return
       }
 
+      const context = this.#runContext.get(sessionId)
       current.exitCode = code
       current.signal = signal
       current.finishedAt = now()
@@ -2718,6 +3166,9 @@ export class RuntimeSessionManager {
           type: 'session.killed',
           sessionId,
           state: this.getState(),
+          // The kernel fact was appended by the kill command; the process
+          // exit is only its completion, not a second fact.
+          kernelEventId: context?.killedEventId,
         })
         return
       }
@@ -2734,11 +3185,17 @@ export class RuntimeSessionManager {
           status: 'idle',
         })
         this.#runContext.delete(sessionId)
+        const finishedEvent = this.#appendKernelEvent(
+          'session.finished',
+          { sessionId, exitCode: code },
+          { actor: { kind: 'provider' }, causeId: context?.activationEventId }
+        )
         this.#touch()
         this.#emitRuntimeEvent({
           type: 'session.finished',
           sessionId,
           state: this.getState(),
+          kernelEventId: finishedEvent?.id,
         })
         return
       }
@@ -3221,12 +3678,13 @@ export class RuntimeSessionManager {
     this.#touch()
   }
 
-  #failSession(sessionId, error) {
+  #failSession(sessionId, error, ctx: JsonRecord = undefined) {
     const session = this.#state.sessions[sessionId]
     if (!session) {
       return
     }
 
+    const context = this.#runContext.get(sessionId)
     session.status = 'failed'
     session.error = error
     session.finishedAt = now()
@@ -3244,12 +3702,21 @@ export class RuntimeSessionManager {
       status: 'failed',
     })
     this.#runContext.delete(sessionId)
+    const failedEvent = this.#appendKernelEvent(
+      'session.failed',
+      { sessionId, error: truncateForLog(String(error ?? ''), 400) },
+      ctx ?? {
+        actor: { kind: 'provider' },
+        causeId: context?.activationEventId,
+      }
+    )
     this.#touch()
     this.#emitRuntimeEvent({
       type: 'session.failed',
       sessionId,
       error,
       state: this.getState(),
+      kernelEventId: failedEvent?.id,
     })
   }
 
@@ -3426,7 +3893,7 @@ export class RuntimeSessionManager {
     return normalized
   }
 
-  #assignMaster(clusterId, sessionId) {
+  #assignMaster(clusterId, sessionId, ctx: JsonRecord = undefined) {
     const cluster = this.#ensureCluster(clusterId)
     const session = this.#state.sessions[sessionId]
     const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
@@ -3434,6 +3901,8 @@ export class RuntimeSessionManager {
     if (!session || !node) {
       throw new Error(`Unknown master session: ${sessionId}`)
     }
+
+    const alreadyAssigned = cluster.masterSessionId === sessionId
 
     const staleMasterIds = new Set()
     if (cluster.masterSessionId && cluster.masterSessionId !== sessionId) {
@@ -3474,6 +3943,14 @@ export class RuntimeSessionManager {
 
     for (const staleMasterId of staleMasterIds) {
       this.#syncSessionRoleAndCluster(staleMasterId)
+    }
+
+    if (!alreadyAssigned) {
+      this.#appendKernelEvent(
+        'role.assigned',
+        { clusterId, masterSessionId: sessionId },
+        ctx ?? { actor: { kind: 'runtime' } }
+      )
     }
   }
 
@@ -3563,9 +4040,16 @@ export class RuntimeSessionManager {
   #recoverRunningLoops() {
     for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
       if (cluster.loopState?.status === 'running' && !cluster.frozen) {
+        const recoveredEvent = this.#appendKernelEvent(
+          'loop.recovered',
+          { clusterId: cluster.clusterId },
+          { actor: { kind: 'runtime' } },
+          { reason: 'Runtime restarted with a running loop; resuming it.' }
+        )
         this.#queueLoopWakeup(cluster.clusterId, {
           type: 'runtime.recovered',
           ts: now(),
+          kernelEventId: recoveredEvent?.id,
         })
       }
     }
@@ -3613,6 +4097,7 @@ export class RuntimeSessionManager {
         from: event.from,
         reportId: event.report.id,
         report: event.report,
+        kernelEventId: event.kernelEventId,
       }
     }
 
@@ -3621,6 +4106,7 @@ export class RuntimeSessionManager {
       ts: now(),
       sessionId: event.sessionId,
       error: event.error,
+      kernelEventId: event.kernelEventId,
     }
   }
 
@@ -3661,10 +4147,15 @@ export class RuntimeSessionManager {
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
 
+    // The hero loop is hardcoded automation (a rule actor); every action it
+    // takes chains back to the kernel event that woke it.
+    const ctx = this.#loopRuleCtx(clusterId, event.kernelEventId)
+
     if (cluster.frozen) {
       this.#stopLoop(clusterId, 'Cluster is frozen; loop stopped.', {
         event,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3673,6 +4164,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Cluster has no LoopPolicy.', {
         event,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3685,6 +4177,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Cluster has no master session.', {
         event,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3697,7 +4190,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(
         clusterId,
         `Master session cannot continue: ${masterSession.status}.`,
-        { event, broadcast: true }
+        { event, broadcast: true, ctx }
       )
       return
     }
@@ -3711,13 +4204,13 @@ export class RuntimeSessionManager {
           : event.error
             ? `Managed session failed: ${event.error}`
             : 'Managed session failed.',
-        { event, broadcast: true }
+        { event, broadcast: true, ctx }
       )
       return
     }
 
     if (event.type === 'report.received') {
-      await this.#handleLoopReport(clusterId, event.report)
+      await this.#handleLoopReport(clusterId, event.report, ctx)
       return
     }
 
@@ -3726,7 +4219,7 @@ export class RuntimeSessionManager {
       event.type === 'loop.started' ||
       event.type === 'runtime.recovered'
     ) {
-      await this.#handleLoopSessionFinished(clusterId, event.sessionId)
+      await this.#handleLoopSessionFinished(clusterId, event.sessionId, ctx)
     }
   }
 
@@ -3735,10 +4228,11 @@ export class RuntimeSessionManager {
     this.#stopLoop(clusterId, `Loop error: ${message}`, {
       event,
       broadcast: true,
+      ctx: this.#loopRuleCtx(clusterId, event?.kernelEventId),
     })
   }
 
-  async #handleLoopSessionFinished(clusterId, finishedSessionId) {
+  async #handleLoopSessionFinished(clusterId, finishedSessionId, ctx) {
     const cluster = this.#state.clusters[clusterId]
     if (!cluster || cluster.loopState?.status !== 'running') {
       return
@@ -3749,6 +4243,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Cluster has no coder session.', {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3772,6 +4267,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Coder session is missing.', {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3789,19 +4285,20 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
 
     if (!reviewerSessionId) {
-      await this.#createLoopReviewer(clusterId, coderSessionId)
+      await this.#createLoopReviewer(clusterId, coderSessionId, ctx)
       return
     }
 
-    await this.#resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId)
+    await this.#resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId, ctx)
   }
 
-  async #handleLoopReport(clusterId, report) {
+  async #handleLoopReport(clusterId, report, ctx) {
     const cluster = this.#state.clusters[clusterId]
     if (!cluster || cluster.loopState?.status !== 'running') {
       return
@@ -3817,6 +4314,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Cluster has no coder session.', {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3835,13 +4333,17 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, reason, {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
-      this.#applyFreeze({
-        targetId: clusterId,
-        source: cluster.masterSessionId,
-        reason,
-        masterReason: reason,
-      })
+      this.#applyFreeze(
+        {
+          targetId: clusterId,
+          source: cluster.masterSessionId,
+          reason,
+          masterReason: reason,
+        },
+        ctx
+      )
       return
     }
 
@@ -3852,20 +4354,24 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, reason, {
         event: cluster.loopState.lastEvent,
         broadcast: true,
+        ctx,
       })
-      this.#applyFreeze({
-        targetId: clusterId,
-        source: cluster.masterSessionId,
-        reason,
-        masterReason: reason,
-      })
+      this.#applyFreeze(
+        {
+          targetId: clusterId,
+          source: cluster.masterSessionId,
+          reason,
+          masterReason: reason,
+        },
+        ctx
+      )
       return
     }
 
-    await this.#resumeCoderFromReport(clusterId, coderSessionId, report)
+    await this.#resumeCoderFromReport(clusterId, coderSessionId, report, ctx)
   }
 
-  async #createLoopReviewer(clusterId, coderSessionId) {
+  async #createLoopReviewer(clusterId, coderSessionId, ctx) {
     const cluster = this.#state.clusters[clusterId]
     const masterSessionId = cluster?.masterSessionId
     if (!cluster || !masterSessionId) {
@@ -3874,13 +4380,21 @@ export class RuntimeSessionManager {
 
     const coder = this.#state.sessions[coderSessionId]
     const reason = `Coder ${coder?.label ?? coderSessionId} finished; create reviewer.`
-    const result = await this.#membraneCreateSession(masterSessionId, {
-      agent: 'claude-code',
-      label: 'Reviewer',
-      cluster: clusterId,
-      prompt: this.#reviewerCreatePrompt(),
-      context: this.#gitDiffForSession(coderSessionId),
-      masterReason: reason,
+    // The loop automation acts as a rule actor; the lineage edge still points
+    // at the master session (the loop is the master's automation).
+    const result = await this.dispatchCommand({
+      kind: 'create_session',
+      actor: ctx.actor,
+      causeId: ctx.causeId,
+      reason,
+      input: this.#membraneCreateInput(masterSessionId, {
+        agent: 'claude-code',
+        label: 'Reviewer',
+        cluster: clusterId,
+        prompt: this.#reviewerCreatePrompt(),
+        context: this.#gitDiffForSession(coderSessionId),
+        masterReason: reason,
+      }),
     })
 
     cluster.loopState = {
@@ -3892,7 +4406,7 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
   }
 
-  async #resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId) {
+  async #resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId, ctx) {
     const cluster = this.#state.clusters[clusterId]
     const masterSessionId = cluster?.masterSessionId
     const reviewer = this.#state.sessions[reviewerSessionId]
@@ -3913,21 +4427,29 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Reviewer cannot be resumed by the loop.', {
         event: cluster.loopState?.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
 
     const reason = `Coder finished fixes; resume reviewer ${reviewer.label}.`
-    await this.#membraneResumeSession(masterSessionId, {
-      sessionId: reviewerSessionId,
-      message: this.#reviewerResumeMessage(),
-      context: this.#gitDiffForSession(coderSessionId),
-      masterReason: reason,
+    await this.dispatchCommand({
+      kind: 'resume_session',
+      actor: ctx.actor,
+      causeId: ctx.causeId,
+      reason,
+      input: {
+        sessionId: reviewerSessionId,
+        message: this.#reviewerResumeMessage(),
+        context: this.#gitDiffForSession(coderSessionId),
+        edgeSourceSessionId: masterSessionId,
+        masterReason: reason,
+      },
     })
     this.#setLoopReason(clusterId, reason)
   }
 
-  async #resumeCoderFromReport(clusterId, coderSessionId, report) {
+  async #resumeCoderFromReport(clusterId, coderSessionId, report, ctx) {
     const cluster = this.#state.clusters[clusterId]
     const masterSessionId = cluster?.masterSessionId
     const coder = this.#state.sessions[coderSessionId]
@@ -3948,6 +4470,7 @@ export class RuntimeSessionManager {
       this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
         event: cluster.loopState?.lastEvent,
         broadcast: true,
+        ctx,
       })
       return
     }
@@ -3961,10 +4484,17 @@ export class RuntimeSessionManager {
     }
     this.#touch()
 
-    await this.#membraneResumeSession(masterSessionId, {
-      sessionId: coderSessionId,
-      message: this.#coderIssueMessage(report, nextIteration),
-      masterReason: reason,
+    await this.dispatchCommand({
+      kind: 'resume_session',
+      actor: ctx.actor,
+      causeId: ctx.causeId,
+      reason,
+      input: {
+        sessionId: coderSessionId,
+        message: this.#coderIssueMessage(report, nextIteration),
+        edgeSourceSessionId: masterSessionId,
+        masterReason: reason,
+      },
     })
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
   }
@@ -4515,12 +5045,13 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
   }
 
-  #stopLoop(clusterId, reason, { event, broadcast = false }: JsonRecord = {}) {
+  #stopLoop(clusterId, reason, { event, broadcast = false, ctx }: JsonRecord = {}) {
     const cluster = this.#state.clusters[clusterId]
     if (!cluster) {
       return
     }
 
+    const wasRunning = cluster.loopState?.status === 'running'
     const ts = now()
     cluster.loopState = {
       ...this.#ensureLoopState(cluster),
@@ -4528,6 +5059,14 @@ export class RuntimeSessionManager {
       reason,
       stoppedAt: ts,
       lastEvent: this.#serializeLoopEvent(event ?? { type: 'loop.stopped', ts }),
+    }
+    if (wasRunning) {
+      this.#appendKernelEvent(
+        'loop.stopped',
+        { clusterId },
+        ctx ?? this.#loopRuleCtx(clusterId, event?.kernelEventId),
+        { reason }
+      )
     }
     this.#touch()
 
@@ -4541,7 +5080,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  #applyFreeze({ targetId, reason, source, masterReason }: JsonRecord) {
+  #applyFreeze({ targetId, reason, source, masterReason }: JsonRecord, ctx: JsonRecord) {
     const cluster = this.#state.clusters[targetId]
     const session = this.#state.sessions[targetId]
     const sourceSessionId =
@@ -4554,6 +5093,7 @@ export class RuntimeSessionManager {
       cluster.freezeReason = finalReason
       this.#stopLoop(cluster.clusterId, finalReason, {
         event: { type: 'freeze.applied', targetId, ts: now() },
+        ctx,
       })
       targetSessionIds = [...cluster.nodeIds]
     } else if (session) {
@@ -4564,6 +5104,7 @@ export class RuntimeSessionManager {
       if (clusterId) {
         this.#stopLoop(clusterId, finalReason, {
           event: { type: 'freeze.applied', targetId, ts: now() },
+          ctx,
         })
       }
     } else {
@@ -4598,6 +5139,12 @@ export class RuntimeSessionManager {
       }
     }
 
+    this.#appendKernelEvent(
+      'freeze.applied',
+      { targetId, targetSessionIds, sourceSessionId },
+      ctx,
+      { reason: finalReason }
+    )
     this.#touch()
     this.#broadcast({
       type: 'freeze.applied',
@@ -4643,86 +5190,12 @@ export class RuntimeSessionManager {
     }
   }
 
-  async #membraneCreateSession(source, input: JsonRecord = {}) {
-    const prompt =
-      typeof input.prompt === 'string' && input.prompt.trim().length > 0
-        ? input.prompt.trim()
-        : undefined
-    if (!prompt) {
-      throw new Error('create_session prompt is required')
+  #cmdReport(input: JsonRecord = {}, ctx: JsonRecord) {
+    const source = ctx.actor?.ref
+    if (!source || !this.#state.sessions[source]) {
+      throw new Error(`Unknown report source session: ${source ?? ''}`)
     }
 
-    if (input.agent && input.agent !== 'claude-code') {
-      throw new Error(`Unsupported agent for P2 membrane: ${input.agent}`)
-    }
-
-    const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
-    const sourceSession = this.#state.sessions[source]
-    const cluster =
-      typeof input.cluster === 'string' && input.cluster.trim().length > 0
-        ? input.cluster.trim()
-        : sourceNode?.clusterId
-    const envelope = this.#createEnvelope(source)
-    const result = await this.createSession({
-      agent: 'claude-code',
-      prompt,
-      cwd: sourceSession?.cwd,
-      context: input.context,
-      cluster,
-      label: input.label,
-      // Children inherit their creator's runtime settings (like cwd), so a
-      // cheap-model master never silently spawns default-model sessions.
-      runtimeSettings: sourceSession?.runtimeSettings,
-    })
-    this.#addEdge({
-      source,
-      target: result.sessionId,
-      kind: 'create-session',
-      envelope,
-      label: input.label ? `create: ${input.label}` : 'create_session',
-      masterReason: this.#masterReasonFromInput(source, input),
-    })
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-    return { sessionId: result.sessionId }
-  }
-
-  async #membraneResumeSession(source, input: JsonRecord = {}) {
-    const target = input.sessionId
-    if (typeof target !== 'string' || target.trim().length === 0) {
-      throw new Error('resume_session sessionId is required')
-    }
-
-    const message =
-      typeof input.message === 'string' && input.message.trim().length > 0
-        ? input.message.trim()
-        : undefined
-    if (!message) {
-      throw new Error('resume_session message is required')
-    }
-
-    const envelope = this.#createEnvelope(source)
-    await this.resumeSession({
-      sessionId: target,
-      message,
-      context: input.context,
-    })
-
-    this.#addEdge({
-      source,
-      target,
-      kind: 'resume-session',
-      envelope,
-      label: 'resume_session',
-      masterReason: this.#masterReasonFromInput(source, input),
-    })
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-
-    return { ok: true }
-  }
-
-  #membraneReport(source, input: JsonRecord = {}) {
     const payload = this.#normalizeReportPayload(input)
     const envelope = this.#createEnvelope(source)
     const report = {
@@ -4769,12 +5242,24 @@ export class RuntimeSessionManager {
       })
     }
 
+    const reportEvent = this.#appendKernelEvent(
+      'report.received',
+      {
+        reportId: report.id,
+        from: source,
+        reportType: payload.type,
+        verdict: payload.type === 'verdict' ? payload.verdict : undefined,
+        summary: truncateForLog(this.#reportSummary(payload), 200),
+      },
+      ctx
+    )
     this.#touch()
     this.#emitRuntimeEvent({
       type: 'report.received',
       from: source,
       report,
       state: this.getState(),
+      kernelEventId: reportEvent?.id,
     })
     return { ok: true }
   }
@@ -5156,24 +5641,76 @@ export class RuntimeSessionManager {
   }
 
   #persistState() {
-    if (!this.#storageFile) {
-      return
-    }
+    this.#kernelStore.saveSnapshot(this.#state)
+  }
 
-    writeJsonAtomically(this.#storageFile, this.#state)
+  #kernelStoreDiagnostics() {
+    return this.#kernelStore.diagnostics.map((item) =>
+      diagnostic(item.code, item.message, item.context ?? {})
+    )
   }
 
   #loadState() {
+    const snapshot = this.#kernelStore.loadSnapshot()
+    const storeDiagnostics = this.#kernelStoreDiagnostics()
+    if (snapshot) {
+      return this.#normalizeState(snapshot.state, storeDiagnostics)
+    }
+
+    // No snapshot. Distinguish first-run migration from corruption recovery:
+    // after a preserved-corrupt store, the JSON file is a stale fossil -- we
+    // still restore it (better than empty), but the rollback must be loud.
+    const storeWasCorrupted = this.#kernelStore.diagnostics.some((item) =>
+      String(item.code ?? '').startsWith('kernel-store.')
+    )
+    const fossilExists = this.#storageFile && fs.existsSync(this.#storageFile)
+    if (storeWasCorrupted && fossilExists) {
+      let fossilModifiedAt
+      try {
+        fossilModifiedAt = fs.statSync(this.#storageFile).mtime.toISOString()
+      } catch {
+        fossilModifiedAt = undefined
+      }
+      storeDiagnostics.push(
+        diagnostic(
+          'storage.state_rolled_back',
+          'Kernel store was corrupt; state was restored from the legacy JSON snapshot and may be older than your latest work.',
+          { storageFile: this.#storageFile, fossilModifiedAt }
+        )
+      )
+    }
+
+    const legacy = this.#loadLegacyJsonState(storeDiagnostics)
+    if (legacy) {
+      if (legacy.imported) {
+        this.#legacyImportKind = storeWasCorrupted ? 'fossil-rollback' : 'migration'
+      }
+      return legacy.state
+    }
+
+    if (storeDiagnostics.length > 0) {
+      return this.#withDiagnostics(createEmptyGraphState(), storeDiagnostics)
+    }
+    return createEmptyGraphState()
+  }
+
+  // Reads the pre-G0 JSON storage format. Returns { state, imported } where
+  // `imported` is true only when real data was parsed -- an empty recovery
+  // state must not masquerade as a completed import in the kernel log.
+  #loadLegacyJsonState(diagnostics: JsonRecord[] = []) {
     if (!this.#storageFile || !fs.existsSync(this.#storageFile)) {
-      return createEmptyGraphState()
+      return undefined
     }
 
     const primary = readJsonFile(this.#storageFile)
     if (primary.ok) {
-      return this.#normalizeState(primary.value)
+      return {
+        state: this.#normalizeState(primary.value, diagnostics),
+        imported: true,
+      }
     }
 
-    const diagnostics = [
+    diagnostics.push(
       diagnostic(
         'storage.primary_parse_failed',
         'Primary Orrery runtime state could not be parsed.',
@@ -5182,8 +5719,8 @@ export class RuntimeSessionManager {
           error: primary.error.message,
           preservedFile: preserveCorruptFile(this.#storageFile),
         }
-      ),
-    ]
+      )
+    )
 
     const backupFile = backupFileFor(this.#storageFile)
     if (fs.existsSync(backupFile)) {
@@ -5196,7 +5733,10 @@ export class RuntimeSessionManager {
             { backupFile }
           )
         )
-        return this.#normalizeState(backup.value, diagnostics)
+        return {
+          state: this.#normalizeState(backup.value, diagnostics),
+          imported: true,
+        }
       }
 
       diagnostics.push(
@@ -5211,7 +5751,10 @@ export class RuntimeSessionManager {
     console.error(
       `Failed to load Orrery runtime state: ${primary.error.message}; starting with an empty recoverable state.`
     )
-    return this.#withDiagnostics(createEmptyGraphState(), diagnostics)
+    return {
+      state: this.#withDiagnostics(createEmptyGraphState(), diagnostics),
+      imported: false,
+    }
   }
 
   #normalizeState(value, diagnostics: JsonRecord[] = []) {
@@ -5517,6 +6060,7 @@ export class RuntimeSessionManager {
         session.error ??
         `Interrupted by runtime restart while ${session.status}; review the last messages and resume when ready.`
       session.finishedAt = session.finishedAt ?? now()
+      this.#restartInterruptedSessionIds.push(sessionId)
       return 'failed'
     }
 

@@ -108,6 +108,16 @@ test('debug CLI covers the session/graph/state surface', async () => {
     assert.equal(eventsParsed.sessionId, sessionId)
     assert.equal(eventsParsed.events.length > 0, true)
 
+    const kernel = await runCli(base, ['kernel'])
+    assert.match(kernel.stdout, /session\.created/)
+    assert.match(kernel.stdout, /actor=human/)
+    assert.match(kernel.stdout, /latestSeq=/)
+    const kernelJson = await runCli(base, ['kernel', '--json', '--type', 'session.finished'])
+    const kernelParsed = JSON.parse(kernelJson.stdout)
+    assert.ok(kernelParsed.events.length >= 1)
+    assert.ok(kernelParsed.events.every((event) => event.type === 'session.finished'))
+    assert.ok(kernelParsed.events[0].causeId, 'finish must carry its causal link')
+
     const missing = await runCli(base, ['session', 'show', 'zzz'], {
       expectFailure: true,
     })
