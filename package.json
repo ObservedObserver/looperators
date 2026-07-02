@@ -13,6 +13,7 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "check:electron": "tsc -p tsconfig.electron.json --noEmit",
     "lint": "oxlint",
+    "cli": "node scripts/orrery-cli.mjs",
     "runtime:http": "npm run build:electron && node dist-electron/electron/runtimeHttpServerCli.js",
     "runtime:http:serve": "node dist-electron/electron/runtimeHttpServerCli.js",
     "runtime:spike": "node scripts/claude-stream-json-spike.mjs finish",
