@@ -40,6 +40,20 @@ contextBridge.exposeInMainWorld('orrery', {
     freeze: (input) => ipcRenderer.invoke('orrery:freeze', input),
     getWorkingTreeDiff: (input) =>
       ipcRenderer.invoke('orrery:get-working-tree-diff', input),
+    openWorkspace: (input) =>
+      ipcRenderer.invoke('orrery:open-workspace', input),
+    createTerminal: (input) =>
+      ipcRenderer.invoke('orrery:create-terminal', input),
+    getTerminal: (input) =>
+      ipcRenderer.invoke('orrery:get-terminal', input),
+    runTerminalCommand: (input) =>
+      ipcRenderer.invoke('orrery:run-terminal-command', input),
+    writeTerminalInput: (input) =>
+      ipcRenderer.invoke('orrery:write-terminal-input', input),
+    clearTerminal: (input) =>
+      ipcRenderer.invoke('orrery:clear-terminal', input),
+    closeTerminal: (input) =>
+      ipcRenderer.invoke('orrery:close-terminal', input),
     onEvent: (listener) => {
       const wrappedListener = (_event, payload) => listener(payload)
       ipcRenderer.on('orrery:runtime-event', wrappedListener)

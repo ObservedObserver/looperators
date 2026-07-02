@@ -110,6 +110,27 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:get-working-tree-diff', (_event, input) =>
     runtime.getWorkingTreeDiff(input)
   )
+  ipcMain.handle('orrery:open-workspace', (_event, input) =>
+    runtime.openWorkspace(input)
+  )
+  ipcMain.handle('orrery:create-terminal', (_event, input) =>
+    runtime.createTerminal(input)
+  )
+  ipcMain.handle('orrery:get-terminal', (_event, input) =>
+    runtime.getTerminal(input)
+  )
+  ipcMain.handle('orrery:run-terminal-command', (_event, input) =>
+    runtime.runTerminalCommand(input)
+  )
+  ipcMain.handle('orrery:write-terminal-input', (_event, input) =>
+    runtime.writeTerminalInput(input)
+  )
+  ipcMain.handle('orrery:clear-terminal', (_event, input) =>
+    runtime.clearTerminal(input)
+  )
+  ipcMain.handle('orrery:close-terminal', (_event, input) =>
+    runtime.closeTerminal(input)
+  )
 
   createMainWindow()
 

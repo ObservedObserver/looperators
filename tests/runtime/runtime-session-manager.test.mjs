@@ -268,6 +268,54 @@ async function waitFor(label, predicate, timeoutMs = 5000) {
   throw new Error(`Timed out waiting for ${label}`)
 }
 
+function persistedStateWithSession(sessionId, cwd) {
+  const ts = '2026-06-30T00:00:00.000Z'
+  return {
+    version: 5,
+    updatedAt: ts,
+    providerInstances: [],
+    nodes: [
+      {
+        nodeId: sessionId,
+        sessionId,
+        label: 'Terminal Session',
+        role: 'worker',
+        agent: 'codex',
+        status: 'idle',
+        position: { x: 0, y: 0 },
+      },
+    ],
+    edges: [],
+    sessions: {
+      [sessionId]: {
+        sessionId,
+        nodeId: sessionId,
+        backend: 'codex-app-server',
+        providerKind: 'codex',
+        providerInstanceId: 'default-codex',
+        agent: 'codex',
+        label: 'Terminal Session',
+        prompt: 'terminal fixture',
+        cwd,
+        role: 'worker',
+        status: 'idle',
+        createdAt: ts,
+        updatedAt: ts,
+        chunks: [],
+        messages: [],
+        nativeEvents: [],
+        runtimeEvents: [],
+        runtimeActivities: [],
+        runtimeRequests: [],
+        runtimeUserInputRequests: [],
+        runtimePlans: [],
+      },
+    },
+    clusters: {},
+    reports: [],
+  }
+}
+
 test('compiled RuntimeSessionManager creates, resumes, persists, and validates reports', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-ts-runtime-test-'))
   const fakeClaude = path.join(tempRoot, 'claude')
@@ -376,6 +424,79 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
     } else {
       process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
     }
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager opens an auxiliary terminal for a session', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-terminal-test-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const sessionId = 'sess-terminal'
+  const emittedEvents = []
+
+  fs.writeFileSync(
+    storageFile,
+    JSON.stringify(persistedStateWithSession(sessionId, tempRoot), null, 2)
+  )
+
+  const runtime = new RuntimeSessionManager({
+    storageFile,
+    broadcastRuntimeEvent: (event) => emittedEvents.push(event),
+  })
+
+  try {
+    const created = runtime.createTerminal({ sessionId })
+    assert.equal(created.ok, true)
+    assert.equal(created.terminal.sessionId, sessionId)
+    assert.equal(created.terminal.cwd, tempRoot)
+    assert.equal(created.terminal.status, 'running')
+    assert.match(created.terminal.prompt, / .+ [%>] $/)
+
+    const command =
+      process.platform === 'win32'
+        ? 'cd && echo orrery-terminal-ok'
+        : 'pwd && echo orrery-terminal-ok'
+    const started = runtime.runTerminalCommand({
+      terminalId: created.terminal.terminalId,
+      command,
+    })
+    assert.equal(started.ok, true)
+    assert.equal(started.terminal.currentCommand.command, command)
+
+    const finished = await waitFor('terminal command finished', () =>
+      emittedEvents.find(
+        (event) =>
+          event.type === 'terminal.command.finished' &&
+          event.command.commandId === started.commandId
+      )
+    )
+    assert.equal(finished.command.exitCode, 0)
+
+    const output = finished.terminal.chunks
+      .map((chunk) => chunk.text)
+      .join('')
+    assert.match(output, /orrery-terminal-ok/)
+    assert.match(output, new RegExp(tempRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.match(output, new RegExp(`${created.terminal.prompt}${command}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.doesNotMatch(output, /❯ /)
+    assert.equal(
+      finished.terminal.chunks.some((chunk) =>
+        chunk.text.includes('__ORRERY_COMMAND_DONE_')
+      ),
+      false
+    )
+
+    const cleared = runtime.clearTerminal({
+      terminalId: created.terminal.terminalId,
+    })
+    assert.equal(cleared.terminal.chunks.length, 0)
+
+    const closed = runtime.closeTerminal({
+      terminalId: created.terminal.terminalId,
+    })
+    assert.equal(closed.terminal.status, 'closed')
+  } finally {
+    runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

@@ -289,6 +289,54 @@ function compileRoutes(
       handler: async (request) =>
         runtime.getWorkingTreeDiff(await readJsonBody(request)),
     },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/open-workspace$/,
+      handler: async (request) =>
+        runtime.openWorkspace(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/terminals$/,
+      handler: async (request) =>
+        runtime.createTerminal(await readJsonBody(request)),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/terminals\/([^/]+)$/,
+      handler: async (_request, params) =>
+        runtime.getTerminal({ terminalId: params.terminalId }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/terminals\/([^/]+)\/command$/,
+      handler: async (request, params) =>
+        runtime.runTerminalCommand({
+          ...(await readJsonBody(request)),
+          terminalId: params.terminalId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/terminals\/([^/]+)\/stdin$/,
+      handler: async (request, params) =>
+        runtime.writeTerminalInput({
+          ...(await readJsonBody(request)),
+          terminalId: params.terminalId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/terminals\/([^/]+)\/clear$/,
+      handler: async (_request, params) =>
+        runtime.clearTerminal({ terminalId: params.terminalId }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/terminals\/([^/]+)\/close$/,
+      handler: async (_request, params) =>
+        runtime.closeTerminal({ terminalId: params.terminalId }),
+    },
   ]
 }
 
@@ -309,6 +357,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/terminals/') && match[1]) {
+    return { terminalId: decodeParam(match[1]) }
   }
 
   return {}

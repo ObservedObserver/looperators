@@ -90,6 +90,54 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     })
     assert.equal(wrongTypeResponse.status, 415)
 
+    const invalidOpenTargetResponse = await fetch(
+      `${base}/api/runtime/open-workspace`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:5173',
+        },
+        body: JSON.stringify({ cwd: process.cwd(), target: 'not-an-app' }),
+      }
+    )
+    assert.equal(invalidOpenTargetResponse.status, 500)
+    const invalidOpenTarget = await invalidOpenTargetResponse.json()
+    assert.match(invalidOpenTarget.error, /Unsupported workspace open target/)
+
+    const invalidOpenCwdResponse = await fetch(
+      `${base}/api/runtime/open-workspace`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:5173',
+        },
+        body: JSON.stringify({
+          cwd: path.join(tempRoot, 'missing-project'),
+          target: 'finder',
+        }),
+      }
+    )
+    assert.equal(invalidOpenCwdResponse.status, 500)
+    const invalidOpenCwd = await invalidOpenCwdResponse.json()
+    assert.match(invalidOpenCwd.error, /Project folder not found/)
+
+    const invalidTerminalSessionResponse = await fetch(
+      `${base}/api/runtime/terminals`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:5173',
+        },
+        body: JSON.stringify({ sessionId: 'missing-session' }),
+      }
+    )
+    assert.equal(invalidTerminalSessionResponse.status, 500)
+    const invalidTerminalSession = await invalidTerminalSessionResponse.json()
+    assert.match(invalidTerminalSession.error, /Unknown session/)
+
     const optionsResponse = await fetch(`${base}/api/runtime/state`, {
       method: 'OPTIONS',
       headers: { Origin: 'http://127.0.0.1:5173' },

@@ -36,7 +36,7 @@ function ToolRow({ run }: { run: ToolRun }) {
         >
           {gutter.char}
         </span>
-        <span className="min-w-0 leading-6">
+        <span className="min-w-0 text-[12px] leading-6">
           <span className="font-medium text-lime">{run.command}</span>
           {run.args ? (
             <span className="ml-2 break-words text-term-dim">{run.args}</span>

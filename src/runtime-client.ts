@@ -4,11 +4,17 @@ import type {
   AnswerUserInputInput,
   ArchiveRuntimeSessionInput,
   AssignMasterToClusterInput,
+  ClearTerminalInput,
+  CloseTerminalInput,
+  CreateTerminalInput,
   CreateMasterForClusterInput,
   CreateRuntimeSessionInput,
   CreateRuntimeSessionResult,
   FreezeInput,
+  GetTerminalInput,
   GraphState,
+  OpenWorkspaceInput,
+  OpenWorkspaceResult,
   ProviderSetupStatus,
   ProviderSetupStatusInput,
   ProjectContext,
@@ -16,6 +22,9 @@ import type {
   RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
+  RuntimeTerminalResult,
+  RunTerminalCommandInput,
+  RunTerminalCommandResult,
   SessionId,
   SetClusterLoopPolicyInput,
   StartMasterLoopInput,
@@ -23,6 +32,7 @@ import type {
   UpdateNodePositionsInput,
   UpsertProviderInstanceInput,
   UpsertClusterInput,
+  WriteTerminalInput,
   WorkingTreeDiffInput,
   WorkingTreeDiffResult,
 } from '@/shared/graph-state'
@@ -90,6 +100,17 @@ export type RuntimeApi = {
   getWorkingTreeDiff: (
     input: WorkingTreeDiffInput
   ) => Promise<WorkingTreeDiffResult>
+  openWorkspace: (input: OpenWorkspaceInput) => Promise<OpenWorkspaceResult>
+  createTerminal: (input: CreateTerminalInput) => Promise<RuntimeTerminalResult>
+  getTerminal: (input: GetTerminalInput) => Promise<RuntimeTerminalResult>
+  runTerminalCommand: (
+    input: RunTerminalCommandInput
+  ) => Promise<RunTerminalCommandResult>
+  writeTerminalInput: (
+    input: WriteTerminalInput
+  ) => Promise<RuntimeTerminalResult>
+  clearTerminal: (input: ClearTerminalInput) => Promise<RuntimeTerminalResult>
+  closeTerminal: (input: CloseTerminalInput) => Promise<RuntimeTerminalResult>
   onEvent: (listener: (event: RuntimeEvent) => void) => () => void
 }
 
@@ -110,7 +131,7 @@ type ElectronRuntimeClient = {
 type HttpRuntimeClient = {
   kind: 'http'
   isAvailable: true
-  platform: 'web'
+  platform: string
   runtimeUrl: string
   workspace: RuntimeWorkspaceMetadata
   runtime: RuntimeApi
@@ -167,6 +188,12 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'freeze.applied',
   'loop.started',
   'loop.stopped',
+  'terminal.created',
+  'terminal.output',
+  'terminal.command.finished',
+  'terminal.exited',
+  'terminal.closed',
+  'terminal.cleared',
 ]
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -399,6 +426,48 @@ class HttpRuntimeApi implements RuntimeApi {
     )
   }
 
+  openWorkspace(input: OpenWorkspaceInput) {
+    return this.#post<OpenWorkspaceResult>('open-workspace', input)
+  }
+
+  createTerminal(input: CreateTerminalInput) {
+    return this.#post<RuntimeTerminalResult>('terminals', input)
+  }
+
+  getTerminal(input: GetTerminalInput) {
+    return this.#get<RuntimeTerminalResult>(
+      `terminals/${encodeURIComponent(input.terminalId)}`
+    )
+  }
+
+  runTerminalCommand(input: RunTerminalCommandInput) {
+    return this.#post<RunTerminalCommandResult>(
+      `terminals/${encodeURIComponent(input.terminalId)}/command`,
+      input
+    )
+  }
+
+  writeTerminalInput(input: WriteTerminalInput) {
+    return this.#post<RuntimeTerminalResult>(
+      `terminals/${encodeURIComponent(input.terminalId)}/stdin`,
+      input
+    )
+  }
+
+  clearTerminal(input: ClearTerminalInput) {
+    return this.#post<RuntimeTerminalResult>(
+      `terminals/${encodeURIComponent(input.terminalId)}/clear`,
+      input
+    )
+  }
+
+  closeTerminal(input: CloseTerminalInput) {
+    return this.#post<RuntimeTerminalResult>(
+      `terminals/${encodeURIComponent(input.terminalId)}/close`,
+      input
+    )
+  }
+
   onEvent(listener: (event: RuntimeEvent) => void) {
     const source = new EventSource(this.#url('events'))
     const handleEvent = (event: MessageEvent<string>) => {
@@ -505,7 +574,7 @@ function createHttpRuntimeClient(
   cachedHttpRuntimeClient = {
     kind: 'http',
     isAvailable: true,
-    platform: 'web',
+    platform: config?.platform ?? 'web',
     runtimeUrl,
     workspace,
     runtime,

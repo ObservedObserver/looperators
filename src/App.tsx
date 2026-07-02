@@ -36,14 +36,17 @@ import {
   ArchiveRestore,
   ArrowUp,
   Bot,
+  Box,
   Braces,
   Check,
   ChevronDown,
+  CodeXml,
   ClipboardCheck,
   CirclePlay,
   FileText,
   FolderOpen,
   GitBranch,
+  Hammer,
   Image as ImageIcon,
   MessageSquarePlus,
   MessagesSquare,
@@ -53,6 +56,7 @@ import {
   PanelRightOpen,
   Paperclip,
   RefreshCw,
+  Rocket,
   Search,
   Send,
   Snowflake,
@@ -61,10 +65,14 @@ import {
   Sun,
   Terminal,
   TriangleAlert,
+  Waves,
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { Select as SelectPrimitive } from 'radix-ui'
+import {
+  DropdownMenu as DropdownMenuPrimitive,
+  Select as SelectPrimitive,
+} from 'radix-ui'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -95,14 +103,19 @@ import {
   type GraphEdge,
   type GraphEdgeKind,
   type GraphState,
+  type OpenWorkspaceTarget,
   type ProjectContext,
   type ProviderSetupStatus,
   type Report,
+  type RuntimeTerminal,
+  type RuntimeTerminalChunk,
+  type RuntimeTerminalStatus,
   type RuntimeStateDiagnostic,
   type SessionStatus,
   type WorkMode,
   type UpdateNodePositionsInput,
   type WorkingTreeDiffResult,
+  openWorkspaceTargetIds,
 } from '@/shared/graph-state'
 import type {
   ChatAttachment,
@@ -219,7 +232,24 @@ const railSidebarWidth = 264
 const expandedGraphLayoutMinWidth =
   railSidebarWidth + chatPanelMinWidth + chatCanvasSeparatorWidth + canvasPanelMinWidth
 const graphCollapsedStorageKey = 'orrery.graphCollapsed.v1'
+const openWorkspaceTargetStorageKey = 'orrery.openWorkspaceTarget.v1'
 const attachmentTextPreviewLimit = chatAttachmentTextMaxLength
+
+const workspaceOpenTargetOptions: {
+  id: OpenWorkspaceTarget
+  label: string
+  icon: LucideIcon
+  darwinOnly?: boolean
+}[] = [
+  { id: 'vscode', label: 'VS Code', icon: CodeXml },
+  { id: 'cursor', label: 'Cursor', icon: Box },
+  { id: 'windsurf', label: 'Windsurf', icon: Waves },
+  { id: 'antigravity', label: 'Antigravity', icon: Rocket },
+  { id: 'finder', label: 'Finder', icon: FolderOpen },
+  { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'ghostty', label: 'Ghostty', icon: Terminal },
+  { id: 'xcode', label: 'Xcode', icon: Hammer, darwinOnly: true },
+]
 
 function initialChatPanelWidth() {
   if (typeof window === 'undefined') {
@@ -234,6 +264,37 @@ function initialChatPanelWidth() {
   } catch {
     return defaultChatPanelWidth
   }
+}
+
+function isOpenWorkspaceTarget(value: string): value is OpenWorkspaceTarget {
+  return openWorkspaceTargetIds.includes(value as OpenWorkspaceTarget)
+}
+
+function initialOpenWorkspaceTarget(): OpenWorkspaceTarget {
+  if (typeof window === 'undefined') {
+    return 'vscode'
+  }
+
+  try {
+    const stored = window.localStorage.getItem(openWorkspaceTargetStorageKey)
+    return stored && isOpenWorkspaceTarget(stored) ? stored : 'vscode'
+  } catch {
+    return 'vscode'
+  }
+}
+
+function workspaceOpenTargetOption(target: OpenWorkspaceTarget) {
+  return (
+    workspaceOpenTargetOptions.find((option) => option.id === target) ??
+    workspaceOpenTargetOptions[0]
+  )
+}
+
+function workspaceOpenTargetAvailable(
+  option: (typeof workspaceOpenTargetOptions)[number],
+  platform?: string
+) {
+  return !option.darwinOnly || platform === 'darwin'
 }
 
 function initialGraphCollapsed() {
@@ -314,6 +375,10 @@ function readBlobAsDataUrl(blob: Blob) {
     reader.onerror = () => reject(reader.error ?? new Error('Failed to read image.'))
     reader.readAsDataURL(blob)
   })
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 async function composerAttachmentFromFile(file: File): Promise<ChatAttachment> {
@@ -1618,6 +1683,431 @@ function NewChatSetupPill({
   )
 }
 
+function OpenWorkspaceSplitButton({
+  target,
+  platform,
+  disabled,
+  pendingTarget,
+  onOpen,
+  onTargetChange,
+}: {
+  target: OpenWorkspaceTarget
+  platform?: string
+  disabled?: boolean
+  pendingTarget?: OpenWorkspaceTarget
+  onOpen: (target: OpenWorkspaceTarget) => void
+  onTargetChange: (target: OpenWorkspaceTarget) => void
+}) {
+  const activeOption = workspaceOpenTargetOption(target)
+  const ActiveIcon = activeOption.icon
+  const isOpening = Boolean(pendingTarget)
+  const activeUnavailable = !workspaceOpenTargetAvailable(activeOption, platform)
+  const mainDisabled = disabled || isOpening || activeUnavailable
+
+  return (
+    <DropdownMenuPrimitive.Root>
+      <div className="app-region-no-drag inline-flex h-7 shrink-0 overflow-hidden rounded-lg border border-border bg-background shadow-sm">
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              className="h-7 rounded-none border-0 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
+              variant="ghost"
+              size="sm"
+              disabled={mainDisabled}
+              aria-label={`Open in ${activeOption.label}`}
+              onClick={() => onOpen(target)}
+            >
+              {isOpening && pendingTarget === target ? (
+                <RefreshCw className="size-3.5 animate-spin" />
+              ) : (
+                <ActiveIcon className="size-3.5" />
+              )}
+              <span className="hidden max-w-16 truncate min-[1280px]:inline">
+                {activeOption.label}
+              </span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {activeUnavailable
+              ? `${activeOption.label} is unavailable on this platform`
+              : `Open in ${activeOption.label}`}
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuPrimitive.Trigger asChild>
+          <Button
+            className="h-7 w-7 rounded-none border-0 border-l border-border bg-muted/70 px-0"
+            variant="ghost"
+            size="icon-sm"
+            disabled={disabled || isOpening}
+            aria-label="Choose open target"
+          >
+            <ChevronDown className="size-3.5" />
+          </Button>
+        </DropdownMenuPrimitive.Trigger>
+      </div>
+      <DropdownMenuPrimitive.Portal>
+        <DropdownMenuPrimitive.Content
+          align="end"
+          side="bottom"
+          sideOffset={8}
+          className="z-50 w-56 overflow-hidden rounded-xl border border-border bg-popover p-1.5 text-popover-foreground shadow-[0_18px_44px_-16px_rgba(0,0,0,0.55)] data-[side=bottom]:animate-in data-[side=bottom]:slide-in-from-top-1"
+        >
+          {workspaceOpenTargetOptions.map((option) => {
+            const Icon = option.icon
+            const unavailable = !workspaceOpenTargetAvailable(option, platform)
+            const selected = option.id === target
+            const pending = pendingTarget === option.id
+
+            return (
+              <DropdownMenuPrimitive.Item
+                key={option.id}
+                disabled={disabled || isOpening || unavailable}
+                className="relative flex h-9 cursor-pointer select-none items-center gap-2.5 rounded-lg px-2.5 pr-8 text-[13px] outline-none transition data-[disabled]:pointer-events-none data-[disabled]:opacity-35 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+                onSelect={() => {
+                  onTargetChange(option.id)
+                  onOpen(option.id)
+                }}
+              >
+                {pending ? (
+                  <RefreshCw className="size-4 shrink-0 animate-spin text-lime-hi" />
+                ) : (
+                  <Icon
+                    className={cn(
+                      'size-4 shrink-0',
+                      selected ? 'text-lime-hi' : 'text-muted-foreground'
+                    )}
+                  />
+                )}
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {selected ? (
+                  <Check className="absolute right-2.5 size-3.5 text-lime-hi" />
+                ) : null}
+              </DropdownMenuPrimitive.Item>
+            )
+          })}
+        </DropdownMenuPrimitive.Content>
+      </DropdownMenuPrimitive.Portal>
+    </DropdownMenuPrimitive.Root>
+  )
+}
+
+function terminalStatusPillCls(status: RuntimeTerminalStatus) {
+  switch (status) {
+    case 'running':
+      return 'border-term-green/35 bg-term-green/10 text-term-green'
+    case 'exited':
+      return 'border-term-amber/35 bg-term-amber/10 text-term-amber'
+    case 'closed':
+    default:
+      return 'border-ink-line bg-foreground/[0.04] text-term-dim'
+  }
+}
+
+function terminalChunkClassName(chunk: RuntimeTerminalChunk) {
+  switch (chunk.stream) {
+    case 'stdin':
+      return 'text-lime-hi'
+    case 'stderr':
+      return 'text-term-rose'
+    case 'system':
+      return 'text-term-dim2'
+    case 'stdout':
+    default:
+      return 'text-term-name'
+  }
+}
+
+function SessionTerminalPanel({
+  terminal,
+  isOpening,
+  isSending,
+  onSubmit,
+  onClear,
+  onClose,
+}: {
+  terminal: RuntimeTerminal
+  isOpening?: boolean
+  isSending?: boolean
+  onSubmit: (command: string) => void
+  onClear: () => void
+  onClose: () => void
+}) {
+  const terminalRef = useRef<HTMLDivElement | null>(null)
+  const [draft, setDraft] = useState('')
+  const [cursorIndex, setCursorIndex] = useState(0)
+  const [history, setHistory] = useState<string[]>([])
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const commandRunning = terminal.currentCommand?.status === 'running'
+  const inputDisabled = isOpening || isSending || terminal.status !== 'running'
+  const canEdit = !inputDisabled && !commandRunning
+  const cursorChar = draft[cursorIndex] ?? ' '
+  const beforeCursor = draft.slice(0, cursorIndex)
+  const afterCursor = draft.slice(Math.min(cursorIndex + 1, draft.length))
+
+  useEffect(() => {
+    const terminalSurface = terminalRef.current
+    if (!terminalSurface) {
+      return
+    }
+
+    terminalSurface.scrollTop = terminalSurface.scrollHeight
+  }, [cursorIndex, draft, terminal.chunks.length, terminal.updatedAt])
+
+  useEffect(() => {
+    setDraft('')
+    setCursorIndex(0)
+    setHistoryIndex(null)
+    window.setTimeout(() => terminalRef.current?.focus(), 0)
+  }, [terminal.terminalId])
+
+  const insertDraftText = useCallback(
+    (text: string) => {
+      if (!canEdit || text.length === 0) {
+        return
+      }
+
+      const normalized = text.replace(/\r\n?/g, '\n')
+      const nextDraft = `${draft.slice(0, cursorIndex)}${normalized}${draft.slice(
+        cursorIndex
+      )}`
+      setDraft(nextDraft)
+      setCursorIndex(cursorIndex + normalized.length)
+      setHistoryIndex(null)
+    },
+    [canEdit, cursorIndex, draft]
+  )
+
+  const submitDraft = useCallback(() => {
+    if (!canEdit) {
+      return
+    }
+
+    const command = draft
+    setDraft('')
+    setCursorIndex(0)
+    setHistoryIndex(null)
+    if (command.trim().length > 0) {
+      setHistory((current) => [...current, command].slice(-100))
+    }
+    onSubmit(command)
+  }, [canEdit, draft, onSubmit])
+
+  const recallHistory = useCallback(
+    (direction: -1 | 1) => {
+      if (!canEdit || history.length === 0) {
+        return
+      }
+
+      let nextIndex: number | null
+      if (historyIndex === null) {
+        nextIndex = direction < 0 ? history.length - 1 : null
+      } else {
+        const candidate = historyIndex + direction
+        nextIndex =
+          candidate < 0
+            ? 0
+            : candidate >= history.length
+              ? null
+              : candidate
+      }
+
+      setHistoryIndex(nextIndex)
+      const nextDraft = nextIndex === null ? '' : history[nextIndex]
+      setDraft(nextDraft)
+      setCursorIndex(nextDraft.length)
+    },
+    [canEdit, history, historyIndex]
+  )
+
+  const handleTerminalKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (!canEdit) {
+        return
+      }
+      if (event.metaKey || event.altKey) {
+        return
+      }
+
+      if (event.ctrlKey) {
+        if (event.key.toLowerCase() === 'l') {
+          event.preventDefault()
+          onClear()
+        }
+        return
+      }
+
+      switch (event.key) {
+        case 'Enter':
+          event.preventDefault()
+          submitDraft()
+          return
+        case 'Backspace':
+          event.preventDefault()
+          if (cursorIndex > 0) {
+            setDraft(`${draft.slice(0, cursorIndex - 1)}${draft.slice(cursorIndex)}`)
+            setCursorIndex(cursorIndex - 1)
+            setHistoryIndex(null)
+          }
+          return
+        case 'Delete':
+          event.preventDefault()
+          if (cursorIndex < draft.length) {
+            setDraft(`${draft.slice(0, cursorIndex)}${draft.slice(cursorIndex + 1)}`)
+            setHistoryIndex(null)
+          }
+          return
+        case 'ArrowLeft':
+          event.preventDefault()
+          setCursorIndex((current) => Math.max(0, current - 1))
+          return
+        case 'ArrowRight':
+          event.preventDefault()
+          setCursorIndex((current) => Math.min(draft.length, current + 1))
+          return
+        case 'Home':
+          event.preventDefault()
+          setCursorIndex(0)
+          return
+        case 'End':
+          event.preventDefault()
+          setCursorIndex(draft.length)
+          return
+        case 'ArrowUp':
+          event.preventDefault()
+          recallHistory(-1)
+          return
+        case 'ArrowDown':
+          event.preventDefault()
+          recallHistory(1)
+          return
+        case 'Tab':
+          event.preventDefault()
+          insertDraftText('  ')
+          return
+        default:
+          break
+      }
+
+      if (event.key.length === 1) {
+        event.preventDefault()
+        insertDraftText(event.key)
+      }
+    },
+    [
+      canEdit,
+      cursorIndex,
+      draft,
+      insertDraftText,
+      onClear,
+      recallHistory,
+      submitDraft,
+    ]
+  )
+
+  return (
+    <section
+      className="shrink-0 border-t border-ink-line-2 bg-ink font-mono"
+      aria-label="Session terminal"
+    >
+      <div className="flex h-9 min-w-0 items-center gap-2 border-b border-ink-line-2 px-3">
+        <Terminal className="size-3.5 shrink-0 text-lime-hi" />
+        <span className="shrink-0 text-[10px] uppercase tracking-[0.16em] text-term-dim2">
+          Terminal
+        </span>
+        <span
+          className="min-w-0 flex-1 truncate text-[11px] text-term-dim"
+          title={terminal.cwd}
+        >
+          {compactPath(terminal.cwd)}
+        </span>
+        {terminal.lastCommand ? (
+          <span className="hidden shrink-0 text-[10.5px] tabular-nums text-term-dim2 min-[1180px]:inline">
+            exit {terminal.lastCommand.exitCode ?? 'n/a'}
+          </span>
+        ) : null}
+        <span className={cn(statePillBase, terminalStatusPillCls(terminal.status))}>
+          {commandRunning ? 'running' : terminal.status}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              className="size-7 shrink-0"
+              variant="ghost"
+              size="icon-sm"
+              disabled={terminal.chunks.length === 0}
+              aria-label="Clear Terminal"
+              onClick={onClear}
+            >
+              <RefreshCw className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Clear</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              className="size-7 shrink-0"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close Terminal"
+              onClick={onClose}
+            >
+              <X className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Close</TooltipContent>
+        </Tooltip>
+      </div>
+
+      <div
+        ref={terminalRef}
+        className="h-56 cursor-text overflow-y-auto overscroll-contain px-3 py-2 text-[12px] leading-5 outline-none focus:ring-1 focus:ring-inset focus:ring-lime-hi/25"
+        role="textbox"
+        tabIndex={0}
+        aria-label="Terminal"
+        aria-multiline="true"
+        onClick={() => terminalRef.current?.focus()}
+        onKeyDown={handleTerminalKeyDown}
+        onPaste={(event) => {
+          if (!canEdit) {
+            return
+          }
+
+          const text = event.clipboardData.getData('text/plain')
+          if (text.length > 0) {
+            event.preventDefault()
+            insertDraftText(text)
+          }
+        }}
+      >
+        <pre className="min-h-full whitespace-pre-wrap break-words font-mono text-term-name">
+          {terminal.chunks.map((chunk) => (
+            <span key={chunk.id} className={terminalChunkClassName(chunk)}>
+              {chunk.text}
+            </span>
+          ))}
+          {canEdit ? (
+            <span>
+              <span className="text-term-dim">{terminal.prompt}</span>
+              <span>{beforeCursor}</span>
+              <span className="animate-pulse bg-term-name text-ink">
+                {cursorChar}
+              </span>
+              <span>{afterCursor}</span>
+            </span>
+          ) : terminal.status === 'running' ? (
+            <span className="text-term-faint">
+              {commandRunning ? 'command running...' : ''}
+            </span>
+          ) : (
+            <span className="text-term-faint">{terminal.status}</span>
+          )}
+        </pre>
+      </div>
+    </section>
+  )
+}
+
 const modelDefaultOptionValue = '__orrery_model_default__'
 const modelCustomOptionValue = '__orrery_model_custom__'
 
@@ -2787,7 +3277,7 @@ function ActivityTimelineRow({ activity }: { activity: RuntimeActivity }) {
         >
           {statusMarker.char}
         </span>
-        <span className="min-w-0 leading-6">
+        <span className="min-w-0 text-[12px] leading-6">
           <span className="font-medium text-lime">{command}</span>
           {activity.args ? (
             <span className="ml-2 break-words text-term-dim">
@@ -4211,6 +4701,15 @@ function App() {
   const [diffTurnId, setDiffTurnId] = useState<string>()
   const [diffPanelError, setDiffPanelError] = useState<string>()
   const [runtimeError, setRuntimeError] = useState<string>()
+  const [openWorkspaceTarget, setOpenWorkspaceTarget] =
+    useState<OpenWorkspaceTarget>(initialOpenWorkspaceTarget)
+  const [openingWorkspaceTarget, setOpeningWorkspaceTarget] =
+    useState<OpenWorkspaceTarget>()
+  const [terminalPanel, setTerminalPanel] = useState<RuntimeTerminal>()
+  const [isTerminalPanelOpen, setIsTerminalPanelOpen] = useState(false)
+  const [isOpeningTerminal, setIsOpeningTerminal] = useState(false)
+  const [isSendingTerminalCommand, setIsSendingTerminalCommand] =
+    useState(false)
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([])
   const [pendingLinkedSourceId, setPendingLinkedSourceId] = useState<
     string | null
@@ -4238,6 +4737,10 @@ function App() {
   const runtimeApi = demoMode ? undefined : runtimeClient.runtime
   const isRuntimeAvailable = Boolean(runtimeApi)
   const isElectron = !demoMode && runtimeClient.kind === 'electron'
+  const runtimeHostPlatform =
+    runtimeClient.kind === 'electron' || runtimeClient.kind === 'http'
+      ? runtimeClient.platform
+      : undefined
   const runtimeModeLabel = demoMode
     ? 'demo'
     : runtimeClient.kind === 'electron'
@@ -4462,6 +4965,16 @@ function App() {
     Boolean(selectedSession) && !selectedSessionFrozen
   const canFreezeActiveCluster =
     Boolean(activeCluster) && activeCluster?.frozen !== true
+  const canOpenSelectedWorkspace = Boolean(
+    isRuntimeAvailable && selectedSession?.cwd.trim()
+  )
+  const selectedTerminal =
+    terminalPanel?.sessionId === selectedSession?.sessionId
+      ? terminalPanel
+      : undefined
+  const canOpenSelectedTerminal = Boolean(
+    isRuntimeAvailable && selectedSession?.sessionId && selectedSession?.cwd.trim()
+  )
   const canOpenDiffPanel = Boolean(isRuntimeAvailable && selectedSession)
   const canActOnPlan = Boolean(isRuntimeAvailable && selectedSession && canResume)
   const graphForcedCollapsed = viewportWidth < expandedGraphLayoutMinWidth
@@ -4829,6 +5342,21 @@ function App() {
       return
     }
 
+    try {
+      window.localStorage.setItem(
+        openWorkspaceTargetStorageKey,
+        openWorkspaceTarget
+      )
+    } catch {
+      // Open-target persistence is best-effort.
+    }
+  }, [openWorkspaceTarget])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
     const handleResize = () => {
       const totalWidth =
         splitContainerRef.current?.getBoundingClientRect().width ??
@@ -5084,7 +5612,16 @@ function App() {
       })
 
     const unsubscribe = runtimeApi.onEvent((event) => {
-      setRuntimeState(event.state)
+      if ('state' in event) {
+        setRuntimeState(event.state)
+      }
+      if ('terminal' in event) {
+        setTerminalPanel((current) =>
+          current?.terminalId === event.terminal.terminalId
+            ? event.terminal
+            : current
+        )
+      }
     })
 
     return () => {
@@ -5252,6 +5789,148 @@ function App() {
       setRuntimeError(error instanceof Error ? error.message : String(error))
     }
   }, [runtimeApi, selectedSessionId])
+
+  const openSelectedWorkspace = useCallback(
+    async (target: OpenWorkspaceTarget) => {
+      if (!runtimeApi) {
+        setRuntimeError(runtimeUnavailableText)
+        return
+      }
+      if (!selectedSession) {
+        return
+      }
+
+      setOpeningWorkspaceTarget(target)
+      setRuntimeError(undefined)
+
+      try {
+        await runtimeApi.openWorkspace({
+          cwd: selectedSession.cwd,
+          target,
+        })
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setOpeningWorkspaceTarget(undefined)
+      }
+    },
+    [runtimeApi, runtimeUnavailableText, selectedSession]
+  )
+
+  const openSelectedTerminal = useCallback(async () => {
+    if (!runtimeApi) {
+      setRuntimeError(runtimeUnavailableText)
+      return undefined
+    }
+    if (!selectedSession) {
+      return undefined
+    }
+
+    setIsOpeningTerminal(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await runtimeApi.createTerminal({
+        sessionId: selectedSession.sessionId,
+        cwd: selectedSession.cwd,
+      })
+      setTerminalPanel(result.terminal)
+      setIsTerminalPanelOpen(true)
+      return result.terminal
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+      return undefined
+    } finally {
+      setIsOpeningTerminal(false)
+    }
+  }, [runtimeApi, runtimeUnavailableText, selectedSession])
+
+  const runSelectedTerminalCommand = useCallback(async (command: string) => {
+    if (!runtimeApi) {
+      setRuntimeError(runtimeUnavailableText)
+      return
+    }
+
+    const terminal =
+      selectedTerminal?.status === 'running'
+        ? selectedTerminal
+        : await openSelectedTerminal()
+    if (!terminal) {
+      return
+    }
+
+    setIsSendingTerminalCommand(true)
+    setRuntimeError(undefined)
+
+    try {
+      const result = await runtimeApi.runTerminalCommand({
+        terminalId: terminal.terminalId,
+        command,
+      })
+      setTerminalPanel(result.terminal)
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const currentCommand = result.terminal.currentCommand
+        if (!currentCommand || currentCommand.commandId !== result.commandId) {
+          break
+        }
+
+        await wait(100)
+        const refreshed = await runtimeApi.getTerminal({
+          terminalId: terminal.terminalId,
+        })
+        setTerminalPanel(refreshed.terminal)
+        const finished = refreshed.terminal.lastCommand
+        if (
+          finished?.commandId === result.commandId ||
+          refreshed.terminal.currentCommand?.commandId !== result.commandId
+        ) {
+          break
+        }
+      }
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsSendingTerminalCommand(false)
+    }
+  }, [
+    openSelectedTerminal,
+    runtimeApi,
+    runtimeUnavailableText,
+    selectedTerminal,
+  ])
+
+  const clearSelectedTerminal = useCallback(async () => {
+    if (!runtimeApi || !selectedTerminal) {
+      return
+    }
+
+    try {
+      const result = await runtimeApi.clearTerminal({
+        terminalId: selectedTerminal.terminalId,
+      })
+      setTerminalPanel(result.terminal)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    }
+  }, [runtimeApi, selectedTerminal])
+
+  const closeSelectedTerminal = useCallback(async () => {
+    if (!runtimeApi || !selectedTerminal) {
+      setIsTerminalPanelOpen(false)
+      return
+    }
+
+    try {
+      const result = await runtimeApi.closeTerminal({
+        terminalId: selectedTerminal.terminalId,
+      })
+      setTerminalPanel(result.terminal)
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsTerminalPanelOpen(false)
+    }
+  }, [runtimeApi, selectedTerminal])
 
   const setSessionArchived = useCallback(
     async (sessionId: string, archived: boolean) => {
@@ -6794,6 +7473,46 @@ function App() {
                         </span>
                       ) : null}
                       {selectedSession ? (
+                        <OpenWorkspaceSplitButton
+                          target={openWorkspaceTarget}
+                          platform={runtimeHostPlatform}
+                          disabled={!canOpenSelectedWorkspace}
+                          pendingTarget={openingWorkspaceTarget}
+                          onTargetChange={setOpenWorkspaceTarget}
+                          onOpen={openSelectedWorkspace}
+                        />
+                      ) : null}
+                      {selectedSession ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
+                              variant={
+                                isTerminalPanelOpen && selectedTerminal
+                                  ? 'secondary'
+                                  : 'outline'
+                              }
+                              size="sm"
+                              disabled={
+                                !canOpenSelectedTerminal || isOpeningTerminal
+                              }
+                              aria-label="Open Terminal"
+                              onClick={openSelectedTerminal}
+                            >
+                              {isOpeningTerminal ? (
+                                <RefreshCw className="size-3.5 animate-spin" />
+                              ) : (
+                                <Terminal className="size-3.5" />
+                              )}
+                              <span className="hidden min-[1280px]:inline">
+                                Terminal
+                              </span>
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Open Terminal</TooltipContent>
+                        </Tooltip>
+                      ) : null}
+                      {selectedSession ? (
                         <Button
                           className="app-region-no-drag h-7 px-2 font-mono text-[10.5px] uppercase tracking-[0.06em]"
                           variant="outline"
@@ -6881,6 +7600,17 @@ function App() {
                     </div>
                   )}
                 </div>
+
+                {isTerminalPanelOpen && selectedTerminal ? (
+                  <SessionTerminalPanel
+                    terminal={selectedTerminal}
+                    isOpening={isOpeningTerminal}
+                    isSending={isSendingTerminalCommand}
+                    onSubmit={runSelectedTerminalCommand}
+                    onClear={clearSelectedTerminal}
+                    onClose={closeSelectedTerminal}
+                  />
+                ) : null}
 
                 <div className="shrink-0 border-t border-border bg-card p-2.5">
                   {!selectedSession ? (

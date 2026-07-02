@@ -17,6 +17,30 @@ export const graphEdgeKinds = [
   'freeze',
 ]
 
+export const openWorkspaceTargetIds = [
+  'vscode',
+  'cursor',
+  'windsurf',
+  'antigravity',
+  'finder',
+  'terminal',
+  'ghostty',
+  'xcode',
+]
+
+export const runtimeTerminalStatuses = [
+  'running',
+  'exited',
+  'closed',
+]
+
+export const runtimeTerminalStreams = [
+  'stdin',
+  'stdout',
+  'stderr',
+  'system',
+]
+
 export const defaultGraphProviderInstances = [
   {
     providerInstanceId: 'default-claude-sdk',
@@ -151,6 +175,50 @@ export const graphStateSchema = {
       output:
         'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
     },
+    openWorkspace: {
+      input: {
+        cwd: 'string; project folder to open',
+        target:
+          '"vscode" | "cursor" | "windsurf" | "antigravity" | "finder" | "terminal" | "ghostty" | "xcode"',
+      },
+      output: '{ ok: boolean, cwd: string, target: OpenWorkspaceTarget }',
+    },
+    createTerminal: {
+      input: {
+        sessionId:
+          'SessionId; selected chat this auxiliary terminal is attached to',
+        cwd: 'string?; defaults to the selected session cwd',
+      },
+      output:
+        'RuntimeTerminal; in-process terminal surface, not a graph session',
+    },
+    getTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    runTerminalCommand: {
+      input: {
+        terminalId: 'string',
+        command: 'string; shell command line to send to the terminal',
+      },
+      output:
+        '{ ok: boolean, terminal: RuntimeTerminal, commandId: string }',
+    },
+    writeTerminalInput: {
+      input: {
+        terminalId: 'string',
+        input: 'string; raw stdin for the running shell',
+      },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    clearTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    closeTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
     getProviderSetupStatus: {
       input: {
         providerKind: 'ProviderKind; provider selected in the chat setup UI',
@@ -206,6 +274,12 @@ export const graphStateSchema = {
     'freeze.applied',
     'loop.started',
     'loop.stopped',
+    'terminal.created',
+    'terminal.output',
+    'terminal.command.finished',
+    'terminal.exited',
+    'terminal.closed',
+    'terminal.cleared',
   ],
   readabilityFields: {
     GraphNode: {

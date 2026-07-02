@@ -33,6 +33,30 @@ export const graphEdgeKinds = [
   'freeze',
 ] as const
 
+export const openWorkspaceTargetIds = [
+  'vscode',
+  'cursor',
+  'windsurf',
+  'antigravity',
+  'finder',
+  'terminal',
+  'ghostty',
+  'xcode',
+] as const
+
+export const runtimeTerminalStatuses = [
+  'running',
+  'exited',
+  'closed',
+] as const
+
+export const runtimeTerminalStreams = [
+  'stdin',
+  'stdout',
+  'stderr',
+  'system',
+] as const
+
 export const defaultGraphProviderInstances: ProviderInstance[] = [
   {
     providerInstanceId: 'default-claude-sdk',
@@ -169,6 +193,50 @@ export const graphStateSchema = {
       output:
         'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
     },
+    openWorkspace: {
+      input: {
+        cwd: 'string; project folder to open',
+        target:
+          '"vscode" | "cursor" | "windsurf" | "antigravity" | "finder" | "terminal" | "ghostty" | "xcode"',
+      },
+      output: '{ ok: boolean, cwd: string, target: OpenWorkspaceTarget }',
+    },
+    createTerminal: {
+      input: {
+        sessionId:
+          'SessionId; selected chat this auxiliary terminal is attached to',
+        cwd: 'string?; defaults to the selected session cwd',
+      },
+      output:
+        'RuntimeTerminal; in-process terminal surface, not a graph session',
+    },
+    getTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    runTerminalCommand: {
+      input: {
+        terminalId: 'string',
+        command: 'string; shell command line to send to the terminal',
+      },
+      output:
+        '{ ok: boolean, terminal: RuntimeTerminal, commandId: string }',
+    },
+    writeTerminalInput: {
+      input: {
+        terminalId: 'string',
+        input: 'string; raw stdin for the running shell',
+      },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    clearTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
+    closeTerminal: {
+      input: { terminalId: 'string' },
+      output: '{ ok: boolean, terminal: RuntimeTerminal }',
+    },
     getProviderSetupStatus: {
       input: {
         providerKind: 'ProviderKind; provider selected in the chat setup UI',
@@ -218,6 +286,12 @@ export const graphStateSchema = {
     'freeze.applied',
     'loop.started',
     'loop.stopped',
+    'terminal.created',
+    'terminal.output',
+    'terminal.command.finished',
+    'terminal.exited',
+    'terminal.closed',
+    'terminal.cleared',
   ],
   readabilityFields: {
     GraphNode: {
@@ -348,6 +422,9 @@ export type GraphNode = FreezeState & {
 }
 
 export type GraphEdgeKind = (typeof graphEdgeKinds)[number]
+export type OpenWorkspaceTarget = (typeof openWorkspaceTargetIds)[number]
+export type RuntimeTerminalStatus = (typeof runtimeTerminalStatuses)[number]
+export type RuntimeTerminalStream = (typeof runtimeTerminalStreams)[number]
 
 export type GraphEdge = FreezeState & {
   edgeId: EdgeId
@@ -421,6 +498,40 @@ export type AgentSession = {
   runtimeSettings?: ProviderRuntimeSettings
   effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig
   archived?: boolean
+}
+
+export type RuntimeTerminalChunk = {
+  id: string
+  terminalId: string
+  sessionId: SessionId
+  ts: string
+  stream: RuntimeTerminalStream
+  text: string
+}
+
+export type RuntimeTerminalCommand = {
+  commandId: string
+  command: string
+  status: 'running' | 'finished'
+  startedAt: string
+  finishedAt?: string
+  exitCode?: number
+}
+
+export type RuntimeTerminal = {
+  terminalId: string
+  sessionId: SessionId
+  cwd: string
+  shell: string
+  prompt: string
+  status: RuntimeTerminalStatus
+  createdAt: string
+  updatedAt: string
+  exitCode?: number | null
+  signal?: string | null
+  chunks: RuntimeTerminalChunk[]
+  currentCommand?: RuntimeTerminalCommand
+  lastCommand?: RuntimeTerminalCommand
 }
 
 export type Cluster = {
@@ -640,6 +751,54 @@ export type WorkingTreeDiffInput = {
   turnId?: string
 }
 
+export type OpenWorkspaceInput = {
+  cwd: string
+  target: OpenWorkspaceTarget
+}
+
+export type OpenWorkspaceResult = {
+  ok: boolean
+  cwd: string
+  target: OpenWorkspaceTarget
+  platform: string
+}
+
+export type CreateTerminalInput = {
+  sessionId: SessionId
+  cwd?: string
+}
+
+export type GetTerminalInput = {
+  terminalId: string
+}
+
+export type RunTerminalCommandInput = {
+  terminalId: string
+  command: string
+}
+
+export type WriteTerminalInput = {
+  terminalId: string
+  input: string
+}
+
+export type ClearTerminalInput = {
+  terminalId: string
+}
+
+export type CloseTerminalInput = {
+  terminalId: string
+}
+
+export type RuntimeTerminalResult = {
+  ok: boolean
+  terminal: RuntimeTerminal
+}
+
+export type RunTerminalCommandResult = RuntimeTerminalResult & {
+  commandId: string
+}
+
 export type RuntimeEvent =
   | { type: 'runtime.state'; state: GraphState }
   | { type: 'provider.instances.updated'; state: GraphState }
@@ -673,6 +832,39 @@ export type RuntimeEvent =
       clusterId: ClusterId
       reason?: string
       state: GraphState
+    }
+  | { type: 'terminal.created'; terminal: RuntimeTerminal }
+  | {
+      type: 'terminal.output'
+      terminalId: string
+      sessionId: SessionId
+      chunk: RuntimeTerminalChunk
+      terminal: RuntimeTerminal
+    }
+  | {
+      type: 'terminal.command.finished'
+      terminalId: string
+      sessionId: SessionId
+      command: RuntimeTerminalCommand
+      terminal: RuntimeTerminal
+    }
+  | {
+      type: 'terminal.exited'
+      terminalId: string
+      sessionId: SessionId
+      terminal: RuntimeTerminal
+    }
+  | {
+      type: 'terminal.closed'
+      terminalId: string
+      sessionId: SessionId
+      terminal: RuntimeTerminal
+    }
+  | {
+      type: 'terminal.cleared'
+      terminalId: string
+      sessionId: SessionId
+      terminal: RuntimeTerminal
     }
 
 export function createEmptyGraphState(): GraphState {
