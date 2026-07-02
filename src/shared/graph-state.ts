@@ -14,7 +14,7 @@ import type {
   UserInputAnswerMap,
 } from './provider-runtime'
 
-export const graphStateVersion = 5
+export const graphStateVersion = 6
 
 export const sessionStatuses = [
   'pending',
@@ -31,6 +31,7 @@ export const graphEdgeKinds = [
   'resume-session',
   'report',
   'freeze',
+  'link',
 ] as const
 
 export const openWorkspaceTargetIds = [
@@ -133,8 +134,32 @@ export const graphStateSchema = {
         'verdict | relationship | info payload; runtime adds envelope and routes upward',
       output: { ok: 'boolean' },
     },
+    link_sessions: {
+      input: {
+        sessionId: 'SessionId; link target, source is the calling session',
+        label: 'string?',
+        reason: 'string?',
+      },
+      output: { ok: 'boolean', edgeId: 'string' },
+    },
   },
   publicRuntimeApi: {
+    linkSessions: {
+      input: {
+        source: 'SessionId',
+        target: 'SessionId',
+        label: 'string?; defaults to "link"',
+        reason: 'string?; shown as edge detail',
+      },
+      output:
+        '{ edge: GraphEdge }; idempotent for same source/target/label, a new reason refreshes the stored summary',
+    },
+    removeEdge: {
+      input: {
+        edgeId: 'string; only kind "link" edges are removable',
+      },
+      output: '{ ok: boolean }',
+    },
     createSession: {
       input: {
         base: 'CreateRuntimeSessionInput',
@@ -284,6 +309,8 @@ export const graphStateSchema = {
     'session.killed',
     'report.received',
     'freeze.applied',
+    'edge.created',
+    'edge.removed',
     'loop.started',
     'loop.stopped',
     'terminal.created',

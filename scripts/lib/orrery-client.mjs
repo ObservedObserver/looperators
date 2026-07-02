@@ -199,6 +199,22 @@ export class OrreryClient {
     )
   }
 
+  linkSessions(source, target, options = {}) {
+    return this.#request('POST', '/api/runtime/edges', {
+      source,
+      target,
+      ...(options.label ? { label: options.label } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
+    })
+  }
+
+  removeEdge(edgeId) {
+    return this.#request(
+      'POST',
+      `/api/runtime/edges/${encodeURIComponent(edgeId)}/remove`
+    )
+  }
+
   upsertProviderInstance(input = {}) {
     return this.#request('POST', '/api/runtime/provider-instances', input)
   }

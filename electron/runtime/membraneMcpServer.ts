@@ -77,6 +77,30 @@ const tools = [
     },
   },
   {
+    name: 'link_sessions',
+    description:
+      'Declare a visible relationship edge from the current session to another Orrery session/node.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Target Orrery session id to link to. This is also the graph node id.',
+        },
+        label: {
+          type: 'string',
+          description: 'Optional short edge label, for example reviews or depends-on.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional explanation shown as the edge detail.',
+        },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'report',
     description:
       'Submit a typed verdict, relationship, or info report to the Orrery graph blackboard.',

@@ -506,6 +506,7 @@ const edgeKindLabels: Record<GraphEdgeKind, string> = {
   'resume-session': 'send',
   report: 'report',
   freeze: 'freeze',
+  link: 'link',
 }
 
 const edgeKindClassNames: Record<GraphEdgeKind, string> = {
@@ -517,6 +518,8 @@ const edgeKindClassNames: Record<GraphEdgeKind, string> = {
     'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
   freeze:
     'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-300',
+  link:
+    'border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300',
 }
 
 const edgeKindStrokes: Record<GraphEdgeKind, string> = {
@@ -524,6 +527,7 @@ const edgeKindStrokes: Record<GraphEdgeKind, string> = {
   'resume-session': 'oklch(0.75 0.15 75)',
   report: 'oklch(0.72 0.13 210)',
   freeze: 'oklch(0.6 0.02 240)',
+  link: 'oklch(0.65 0.19 300)',
 }
 
 function edgeDisplayLabel(edgeData: GraphEdgeData) {
@@ -2690,7 +2694,9 @@ function ReadabilityEdge({
                 ? '2 4'
                 : edgeData.kind === 'freeze'
                   ? '8 5'
-                  : undefined,
+                  : edgeData.kind === 'link'
+                    ? '3 3'
+                    : undefined,
           opacity: edgeData.frozen ? 0.55 : 1,
         }}
       />

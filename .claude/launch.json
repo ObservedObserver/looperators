@@ -6,6 +6,22 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:web", "--", "--host", "127.0.0.1", "--port", "5191", "--strictPort"],
       "port": 5191
+    },
+    {
+      "name": "web-headless-accept",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "cross-env",
+        "ORRERY_RUNTIME_PROXY_TARGET=http://127.0.0.1:48699",
+        "VITE_ORRERY_RUNTIME_URL=http://127.0.0.1:5192",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5192",
+        "--strictPort"
+      ],
+      "port": 5192
     }
   ]
 }

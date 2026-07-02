@@ -31,6 +31,9 @@ Commands:
   session kill <id>
   session archive <id> [--restore]
   events <id> [--since <cursor>]        Incremental provider events as JSON
+  edge add <source> <target>            Declare a link edge between two sessions
+    [--label <text>] [--reason <text>]
+  edge remove <edgeId>                  Remove a link edge (other kinds are history)
   graph [--json]                        Topology: clusters, nodes, edges
   state [--json]                        Runtime state (summary unless --json)
 
@@ -476,6 +479,49 @@ async function commandEvents(client, values, idOrPrefix) {
   printJson(result)
 }
 
+async function resolveEdgeId(client, idOrPrefix) {
+  if (!idOrPrefix) {
+    fail('Missing edge id', 2)
+  }
+  const graph = await client.graph()
+  const exact = graph.edges.find((edge) => edge.edgeId === idOrPrefix)
+  if (exact) {
+    return exact.edgeId
+  }
+  const matches = graph.edges.filter((edge) => edge.edgeId.startsWith(idOrPrefix))
+  if (matches.length === 1) {
+    return matches[0].edgeId
+  }
+  if (matches.length === 0) {
+    fail(`No edge matches "${idOrPrefix}"`)
+  }
+  fail(
+    `Ambiguous edge prefix "${idOrPrefix}":\n${matches
+      .map((edge) => `  ${edge.edgeId} (${edge.kind} ${shortId(edge.source)} -> ${shortId(edge.target)})`)
+      .join('\n')}`
+  )
+}
+
+async function commandEdgeAdd(client, values, sourceArg, targetArg) {
+  assertWritable(values, 'edge add')
+  const source = await resolveSessionId(client, sourceArg)
+  const target = await resolveSessionId(client, targetArg)
+  const { edge } = await client.linkSessions(source, target, {
+    label: values.label,
+    reason: values.reason,
+  })
+  process.stdout.write(
+    `${edge.edgeId}\n${shortId(edge.source)} -[${edge.kind}${edge.label ? ` "${edge.label}"` : ''}]-> ${shortId(edge.target)}\n`
+  )
+}
+
+async function commandEdgeRemove(client, values, idOrPrefix) {
+  assertWritable(values, 'edge remove')
+  const edgeId = await resolveEdgeId(client, idOrPrefix)
+  await client.removeEdge(edgeId)
+  process.stdout.write(`removed ${edgeId}\n`)
+}
+
 async function commandGraph(client, values) {
   const graph = await client.graph()
   if (values.json) {
@@ -526,8 +572,12 @@ async function commandGraph(client, values) {
     process.stdout.write(`${colors.bold('Edges')}\n`)
     for (const edge of graph.edges) {
       const label = edge.label ? ` "${edge.label}"` : ''
+      // Link edges are the removable kind, so show an id prefix usable with
+      // `edge remove`.
+      const edgeRef =
+        edge.kind === 'link' ? colors.dim(`  (${edge.edgeId.slice(0, 13)}…)`) : ''
       process.stdout.write(
-        `  ${shortId(edge.source)} -[${edge.kind}${label}]-> ${shortId(edge.target)}\n`
+        `  ${shortId(edge.source)} -[${edge.kind}${label}]-> ${shortId(edge.target)}${edgeRef}\n`
       )
     }
   }
@@ -575,6 +625,7 @@ async function main() {
       model: { type: 'string' },
       preset: { type: 'string' },
       label: { type: 'string' },
+      reason: { type: 'string' },
       link: { type: 'string' },
       'link-label': { type: 'string' },
       view: { type: 'string' },
@@ -599,7 +650,7 @@ async function main() {
     ...(values.preset ? { modelPreset: values.preset } : {}),
   })
 
-  const [command, subcommand, target] = positionals
+  const [command, subcommand, target, extra] = positionals
 
   if (command === 'sessions') {
     return commandSessions(client, values)
@@ -612,6 +663,16 @@ async function main() {
   }
   if (command === 'events') {
     return commandEvents(client, values, subcommand)
+  }
+  if (command === 'edge') {
+    switch (subcommand) {
+      case 'add':
+        return commandEdgeAdd(client, values, target, extra)
+      case 'remove':
+        return commandEdgeRemove(client, values, target)
+      default:
+        fail(`Unknown edge subcommand: ${subcommand ?? ''}\n\n${usage}`, 2)
+    }
   }
   if (command === 'session') {
     switch (subcommand) {
@@ -638,6 +699,14 @@ const isDirectRun =
   process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 
 if (isDirectRun) {
+  // Piping into head/grep closes stdout early; treat that as a clean exit
+  // instead of an unhandled EPIPE crash.
+  process.stdout.on('error', (error) => {
+    if (error?.code === 'EPIPE') {
+      process.exit(0)
+    }
+    throw error
+  })
   main().catch((error) => {
     const detail = error instanceof Error ? error.message : String(error)
     if (/fetch failed/i.test(detail)) {

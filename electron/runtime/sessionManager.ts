@@ -2474,6 +2474,83 @@ export class RuntimeSessionManager {
     })
   }
 
+  linkSessions(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const source = this.#requireSession(request.source).sessionId
+    const target = this.#requireSession(request.target).sessionId
+    if (source === target) {
+      throw new Error('Cannot link a session to itself')
+    }
+
+    const label = nonEmptyString(request.label) ? request.label.trim() : 'link'
+    const reason = nonEmptyString(request.reason) ? request.reason.trim() : undefined
+
+    const existing = this.#state.edges.find(
+      (edge) =>
+        edge.kind === 'link' &&
+        edge.source === source &&
+        edge.target === target &&
+        edge.label === label
+    )
+    if (existing) {
+      // Idempotent on source+target+label, but a fresh reason replaces the
+      // stored detail so re-declaring a link never silently drops rationale.
+      if (reason && existing.summary !== reason) {
+        existing.summary = reason
+        this.#touch()
+        this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      }
+      return { edge: clone(existing) }
+    }
+
+    const envelope = this.#createEnvelope(source)
+    this.#addEdge({
+      source,
+      target,
+      kind: 'link',
+      envelope,
+      label,
+      summary: reason,
+    })
+    const edge = this.#state.edges.at(-1)
+    this.#touch()
+    this.#broadcast({
+      type: 'edge.created',
+      edgeId: edge.edgeId,
+      state: this.getState(),
+    })
+    return { edge: clone(edge) }
+  }
+
+  removeEdge(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const edgeId = nonEmptyString(request.edgeId) ? request.edgeId.trim() : undefined
+    if (!edgeId) {
+      throw new Error('removeEdge edgeId is required')
+    }
+
+    const index = this.#state.edges.findIndex((edge) => edge.edgeId === edgeId)
+    if (index < 0) {
+      throw new Error(`Unknown edge: ${edgeId}`)
+    }
+
+    const edge = this.#state.edges[index]
+    if (edge.kind !== 'link') {
+      // Runtime-semantic edges (create/resume/report/freeze) are history of
+      // what actually happened; only declared relationships are removable.
+      throw new Error(`Only link edges can be removed, ${edgeId} is ${edge.kind}`)
+    }
+
+    this.#state.edges.splice(index, 1)
+    this.#touch()
+    this.#broadcast({
+      type: 'edge.removed',
+      edgeId,
+      state: this.getState(),
+    })
+    return { ok: true }
+  }
+
   async handleMembraneRequest({ tool, source, input }: JsonRecord) {
     if (!this.#state.sessions[source]) {
       throw new Error(`Unknown membrane source session: ${source}`)
@@ -2491,7 +2568,26 @@ export class RuntimeSessionManager {
       return this.#membraneReport(source, input)
     }
 
+    if (tool === 'link_sessions') {
+      return this.#membraneLinkSessions(source, input)
+    }
+
     throw new Error(`Unknown membrane tool: ${tool}`)
+  }
+
+  #membraneLinkSessions(source, input: JsonRecord = {}) {
+    const target = input.sessionId
+    if (typeof target !== 'string' || target.trim().length === 0) {
+      throw new Error('link_sessions sessionId is required')
+    }
+
+    const { edge } = this.linkSessions({
+      source,
+      target: target.trim(),
+      label: input.label,
+      reason: input.reason,
+    })
+    return { ok: true, edgeId: edge.edgeId }
   }
 
   async #startRun(sessionId, { prompt, attachments = [], runKind, userMessageId }) {

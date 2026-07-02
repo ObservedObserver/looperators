@@ -100,6 +100,33 @@ test('headless harness drives an isolated runtime end to end', async () => {
     const graph = await harness.graph()
     assert.equal(graph.nodes.length, 2)
 
+    let linked
+    const edgeEvent = await harness.waitForEvent(
+      (event) => event.type === 'edge.created',
+      {
+        timeoutMs: 10_000,
+        label: 'edge.created event',
+        trigger: async () => {
+          linked = await harness.linkSessions(created.sessionId, explicit.sessionId, {
+            label: 'reviews',
+            reason: 'A watches B',
+          })
+        },
+      }
+    )
+    assert.equal(edgeEvent.edgeId, linked.edge.edgeId)
+    const graphWithLink = await harness.graph()
+    const linkEdge = graphWithLink.edges.find((edge) => edge.kind === 'link')
+    assert.equal(linkEdge.edgeId, linked.edge.edgeId)
+    assert.equal(linkEdge.label, 'reviews')
+
+    await harness.removeEdge(linked.edge.edgeId)
+    const graphAfterRemove = await harness.graph()
+    assert.equal(
+      graphAfterRemove.edges.some((edge) => edge.kind === 'link'),
+      false
+    )
+
     const events = await harness.events(created.sessionId)
     assert.equal(events.events.length > 0, true)
     const incremental = await harness.events(created.sessionId, events.cursor)

@@ -140,6 +140,57 @@ test('debug CLI covers the session/graph/state surface', async () => {
     const killIdle = await runCli(base, ['session', 'kill', sessionId])
     assert.match(killIdle.stdout, /no active run to kill/)
 
+    const second = await runCli(base, [
+      'session',
+      'create',
+      '--prompt',
+      'cli smoke second session',
+      '--cwd',
+      process.cwd(),
+      '--label',
+      'CliSmokeTwo',
+      '--wait',
+      '--timeout',
+      '10000',
+    ])
+    const secondId = second.stdout.trim().split('\n')[0]
+
+    const blockedEdge = await runCli(
+      base,
+      ['--readonly', 'edge', 'add', shortPrefix, secondId.slice(0, 8)],
+      { expectFailure: true }
+    )
+    assert.notEqual(blockedEdge.code, 0)
+    assert.match(blockedEdge.stderr, /--readonly: refusing/)
+
+    const edgeAdded = await runCli(base, [
+      'edge',
+      'add',
+      shortPrefix,
+      secondId.slice(0, 8),
+      '--label',
+      'reviews',
+      '--reason',
+      'cli link smoke',
+    ])
+    const edgeId = edgeAdded.stdout.trim().split('\n')[0]
+    assert.equal(edgeId.startsWith('link:'), true)
+    assert.match(edgeAdded.stdout, /-\[link "reviews"\]->/)
+
+    const graphWithEdge = await runCli(base, ['graph'])
+    assert.match(graphWithEdge.stdout, /-\[link "reviews"\]->/)
+    assert.match(graphWithEdge.stdout, /\(link:/)
+
+    const unknownEdge = await runCli(base, ['edge', 'remove', 'zzz'], {
+      expectFailure: true,
+    })
+    assert.match(unknownEdge.stderr, /No edge matches/)
+
+    const edgeRemoved = await runCli(base, ['edge', 'remove', edgeId.slice(0, 13)])
+    assert.match(edgeRemoved.stdout, /removed link:/)
+    const graphAfterRemove = await runCli(base, ['graph'])
+    assert.doesNotMatch(graphAfterRemove.stdout, /-\[link/)
+
     const badTimeout = await runCli(
       base,
       ['session', 'create', '--prompt', 'x', '--wait', '--timeout', '5s'],

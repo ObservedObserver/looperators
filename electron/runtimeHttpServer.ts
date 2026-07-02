@@ -156,7 +156,14 @@ function notFoundOnUnknownSession<T>(read: () => T): T {
 }
 
 function decodeParam(value: string | undefined) {
-  return decodeURIComponent(value ?? '')
+  try {
+    return decodeURIComponent(value ?? '')
+  } catch {
+    // decodeURIComponent throws URIError on bad percent-encoding; without
+    // this, one malformed URL becomes an unhandled rejection that kills the
+    // whole runtime server process.
+    throw new RuntimeHttpError(400, 'Malformed URL encoding in path parameter')
+  }
 }
 
 function compileRoutes(
@@ -268,6 +275,16 @@ function compileRoutes(
           ...(await readJsonBody(request)),
           requestId: params.requestId,
         }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/edges$/,
+      handler: async (request) => runtime.linkSessions(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/edges\/([^/]+)\/remove$/,
+      handler: (_request, params) => runtime.removeEdge({ edgeId: params.edgeId }),
     },
     {
       method: 'POST',
@@ -401,6 +418,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/user-input/') && match[1]) {
     return { requestId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/edges/') && match[1]) {
+    return { edgeId: decodeParam(match[1]) }
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }
@@ -551,9 +571,8 @@ export function createRuntimeHttpServer(
       return
     }
 
-    const params = routeParams(route.pattern, pathname) ?? {}
-
     try {
+      const params = routeParams(route.pattern, pathname) ?? {}
       const result = await route.handler(request, params)
       if (request.method === 'HEAD') {
         response.writeHead(200, { 'Content-Type': 'application/json' })
