@@ -9,6 +9,7 @@ import {
   OrreryHarness,
   resolveRequestedProviderKind,
 } from '../../scripts/lib/orrery-client.mjs'
+import { modelPresets } from '../../scripts/lib/model-presets.mjs'
 
 const fakeClaudeSource = `#!/usr/bin/env node
 const args = process.argv.slice(2)
@@ -125,6 +126,108 @@ test('attach mode targets an explicit base url', () => {
   assert.equal(client.baseUrl, 'http://127.0.0.1:48274')
 })
 
+test('named model presets resolve from the shared registry', () => {
+  const client = OrreryClient.attach('http://127.0.0.1:48274', {
+    modelPreset: 'cheap',
+  })
+  assert.deepEqual(client.modelPreset, modelPresets.cheap)
+  assert.throws(
+    () =>
+      OrreryClient.attach('http://127.0.0.1:48274', {
+        modelPreset: 'no-such-preset',
+      }),
+    /Unknown model preset: no-such-preset/
+  )
+})
+
+test('wait primitives fail fast when a session dies', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-client-fail-test-'))
+  const failingClaude = path.join(tempRoot, 'claude')
+  fs.writeFileSync(
+    failingClaude,
+    `#!/usr/bin/env node
+process.stderr.write('fake provider exploded\\n')
+process.exit(1)
+`
+  )
+  fs.chmodSync(failingClaude, 0o755)
+
+  const harness = await OrreryHarness.start({
+    env: { ORRERY_CLAUDE_BIN: failingClaude },
+  })
+
+  try {
+    let firstDoomed
+    await assert.rejects(
+      () =>
+        harness.waitForEvent((event) => event.type === 'session.finished', {
+          timeoutMs: 10_000,
+          label: 'session.finished',
+          trigger: async () => {
+            firstDoomed = await harness.createSession({
+              prompt: 'doomed session',
+              cwd: process.cwd(),
+            })
+          },
+        }),
+      /failed while waiting for session.finished/
+    )
+
+    let secondDoomed
+    await assert.rejects(
+      () =>
+        harness.waitForReport(
+          { verdict: 'clean' },
+          {
+            timeoutMs: 10_000,
+            trigger: async () => {
+              secondDoomed = await harness.createSession({
+                prompt: 'doomed reporter',
+                cwd: process.cwd(),
+              })
+            },
+          }
+        ),
+      (error) => {
+        assert.match(error.message, /died while waiting for report/)
+        assert.equal(
+          error.message.includes(secondDoomed.sessionId),
+          true,
+          'the new casualty must be attributed'
+        )
+        assert.equal(
+          error.message.includes(firstDoomed.sessionId),
+          false,
+          'sessions already dead at wait start must be ignored'
+        )
+        return true
+      }
+    )
+
+    await assert.rejects(
+      () =>
+        harness.waitForReport(
+          { verdict: 'clean' },
+          {
+            timeoutMs: 1_500,
+            failOnSessionFailure: false,
+            trigger: async () => {
+              await harness.createSession({
+                prompt: 'doomed but tolerated',
+                cwd: process.cwd(),
+              })
+            },
+          }
+        ),
+      /Timed out/,
+      'failOnSessionFailure: false must fall through to the timeout'
+    )
+  } finally {
+    await harness.close()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('preset kind resolution mirrors the server providerConfig exactly', () => {
   const instances = [
     { providerInstanceId: 'isolated-codex', kind: 'codex' },
@@ -143,6 +246,14 @@ test('preset kind resolution mirrors the server providerConfig exactly', () => {
     resolveRequestedProviderKind({ providerInstanceId: 'isolated-codex' }, instances),
     'codex',
     'instance-only input must resolve the instance kind like the server does'
+  )
+  assert.equal(
+    resolveRequestedProviderKind(
+      { providerInstanceId: ' isolated-codex ' },
+      instances
+    ),
+    'codex',
+    'instance ids are trimmed before lookup, like the server'
   )
   assert.equal(
     resolveRequestedProviderKind({ providerKind: 'claude-code ' }, instances),

@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { modelPresets } from './model-presets.mjs'
+
 const defaultRuntimeBaseUrl = 'http://127.0.0.1:48274'
 const defaultPollIntervalMs = 250
 const defaultWaitTimeoutMs = 300_000
@@ -21,16 +23,37 @@ function trimmedString(value) {
 
 const validProviderKinds = new Set(['legacy-claude-cli', 'claude-code', 'codex'])
 
+// Accepts either a named preset ('cheap') or an already-resolved
+// { providerKind: runtimeSettings } object. Unknown names fail loudly:
+// silently skipping a preset would run acceptance sessions on default
+// (expensive) models, which is exactly what presets exist to prevent.
+function resolveModelPreset(modelPreset) {
+  if (modelPreset === undefined) {
+    return undefined
+  }
+  if (typeof modelPreset === 'string') {
+    const preset = modelPresets[modelPreset]
+    if (!preset) {
+      throw new Error(
+        `Unknown model preset: ${modelPreset}. Known presets: ${Object.keys(modelPresets).join(', ')}`
+      )
+    }
+    return preset
+  }
+  return modelPreset
+}
+
 // Mirrors the requested-kind resolution in sessionManager providerConfig
 // (same precedence, no trimming, same validation fallback) so model presets
 // attach to the provider the runtime will actually select.
 export function resolveRequestedProviderKind(input = {}, providerInstances = []) {
+  const requestedInstanceId = trimmedString(input.providerInstanceId)
   const requested =
     input.providerKind ??
     (input.agent === 'codex' ? 'codex' : undefined) ??
-    (input.providerInstanceId
+    (requestedInstanceId
       ? providerInstances.find(
-          (instance) => instance.providerInstanceId === input.providerInstanceId
+          (instance) => instance.providerInstanceId === requestedInstanceId
         )?.kind
       : undefined)
   return validProviderKinds.has(requested) ? requested : 'legacy-claude-cli'
@@ -42,7 +65,7 @@ export class OrreryClient {
 
   constructor({ baseUrl, modelPreset } = {}) {
     this.#baseUrl = (trimmedString(baseUrl) ?? defaultRuntimeBaseUrl).replace(/\/$/, '')
-    this.#modelPreset = modelPreset
+    this.#modelPreset = resolveModelPreset(modelPreset)
   }
 
   static attach(baseUrl, options = {}) {
@@ -272,15 +295,48 @@ export class OrreryClient {
     return this.waitForStatus(sessionId, 'idle', options)
   }
 
-  waitForReport(match = {}, options = {}) {
+  // Rejects when a session fails or is killed while the report is pending;
+  // sessions already dead when the wait starts are ignored (opt out with
+  // failOnSessionFailure: false). options.trigger runs after the dead-session
+  // snapshot, so failures it causes are always attributed to this wait.
+  async waitForReport(match = {}, options = {}) {
     const describeMatch =
       Object.entries(match)
         .map(([key, value]) => `${key}=${value}`)
         .join(' ') || 'any report'
+    const deadSessionIds = (state) =>
+      Object.values(state.sessions ?? {})
+        .filter(
+          (session) => session.status === 'failed' || session.status === 'killed'
+        )
+        .map((session) => session.sessionId)
+    const deadAtStart = new Set(deadSessionIds(await this.state()))
+    if (options.trigger) {
+      await options.trigger()
+    }
     return this.waitFor(
       `report ${describeMatch}`,
       async () => {
         const state = await this.state()
+        if (options.failOnSessionFailure !== false) {
+          const casualties = Object.values(state.sessions ?? {}).filter(
+            (session) =>
+              (session.status === 'failed' || session.status === 'killed') &&
+              !deadAtStart.has(session.sessionId)
+          )
+          if (casualties.length > 0) {
+            const detail = casualties
+              .map(
+                (session) =>
+                  `${session.sessionId} ${session.status}` +
+                  (session.error ? `: ${session.error}` : '')
+              )
+              .join('; ')
+            throw new Error(
+              `Session died while waiting for report ${describeMatch} — ${detail}`
+            )
+          }
+        }
         const report = (state.reports ?? []).find(
           (candidate) =>
             (match.type === undefined || candidate.payload?.type === match.type) &&
@@ -360,10 +416,14 @@ export class OrreryClient {
   //   await client.waitForEvent((e) => e.type === 'session.created', {
   //     trigger: () => client.createSession({ ... }),
   //   })
+  // Rejects on session.failed / session.killed events the predicate did not
+  // claim (opt out with failOnSessionFailure: false, e.g. when waiting for a
+  // failure on purpose alongside other conditions).
   waitForEvent(predicate, options = {}) {
     const timeoutMs = options.timeoutMs ?? defaultWaitTimeoutMs
     const label = options.label ?? 'runtime event'
     const trigger = options.trigger
+    const failOnSessionFailure = options.failOnSessionFailure !== false
     return new Promise((resolve, reject) => {
       let settled = false
       let subscription
@@ -397,6 +457,21 @@ export class OrreryClient {
           triggerPromise.then(
             () => finish(resolve, event),
             () => {}
+          )
+          return
+        }
+        if (
+          failOnSessionFailure &&
+          (event.type === 'session.failed' || event.type === 'session.killed')
+        ) {
+          finish(
+            reject,
+            new Error(
+              `Session ${event.sessionId} ${
+                event.type === 'session.failed' ? 'failed' : 'was killed'
+              } while waiting for ${label}` +
+                (event.error ? `: ${event.error}` : '')
+            )
           )
         }
       })
