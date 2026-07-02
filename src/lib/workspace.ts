@@ -199,3 +199,5 @@ export function validateProjectCwd(value: string): ProjectCwdValidation {
     message: `Selected cwd: ${compactPath(trimmed)}`,
   }
 }
+
+export const demoMode = isDemoModeRequested()

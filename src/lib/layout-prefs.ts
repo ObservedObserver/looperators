@@ -127,3 +127,5 @@ export function clampChatPanelWidth(width: number, totalWidth?: number) {
       : Number.POSITIVE_INFINITY
   return Math.min(Math.max(width, chatPanelMinWidth), maxWidth)
 }
+
+export type RailTab = 'orchestrate' | 'sessions' | 'chat'
