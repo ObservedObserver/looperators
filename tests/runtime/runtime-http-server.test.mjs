@@ -23,6 +23,12 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     assert.equal(config.baseUrl, base)
     assert.equal(config.eventsUrl, `${base}/api/runtime/events`)
 
+    const headConfigResponse = await fetch(`${base}/api/runtime/config`, {
+      method: 'HEAD',
+    })
+    assert.equal(headConfigResponse.status, 200)
+    assert.equal(headConfigResponse.headers.get('content-type'), 'application/json')
+
     const stateResponse = await fetch(`${base}/api/runtime/state`)
     assert.equal(stateResponse.status, 200)
     const state = await stateResponse.json()
@@ -34,7 +40,7 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Origin: 'http://127.0.0.1:5173',
+        Origin: 'http://127.0.0.1:48273',
       },
       body: JSON.stringify({
         providerInstanceId: 'default-claude-sdk',
@@ -57,14 +63,14 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Origin: 'http://127.0.0.1:5173',
+        Origin: 'http://127.0.0.1:48273',
       },
       body: JSON.stringify({ cwd: process.cwd() }),
     })
     assert.equal(contextResponse.status, 200)
     assert.equal(
       contextResponse.headers.get('access-control-allow-origin'),
-      'http://127.0.0.1:5173'
+      'http://127.0.0.1:48273'
     )
     const context = await contextResponse.json()
     assert.equal(context.cwd, process.cwd())
@@ -84,7 +90,7 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
       method: 'POST',
       headers: {
         'Content-Type': 'text/plain',
-        Origin: 'http://127.0.0.1:5173',
+        Origin: 'http://127.0.0.1:48273',
       },
       body: JSON.stringify({ cwd: process.cwd() }),
     })
@@ -96,7 +102,7 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Origin: 'http://127.0.0.1:5173',
+          Origin: 'http://127.0.0.1:48273',
         },
         body: JSON.stringify({ cwd: process.cwd(), target: 'not-an-app' }),
       }
@@ -111,7 +117,7 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Origin: 'http://127.0.0.1:5173',
+          Origin: 'http://127.0.0.1:48273',
         },
         body: JSON.stringify({
           cwd: path.join(tempRoot, 'missing-project'),
@@ -129,7 +135,7 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Origin: 'http://127.0.0.1:5173',
+          Origin: 'http://127.0.0.1:48273',
         },
         body: JSON.stringify({ sessionId: 'missing-session' }),
       }
@@ -140,12 +146,12 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
 
     const optionsResponse = await fetch(`${base}/api/runtime/state`, {
       method: 'OPTIONS',
-      headers: { Origin: 'http://127.0.0.1:5173' },
+      headers: { Origin: 'http://127.0.0.1:48273' },
     })
     assert.equal(optionsResponse.status, 204)
     assert.equal(
       optionsResponse.headers.get('access-control-allow-origin'),
-      'http://127.0.0.1:5173'
+      'http://127.0.0.1:48273'
     )
 
     const controller = new AbortController()

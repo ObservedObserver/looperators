@@ -38,7 +38,7 @@ import type {
 } from '@/shared/graph-state'
 import type { ProviderInstance } from '@/shared/provider-runtime'
 
-const defaultRuntimeUrl = 'http://127.0.0.1:5174'
+const defaultRuntimeUrl = 'http://127.0.0.1:48274'
 
 export type RuntimeWorkspaceMetadata = {
   defaultCwd?: string

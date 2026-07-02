@@ -6,9 +6,9 @@
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "npm run dev:app",
-    "dev:app": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on http://127.0.0.1:5173 dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
-    "dev:web": "vite",
-    "dev:web:real": "npm run build:electron && concurrently -k \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"node dist-electron/electron/runtimeHttpServerCli.js\" \"wait-on http://127.0.0.1:5174/api/runtime/config && cross-env VITE_ORRERY_RUNTIME_URL=http://127.0.0.1:5174 vite --host 127.0.0.1 --port 5173 --strictPort\"",
+    "dev:app": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1 --port 48273 --strictPort\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on http://127.0.0.1:48273 dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:48273 electron .\"",
+    "dev:web": "vite --host 127.0.0.1 --port 48273 --strictPort",
+    "dev:web:real": "npm run build:electron && concurrently -k \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"node dist-electron/electron/runtimeHttpServerCli.js\" \"wait-on http://127.0.0.1:48274/api/runtime/config && cross-env VITE_ORRERY_RUNTIME_URL=http://127.0.0.1:48274 vite --host 127.0.0.1 --port 48273 --strictPort\"",
     "build": "npm run build:electron && tsc -b && vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
     "check:electron": "tsc -p tsconfig.electron.json --noEmit",

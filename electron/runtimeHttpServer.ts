@@ -5,7 +5,7 @@ import { URL } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
 
 const loopbackHost = '127.0.0.1'
-const defaultPort = 5174
+const defaultPort = 48274
 const maxRequestBodyBytes = 2 * 1024 * 1024
 const sseKeepAliveMs = 25000
 
@@ -76,8 +76,8 @@ function corsOriginsFromEnv() {
     : []
 
   return [
-    'http://127.0.0.1:5173',
-    'http://localhost:5173',
+    'http://127.0.0.1:48273',
+    'http://localhost:48273',
     ...origins,
   ]
 }
@@ -490,8 +490,9 @@ export function createRuntimeHttpServer(
       return
     }
 
+    const routeMethod = request.method === 'HEAD' ? 'GET' : request.method
     const route = routes.find((candidate) => {
-      if (candidate.method !== request.method) {
+      if (candidate.method !== routeMethod) {
         return false
       }
 
@@ -507,6 +508,11 @@ export function createRuntimeHttpServer(
 
     try {
       const result = await route.handler(request, params)
+      if (request.method === 'HEAD') {
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end()
+        return
+      }
       sendJson(response, 200, result ?? { ok: true })
     } catch (error) {
       const statusCode =
