@@ -153,3 +153,5 @@ export function useInteractions({
     answerRuntimeUserInput,
   }
 }
+
+export type InteractionsState = ReturnType<typeof useInteractions>

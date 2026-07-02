@@ -148,3 +148,5 @@ export function useRuntimeCore() {
     canActOnPlan,
   }
 }
+
+export type RuntimeCoreState = ReturnType<typeof useRuntimeCore>

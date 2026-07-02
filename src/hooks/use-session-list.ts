@@ -115,3 +115,5 @@ export function useSessionList({
     setSessionArchived,
   }
 }
+
+export type SessionListState = ReturnType<typeof useSessionList>

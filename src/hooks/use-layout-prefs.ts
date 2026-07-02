@@ -171,3 +171,5 @@ export function useLayoutPrefs() {
     effectiveGraphCollapsed,
   }
 }
+
+export type LayoutPrefsState = ReturnType<typeof useLayoutPrefs>

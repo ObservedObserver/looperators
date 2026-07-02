@@ -235,3 +235,5 @@ export function useCanvas({
     updateCanvasSelection,
   }
 }
+
+export type CanvasState = ReturnType<typeof useCanvas>

@@ -144,3 +144,5 @@ export function useComposer({
     composerHasPayload,
   }
 }
+
+export type ComposerState = ReturnType<typeof useComposer>

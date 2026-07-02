@@ -438,3 +438,5 @@ export function useSessionActions({
     reviseRuntimePlan,
   }
 }
+
+export type SessionActionsState = ReturnType<typeof useSessionActions>

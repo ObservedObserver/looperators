@@ -176,3 +176,5 @@ export function useTerminalPanel({
     closeSelectedTerminal,
   }
 }
+
+export type TerminalPanelState = ReturnType<typeof useTerminalPanel>

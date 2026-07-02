@@ -330,3 +330,5 @@ export function useNewChatSetup({
     restoreCwdFallback,
   }
 }
+
+export type NewChatSetupState = ReturnType<typeof useNewChatSetup>

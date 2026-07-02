@@ -133,3 +133,5 @@ export function useDiffPanel({
     openTurnDiff,
   }
 }
+
+export type DiffPanelState = ReturnType<typeof useDiffPanel>

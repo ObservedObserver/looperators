@@ -534,3 +534,5 @@ export function useOrchestration({
     freezeActiveCluster,
   }
 }
+
+export type OrchestrationState = ReturnType<typeof useOrchestration>
