@@ -96,3 +96,6 @@ export const termInputCls =
 /** Ink textarea. Dark in both themes. */
 export const termTextareaCls =
   'w-full resize-y rounded-md border border-ink-line bg-ink px-3 py-2.5 font-mono text-[13px] leading-6 text-term-name outline-none transition placeholder:text-term-faint focus:border-lime-hi/55 focus:ring-1 focus:ring-lime-hi/25 disabled:opacity-50'
+
+export const termActionBtnCls =
+  'min-w-0 justify-start font-mono text-[11px] uppercase tracking-[0.06em]'
