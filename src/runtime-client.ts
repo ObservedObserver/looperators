@@ -186,6 +186,8 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'session.killed',
   'report.received',
   'freeze.applied',
+  'edge.created',
+  'edge.removed',
   'loop.started',
   'loop.stopped',
   'terminal.created',

@@ -853,6 +853,8 @@ export type RuntimeEvent =
   | { type: 'session.killed'; sessionId: SessionId; state: GraphState }
   | { type: 'report.received'; from: SessionId; report: Report; state: GraphState }
   | { type: 'freeze.applied'; targetId: string; reason?: string; state: GraphState }
+  | { type: 'edge.created'; edgeId: string; state: GraphState }
+  | { type: 'edge.removed'; edgeId: string; state: GraphState }
   | { type: 'loop.started'; clusterId: ClusterId; state: GraphState }
   | {
       type: 'loop.stopped'
