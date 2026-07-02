@@ -12,6 +12,7 @@
 // Writes are allowed by default (real acceptance flows need them); pass
 // --readonly to guard a session against accidental mutations.
 
+import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { OrreryClient } from './lib/orrery-client.mjs'
@@ -322,6 +323,70 @@ function renderRuntimeEventLine(event) {
   }
 }
 
+// Renders tailed runtime events under a --max-events budget. A streamed
+// assistant reply counts as ONE event: it claims its slot at segment start,
+// keeps printing until the segment closes, and the close is where the limit
+// finally stops the tail. Without this, SDK/Codex sessions (assistant output
+// arrives purely as content.delta) could stream unbounded text past the
+// limit. Exported for unit tests — the fake legacy provider used in e2e
+// tests cannot produce provider.runtime content.delta broadcasts.
+export function createTailEventPrinter({ sessionId, eventLimit, write, stop }) {
+  let printed = 0
+  let streamingText = false
+  const limitReached = () => eventLimit !== undefined && printed >= eventLimit
+
+  const handle = (event) => {
+    if (sessionId && event.sessionId !== sessionId) {
+      return
+    }
+    const line = renderRuntimeEventLine(event)
+    if (line === undefined) {
+      return
+    }
+
+    if (typeof line === 'object' && line.stream) {
+      if (!streamingText) {
+        if (limitReached()) {
+          return
+        }
+        printed += 1
+        streamingText = true
+      }
+      write(line.stream)
+      return
+    }
+
+    if (streamingText) {
+      write('\n')
+      streamingText = false
+      if (limitReached()) {
+        stop()
+        return
+      }
+    }
+    // stop() only interrupts the next read; events already buffered in the
+    // current SSE chunk still dispatch synchronously, so re-check the limit.
+    if (limitReached()) {
+      return
+    }
+    write(`${line}\n`)
+    printed += 1
+    if (limitReached()) {
+      stop()
+    }
+  }
+
+  // Terminates a dangling streamed segment (e.g. tail stopped mid-stream).
+  const flush = () => {
+    if (streamingText) {
+      write('\n')
+      streamingText = false
+    }
+  }
+
+  return { handle, flush }
+}
+
 async function commandSessionTail(client, values, idOrPrefix) {
   if (values.all && idOrPrefix) {
     fail('session tail takes either an id or --all, not both', 2)
@@ -332,37 +397,13 @@ async function commandSessionTail(client, values, idOrPrefix) {
     : await resolveSessionId(client, idOrPrefix)
   const session = sessionId ? (await client.session(sessionId)).session : undefined
 
-  let printed = 0
-  let streamingText = false
-
-  const subscription = client.subscribeEvents((event) => {
-    // stop() only interrupts the next read; events already buffered in the
-    // current SSE chunk still dispatch synchronously, so re-check the limit.
-    if (eventLimit !== undefined && printed >= eventLimit) {
-      return
-    }
-    if (sessionId && event.sessionId !== sessionId) {
-      return
-    }
-    const line = renderRuntimeEventLine(event)
-    if (line === undefined) {
-      return
-    }
-    if (typeof line === 'object' && line.stream) {
-      process.stdout.write(line.stream)
-      streamingText = true
-      return
-    }
-    if (streamingText) {
-      process.stdout.write('\n')
-      streamingText = false
-    }
-    process.stdout.write(`${line}\n`)
-    printed += 1
-    if (eventLimit !== undefined && printed >= eventLimit) {
-      subscription.stop()
-    }
+  const printer = createTailEventPrinter({
+    sessionId,
+    eventLimit,
+    write: (text) => process.stdout.write(text),
+    stop: () => subscription.stop(),
   })
+  const subscription = client.subscribeEvents(printer.handle)
 
   process.on('SIGINT', () => {
     subscription.stop()
@@ -386,9 +427,7 @@ async function commandSessionTail(client, values, idOrPrefix) {
       throw error
     }
   }
-  if (streamingText) {
-    process.stdout.write('\n')
-  }
+  printer.flush()
 }
 
 async function commandSessionResume(client, values, idOrPrefix) {
@@ -595,12 +634,17 @@ async function main() {
   fail(`Unknown command: ${command}\n\n${usage}`, 2)
 }
 
-main().catch((error) => {
-  const detail = error instanceof Error ? error.message : String(error)
-  if (/fetch failed/i.test(detail)) {
-    fail(
-      `Cannot reach the runtime server. Is it running? Start one with:\n  npm run runtime:http\n(${detail})`
-    )
-  }
-  fail(detail)
-})
+const isDirectRun =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+
+if (isDirectRun) {
+  main().catch((error) => {
+    const detail = error instanceof Error ? error.message : String(error)
+    if (/fetch failed/i.test(detail)) {
+      fail(
+        `Cannot reach the runtime server. Is it running? Start one with:\n  npm run runtime:http\n(${detail})`
+      )
+    }
+    fail(detail)
+  })
+}

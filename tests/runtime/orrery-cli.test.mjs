@@ -177,6 +177,52 @@ test('debug CLI covers the session/graph/state surface', async () => {
   }
 })
 
+function spawnTail(baseUrl, args) {
+  const tail = spawn(process.execPath, [
+    cliPath,
+    '--url',
+    baseUrl,
+    'session',
+    'tail',
+    ...args,
+  ])
+  let output = ''
+  tail.stdout.on('data', (chunk) => {
+    output += String(chunk)
+  })
+  return { tail, getOutput: () => output }
+}
+
+function waitForTailOutput(tail, getOutput, needle) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(probe)
+      tail.kill('SIGKILL')
+      reject(new Error(`tail output never contained "${needle}": ${getOutput()}`))
+    }, 10_000)
+    const probe = setInterval(() => {
+      if (getOutput().includes(needle)) {
+        clearTimeout(timer)
+        clearInterval(probe)
+        resolve()
+      }
+    }, 50)
+  })
+}
+
+function waitForTailExit(tail, getOutput) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      tail.kill('SIGKILL')
+      reject(new Error(`tail did not exit: ${getOutput()}`))
+    }, 10_000)
+    tail.once('exit', (code) => {
+      clearTimeout(timer)
+      resolve(code)
+    })
+  })
+}
+
 test('debug CLI tail follows live events after its ready signal', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-cli-tail-test-'))
   const fakeClaude = path.join(tempRoot, 'claude')
@@ -194,53 +240,123 @@ test('debug CLI tail follows live events after its ready signal', async () => {
     })
     await harness.waitForIdle(created.sessionId, { timeoutMs: 10_000 })
 
-    const tail = spawn(process.execPath, [
-      cliPath,
-      '--url',
-      harness.baseUrl,
-      'session',
-      'tail',
-      created.sessionId,
-      '--max-events',
-      '1',
-    ])
-    let output = ''
-    tail.stdout.on('data', (chunk) => {
-      output += String(chunk)
-    })
-
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        clearInterval(probe)
-        tail.kill('SIGKILL')
-        reject(new Error(`tail header never appeared: ${output}`))
-      }, 10_000)
-      const probe = setInterval(() => {
-        if (output.includes('Tailing TailTarget')) {
-          clearTimeout(timer)
-          clearInterval(probe)
-          resolve()
-        }
-      }, 50)
-    })
-
+    const first = spawnTail(harness.baseUrl, [created.sessionId, '--max-events', '1'])
+    await waitForTailOutput(first.tail, first.getOutput, 'Tailing TailTarget')
     await harness.resumeSession(created.sessionId, { message: 'tail trigger' })
-
-    const exitCode = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        tail.kill('SIGKILL')
-        reject(new Error(`tail did not exit after event: ${output}`))
-      }, 10_000)
-      tail.once('exit', (code) => {
-        clearTimeout(timer)
-        resolve(code)
-      })
-    })
-    assert.equal(exitCode, 0)
-    assert.match(output, /session\.resumed|session\.finished/)
+    const firstExit = await waitForTailExit(first.tail, first.getOutput)
+    assert.equal(firstExit, 0)
+    assert.match(first.getOutput(), /session\.resumed|session\.finished/)
   } finally {
     await harness.close()
     fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('tail printer counts a streamed assistant reply as one event', async () => {
+  const { createTailEventPrinter } = await import('../../scripts/orrery-cli.mjs')
+  const streamDelta = (text) => ({
+    type: 'provider.runtime',
+    sessionId: 'session-a',
+    providerEvent: {
+      type: 'content.delta',
+      streamKind: 'assistant_text',
+      text,
+    },
+  })
+  const lineEvent = (type) => ({ type, sessionId: 'session-a' })
+
+  // The reviewer scenario: assistant output arrives purely as content.delta
+  // (SDK/Codex paths). With --max-events 1 the stream claims the only slot,
+  // prints in full, and the segment close stops the tail.
+  {
+    const writes = []
+    let stopped = 0
+    const printer = createTailEventPrinter({
+      sessionId: 'session-a',
+      eventLimit: 1,
+      write: (text) => writes.push(text),
+      stop: () => {
+        stopped += 1
+      },
+    })
+    printer.handle(streamDelta('unbounded '))
+    printer.handle(streamDelta('assistant '))
+    printer.handle(streamDelta('stream'))
+    printer.handle(lineEvent('turn.completed'))
+    printer.handle(lineEvent('session.finished'))
+    assert.equal(writes.join(''), 'unbounded assistant stream\n')
+    assert.equal(stopped >= 1, true, 'segment close must stop the tail')
+  }
+
+  // Limit 2: one line event + one full stream, nothing after the close.
+  {
+    const writes = []
+    let stopped = 0
+    const printer = createTailEventPrinter({
+      sessionId: 'session-a',
+      eventLimit: 2,
+      write: (text) => writes.push(text),
+      stop: () => {
+        stopped += 1
+      },
+    })
+    printer.handle(lineEvent('session.resumed'))
+    printer.handle(streamDelta('hello '))
+    printer.handle(streamDelta('world'))
+    printer.handle(lineEvent('session.finished'))
+    printer.handle(streamDelta('must not print'))
+    const output = writes.join('')
+    assert.match(output, /session\.resumed/)
+    assert.match(output, /hello world\n/)
+    assert.doesNotMatch(output, /session\.finished/)
+    assert.doesNotMatch(output, /must not print/)
+    assert.equal(stopped >= 1, true)
+  }
+
+  // Limit reached by a line event: buffered same-chunk stream deltas and
+  // lines must all be suppressed.
+  {
+    const writes = []
+    const printer = createTailEventPrinter({
+      sessionId: 'session-a',
+      eventLimit: 1,
+      write: (text) => writes.push(text),
+      stop: () => {},
+    })
+    printer.handle(lineEvent('session.resumed'))
+    printer.handle(streamDelta('suppressed'))
+    printer.handle(lineEvent('session.finished'))
+    assert.equal(writes.join(''), '[session-] session.resumed\n')
+    assert.doesNotMatch(writes.join(''), /suppressed|session\.finished/)
+  }
+
+  // Other sessions' events never consume the budget.
+  {
+    const writes = []
+    const printer = createTailEventPrinter({
+      sessionId: 'session-a',
+      eventLimit: 1,
+      write: (text) => writes.push(text),
+      stop: () => {},
+    })
+    printer.handle({ type: 'session.resumed', sessionId: 'session-b' })
+    printer.handle(lineEvent('session.resumed'))
+    assert.match(writes.join(''), /session\.resumed/)
+    assert.equal(writes.length, 1)
+  }
+
+  // flush terminates a dangling stream segment.
+  {
+    const writes = []
+    const printer = createTailEventPrinter({
+      sessionId: 'session-a',
+      eventLimit: undefined,
+      write: (text) => writes.push(text),
+      stop: () => {},
+    })
+    printer.handle(streamDelta('dangling'))
+    printer.flush()
+    assert.equal(writes.join(''), 'dangling\n')
   }
 })
 
