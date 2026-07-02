@@ -2,22 +2,20 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { kernelActorKinds } from '../../shared/graph-core/types.js'
+import type {
+  GraphEvent,
+  KernelActor,
+  KernelActorKind,
+} from '../../shared/graph-core/types.js'
 
 type JsonRecord = Record<string, any>
 
-export type KernelActorKind =
-  | 'human'
-  | 'master'
-  | 'agent'
-  | 'rule'
-  | 'provider'
-  | 'runtime'
-
-export type KernelActor = {
-  kind: KernelActorKind
-  // sessionId for master/agent, rule identity (e.g. "loop:<clusterId>") for rule.
-  ref?: string
-}
+// Kernel event shapes live in graph-core (the single source of truth for
+// the kernel's pure logic); the store persists exactly that shape.
+export type KernelEvent = GraphEvent
+export type { KernelActor, KernelActorKind }
+export { kernelActorKinds }
 
 export type KernelEventInput = {
   type: string
@@ -26,26 +24,6 @@ export type KernelEventInput = {
   reason?: string
   payload?: JsonRecord
 }
-
-export type KernelEvent = {
-  seq: number
-  id: string
-  ts: string
-  type: string
-  actor: KernelActor
-  causeId?: string
-  reason?: string
-  payload: JsonRecord
-}
-
-export const kernelActorKinds = new Set<KernelActorKind>([
-  'human',
-  'master',
-  'agent',
-  'rule',
-  'provider',
-  'runtime',
-])
 
 const kernelStoreSchema = `
 CREATE TABLE IF NOT EXISTS events (

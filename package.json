@@ -21,7 +21,7 @@
     "runtime:spike": "node scripts/claude-stream-json-spike.mjs finish",
     "runtime:spike:kill": "node scripts/claude-stream-json-spike.mjs kill",
     "test": "npm run test:kernel",
-    "test:kernel": "npm run build:electron && node --test tests/runtime/*.test.mjs",
+    "test:kernel": "npm run build:electron && node --test tests/runtime/*.test.mjs tests/graph-core/*.test.mjs",
     "test:kernel:orchestration": "npm run build:electron && node scripts/canvas-orchestration-smoke.mjs",
     "test:kernel:master-loop": "npm run build:electron && node scripts/master-loop-smoke.mjs",
     "test:kernel:persistence": "npm run build:electron && node scripts/runtime-persistence-recovery.mjs",
