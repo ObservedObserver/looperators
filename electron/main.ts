@@ -51,6 +51,9 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())
+  ipcMain.handle('orrery:kernel-events', (_event, input) =>
+    runtime.getKernelEvents(input)
+  )
   ipcMain.handle('orrery:get-project-context', (_event, input) =>
     runtime.getProjectContext(input)
   )

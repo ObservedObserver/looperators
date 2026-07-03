@@ -200,6 +200,7 @@ function compileRoutes(
           since: params.get('since') ?? undefined,
           limit: params.get('limit') ?? undefined,
           type: params.get('type') ?? undefined,
+          tail: params.get('tail') ?? undefined,
         })
       },
     },

@@ -170,7 +170,7 @@ export function ReadabilityEdge({
         style={{
           ...style,
           stroke: edgeKindStrokes[edgeData.kind],
-          strokeWidth: selected ? 2.5 : 1.7,
+          strokeWidth: selected ? 2.5 : edgeData.kind === 'subscription' ? 2 : 1.7,
           strokeDasharray:
             edgeData.kind === 'resume-session'
               ? '6 4'
@@ -180,7 +180,9 @@ export function ReadabilityEdge({
                   ? '8 5'
                   : edgeData.kind === 'link'
                     ? '3 3'
-                    : undefined,
+                    : edgeData.kind === 'subscription'
+                      ? '10 5'
+                      : undefined,
           opacity: edgeData.frozen ? 0.55 : 1,
         }}
       />
@@ -197,12 +199,27 @@ export function ReadabilityEdge({
           title={[edgeData.summary, reason].filter(Boolean).join('\n')}
         >
           <div className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
-            <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>
+            {edgeData.kind === 'subscription' ? null : <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>}
             <span>{edgeDisplayLabel(edgeData)}</span>
             {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
             {edgeData.issueCount !== undefined ? <span className="tabular-nums">· {edgeData.issueCount} iss</span> : null}
+            {edgeData.kind === 'subscription' && edgeData.gate ? <span>· {edgeData.gate === 'auto' ? '⚡ auto' : edgeData.gate === 'master' ? '◆ master' : '⊘ human'}</span> : null}
+            {edgeData.kind === 'subscription' && edgeData.firings !== undefined ? (
+              <span className="tabular-nums">
+                · {edgeData.firings}
+                {edgeData.maxFirings !== undefined ? `/${edgeData.maxFirings}` : ''}
+              </span>
+            ) : null}
+            {edgeData.subscriptionState === 'stopped' ? <span>· stopped</span> : null}
+            {edgeData.pendingStatus ? <span className="text-term-amber">· {edgeData.pendingStatus}</span> : null}
           </div>
-          {visibleDetail ? <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">{visibleDetail}</div> : null}
+          {edgeData.kind === 'subscription' && (edgeData.untilSummary || edgeData.summary) ? (
+            <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">
+              {[edgeData.summary, edgeData.untilSummary].filter(Boolean).join(' · ')}
+            </div>
+          ) : visibleDetail ? (
+            <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">{visibleDetail}</div>
+          ) : null}
         </div>
       </EdgeLabelRenderer>
     </>

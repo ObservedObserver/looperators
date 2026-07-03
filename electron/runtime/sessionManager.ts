@@ -1536,6 +1536,7 @@ export class RuntimeSessionManager {
       sinceSeq: Number(request.since ?? request.sinceSeq ?? 0) || 0,
       limit: Number(request.limit ?? 0) || undefined,
       type: optionalTrimmedString(request.type),
+      tail: request.tail === true || request.tail === 'true',
     })
     return { events, latestSeq: this.#kernelStore.latestSeq() }
   }
@@ -1746,7 +1747,11 @@ export class RuntimeSessionManager {
     if (decision.gate === 'auto') {
       await this.#cmdApproveActivation(
         { slotKey },
-        { actor: { kind: 'rule', ref: decision.subscriptionId }, causeId: pendingEvent?.id }
+        {
+          actor: { kind: 'rule', ref: decision.subscriptionId },
+          causeId: pendingEvent?.id,
+          reason: 'Auto gate: approved deterministically.',
+        }
       )
       return
     }

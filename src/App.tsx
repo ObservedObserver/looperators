@@ -122,6 +122,7 @@ function App() {
     setRuntimeError,
     syncTerminalFromEvent,
     restoreCwdFallback,
+    ingestKernelEvents: core.ingestKernelEvents,
   });
 
   const actions = useSessionActions({

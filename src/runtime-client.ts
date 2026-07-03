@@ -13,6 +13,7 @@ import type {
   FreezeInput,
   GetTerminalInput,
   GraphState,
+  KernelEvent,
   OpenWorkspaceInput,
   OpenWorkspaceResult,
   ProviderSetupStatus,
@@ -49,8 +50,12 @@ export type RuntimeConfig = {
   workspace?: RuntimeWorkspaceMetadata;
 };
 
+export type KernelEventsInput = { since?: number; limit?: number; tail?: boolean };
+export type KernelEventsResult = { events: KernelEvent[]; latestSeq: number };
+
 export type RuntimeApi = {
   getState: () => Promise<GraphState>;
+  getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
   getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
@@ -343,6 +348,21 @@ class HttpRuntimeApi implements RuntimeApi {
 
   getTerminal(input: GetTerminalInput) {
     return this.#get<RuntimeTerminalResult>(`terminals/${encodeURIComponent(input.terminalId)}`);
+  }
+
+  getKernelEvents(input?: KernelEventsInput) {
+    const params = new URLSearchParams();
+    if (input?.since !== undefined) {
+      params.set('since', String(input.since));
+    }
+    if (input?.limit !== undefined) {
+      params.set('limit', String(input.limit));
+    }
+    if (input?.tail) {
+      params.set('tail', 'true');
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : '';
+    return this.#get<KernelEventsResult>(`kernel-events${query}`);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {

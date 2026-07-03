@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
-import { createEmptyGraphState, type GraphState } from '@/shared/graph-state';
+import { createEmptyGraphState, type GraphState, type KernelEvent } from '@/shared/graph-state';
 import { projectSession } from '@/shared/session-projection';
 import { createDemoGraphState } from '@/shared/demo-state';
 import { useRuntimeClient } from '@/runtime-client';
@@ -70,6 +70,29 @@ export function useRuntimeCore() {
       : undefined;
   const reportsById = useMemo(() => new Map(runtimeState.reports.map((report) => [report.id, report])), [runtimeState.reports]);
   const graphActivity = useMemo(() => activityEvents(runtimeState), [runtimeState]);
+
+  // Kernel event timeline (G4): the append-only log of graph-level facts,
+  // seeded via HTTP/IPC and kept live by kernel.event broadcasts.
+  const [kernelEvents, setKernelEvents] = useState<KernelEvent[]>([]);
+  const ingestKernelEvents = useCallback((incoming: KernelEvent[]) => {
+    if (incoming.length === 0) {
+      return;
+    }
+    setKernelEvents((current) => {
+      const byId = new Map(current.map((event) => [event.id, event]));
+      let changed = false;
+      for (const event of incoming) {
+        if (!byId.has(event.id)) {
+          byId.set(event.id, event);
+          changed = true;
+        }
+      }
+      if (!changed) {
+        return current;
+      }
+      return [...byId.values()].sort((left, right) => left.seq - right.seq).slice(-250);
+    });
+  }, []);
   const selectedSessionIsMaster = selectedSession?.role === 'master';
   const canResume =
     Boolean(selectedSession) &&
@@ -110,6 +133,8 @@ export function useRuntimeCore() {
     selectedRecoveryState,
     reportsById,
     graphActivity,
+    kernelEvents,
+    ingestKernelEvents,
     canResume,
     canKill,
     canActOnPlan,

@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('orrery', {
   },
   runtime: {
     getState: () => ipcRenderer.invoke('orrery:runtime-state'),
+    getKernelEvents: (input) =>
+      ipcRenderer.invoke('orrery:kernel-events', input),
     getProjectContext: (input) =>
       ipcRenderer.invoke('orrery:get-project-context', input),
     getProviderSetupStatus: (input) =>

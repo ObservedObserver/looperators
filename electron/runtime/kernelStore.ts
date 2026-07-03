@@ -266,23 +266,28 @@ export class KernelStore {
     sinceSeq = 0,
     limit = 500,
     type,
-  }: { sinceSeq?: number; limit?: number; type?: string } = {}): KernelEvent[] {
+    tail = false,
+  }: { sinceSeq?: number; limit?: number; type?: string; tail?: boolean } = {}): KernelEvent[] {
     if (this.#closed) {
       return []
     }
 
     const boundedLimit = Math.max(1, Math.min(Number(limit) || 500, 2000))
     const since = Number.isFinite(Number(sinceSeq)) ? Number(sinceSeq) : 0
+    // tail: the NEWEST N matching events (still returned in ascending seq
+    // order) — what a live timeline wants when the log is long.
+    const order = tail ? 'DESC' : 'ASC'
     const rows = type
       ? this.#db
           .prepare(
-            'SELECT * FROM events WHERE seq > ? AND type = ? ORDER BY seq ASC LIMIT ?'
+            `SELECT * FROM events WHERE seq > ? AND type = ? ORDER BY seq ${order} LIMIT ?`
           )
           .all(since, type, boundedLimit)
       : this.#db
-          .prepare('SELECT * FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?')
+          .prepare(`SELECT * FROM events WHERE seq > ? ORDER BY seq ${order} LIMIT ?`)
           .all(since, boundedLimit)
-    return rows.map((row) => rowToEvent(row as JsonRecord))
+    const events = rows.map((row) => rowToEvent(row as JsonRecord))
+    return tail ? events.reverse() : events
   }
 
   latestSeq(): number {

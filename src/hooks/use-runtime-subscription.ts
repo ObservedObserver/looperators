@@ -1,6 +1,6 @@
 import { type Dispatch, type SetStateAction, useEffect } from 'react';
 
-import type { GraphState, RuntimeTerminal } from '@/shared/graph-state';
+import type { GraphState, KernelEvent, RuntimeTerminal } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
 
 export function useRuntimeSubscription({
@@ -10,6 +10,7 @@ export function useRuntimeSubscription({
   setRuntimeError,
   syncTerminalFromEvent,
   restoreCwdFallback,
+  ingestKernelEvents,
 }: {
   runtimeApi: RuntimeApi | undefined;
   setRuntimeState: Dispatch<SetStateAction<GraphState>>;
@@ -17,6 +18,7 @@ export function useRuntimeSubscription({
   setRuntimeError: Dispatch<SetStateAction<string | undefined>>;
   syncTerminalFromEvent: (terminal: RuntimeTerminal) => void;
   restoreCwdFallback: (state: GraphState) => void;
+  ingestKernelEvents?: (events: KernelEvent[]) => void;
 }) {
   useEffect(() => {
     if (!runtimeApi) {
@@ -39,6 +41,19 @@ export function useRuntimeSubscription({
         }
       });
 
+    if (ingestKernelEvents) {
+      runtimeApi
+        .getKernelEvents({ limit: 250, tail: true })
+        .then((result) => {
+          if (isMounted) {
+            ingestKernelEvents(result.events);
+          }
+        })
+        .catch(() => {
+          // The timeline is progressive enhancement; live events still land.
+        });
+    }
+
     const unsubscribe = runtimeApi.onEvent((event) => {
       if ('state' in event) {
         setRuntimeState(event.state);
@@ -46,11 +61,14 @@ export function useRuntimeSubscription({
       if ('terminal' in event) {
         syncTerminalFromEvent(event.terminal);
       }
+      if (event.type === 'kernel.event' && ingestKernelEvents) {
+        ingestKernelEvents([event.event]);
+      }
     });
 
     return () => {
       isMounted = false;
       unsubscribe();
     };
-  }, [restoreCwdFallback, runtimeApi, setRuntimeError, setRuntimeState, setSelectedSessionId, syncTerminalFromEvent]);
+  }, [ingestKernelEvents, restoreCwdFallback, runtimeApi, setRuntimeError, setRuntimeState, setSelectedSessionId, syncTerminalFromEvent]);
 }

@@ -3,7 +3,16 @@ import { MarkerType, applyNodeChanges, type Edge, type Node, type NodeChange } f
 
 import type { GraphState, Report } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
-import { applyFlowNodePositionUpdates, applyNodePositionUpdates, clusterBoundaryNodes, edgeSummary, nodePositionUpdatesFromFlowNodes } from '@/lib/graph-view';
+import {
+  applyFlowNodePositionUpdates,
+  applyNodePositionUpdates,
+  clusterBoundaryNodes,
+  edgeSummary,
+  nodePositionUpdatesFromFlowNodes,
+  subscriptionEdgeDescriptors,
+  subscriptionPatternLabel,
+  subscriptionUntilSummary,
+} from '@/lib/graph-view';
 import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/reports';
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
 
@@ -72,7 +81,7 @@ export function useCanvas({
     const sequenceById = new Map(sorted.map((edge, index) => [edge.edgeId, index + 1]));
     const recentEdgeIds = new Set(sorted.slice(-3).map((edge) => edge.edgeId));
 
-    return runtimeState.edges.map((edge) => {
+    const historyEdges = runtimeState.edges.map((edge) => {
       const report = edge.reportId ? reportsById.get(edge.reportId) : undefined;
       return {
         id: edge.edgeId,
@@ -96,7 +105,38 @@ export function useCanvas({
         },
       };
     });
-  }, [reportsById, runtimeState.edges]);
+
+    // Intent edges (kernel doc §3): subscriptions are the dashed primary
+    // structure; a live pending slot animates the edge (the activity pulse).
+    const intentEdges = subscriptionEdgeDescriptors(runtimeState).map((descriptor) => {
+      const subscription = descriptor.subscription;
+      return {
+        id: descriptor.id,
+        type: 'readability',
+        source: descriptor.source,
+        target: descriptor.target,
+        animated: subscription.state === 'active' && Boolean(descriptor.pendingStatus),
+        markerEnd: { type: MarkerType.ArrowClosed },
+        zIndex: 5,
+        data: {
+          kind: 'subscription' as const,
+          label: subscription.label ?? 'when',
+          sequence: 0,
+          ts: subscription.createdAt,
+          summary: subscriptionPatternLabel(subscription),
+          frozen: subscription.state === 'stopped',
+          gate: subscription.gate,
+          firings: subscription.firings,
+          maxFirings: subscription.stop?.maxFirings,
+          untilSummary: subscriptionUntilSummary(subscription),
+          subscriptionState: subscription.state,
+          pendingStatus: descriptor.pendingStatus,
+        },
+      };
+    });
+
+    return [...historyEdges, ...intentEdges];
+  }, [reportsById, runtimeState]);
 
   useEffect(() => {
     if (!isDraggingCanvasNodeRef.current) {

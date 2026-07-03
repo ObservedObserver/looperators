@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { canvasPanelMinWidth, type RailTab } from '@/lib/layout-prefs';
-import { edgeKindClassNames, activityTitle } from '@/lib/graph-view';
+import { edgeKindClassNames, activityTitle, kernelActorLabel, kernelEventLabel, kernelEventSubject } from '@/lib/graph-view';
 import { nodeTypes, edgeTypes } from '@/components/canvas';
 import { WorkingTreeDiffPanel } from '@/components/working-tree-diff-panel';
 import { type Dispatch, type SetStateAction } from 'react';
@@ -24,8 +24,17 @@ type SessionGraphPanelProps = {
   setActiveClusterId: Dispatch<SetStateAction<string | undefined>>;
 };
 
+const kernelActorClassNames: Record<string, string> = {
+  human: 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300',
+  master: 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  agent: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+  rule: 'border-lime-600/50 bg-lime-500/10 text-lime-700 dark:text-lime-300',
+  provider: 'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-300',
+  runtime: 'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-300',
+};
+
 export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActiveTab, setActiveClusterId }: SessionGraphPanelProps) {
-  const { runtimeState, setSelectedSessionId, selectedSession, graphActivity } = core;
+  const { runtimeState, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
   const { setPendingLinkedSourceId } = actions;
   const {
@@ -90,7 +99,46 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
 
       <div className="flex min-h-0 flex-1">
         <div className="relative min-h-0 flex-1">
-          {graphActivity.length > 0 ? (
+          {kernelEvents.length > 0 ? (
+            <div className="pointer-events-none absolute bottom-3 left-14 z-10 w-[320px] max-w-[calc(100%-4.5rem)] opacity-80 transition-opacity hover:opacity-100">
+              <div className="pointer-events-auto rounded-lg border border-border bg-background/88 font-mono shadow-sm backdrop-blur">
+                <div className="flex items-center gap-2 border-b border-border/70 px-2.5 py-2">
+                  <Activity className="size-3 shrink-0 text-accent-ink" />
+                  <h2 className="truncate text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Kernel timeline</h2>
+                  <span className="ml-auto tabular-nums text-[11px] text-muted-foreground">#{kernelEvents.at(-1)?.seq}</span>
+                </div>
+
+                <ol className="max-h-44 space-y-2 overflow-y-auto p-2.5">
+                  {[...kernelEvents].reverse().map((event) => (
+                    <li key={event.id} className="grid grid-cols-[auto_1fr] gap-2.5 text-xs">
+                      <span className="pt-0.5 text-[11px] tabular-nums text-term-faint">{event.seq}</span>
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span
+                            className={cn(
+                              'rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.06em]',
+                              kernelActorClassNames[event.actor.kind] ?? kernelActorClassNames.runtime,
+                            )}
+                            title={`actor: ${event.actor.kind}${event.actor.ref ? ` (${event.actor.ref})` : ''}${event.causeId ? `\ncause: ${event.causeId}` : ''}`}
+                          >
+                            {kernelActorLabel(runtimeState, event.actor)}
+                          </span>
+                          <span className="truncate font-medium text-foreground/90">
+                            {kernelEventLabel(event.type)}
+                            {(() => {
+                              const subject = kernelEventSubject(runtimeState, event);
+                              return subject ? ` · ${subject}` : '';
+                            })()}
+                          </span>
+                        </div>
+                        {event.reason ? <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">reason: {event.reason}</p> : null}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          ) : graphActivity.length > 0 ? (
             <div className="pointer-events-none absolute bottom-3 left-14 z-10 w-[280px] max-w-[calc(100%-4.5rem)] opacity-80 transition-opacity hover:opacity-100">
               <div className="pointer-events-auto rounded-lg border border-border bg-background/88 font-mono shadow-sm backdrop-blur">
                 <div className="flex items-center gap-2 border-b border-border/70 px-2.5 py-2">
