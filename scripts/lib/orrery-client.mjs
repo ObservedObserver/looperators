@@ -189,6 +189,24 @@ export class OrreryClient {
     )
   }
 
+  // Data-plane delivery into the target's context channel (no activation).
+  deliverToSession(sessionId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/deliver`,
+      input
+    )
+  }
+
+  // Pure activation: runs one turn with note + unread channel preamble.
+  activateSession(sessionId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/activate`,
+      input
+    )
+  }
+
   killSession(sessionId) {
     return this.#request(
       'POST',

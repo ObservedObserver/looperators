@@ -258,6 +258,24 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/deliver$/,
+      handler: async (request, params) =>
+        runtime.deliverToSession({
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/activate$/,
+      handler: async (request, params) =>
+        runtime.activateSession({
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/sessions\/([^/]+)\/archive$/,
       handler: async (request, params) =>
         runtime.archiveSession({

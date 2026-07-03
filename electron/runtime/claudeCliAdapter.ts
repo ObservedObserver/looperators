@@ -100,6 +100,8 @@ function providerEnv(providerInstance) {
 export const membraneToolNames = [
   'mcp__orrery_membrane__create_session',
   'mcp__orrery_membrane__resume_session',
+  'mcp__orrery_membrane__deliver',
+  'mcp__orrery_membrane__activate',
   'mcp__orrery_membrane__report',
   'mcp__orrery_membrane__link_sessions',
 ]
@@ -110,8 +112,11 @@ export function membraneSystemPrompt() {
     'Use the orrery_membrane MCP tools when you need to affect the agent graph:',
     '- mcp__orrery_membrane__create_session creates a real downstream session/node.',
     '- mcp__orrery_membrane__resume_session appends a user message to an existing session/node and resumes it.',
+    '- mcp__orrery_membrane__deliver writes data into another session\'s context channel without activating it (omit content to forward your latest turn summary and diff).',
+    '- mcp__orrery_membrane__activate runs one turn on an existing session; the runtime prefixes your note with the list of its unread channel deliveries.',
     '- mcp__orrery_membrane__report submits typed verdict, relationship, or info data to the graph blackboard.',
     '- mcp__orrery_membrane__link_sessions declares a visible relationship edge to another session/node.',
+    'Sessions have a context channel (an inbox directory outside the repo): deliveries you receive are listed in your activation message with absolute file paths — read those files before acting.',
     'Do not invent session ids. Use ids returned by create_session or provided in the user prompt.',
   ].join('\n')
 }
@@ -165,6 +170,7 @@ function buildClaudeArgs({
   sessionId,
   mcpConfigPath,
   runtimeSettings,
+  channelDir,
 }) {
   const args = []
 
@@ -184,6 +190,13 @@ function buildClaudeArgs({
 
   if (nonEmptyString(runtimeSettings?.model)) {
     args.push('--model', runtimeSettings.model.trim())
+  }
+
+  if (nonEmptyString(channelDir)) {
+    // The session's own context-channel inbox (runtime-owned data plane):
+    // print-mode runs cannot answer permission prompts, so reading delivered
+    // files must be pre-granted like the cwd itself.
+    args.push('--add-dir', channelDir)
   }
 
   if (mcpConfigPath) {
@@ -227,6 +240,7 @@ export class ClaudeCliRun extends EventEmitter {
     membrane,
     providerInstance,
     runtimeSettings,
+    channelDir,
   }) {
     super()
 
@@ -243,6 +257,7 @@ export class ClaudeCliRun extends EventEmitter {
             sessionId,
             mcpConfigPath: this.#mcpHandoff?.configPath,
             runtimeSettings,
+            channelDir,
           }),
         ],
         {

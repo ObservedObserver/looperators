@@ -225,9 +225,9 @@ try {
   )
   assert.ok(
     kernelLog.events.some(
-      (event) => event.type === 'session.resumed' && event.payload.sessionId === sessionId
+      (event) => event.type === 'activated' && event.payload.sessionId === sessionId
     ),
-    'session.resumed must be logged after restart'
+    'activated must be logged after restart'
   )
   const seqs = kernelLog.events.map((event) => event.seq)
   assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), 'kernel seq must be monotonic')

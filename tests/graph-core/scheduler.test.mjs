@@ -187,7 +187,8 @@ test('drop discards the firing while the target is busy', () => {
   const state = fold([
     event('session.created', { sessionId: 'coder' }),
     event('session.created', { sessionId: 'reviewer' }),
-    event('session.resumed', { sessionId: 'reviewer' }), // reviewer busy
+    // The G2 runtime marks turn starts with `activated`.
+    event('activated', { sessionId: 'reviewer', target: 'reviewer' }),
     event('subscription.authored', { subscription: sub }),
   ])
   const decisions = evaluate(state, event('session.finished', { sessionId: 'coder' }))

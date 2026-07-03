@@ -118,6 +118,36 @@ test('debug CLI covers the session/graph/state surface', async () => {
     assert.ok(kernelParsed.events.every((event) => event.type === 'session.finished'))
     assert.ok(kernelParsed.events[0].causeId, 'finish must carry its causal link')
 
+    const deliverBlocked = await runCli(
+      base,
+      ['--readonly', 'session', 'deliver', sessionId, '--content', 'x'],
+      { expectFailure: true }
+    )
+    assert.notEqual(deliverBlocked.code, 0)
+    assert.match(deliverBlocked.stderr, /--readonly: refusing/)
+
+    const deliverRes = await runCli(base, [
+      'session',
+      'deliver',
+      sessionId,
+      '--topic',
+      'notes',
+      '--content',
+      'cli delivery payload',
+    ])
+    assert.match(deliverRes.stdout, /delivered #1 \(topic notes\)/)
+
+    const activateRes = await runCli(base, [
+      'session',
+      'activate',
+      sessionId,
+      '--wait',
+      '--timeout',
+      '10000',
+    ])
+    assert.match(activateRes.stdout, /activated /)
+    assert.match(activateRes.stdout, /status: idle/)
+
     const missing = await runCli(base, ['session', 'show', 'zzz'], {
       expectFailure: true,
     })

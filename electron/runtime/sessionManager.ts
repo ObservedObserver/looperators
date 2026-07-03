@@ -13,6 +13,10 @@ import {
 } from '../../shared/graph-state.js'
 import { projectSession } from '../../shared/session-projection.js'
 import {
+  ContextChannelStore,
+  activationPreamble,
+} from './contextChannel.js'
+import {
   KernelStore,
   kernelActorKinds,
   kernelDatabaseFileFor,
@@ -38,6 +42,8 @@ const storageBackupSuffix = '.bak'
 const kernelCommandKinds = new Set([
   'create_session',
   'resume_session',
+  'deliver',
+  'activate',
   'archive_session',
   'kill_session',
   'respond_runtime_request',
@@ -1317,6 +1323,7 @@ export class RuntimeSessionManager {
   #loopTasks = new Map<string, Promise<void>>()
   #storageFile: string | undefined
   #kernelStore: KernelStore
+  #channelStore: ContextChannelStore
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
@@ -1348,6 +1355,13 @@ export class RuntimeSessionManager {
       databaseFile: this.#storageFile
         ? kernelDatabaseFileFor(this.#storageFile)
         : undefined,
+    })
+    // Per-session inbox directories live next to the storage (outside any
+    // project repo, §4.2.5); storage-less managers get an isolated temp root.
+    this.#channelStore = new ContextChannelStore({
+      root: this.#storageFile
+        ? path.join(path.dirname(this.#storageFile), 'channels')
+        : fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channels-')),
     })
     this.#state = this.#loadState()
     if (this.#legacyImportKind === 'migration') {
@@ -1428,6 +1442,10 @@ export class RuntimeSessionManager {
         return this.#cmdCreateSession(input, ctx)
       case 'resume_session':
         return this.#cmdResumeSession(input, ctx)
+      case 'deliver':
+        return this.#cmdDeliver(input, ctx)
+      case 'activate':
+        return this.#cmdActivate(input, ctx)
       case 'archive_session':
         return this.#cmdArchiveSession(input, ctx)
       case 'kill_session':
@@ -1977,19 +1995,51 @@ export class RuntimeSessionManager {
         : defaultPrompt
     const attachments = normalizeChatAttachments(input.attachments)
     const provider = providerConfig(input, this.#state.providerInstances)
-    const initialContent = messageContent(prompt, input.context)
-    const providerPrompt = providerPromptContent({
-      providerKind: provider.providerKind,
-      message: prompt,
-      context: input.context,
-      attachments,
-    })
+    // Everything that can reject the command must run before the channel is
+    // written: a failed create must not leave an orphan delivery with no
+    // `delivered` fact behind it (events are the truth, files follow).
     const runtimeSettings = normalizeProviderRuntimeSettings(input.runtimeSettings)
     const workspace =
       normalizeWorkMode(input.workMode) === 'worktree'
         ? createSessionWorktree(input.cwd, sessionId, input.branch)
         : localSessionWorkspace(input.cwd, input.branch)
     const cwd = workspace.cwd
+
+    // Handoff content is pre-seeded into the new session's channel instead
+    // of being inlined into the prompt (§4.1 create_session): the chat
+    // history starts with a short bootstrap plus the delivery listing, and
+    // large payloads never scroll out of the context window.
+    const handoffContext =
+      typeof input.context === 'string' && input.context.trim().length > 0
+        ? input.context
+        : undefined
+    let handoffDelivery
+    if (handoffContext) {
+      handoffDelivery = this.#channelStore.deliver({
+        target: sessionId,
+        from: sourceSessionId ?? 'human',
+        fromLabel: sourceSessionId
+          ? this.#state.sessions[sourceSessionId]?.label
+          : undefined,
+        topic: optionalTrimmedString(input.contextTopic) ?? 'handoff',
+        entries: [{ name: 'context.md', content: handoffContext }],
+      })
+    }
+    const preamble = handoffDelivery
+      ? activationPreamble(this.#channelStore.unread(sessionId), {
+          channelDir: this.#channelStore.channelDir(sessionId),
+        })
+      : undefined
+    const initialContent = [prompt, preamble].filter(Boolean).join('\n\n')
+    const providerPrompt = providerPromptContent({
+      providerKind: provider.providerKind,
+      message: initialContent,
+      context: undefined,
+      attachments,
+    })
+    if (handoffDelivery) {
+      this.#channelStore.markRead(sessionId, handoffDelivery.seq)
+    }
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
         ? input.label.trim()
@@ -2085,6 +2135,21 @@ export class RuntimeSessionManager {
       ctx,
       { reason: ctx.reason ?? this.#masterReasonFromInput(sourceSessionId, input) }
     )
+    if (handoffDelivery) {
+      // The channel write happened before message composition; the fact
+      // lands after session.created so the log reads create → deliver (§8.1).
+      this.#appendKernelEvent(
+        'delivered',
+        {
+          source: sourceSessionId ?? 'human',
+          target: sessionId,
+          topic: handoffDelivery.topic,
+          channelSeq: handoffDelivery.seq,
+          files: handoffDelivery.files,
+        },
+        { ...ctx, causeId: createdEvent?.id ?? ctx.causeId }
+      )
+    }
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
 
@@ -2094,6 +2159,9 @@ export class RuntimeSessionManager {
       runKind: 'create',
       userMessageId: this.#state.sessions[sessionId].messages[0].id,
       activationEventId: createdEvent?.id,
+      // Same rollback contract as activations: if the first run dies before
+      // producing output, the pre-seeded handoff becomes unread again.
+      channelReadSeqs: handoffDelivery ? [handoffDelivery.seq] : [],
     })
 
     return { sessionId, state: this.getState() }
@@ -2103,25 +2171,136 @@ export class RuntimeSessionManager {
     return this.#cmdResumeSession(input, this.#humanCtx())
   }
 
+  deliverToSession(input: JsonRecord = {}) {
+    return this.#cmdDeliver(input, this.#humanCtx())
+  }
+
+  async activateSession(input: JsonRecord = {}) {
+    return this.#cmdActivate(input, this.#humanCtx())
+  }
+
+  // resume = deliver + activate (kernel doc §4.1). The external verb stays
+  // compatible: context (when present) lands in the target's channel as a
+  // delivery instead of being inlined into the chat message, and the
+  // activation message is the note plus the deterministic channel preamble.
   async #cmdResumeSession(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionId = input.sessionId
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      throw new Error(`Unknown session: ${sessionId}`)
+    this.#assertActivatable(sessionId, ctx)
+
+    const message =
+      typeof input.message === 'string' && input.message.trim().length > 0
+        ? input.message.trim()
+        : undefined
+    if (!message) {
+      throw new Error('Resume message is required')
     }
 
+    const context =
+      typeof input.context === 'string' && input.context.trim().length > 0
+        ? input.context
+        : undefined
+    if (context) {
+      this.#deliverToChannel(
+        {
+          target: sessionId,
+          from:
+            optionalTrimmedString(input.edgeSourceSessionId) ??
+            optionalTrimmedString(ctx.actor?.ref),
+          topic: optionalTrimmedString(input.contextTopic) ?? 'context',
+          entries: [{ name: 'context.md', content: context }],
+        },
+        ctx
+      )
+    }
+
+    return this.#runActivation(sessionId, {
+      note: message,
+      attachments: normalizeChatAttachments(input.attachments),
+      edgeSourceSessionId: optionalTrimmedString(input.edgeSourceSessionId),
+      edgeInput: input,
+      ctx,
+    })
+  }
+
+  // Pure data-plane delivery (§4.1 deliver): writes to the target's channel
+  // and records the `delivered` fact. Never activates.
+  #cmdDeliver(input: JsonRecord = {}, ctx: JsonRecord) {
+    const target = optionalTrimmedString(input.sessionId) ?? optionalTrimmedString(input.target)
+    if (!target || !this.#state.sessions[target]) {
+      throw new Error(`Unknown session: ${target ?? ''}`)
+    }
+
+    const topic = optionalTrimmedString(input.topic)
+    const note = optionalTrimmedString(input.note)
+    const content = typeof input.content === 'string' ? input.content : undefined
+    const from = optionalTrimmedString(ctx.actor?.ref) ?? optionalTrimmedString(input.source)
+
+    let entries
+    if (content) {
+      entries = [
+        {
+          name: optionalTrimmedString(input.filename) ?? 'content.md',
+          content,
+        },
+      ]
+    } else if (from && this.#state.sessions[from]) {
+      // No explicit payload: forward the source's artifact bundle — the
+      // fixed convention for machine-fired deliveries (§4.2.6).
+      entries = this.#artifactBundleEntries(from)
+    }
+    if ((!entries || entries.length === 0) && !note) {
+      throw new Error('deliver requires content, a note, or a session source with artifacts')
+    }
+
+    const delivery = this.#deliverToChannel(
+      { target, from, topic, note, entries },
+      ctx
+    )
+    return {
+      ok: true,
+      delivery: {
+        seq: delivery.seq,
+        topic: delivery.topic,
+        files: delivery.files,
+      },
+    }
+  }
+
+  // Pure activation (§4.1 activate): run one turn on the target with a
+  // deterministically assembled message (note + unread channel preamble).
+  async #cmdActivate(input: JsonRecord = {}, ctx: JsonRecord) {
+    const sessionId = optionalTrimmedString(input.sessionId)
+    this.#assertActivatable(sessionId, ctx)
+
+    const note = optionalTrimmedString(input.note)
+    const unread = this.#channelStore.unread(sessionId)
+    if (!note && unread.current.length === 0) {
+      throw new Error('activate requires a note or pending channel deliveries')
+    }
+
+    return this.#runActivation(sessionId, {
+      note,
+      attachments: normalizeChatAttachments(input.attachments),
+      edgeSourceSessionId: optionalTrimmedString(input.edgeSourceSessionId),
+      edgeInput: input,
+      ctx,
+    })
+  }
+
+  #assertActivatable(sessionId, ctx: JsonRecord) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
     if (this.#runs.has(sessionId)) {
       throw new Error(`Session is already running: ${sessionId}`)
     }
-
     if (session.status === 'killed') {
       throw new Error(`Killed session cannot be resumed: ${sessionId}`)
     }
-
     if (this.#isSessionFrozen(sessionId)) {
       throw new Error(`Frozen session cannot be resumed: ${sessionId}`)
     }
-
     try {
       session.cwd = validateRunnableCwd(session.cwd)
     } catch (error) {
@@ -2132,23 +2311,92 @@ export class RuntimeSessionManager {
       })
       throw error
     }
+  }
 
-    const message =
-      typeof input.message === 'string' && input.message.trim().length > 0
-        ? input.message.trim()
-        : undefined
-    if (!message) {
-      throw new Error('Resume message is required')
+  #deliverToChannel(
+    { target, from, fromLabel, topic, note, entries }: JsonRecord,
+    ctx: JsonRecord
+  ) {
+    const sourceSession = from ? this.#state.sessions[from] : undefined
+    const delivery = this.#channelStore.deliver({
+      target,
+      from: from ?? 'human',
+      fromLabel: fromLabel ?? sourceSession?.label,
+      topic,
+      note,
+      entries,
+    })
+    this.#appendKernelEvent(
+      'delivered',
+      {
+        source: from ?? 'human',
+        target,
+        topic,
+        channelSeq: delivery.seq,
+        files: delivery.files,
+        notePreview: truncateForLog(note, 200),
+      },
+      ctx
+    )
+    return delivery
+  }
+
+  // Assembles the source session's artifact bundle on demand: the last
+  // assistant turn summary plus the workspace diff when there is one.
+  #artifactBundleEntries(sessionId) {
+    const session = this.#state.sessions[sessionId]
+    if (!session) {
+      return []
     }
+    const entries = []
+    // Only completed turns feed the bundle (§4.2.6): a mid-stream delivery
+    // must not snapshot a half-written assistant message.
+    const lastAssistant = [...(session.messages ?? [])]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          message.status === 'complete' &&
+          message.content
+      )
+    const summary = lastAssistant?.content ?? session.result
+    if (typeof summary === 'string' && summary.trim().length > 0) {
+      entries.push({ name: 'turn-summary.md', content: summary })
+    }
+    try {
+      const diff = this.#gitDiffForSession(sessionId)
+      if (typeof diff === 'string' && diff.trim().length > 0) {
+        entries.push({ name: 'workspace-diff.patch', content: diff })
+      }
+      // An empty diff (no git repo / no changes) is a normal case: no file.
+    } catch (error) {
+      entries.push({
+        name: 'workspace-diff-unavailable.md',
+        content: `Workspace diff could not be captured: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      })
+    }
+    return entries
+  }
 
-    const attachments = normalizeChatAttachments(input.attachments)
-    const content = messageContent(message, input.context)
+  async #runActivation(
+    sessionId,
+    { note, attachments = [], edgeSourceSessionId, edgeInput = {}, ctx }: JsonRecord
+  ) {
+    const session = this.#state.sessions[sessionId]
+    const unread = this.#channelStore.unread(sessionId)
+    const preamble = activationPreamble(unread, {
+      channelDir: this.#channelStore.channelDir(sessionId),
+    })
+    const content = [note, preamble].filter(Boolean).join('\n\n')
     const providerPrompt = providerPromptContent({
       providerKind: session.providerKind,
-      message,
-      context: input.context,
+      message: content,
+      context: undefined,
       attachments,
     })
+
     const ts = now()
     const userMessage = {
       id: randomUUID(),
@@ -2169,7 +2417,20 @@ export class RuntimeSessionManager {
     session.updatedAt = ts
     this.#updateNodeStatus(sessionId, 'pending')
 
-    const edgeSourceSessionId = optionalTrimmedString(input.edgeSourceSessionId)
+    const deliveredSeqs = unread.current.map((entry) => entry.seq)
+    // Everything this activation's preamble listed counts as seen. If the
+    // run turns out to never start (spawn-level failure produces no output),
+    // #failSession rolls exactly these seqs back to unread — the agent
+    // never saw the listing. Marked before the run to stay deterministic
+    // against the async arrival of spawn errors.
+    const listedSeqs = [
+      ...unread.current.map((entry) => entry.seq),
+      ...unread.superseded.map((entry) => entry.seq),
+    ]
+    if (listedSeqs.length > 0) {
+      this.#channelStore.markRead(sessionId, Math.max(...listedSeqs))
+    }
+
     if (edgeSourceSessionId && this.#state.sessions[edgeSourceSessionId]) {
       this.#addEdge({
         source: edgeSourceSessionId,
@@ -2177,24 +2438,27 @@ export class RuntimeSessionManager {
         kind: 'resume-session',
         envelope: this.#createEnvelope(edgeSourceSessionId),
         label: 'resume_session',
-        masterReason: this.#masterReasonFromInput(edgeSourceSessionId, input),
+        masterReason: this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
       })
     }
 
-    const resumedEvent = this.#appendKernelEvent(
-      'session.resumed',
+    const activatedEvent = this.#appendKernelEvent(
+      'activated',
       {
+        target: sessionId,
         sessionId,
         edgeSourceSessionId,
-        messagePreview: truncateForLog(message, 200),
+        notePreview: truncateForLog(note, 200),
+        deliveries: deliveredSeqs,
       },
       ctx,
       {
         reason:
-          ctx.reason ?? this.#masterReasonFromInput(edgeSourceSessionId, input),
+          ctx.reason ?? this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
       }
     )
     this.#touch()
+    // Broadcast keeps the runtime-plane name the renderer already consumes.
     this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
 
     await this.#startRun(sessionId, {
@@ -2202,7 +2466,8 @@ export class RuntimeSessionManager {
       attachments,
       runKind: 'resume',
       userMessageId: userMessage.id,
-      activationEventId: resumedEvent?.id,
+      activationEventId: activatedEvent?.id,
+      channelReadSeqs: listedSeqs,
     })
 
     return { ok: true, state: this.getState() }
@@ -2955,6 +3220,44 @@ export class RuntimeSessionManager {
       return { ok: true }
     }
 
+    if (tool === 'deliver') {
+      const target = optionalTrimmedString(request.sessionId)
+      if (!target) {
+        throw new Error('deliver sessionId is required')
+      }
+      const result = await this.dispatchCommand({
+        kind: 'deliver',
+        actor,
+        input: {
+          sessionId: target,
+          topic: request.topic,
+          note: request.note,
+          content: request.content,
+          filename: request.filename,
+        },
+      })
+      return { ok: true, delivery: result.delivery }
+    }
+
+    if (tool === 'activate') {
+      const target = optionalTrimmedString(request.sessionId)
+      if (!target) {
+        throw new Error('activate sessionId is required')
+      }
+      await this.dispatchCommand({
+        kind: 'activate',
+        actor,
+        input: {
+          sessionId: target,
+          note: request.note,
+          edgeSourceSessionId: source,
+          masterReason: request.masterReason,
+          reason: request.reason,
+        },
+      })
+      return { ok: true }
+    }
+
     if (tool === 'report') {
       return this.dispatchCommand({
         kind: 'report',
@@ -3021,6 +3324,7 @@ export class RuntimeSessionManager {
       prompt,
       cwd: sourceSession?.cwd,
       context: input.context,
+      contextTopic: input.contextTopic,
       cluster,
       label: input.label,
       runtimeSettings: sourceSession?.runtimeSettings,
@@ -3033,7 +3337,14 @@ export class RuntimeSessionManager {
 
   async #startRun(
     sessionId,
-    { prompt, attachments = [], runKind, userMessageId, activationEventId }
+    {
+      prompt,
+      attachments = [],
+      runKind,
+      userMessageId,
+      activationEventId,
+      channelReadSeqs = [],
+    }
   ) {
     const session = this.#state.sessions[sessionId]
     const runId = randomUUID()
@@ -3070,9 +3381,13 @@ export class RuntimeSessionManager {
       sawTextDelta: false,
       turnCheckpoint,
       turnDiffRecorded: false,
-      // Kernel event id of the session.created/session.resumed fact that
-      // started this run; provider lifecycle facts chain to it via causeId.
+      // Kernel event id of the session.created/activated fact that started
+      // this run; provider lifecycle facts chain to it via causeId.
       activationEventId,
+      // Channel deliveries listed in this run's activation message; rolled
+      // back to unread if the run dies without ever producing output.
+      channelReadSeqs,
+      runProducedOutput: false,
     })
     this.#appendProviderRuntimeEvent(sessionId, {
       id: randomUUID(),
@@ -3107,6 +3422,11 @@ export class RuntimeSessionManager {
         providerResumeCursor: session.providerResumeCursor,
         sessionId,
         runtimeSettings: session.runtimeSettings,
+        // The session's own inbox: providers grant read access up front so
+        // channel deliveries never stall on a permission prompt (§4.2.5).
+        // ensureChannelDir: the dir must exist (and be canonical) when the
+        // provider session controller initializes its allowlist.
+        channelDir: this.#channelStore.ensureChannelDir(sessionId),
         membrane: {
           bridgeUrl,
           token: membraneToken,
@@ -3213,6 +3533,7 @@ export class RuntimeSessionManager {
       return
     }
 
+    this.#markRunProducedOutput(sessionId)
     const backendSessionId = chunk.event?.session_id ?? chunk.event?.event?.session_id
     if (typeof backendSessionId === 'string') {
       session.backendSessionId = backendSessionId
@@ -3274,6 +3595,7 @@ export class RuntimeSessionManager {
       return
     }
 
+    this.#markRunProducedOutput(sessionId)
     session.nativeEvents ??= []
     const nativeEvent = {
       id: randomUUID(),
@@ -3313,6 +3635,7 @@ export class RuntimeSessionManager {
       return
     }
 
+    this.#markRunProducedOutput(sessionId)
     const normalizedEvent = {
       ...event,
       sessionId,
@@ -3678,6 +4001,13 @@ export class RuntimeSessionManager {
     this.#touch()
   }
 
+  #markRunProducedOutput(sessionId) {
+    const context = this.#runContext.get(sessionId)
+    if (context) {
+      context.runProducedOutput = true
+    }
+  }
+
   #failSession(sessionId, error, ctx: JsonRecord = undefined) {
     const session = this.#state.sessions[sessionId]
     if (!session) {
@@ -3685,6 +4015,16 @@ export class RuntimeSessionManager {
     }
 
     const context = this.#runContext.get(sessionId)
+    if (
+      context &&
+      context.runProducedOutput === false &&
+      Array.isArray(context.channelReadSeqs) &&
+      context.channelReadSeqs.length > 0
+    ) {
+      // The run died before producing any output: the agent never saw the
+      // activation message, so its listed deliveries become unread again.
+      this.#channelStore.unmarkRead(sessionId, context.channelReadSeqs)
+    }
     session.status = 'failed'
     session.error = error
     session.finishedAt = now()
@@ -4381,7 +4721,10 @@ export class RuntimeSessionManager {
     const coder = this.#state.sessions[coderSessionId]
     const reason = `Coder ${coder?.label ?? coderSessionId} finished; create reviewer.`
     // The loop automation acts as a rule actor; the lineage edge still points
-    // at the master session (the loop is the master's automation).
+    // at the master session (the loop is the master's automation). The diff
+    // delivery is likewise attributed to the master for now — a transitional
+    // state until G3 subscriptions attribute it to the S1 edge (source coder).
+    const diff = this.#gitDiffForSession(coderSessionId)
     const result = await this.dispatchCommand({
       kind: 'create_session',
       actor: ctx.actor,
@@ -4391,8 +4734,9 @@ export class RuntimeSessionManager {
         agent: 'claude-code',
         label: 'Reviewer',
         cluster: clusterId,
-        prompt: this.#reviewerCreatePrompt(),
-        context: this.#gitDiffForSession(coderSessionId),
+        prompt: this.#reviewerCreatePrompt(nonEmptyString(diff)),
+        context: diff,
+        contextTopic: 'diff',
         masterReason: reason,
       }),
     })
@@ -4433,6 +4777,7 @@ export class RuntimeSessionManager {
     }
 
     const reason = `Coder finished fixes; resume reviewer ${reviewer.label}.`
+    const diff = this.#gitDiffForSession(coderSessionId)
     await this.dispatchCommand({
       kind: 'resume_session',
       actor: ctx.actor,
@@ -4440,8 +4785,9 @@ export class RuntimeSessionManager {
       reason,
       input: {
         sessionId: reviewerSessionId,
-        message: this.#reviewerResumeMessage(),
-        context: this.#gitDiffForSession(coderSessionId),
+        message: this.#reviewerResumeMessage(nonEmptyString(diff)),
+        context: diff,
+        contextTopic: 'diff',
         edgeSourceSessionId: masterSessionId,
         masterReason: reason,
       },
@@ -4499,19 +4845,25 @@ export class RuntimeSessionManager {
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
   }
 
-  #reviewerCreatePrompt() {
+  #reviewerCreatePrompt(hasDiff) {
     return [
       'Review the latest diff for this Orrery hero review loop.',
+      hasDiff
+        ? 'The diff is delivered in your context channel; the file paths are listed below. Read them first.'
+        : 'The coder\'s latest turn produced no workspace diff; if there is nothing to review, report verdict "clean".',
       'Do not edit files.',
       'When finished, call mcp__orrery_membrane__report exactly once with type "verdict".',
       'Use verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain.',
     ].join('\n')
   }
 
-  #reviewerResumeMessage() {
+  #reviewerResumeMessage(hasDiff) {
     return [
       'The coder has finished another turn.',
-      'Review the latest diff again, preserving context from earlier findings.',
+      hasDiff
+        ? 'The updated diff is delivered in your context channel; the file paths are listed below. Read them first.'
+        : 'This turn produced no workspace diff; if there is nothing left to review, report verdict "clean".',
+      'Review again, preserving context from earlier findings.',
       'Call mcp__orrery_membrane__report exactly once with verdict "issues" or "clean".',
     ].join('\n')
   }

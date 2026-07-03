@@ -50,6 +50,7 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       session.createdBy = asString(payload.sourceSessionId)
       break
     }
+    // Kept for replaying pre-G2 logs; the runtime emits `activated` now.
     case 'session.resumed': {
       const sessionId = asString(payload.sessionId)
       if (!sessionId) {
@@ -218,6 +219,10 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       const slotKey = slotKeyFromPayload(payload)
       if (slotKey) {
         delete state.pending[slotKey]
+      }
+      const target = asString(payload.target) ?? asString(payload.sessionId)
+      if (target) {
+        ensureSession(state, target).status = 'running'
       }
       const subscriptionId = asString(payload.subscriptionId)
       const subscription = subscriptionId

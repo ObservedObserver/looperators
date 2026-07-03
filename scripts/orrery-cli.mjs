@@ -28,6 +28,11 @@ Commands:
   session show <id> [--view transcript|summary|raw] [--json]
   session tail <id> [--all] [--max-events <n>]
   session resume <id> --message <text> [--wait] [--timeout <ms>]
+  session deliver <id>                  Write into the target's context channel (no activation)
+    [--topic <key>] [--note <text>] [--content <text>] [--filename <name>]
+    [--from <session>]                  Forward the source's artifact bundle when no content
+  session activate <id> [--note <text>] [--wait]
+                                        Run one turn: note + unread channel deliveries
   session kill <id>
   session archive <id> [--restore]
   events <id> [--since <cursor>]        Incremental provider events as JSON
@@ -447,6 +452,47 @@ async function commandSessionTail(client, values, idOrPrefix) {
   printer.flush()
 }
 
+async function commandSessionDeliver(client, values, idOrPrefix) {
+  assertWritable(values, 'session deliver')
+  if (!values.content && !values.note && !values.from) {
+    fail('session deliver requires --content, --note, or --from <session>', 2)
+  }
+  const sessionId = await resolveSessionId(client, idOrPrefix)
+  const source = values.from
+    ? await resolveSessionId(client, values.from)
+    : undefined
+  const result = await client.deliverToSession(sessionId, {
+    topic: values.topic,
+    note: values.note,
+    content: values.content,
+    filename: values.filename,
+    source,
+  })
+  process.stdout.write(
+    `delivered #${result.delivery.seq}${
+      result.delivery.topic ? ` (topic ${result.delivery.topic})` : ''
+    } -> ${sessionId}\n`
+  )
+  for (const file of result.delivery.files) {
+    process.stdout.write(`  ${file}\n`)
+  }
+}
+
+async function commandSessionActivate(client, values, idOrPrefix) {
+  assertWritable(values, 'session activate')
+  const sessionId = await resolveSessionId(client, idOrPrefix)
+  await client.activateSession(sessionId, {
+    note: values.note,
+  })
+  process.stdout.write(`activated ${sessionId}\n`)
+  if (values.wait) {
+    const summary = await client.waitForIdle(sessionId, {
+      timeoutMs: waitTimeout(values),
+    })
+    process.stdout.write(`status: ${statusLabel(summary.status)}\n`)
+  }
+}
+
 async function commandSessionResume(client, values, idOrPrefix) {
   assertWritable(values, 'session resume')
   if (!values.message) {
@@ -687,6 +733,11 @@ async function main() {
       since: { type: 'string' },
       limit: { type: 'string' },
       type: { type: 'string' },
+      topic: { type: 'string' },
+      note: { type: 'string' },
+      content: { type: 'string' },
+      filename: { type: 'string' },
+      from: { type: 'string' },
       'max-events': { type: 'string' },
       help: { type: 'boolean' },
     },
@@ -738,6 +789,10 @@ async function main() {
         return commandSessionShow(client, values, target)
       case 'tail':
         return commandSessionTail(client, values, target)
+      case 'deliver':
+        return commandSessionDeliver(client, values, target)
+      case 'activate':
+        return commandSessionActivate(client, values, target)
       case 'resume':
         return commandSessionResume(client, values, target)
       case 'kill':

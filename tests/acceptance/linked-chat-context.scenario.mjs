@@ -21,8 +21,11 @@ export async function run({ orrery, provider, workDir, log }) {
     sourceSessionId: source.sessionId,
     linkLabel: 'handoff',
     context: 'Handoff from the previous session: the codeword is PLUM-42.',
+    // G2: handoff context arrives as a channel delivery listed below the
+    // prompt; the agent must read the delivered file.
     prompt:
-      'A codeword appears in the handoff context above. Reply with only that codeword and nothing else.',
+      'Your context channel has a handoff delivery; its file paths are listed below. ' +
+      'Read the delivered file, find the codeword in it, and reply with only that codeword and nothing else.',
   })
   log(`linked session ${linked.sessionId}`)
   await orrery.waitForIdle(linked.sessionId)

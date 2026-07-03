@@ -110,10 +110,10 @@ test('kernel event log records mutations with actor, cause, and monotonic seq', 
       () => runtime.getState().sessions[sessionId]?.status === 'idle'
     )
     log = runtime.getKernelEvents({ limit: 2000 }).events
-    const resumedEvent = eventsOfType(log, 'session.resumed').find(
+    const resumedEvent = eventsOfType(log, 'activated').find(
       (event) => event.payload.sessionId === sessionId
     )
-    assert.ok(resumedEvent, 'session.resumed must be logged')
+    assert.ok(resumedEvent, 'activated must be logged for the resume')
     assert.equal(resumedEvent.actor.kind, 'human')
     assert.ok(
       eventsOfType(log, 'session.finished').some(

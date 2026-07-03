@@ -77,6 +77,65 @@ const tools = [
     },
   },
   {
+    name: 'deliver',
+    description:
+      'Write data into another Orrery session\'s context channel without activating it. ' +
+      'Omit content to forward your latest turn summary and workspace diff (the artifact bundle).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Target Orrery session id. This is also the graph node id.',
+        },
+        topic: {
+          type: 'string',
+          description:
+            'Optional semantic key. A newer delivery on the same topic supersedes older ones, for example diff.',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional short note stored alongside the payload.',
+        },
+        content: {
+          type: 'string',
+          description: 'Optional payload text written into the delivery directory.',
+        },
+        filename: {
+          type: 'string',
+          description: 'Optional file name for the content payload, defaults to content.md.',
+        },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'activate',
+    description:
+      'Run one turn on an existing Orrery session. The activation message is assembled by the ' +
+      'runtime: your optional note plus the list of unread channel deliveries.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Target Orrery session id. This is also the graph node id.',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional instruction to prepend to the delivery listing.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Optional rationale recorded on the activation for the blackboard.',
+        },
+      },
+      required: ['sessionId'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'link_sessions',
     description:
       'Declare a visible relationship edge from the current session to another Orrery session/node.',

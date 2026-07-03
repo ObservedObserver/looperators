@@ -103,6 +103,11 @@ test('fold projects subscriptions, firings, and pending slots', () => {
   applyEvent(state, event('activated', { subscriptionId: 'sub-1', target: 'reviewer' }))
   assert.equal(state.pending[slotKey], undefined, 'activation consumes the slot')
   assert.equal(state.subscriptions['sub-1'].firings, 1)
+  assert.equal(
+    state.sessions.reviewer.status,
+    'running',
+    'an activation marks the target busy (the runtime emits activated for every turn start)'
+  )
 
   applyEvent(
     state,

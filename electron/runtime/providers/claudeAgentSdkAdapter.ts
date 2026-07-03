@@ -877,6 +877,7 @@ class ClaudeAgentSdkSessionController {
     membrane,
     providerInstance,
     runtimeSettings,
+    channelDir,
   }) {
     try {
       const { query } = await import('@anthropic-ai/claude-agent-sdk')
@@ -885,6 +886,11 @@ class ClaudeAgentSdkSessionController {
       const sdkOptions = {
         cwd,
         resume: backendSessionId,
+        // The session's own context-channel inbox (runtime-owned data plane):
+        // reading delivered files must not stall on a permission prompt.
+        ...(nonEmptyString(channelDir)
+          ? { additionalDirectories: [channelDir] }
+          : {}),
         pathToClaudeCodeExecutable: providerClaudeCommand(providerInstance),
         ...(providerExtraArgs(providerInstance)
           ? { extraArgs: providerExtraArgs(providerInstance) }

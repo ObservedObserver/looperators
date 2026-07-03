@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 export const name = 'kernel-event-log'
 export const description =
-  'G0 acceptance: real session lifecycle lands in the SQLite kernel event log with actors and causal chains (session.created -> session.finished -> session.resumed).'
+  'G0/G2 acceptance: real session lifecycle lands in the SQLite kernel event log with actors and causal chains (session.created -> session.finished -> activated).'
 
 export async function run({ orrery, provider, workDir, log }) {
   const before = await orrery.kernelEvents()
@@ -49,14 +49,14 @@ export async function run({ orrery, provider, workDir, log }) {
 
   const resumedEvent = events.find(
     (event) =>
-      event.type === 'session.resumed' &&
+      event.type === 'activated' &&
       event.payload.sessionId === created.sessionId
   )
-  assert.ok(resumedEvent, 'session.resumed must be in the kernel log')
+  assert.ok(resumedEvent, 'activated must be in the kernel log')
   assert.equal(
     finishedEvents[1].causeId,
     resumedEvent.id,
-    'the second finish must chain to session.resumed via causeId'
+    'the second finish must chain to the activation via causeId'
   )
 
   const seqs = events.map((event) => event.seq)

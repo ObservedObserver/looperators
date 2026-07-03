@@ -252,7 +252,7 @@ try {
 
   const coderResumed = kernelLog.find(
     (event) =>
-      event.type === 'session.resumed' &&
+      event.type === 'activated' &&
       event.payload.sessionId === clean.coderId &&
       event.actor.kind === 'rule'
   )
