@@ -23,7 +23,7 @@
     "test": "npm run test:kernel",
     "test:kernel": "npm run build:electron && node --test tests/runtime/*.test.mjs tests/graph-core/*.test.mjs",
     "test:kernel:orchestration": "npm run build:electron && node scripts/canvas-orchestration-smoke.mjs",
-    "test:kernel:master-loop": "npm run build:electron && node scripts/master-loop-smoke.mjs",
+    "test:kernel:master-loop": "npm run build:electron && node --test tests/runtime/subscriptions.test.mjs",
     "test:kernel:persistence": "npm run build:electron && node scripts/runtime-persistence-recovery.mjs",
     "test:kernel:membrane": "npm run build:electron && node scripts/membrane-validation.mjs",
     "test:kernel:codex-interaction": "npm run build:electron && node scripts/codex-interaction-smoke.mjs",

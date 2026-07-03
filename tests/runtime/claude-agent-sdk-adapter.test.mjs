@@ -88,10 +88,12 @@ test('Claude runtime mode controls automatic permission decisions', () => {
     automaticClaudePermissionResult(
       { runtimeMode: 'full-access' },
       'Bash',
-      { toolUseID: 'tool-1' }
+      { toolUseID: 'tool-1' },
+      { command: 'ls' }
     ),
     {
       behavior: 'allow',
+      updatedInput: { command: 'ls' },
       toolUseID: 'tool-1',
       decisionClassification: 'user_permanent',
     }
@@ -104,6 +106,7 @@ test('Claude runtime mode controls automatic permission decisions', () => {
     ),
     {
       behavior: 'allow',
+      updatedInput: {},
       toolUseID: 'tool-2',
       decisionClassification: 'user_permanent',
     }
@@ -113,6 +116,47 @@ test('Claude runtime mode controls automatic permission decisions', () => {
       { runtimeMode: 'auto-accept-edits' },
       'Bash',
       { toolUseID: 'tool-3' }
+    ),
+    undefined
+  )
+})
+
+test('membrane tools are auto-allowed in every runtime mode (sanctioned control surface)', () => {
+  // Headless runs cannot answer permission prompts; the bridge token already
+  // authenticates the session. Without this, the first gate=master approval
+  // (approve_activation via the SDK provider) wedges forever.
+  for (const toolName of [
+    'mcp__orrery_membrane__approve_activation',
+    'mcp__orrery_membrane__deny_activation',
+    'mcp__orrery_membrane__report',
+    'mcp__orrery_membrane__create_session',
+    'mcp__orrery_membrane__resume_session',
+    'mcp__orrery_membrane__deliver',
+    'mcp__orrery_membrane__activate',
+    'mcp__orrery_membrane__link_sessions',
+  ]) {
+    assert.deepEqual(
+      automaticClaudePermissionResult(
+        { runtimeMode: 'approval-required' },
+        toolName,
+        { toolUseID: 'tool-m' },
+        { slotKey: 'sub-1→target' }
+      ),
+      {
+        behavior: 'allow',
+        updatedInput: { slotKey: 'sub-1→target' },
+        toolUseID: 'tool-m',
+        decisionClassification: 'user_permanent',
+      },
+      `${toolName} must not hit the permission gate`
+    )
+  }
+  // Non-membrane MCP tools stay gated.
+  assert.equal(
+    automaticClaudePermissionResult(
+      { runtimeMode: 'approval-required' },
+      'mcp__other_server__do_thing',
+      { toolUseID: 'tool-4' }
     ),
     undefined
   )

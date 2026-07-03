@@ -1,4 +1,12 @@
-export const graphStateVersion = 6
+export const graphStateVersion = 7
+
+// Intent-layer enums (kernel doc §7.3). Kept as value arrays so the electron
+// build and the renderer share one vocabulary.
+export const subscriptionGates = ['auto', 'master', 'human']
+export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt']
+export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster']
+export const subscriptionStates = ['active', 'stopped']
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered']
 
 export const sessionStatuses = [
   'pending',
@@ -76,7 +84,36 @@ export const graphStateSchema = {
     clusters:
       'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
+    subscriptions:
+      'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
+    pendingActivations:
+      'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     diagnostics: 'RuntimeStateDiagnostic[]?',
+  },
+  subscription: {
+    id: 'SubscriptionId',
+    source: '{kind:"session",sessionId} | {kind:"cluster",clusterId}',
+    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?}',
+    target: '{kind:"session",sessionId}',
+    action: '{kind:"deliver"|"deliver+activate", topic?, note?}',
+    gate: subscriptionGates,
+    concurrency: subscriptionConcurrencies,
+    stop: '{whenReport?:{verdict}, maxFirings?, deadline?}?',
+    onStop: subscriptionOnStops,
+    state: subscriptionStates,
+    firings: 'number',
+    label: 'string?',
+    createdAt: 'ISO-8601 string',
+  },
+  pendingActivation: {
+    slotKey: 'string; `${subscriptionId}→${target}`',
+    subscriptionId: 'SubscriptionId',
+    target: 'SessionId',
+    triggerEventId: 'kernel EventId',
+    gate: subscriptionGates,
+    masterSessionId: 'SessionId?; governor per LCA rule R1 when gate=master',
+    status: '"pending" | "approved"',
+    createdAt: 'ISO-8601 string',
   },
   loopPolicy: {
     until: { whenReport: { verdict: 'string' } },
@@ -359,5 +396,7 @@ export function createEmptyGraphState() {
     })),
     clusters: {},
     reports: [],
+    subscriptions: {},
+    pendingActivations: {},
   }
 }

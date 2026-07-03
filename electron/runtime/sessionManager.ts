@@ -13,6 +13,13 @@ import {
 } from '../../shared/graph-state.js'
 import { projectSession } from '../../shared/session-projection.js'
 import {
+  defaultCycleMaxFirings,
+  evaluate as evaluateSubscriptions,
+  eventSourceSession,
+  governingMaster,
+  staticCheck,
+} from '../../shared/graph-core/index.js'
+import {
   ContextChannelStore,
   activationPreamble,
 } from './contextChannel.js'
@@ -60,6 +67,38 @@ const kernelCommandKinds = new Set([
   'remove_edge',
   'report',
   'upsert_provider_instance',
+  'author_subscription',
+  'stop_subscription',
+  'approve_activation',
+  'deny_activation',
+])
+const validSubscriptionGates = new Set(['auto', 'master', 'human'])
+const validSubscriptionConcurrencies = new Set([
+  'coalesce',
+  'queue',
+  'drop',
+  'interrupt',
+])
+const validSubscriptionOnStops = new Set([
+  'freeze-edge',
+  'freeze-target',
+  'freeze-cluster',
+])
+const validSubscriptionPatterns = new Set([
+  'finished',
+  'failed',
+  'report',
+  'delivered',
+])
+// Kernel facts the subscription scheduler evaluates (§6.1 event patterns).
+// session.killed is not a trigger pattern; it sweeps subscriptions whose
+// participants died (kill parity with the old hero loop).
+const schedulerTriggerEventTypes = new Set([
+  'session.finished',
+  'session.failed',
+  'report.received',
+  'delivered',
+  'session.killed',
 ])
 const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
@@ -1320,10 +1359,10 @@ export class RuntimeSessionManager {
   #runContext = new Map<string, JsonRecord>()
   #terminals = new Map<string, JsonRecord>()
   #terminalRuns = new Map<string, RuntimeTerminalRun>()
-  #loopTasks = new Map<string, Promise<void>>()
   #storageFile: string | undefined
   #kernelStore: KernelStore
   #channelStore: ContextChannelStore
+  #schedulerChain: Promise<void> = Promise.resolve()
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
@@ -1401,7 +1440,7 @@ export class RuntimeSessionManager {
       providerInstances: this.#state.providerInstances,
     })
     this.#persistState()
-    this.#recoverRunningLoops()
+    this.#recoverSchedulerState()
   }
 
   getState() {
@@ -1478,6 +1517,14 @@ export class RuntimeSessionManager {
         return this.#cmdReport(input, ctx)
       case 'upsert_provider_instance':
         return this.#cmdUpsertProviderInstance(input, ctx)
+      case 'author_subscription':
+        return this.#cmdAuthorSubscription(input, ctx)
+      case 'stop_subscription':
+        return this.#cmdStopSubscription(input, ctx)
+      case 'approve_activation':
+        return this.#cmdApproveActivation(input, ctx)
+      case 'deny_activation':
+        return this.#cmdDenyActivation(input, ctx)
     }
 
     throw new Error(`Unhandled kernel command: ${kind}`)
@@ -1497,10 +1544,809 @@ export class RuntimeSessionManager {
     return { actor: { kind: 'human' } }
   }
 
-  #loopRuleCtx(clusterId, causeId) {
+  #subscriptionRuleCtx(subscriptionId, causeId) {
+    return { actor: { kind: 'rule', ref: subscriptionId }, causeId }
+  }
+
+  // ---- Intent layer: subscriptions, gates, and the scheduling loop (G3) ----
+
+  // Builds the graph-core view of the kernel state from live runtime state.
+  // graph-core's fold() remains the replay/derivation contract (G1 tests pin
+  // that the same events reproduce this shape); the runtime evaluates
+  // against its live state so scheduling sees current session statuses.
+  #kernelView() {
+    const sessions = {}
+    for (const session of Object.values(this.#state.sessions as JsonRecord)) {
+      const node = this.#state.nodes.find(
+        (item) => item.sessionId === session.sessionId
+      )
+      sessions[session.sessionId] = {
+        sessionId: session.sessionId,
+        status: session.status,
+        frozen: node?.frozen === true,
+        archived: session.archived === true,
+        createdBy: undefined,
+      }
+    }
+    const scopes = {}
+    for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
+      scopes[cluster.clusterId] = {
+        scopeId: cluster.clusterId,
+        kind: 'cluster',
+        parentId: undefined,
+        members: cluster.nodeIds.filter(
+          (id) => id !== cluster.masterSessionId
+        ),
+        masterSessionId: cluster.masterSessionId,
+      }
+    }
+    const pending = {}
+    for (const slot of Object.values(
+      (this.#state.pendingActivations ?? {}) as JsonRecord
+    )) {
+      pending[slot.slotKey] = {
+        slotKey: slot.slotKey,
+        subscriptionId: slot.subscriptionId,
+        target: slot.target,
+        triggerEventId: slot.triggerEventId,
+        status: slot.status,
+        createdAtSeq: 0,
+      }
+    }
     return {
-      actor: { kind: 'rule', ref: `loop:${clusterId}` },
-      causeId,
+      lastSeq: this.#kernelStore.latestSeq(),
+      sessions,
+      subscriptions: clone(this.#state.subscriptions ?? {}),
+      scopes,
+      pending,
+      links: {},
+    }
+  }
+
+  #activeSubscriptionCount() {
+    return Object.values((this.#state.subscriptions ?? {}) as JsonRecord).filter(
+      (subscription) => subscription.state === 'active'
+    ).length
+  }
+
+  // Single-threaded scheduler (§2.4): kernel facts are processed strictly in
+  // append order through one promise chain.
+  #enqueueSchedulerEvent(event) {
+    if (!schedulerTriggerEventTypes.has(event.type)) {
+      return
+    }
+    if (this.#activeSubscriptionCount() === 0 && Object.keys(this.#state.pendingActivations ?? {}).length === 0) {
+      return
+    }
+    this.#schedulerChain = this.#schedulerChain
+      .catch(() => undefined)
+      .then(() => this.#processSchedulerEvent(event))
+      .catch((error) => {
+        console.error(
+          `Subscription scheduler failed on ${event.type} (${event.id}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      })
+  }
+
+  async #processSchedulerEvent(event) {
+    if (event.type === 'session.killed') {
+      // Kill parity with the old hero loop: a killed participant stops the
+      // subscriptions it takes part in (a killed session never emits again
+      // and cannot be activated). Failed participants keep their
+      // subscriptions — a failed session can be resumed and the loop then
+      // self-heals.
+      this.#stopSubscriptionsForKilledParticipant(event)
+      await this.#drainApprovedSlots()
+      return
+    }
+
+    const decisions = evaluateSubscriptions(this.#kernelView(), event)
+    for (const decision of decisions) {
+      const ctx = this.#subscriptionRuleCtx(decision.subscriptionId, event.id)
+      if (decision.kind === 'stop-subscription') {
+        await this.#stopSubscriptionWithOnStop(decision, ctx)
+        continue
+      }
+      if (decision.kind === 'deliver') {
+        // Data-plane firing: forward the trigger source's artifact bundle.
+        const subscription = this.#state.subscriptions?.[decision.subscriptionId]
+        try {
+          this.#cmdDeliver(
+            {
+              sessionId: decision.target,
+              source: eventSourceSession(event),
+              topic: decision.topic,
+              subscriptionId: decision.subscriptionId,
+              reportId: event.type === 'report.received' ? event.payload.reportId : undefined,
+            },
+            ctx
+          )
+          if (subscription) {
+            subscription.firings += 1
+            this.#touch()
+          }
+        } catch (error) {
+          console.error(
+            `Subscription ${decision.subscriptionId} delivery failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        }
+        continue
+      }
+      if (decision.kind === 'interrupt-target') {
+        try {
+          this.#cmdKillSession({ sessionId: decision.target }, ctx)
+        } catch {
+          // The target may have finished in the meantime; the pend below
+          // still lands.
+        }
+        continue
+      }
+      if (decision.kind === 'drop-firing') {
+        this.#appendKernelEvent(
+          'activation.dropped',
+          { subscriptionId: decision.subscriptionId },
+          ctx,
+          { reason: decision.reason }
+        )
+        continue
+      }
+      if (decision.kind === 'pend-activation') {
+        await this.#createPendingActivation(decision, event, ctx)
+      }
+    }
+
+    await this.#drainApprovedSlots()
+  }
+
+  async #createPendingActivation(decision, event, ctx) {
+    const slotKey = `${decision.subscriptionId}→${decision.target}`
+    if (decision.supersedes && this.#state.pendingActivations?.[decision.supersedes]) {
+      delete this.#state.pendingActivations[decision.supersedes]
+      this.#appendKernelEvent(
+        'activation.superseded',
+        { subscriptionId: decision.subscriptionId, target: decision.target, slotKey: decision.supersedes },
+        ctx,
+        { reason: 'A newer trigger superseded the pending activation (coalesce).' }
+      )
+    }
+
+    const subscription = this.#state.subscriptions?.[decision.subscriptionId]
+    const slot = {
+      slotKey,
+      subscriptionId: decision.subscriptionId,
+      target: decision.target,
+      triggerEventId: event.id,
+      sourceSessionId: eventSourceSession(event),
+      reportId: event.type === 'report.received' ? event.payload.reportId : undefined,
+      gate: decision.gate,
+      masterSessionId: decision.masterSessionId,
+      status: 'pending',
+      createdAt: now(),
+    }
+    this.#state.pendingActivations = this.#state.pendingActivations ?? {}
+    this.#state.pendingActivations[slotKey] = slot
+    const pendingEvent = this.#appendKernelEvent(
+      'activation.pending',
+      {
+        subscriptionId: decision.subscriptionId,
+        target: decision.target,
+        slotKey,
+        triggerEventId: event.id,
+        gate: decision.gate,
+        masterSessionId: decision.masterSessionId,
+      },
+      ctx
+    )
+    this.#touch()
+
+    if (decision.gate === 'auto') {
+      await this.#cmdApproveActivation(
+        { slotKey },
+        { actor: { kind: 'rule', ref: decision.subscriptionId }, causeId: pendingEvent?.id }
+      )
+      return
+    }
+
+    if (decision.gate === 'master' && decision.masterSessionId) {
+      await this.#notifyMasterOfPending(slot, subscription, event, ctx)
+      return
+    }
+    // gate === 'human' (or master with nobody to route to): the slot waits
+    // for an approve/deny command from the UI/CLI.
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+  }
+
+  #pendingRequestText(slot, subscription) {
+    const sourceLabel = slot.sourceSessionId
+      ? this.#state.sessions[slot.sourceSessionId]?.label ?? slot.sourceSessionId
+      : 'unknown'
+    const targetLabel =
+      this.#state.sessions[slot.target]?.label ?? slot.target
+    return [
+      `Pending activation requires your decision (slotKey: ${slot.slotKey}).`,
+      `Subscription ${subscription?.label ?? slot.subscriptionId}: ${sourceLabel} → ${targetLabel}, triggered by ${slot.reportId ? `report ${slot.reportId}` : 'a finished turn'} from ${sourceLabel}.`,
+      `To allow it, call mcp__orrery_membrane__approve_activation exactly once with {"slotKey":"${slot.slotKey}"} — you may add "note" with extra instructions for the target.`,
+      `To reject it, call mcp__orrery_membrane__deny_activation exactly once with {"slotKey":"${slot.slotKey}","reason":"..."}.`,
+      'Then stop.',
+    ].join('\n')
+  }
+
+  async #notifyMasterOfPending(slot, subscription, event, ctx) {
+    const master = this.#state.sessions[slot.masterSessionId]
+    if (!master) {
+      return
+    }
+    const request = this.#pendingRequestText(slot, subscription)
+    try {
+      await this.#cmdActivate(
+        { sessionId: slot.masterSessionId, note: request },
+        { actor: ctx.actor, causeId: slot.triggerEventId }
+      )
+    } catch {
+      // Master is busy (or frozen): park the request in its channel so the
+      // next activation surfaces it.
+      try {
+        this.#deliverToChannel(
+          {
+            target: slot.masterSessionId,
+            from: undefined,
+            topic: `pending-${slot.slotKey}`,
+            note: request,
+          },
+          { actor: ctx.actor, causeId: slot.triggerEventId }
+        )
+      } catch {
+        // Nothing else to do; the slot stays approvable via UI/CLI.
+      }
+    }
+  }
+
+  async #cmdApproveActivation(input: JsonRecord = {}, ctx: JsonRecord) {
+    const slotKey = optionalTrimmedString(input.slotKey)
+    const slot = slotKey ? this.#state.pendingActivations?.[slotKey] : undefined
+    if (!slot) {
+      throw new Error(`Unknown pending activation: ${slotKey ?? ''}`)
+    }
+    this.#assertGateAuthority(slot, ctx)
+    if (slot.status !== 'approved') {
+      slot.status = 'approved'
+      slot.approvalNote = optionalTrimmedString(input.note)
+      slot.approvedBy = ctx.actor
+      this.#appendKernelEvent(
+        'activation.approved',
+        { subscriptionId: slot.subscriptionId, target: slot.target, slotKey },
+        ctx,
+        { reason: ctx.reason ?? slot.approvalNote }
+      )
+      this.#touch()
+    }
+    await this.#drainApprovedSlots()
+    return { ok: true, slotKey }
+  }
+
+  #cmdDenyActivation(input: JsonRecord = {}, ctx: JsonRecord) {
+    const slotKey = optionalTrimmedString(input.slotKey)
+    const slot = slotKey ? this.#state.pendingActivations?.[slotKey] : undefined
+    if (!slot) {
+      throw new Error(`Unknown pending activation: ${slotKey ?? ''}`)
+    }
+    this.#assertGateAuthority(slot, ctx)
+    delete this.#state.pendingActivations[slotKey]
+    this.#appendKernelEvent(
+      'activation.denied',
+      { subscriptionId: slot.subscriptionId, target: slot.target, slotKey },
+      ctx,
+      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
+    )
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { ok: true, slotKey }
+  }
+
+  #assertGateAuthority(slot, ctx: JsonRecord) {
+    const kind = ctx.actor?.kind
+    if (kind === 'human' || kind === 'rule' || kind === 'runtime') {
+      return
+    }
+    // Authority is recomputed live (R1) so a master reassignment takes
+    // effect on already-parked slots: the demoted master loses the gate,
+    // the new governor gains it.
+    const subscription = this.#state.subscriptions?.[slot.subscriptionId]
+    const governor = subscription
+      ? governingMaster(this.#kernelView(), subscription)
+      : slot.masterSessionId
+    if (
+      kind === 'master' &&
+      governor &&
+      ctx.actor?.ref === governor &&
+      this.#state.sessions[governor]?.role === 'master'
+    ) {
+      return
+    }
+    throw new Error(
+      `Session ${ctx.actor?.ref ?? ''} does not govern pending activation ${slot.slotKey}`
+    )
+  }
+
+  // Executes approved slots whose targets are free. Called after every
+  // scheduler event; targets going idle (session.finished) re-drain here —
+  // this is where coalesce's "fire once when idle, with the latest context"
+  // becomes real.
+  async #drainApprovedSlots() {
+    const slots = Object.values(
+      (this.#state.pendingActivations ?? {}) as JsonRecord
+    ).filter((slot) => slot.status === 'approved')
+    for (const slot of slots) {
+      if (!this.#state.pendingActivations?.[slot.slotKey]) {
+        continue
+      }
+      const target = this.#state.sessions[slot.target]
+      const subscription = this.#state.subscriptions?.[slot.subscriptionId]
+      if (!target || !subscription || subscription.state !== 'active') {
+        delete this.#state.pendingActivations[slot.slotKey]
+        this.#appendKernelEvent(
+          'activation.dropped',
+          { subscriptionId: slot.subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          { actor: { kind: 'runtime' } },
+          { reason: 'The subscription or target is gone.' }
+        )
+        continue
+      }
+      if (target.status === 'killed' || target.status === 'failed') {
+        delete this.#state.pendingActivations[slot.slotKey]
+        this.#appendKernelEvent(
+          'activation.dropped',
+          { subscriptionId: slot.subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          { actor: { kind: 'runtime' } },
+          { reason: `Target session is ${target.status}.` }
+        )
+        continue
+      }
+      if (
+        this.#runs.has(slot.target) ||
+        target.status === 'running' ||
+        target.status === 'pending' ||
+        this.#isSessionFrozen(slot.target)
+      ) {
+        // Busy or frozen: the slot is the dirty flag (§5/§6.1); it fires on
+        // a later drain.
+        continue
+      }
+      await this.#executeApprovedSlot(slot, subscription)
+    }
+  }
+
+  async #executeApprovedSlot(slot, subscription) {
+    const ctx = this.#subscriptionRuleCtx(slot.subscriptionId, slot.triggerEventId)
+    try {
+      // Data first (§2.5): the firing's payload is the trigger source's
+      // artifact bundle (plus the rendered report for report triggers).
+      if (slot.sourceSessionId && this.#state.sessions[slot.sourceSessionId]) {
+        const entries = this.#firingEntries(slot.sourceSessionId, slot.reportId)
+        if (entries.length > 0) {
+          this.#deliverToChannel(
+            {
+              target: slot.target,
+              from: slot.sourceSessionId,
+              topic: subscription.action.topic,
+              entries,
+              subscriptionId: slot.subscriptionId,
+            },
+            ctx
+          )
+        }
+      }
+
+      const note = [subscription.action.note, slot.approvalNote]
+        .filter(Boolean)
+        .join('\n\n')
+      delete this.#state.pendingActivations[slot.slotKey]
+      await this.#runActivation(slot.target, {
+        note: note.length > 0 ? note : undefined,
+        ctx: {
+          actor: slot.approvedBy?.kind === 'master' ? slot.approvedBy : ctx.actor,
+          causeId: slot.triggerEventId,
+        },
+        edgeSourceSessionId:
+          slot.approvedBy?.kind === 'master' ? slot.approvedBy.ref : undefined,
+        subscriptionId: slot.subscriptionId,
+        slotKey: slot.slotKey,
+      })
+      subscription.firings += 1
+      this.#syncLoopStateForSubscription(subscription, 'activated')
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    } catch (error) {
+      console.error(
+        `Approved activation ${slot.slotKey} failed to execute: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+  }
+
+  // The payload of a subscription firing: the trigger source's artifact
+  // bundle; report triggers lead with the rendered report instead of the
+  // turn summary.
+  #firingEntries(sourceSessionId, reportId) {
+    const report = reportId
+      ? this.#state.reports.find((item) => item.id === reportId)
+      : undefined
+    if (!report) {
+      return this.#artifactBundleEntries(sourceSessionId)
+    }
+    return [
+      { name: 'review.md', content: this.#renderReportMarkdown(report) },
+      ...this.#artifactBundleEntries(sourceSessionId).filter(
+        (entry) => entry.name !== 'turn-summary.md'
+      ),
+    ]
+  }
+
+  #renderReportMarkdown(report) {
+    const payload = report.payload ?? {}
+    const lines = [`# Report from ${this.#state.sessions[report.from]?.label ?? report.from}`]
+    if (payload.type === 'verdict') {
+      lines.push(`Verdict: ${payload.verdict}`)
+      if (payload.summary) {
+        lines.push('', String(payload.summary))
+      }
+      const issues = Array.isArray(payload.issues) ? payload.issues : []
+      if (issues.length > 0) {
+        lines.push('', '## Issues')
+        for (const issue of issues) {
+          const location = [issue.file, Number.isFinite(issue.line) ? issue.line : undefined]
+            .filter(Boolean)
+            .join(':')
+          lines.push(`- ${issue.message}${location ? ` (${location})` : ''}`)
+        }
+      }
+    } else {
+      lines.push('', JSON.stringify(payload, null, 2))
+    }
+    return `${lines.join('\n')}\n`
+  }
+
+  // --- Subscription authoring / stopping ---
+
+  #cmdAuthorSubscription(input: JsonRecord = {}, ctx: JsonRecord) {
+    const subscription = this.#normalizeSubscriptionInput(input)
+
+    // Static safety check on the prospective intent graph (§6.4).
+    const prospective = this.#kernelView()
+    prospective.subscriptions[subscription.id] = clone(subscription)
+    let check = staticCheck(prospective)
+
+    const onCycle = check.cyclicSubscriptionIds.includes(subscription.id)
+    if (!input.gate) {
+      // Default rule: master on cycles, auto elsewhere (§6.1).
+      subscription.gate = onCycle ? 'master' : 'auto'
+      prospective.subscriptions[subscription.id].gate = subscription.gate
+    }
+    const guarded = []
+    for (const id of check.needsDefaultMaxFirings) {
+      if (id === subscription.id) {
+        subscription.stop = {
+          ...(subscription.stop ?? {}),
+          maxFirings: defaultCycleMaxFirings,
+        }
+        prospective.subscriptions[id].stop = clone(subscription.stop)
+        guarded.push(id)
+        continue
+      }
+      const existing = this.#state.subscriptions?.[id]
+      if (existing) {
+        existing.stop = {
+          ...(existing.stop ?? {}),
+          maxFirings: defaultCycleMaxFirings,
+        }
+        prospective.subscriptions[id].stop = clone(existing.stop)
+        guarded.push(id)
+        this.#appendKernelEvent(
+          'subscription.guarded',
+          { subscriptionId: id, maxFirings: defaultCycleMaxFirings },
+          { actor: { kind: 'runtime' } },
+          { reason: 'Static cycle check applied the default maxFirings guardrail.' }
+        )
+      }
+    }
+    check = staticCheck(prospective)
+    if (!check.ok) {
+      throw new Error(
+        'Subscription would create an unguarded activation cycle; add a stop condition or a non-auto gate.'
+      )
+    }
+
+    this.#state.subscriptions = this.#state.subscriptions ?? {}
+    this.#state.subscriptions[subscription.id] = subscription
+    this.#appendKernelEvent(
+      'subscription.authored',
+      { subscription: clone(subscription) },
+      ctx,
+      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
+    )
+    this.#syncLoopStateForSubscription(subscription, 'subscription.authored')
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return {
+      subscription: clone(subscription),
+      staticCheck: {
+        onCycle,
+        cyclicSubscriptionIds: check.cyclicSubscriptionIds,
+        guardedSubscriptionIds: guarded,
+      },
+    }
+  }
+
+  #normalizeSubscriptionInput(input: JsonRecord = {}) {
+    const sourceSessionId = optionalTrimmedString(input.sourceSessionId)
+    const sourceClusterId = optionalTrimmedString(input.sourceClusterId)
+    let source = isObject(input.source) ? input.source : undefined
+    if (!source && sourceSessionId) {
+      source = { kind: 'session', sessionId: sourceSessionId }
+    }
+    if (!source && sourceClusterId) {
+      source = { kind: 'cluster', clusterId: sourceClusterId }
+    }
+    if (
+      !source ||
+      (source.kind === 'session' && !this.#state.sessions[source.sessionId]) ||
+      (source.kind === 'cluster' && !this.#state.clusters[source.clusterId]) ||
+      (source.kind !== 'session' && source.kind !== 'cluster')
+    ) {
+      throw new Error('Subscription source must be an existing session or cluster')
+    }
+
+    const targetSessionId =
+      optionalTrimmedString(input.targetSessionId) ??
+      (isObject(input.target) ? optionalTrimmedString(input.target.sessionId) : undefined)
+    if (!targetSessionId || !this.#state.sessions[targetSessionId]) {
+      throw new Error('Subscription target must be an existing session')
+    }
+
+    const on = isObject(input.on) ? input.on : { on: input.on }
+    if (!validSubscriptionPatterns.has(on.on)) {
+      throw new Error(`Subscription pattern must be one of finished|failed|report|delivered`)
+    }
+    const pattern: JsonRecord = { on: on.on }
+    if (on.on === 'report' && isObject(on.match)) {
+      pattern.match = {
+        ...(optionalTrimmedString(on.match.type) ? { type: on.match.type.trim() } : {}),
+        ...(optionalTrimmedString(on.match.verdict)
+          ? { verdict: on.match.verdict.trim() }
+          : {}),
+      }
+    }
+    if (on.on === 'delivered' && optionalTrimmedString(on.topic)) {
+      pattern.topic = on.topic.trim()
+    }
+
+    const action = isObject(input.action) ? input.action : { kind: input.action }
+    if (action.kind === 'create') {
+      throw new Error('Subscription action "create" lands in a later version; use a one-shot command')
+    }
+    if (action.kind !== 'deliver' && action.kind !== 'deliver+activate') {
+      throw new Error('Subscription action must be deliver or deliver+activate')
+    }
+
+    const gate = optionalTrimmedString(input.gate)
+    if (gate && !validSubscriptionGates.has(gate)) {
+      throw new Error('Subscription gate must be auto, master, or human')
+    }
+    const concurrency = optionalTrimmedString(input.concurrency) ?? 'coalesce'
+    if (!validSubscriptionConcurrencies.has(concurrency)) {
+      throw new Error('Subscription concurrency must be coalesce, queue, drop, or interrupt')
+    }
+    const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
+    if (!validSubscriptionOnStops.has(onStop)) {
+      throw new Error('Subscription onStop must be freeze-edge, freeze-target, or freeze-cluster')
+    }
+
+    let stop
+    if (isObject(input.stop)) {
+      stop = {}
+      if (isObject(input.stop.whenReport) && optionalTrimmedString(input.stop.whenReport.verdict)) {
+        stop.whenReport = { verdict: input.stop.whenReport.verdict.trim() }
+      }
+      if (input.stop.maxFirings !== undefined) {
+        const maxFirings = Number(input.stop.maxFirings)
+        if (!Number.isInteger(maxFirings) || maxFirings <= 0) {
+          throw new Error('Subscription stop.maxFirings must be a positive integer')
+        }
+        stop.maxFirings = maxFirings
+      }
+      if (optionalTrimmedString(input.stop.deadline)) {
+        if (Number.isNaN(Date.parse(input.stop.deadline))) {
+          throw new Error('Subscription stop.deadline must be a parseable date-time')
+        }
+        stop.deadline = input.stop.deadline.trim()
+      }
+      if (Object.keys(stop).length === 0) {
+        stop = undefined
+      }
+    }
+
+    return {
+      id: optionalTrimmedString(input.id) ?? `sub-${randomUUID().slice(0, 8)}`,
+      source:
+        source.kind === 'session'
+          ? { kind: 'session', sessionId: source.sessionId }
+          : { kind: 'cluster', clusterId: source.clusterId },
+      on: pattern,
+      target: { kind: 'session', sessionId: targetSessionId },
+      action: {
+        kind: action.kind,
+        ...(optionalTrimmedString(action.topic) ? { topic: action.topic.trim() } : {}),
+        ...(optionalTrimmedString(action.note) ? { note: action.note } : {}),
+      },
+      gate: gate ?? undefined,
+      concurrency,
+      stop,
+      onStop,
+      state: 'active',
+      firings: 0,
+      label: optionalTrimmedString(input.label),
+      preset: optionalTrimmedString(input.preset),
+      createdAt: now(),
+    }
+  }
+
+  #cmdStopSubscription(input: JsonRecord = {}, ctx: JsonRecord) {
+    const subscriptionId = optionalTrimmedString(input.subscriptionId)
+    const subscription = subscriptionId
+      ? this.#state.subscriptions?.[subscriptionId]
+      : undefined
+    if (!subscription) {
+      throw new Error(`Unknown subscription: ${subscriptionId ?? ''}`)
+    }
+    if (subscription.state === 'stopped') {
+      return { ok: true, subscription: clone(subscription) }
+    }
+    subscription.state = 'stopped'
+    this.#appendKernelEvent(
+      'subscription.stopped',
+      { subscriptionId },
+      ctx,
+      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
+    )
+    this.#discardSlotsForSubscription(subscriptionId, ctx)
+    this.#syncLoopStateForSubscription(subscription, 'subscription.stopped')
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { ok: true, subscription: clone(subscription) }
+  }
+
+  #stopSubscriptionsForKilledParticipant(event) {
+    const sessionId =
+      typeof event.payload?.sessionId === 'string' ? event.payload.sessionId : undefined
+    if (!sessionId) {
+      return
+    }
+    for (const subscription of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      if (subscription.state !== 'active') {
+        continue
+      }
+      const participates =
+        subscription.target.sessionId === sessionId ||
+        (subscription.source.kind === 'session' &&
+          subscription.source.sessionId === sessionId)
+      if (participates) {
+        this.#cmdStopSubscription(
+          {
+            subscriptionId: subscription.id,
+            reason: 'Participant session was killed.',
+          },
+          { actor: { kind: 'runtime' }, causeId: event.id }
+        )
+      }
+    }
+  }
+
+  #discardSlotsForSubscription(subscriptionId, ctx) {
+    for (const slot of Object.values(
+      (this.#state.pendingActivations ?? {}) as JsonRecord
+    )) {
+      if (slot.subscriptionId === subscriptionId) {
+        delete this.#state.pendingActivations[slot.slotKey]
+        this.#appendKernelEvent(
+          'activation.dropped',
+          { subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          ctx,
+          { reason: 'The subscription stopped.' }
+        )
+      }
+    }
+  }
+
+  // Scheduler-driven stop (a stop condition fired): the subscription stops
+  // AND its onStop escalation runs (§6.2).
+  async #stopSubscriptionWithOnStop(decision, ctx) {
+    const subscription = this.#state.subscriptions?.[decision.subscriptionId]
+    if (!subscription || subscription.state === 'stopped') {
+      return
+    }
+    this.#cmdStopSubscription(
+      { subscriptionId: decision.subscriptionId },
+      { ...ctx, reason: decision.reason }
+    )
+    if (decision.onStop === 'freeze-target') {
+      this.#applyFreeze(
+        { targetId: subscription.target.sessionId, reason: decision.reason },
+        ctx
+      )
+      return
+    }
+    if (decision.onStop === 'freeze-cluster') {
+      const clusterId =
+        this.#managedClusterId(subscription.target.sessionId) ??
+        this.#managedClusterId(
+          subscription.source.kind === 'session'
+            ? subscription.source.sessionId
+            : undefined
+        ) ??
+        (subscription.source.kind === 'cluster'
+          ? subscription.source.clusterId
+          : undefined)
+      this.#applyFreeze(
+        {
+          targetId: clusterId ?? subscription.target.sessionId,
+          reason: decision.reason,
+        },
+        ctx
+      )
+    }
+  }
+
+  // Keeps the renderer-facing cluster.loopState in sync for preset-compiled
+  // loop subscriptions (the old loop state machine is gone; this is a
+  // derived view).
+  #syncLoopStateForSubscription(subscription, lastEventType) {
+    const preset = optionalTrimmedString(subscription?.preset)
+    if (!preset || !preset.startsWith('hero-loop:')) {
+      return
+    }
+    const clusterId = preset.slice('hero-loop:'.length)
+    this.#syncLoopStateForCluster(clusterId, lastEventType)
+  }
+
+  #loopSubscriptionsForCluster(clusterId) {
+    return Object.values((this.#state.subscriptions ?? {}) as JsonRecord).filter(
+      (subscription) => subscription.preset === `hero-loop:${clusterId}`
+    )
+  }
+
+  #syncLoopStateForCluster(clusterId, lastEventType) {
+    const cluster = this.#state.clusters[clusterId]
+    if (!cluster) {
+      return
+    }
+    const subs = this.#loopSubscriptionsForCluster(clusterId)
+    if (subs.length === 0) {
+      return
+    }
+    const s1 = subs.find((subscription) => subscription.label === 'S1')
+    const s2 = subs.find((subscription) => subscription.label === 'S2')
+    const running = subs.some((subscription) => subscription.state === 'active')
+    const previous = cluster.loopState ?? {}
+    cluster.loopState = {
+      status: running ? 'running' : 'stopped',
+      iterations: s2?.firings ?? 0,
+      coderSessionId: s2?.target.sessionId,
+      reviewerSessionId: s1?.target.sessionId,
+      lastEvent: lastEventType
+        ? { type: lastEventType, ts: now() }
+        : previous.lastEvent,
+      reason: running
+        ? `Loop subscriptions active (S2 firings: ${s2?.firings ?? 0}).`
+        : previous.reason ?? 'Loop subscriptions stopped.',
+      startedAt: previous.startedAt,
+      stoppedAt: running ? undefined : previous.stoppedAt ?? now(),
     }
   }
 
@@ -1516,6 +2362,9 @@ export class RuntimeSessionManager {
       // Lightweight broadcast (no state payload); the canvas timeline and
       // acceptance scenarios can follow the kernel log live.
       this.#broadcast({ type: 'kernel.event', event })
+      // Every kernel fact flows through the subscription scheduler (§2.4):
+      // Log → fold → State → match → Pending → gate → Commands.
+      this.#enqueueSchedulerEvent(event)
     }
     return event
   }
@@ -2233,7 +3082,13 @@ export class RuntimeSessionManager {
     const topic = optionalTrimmedString(input.topic)
     const note = optionalTrimmedString(input.note)
     const content = typeof input.content === 'string' ? input.content : undefined
-    const from = optionalTrimmedString(ctx.actor?.ref) ?? optionalTrimmedString(input.source)
+    // Attribution: a caller session (membrane actor.ref) cannot be spoofed;
+    // rule actors reference a subscription rather than a session, so
+    // subscription firings pass the trigger source explicitly instead.
+    const actorRef = optionalTrimmedString(ctx.actor?.ref)
+    const from =
+      (actorRef && this.#state.sessions[actorRef] ? actorRef : undefined) ??
+      optionalTrimmedString(input.source)
 
     let entries
     if (content) {
@@ -2245,15 +3100,23 @@ export class RuntimeSessionManager {
       ]
     } else if (from && this.#state.sessions[from]) {
       // No explicit payload: forward the source's artifact bundle — the
-      // fixed convention for machine-fired deliveries (§4.2.6).
-      entries = this.#artifactBundleEntries(from)
+      // fixed convention for machine-fired deliveries (§4.2.6). Report
+      // triggers additionally carry the rendered report.
+      entries = this.#firingEntries(from, optionalTrimmedString(input.reportId))
     }
     if ((!entries || entries.length === 0) && !note) {
       throw new Error('deliver requires content, a note, or a session source with artifacts')
     }
 
     const delivery = this.#deliverToChannel(
-      { target, from, topic, note, entries },
+      {
+        target,
+        from,
+        topic,
+        note,
+        entries,
+        subscriptionId: input.subscriptionId,
+      },
       ctx
     )
     return {
@@ -2314,7 +3177,7 @@ export class RuntimeSessionManager {
   }
 
   #deliverToChannel(
-    { target, from, fromLabel, topic, note, entries }: JsonRecord,
+    { target, from, fromLabel, topic, note, entries, subscriptionId }: JsonRecord,
     ctx: JsonRecord
   ) {
     const sourceSession = from ? this.#state.sessions[from] : undefined
@@ -2335,6 +3198,9 @@ export class RuntimeSessionManager {
         channelSeq: delivery.seq,
         files: delivery.files,
         notePreview: truncateForLog(note, 200),
+        // Provenance for subscription-fired deliveries; fold counts a
+        // deliver-only subscription's firings from this field.
+        subscriptionId: optionalTrimmedString(subscriptionId),
       },
       ctx
     )
@@ -2382,7 +3248,15 @@ export class RuntimeSessionManager {
 
   async #runActivation(
     sessionId,
-    { note, attachments = [], edgeSourceSessionId, edgeInput = {}, ctx }: JsonRecord
+    {
+      note,
+      attachments = [],
+      edgeSourceSessionId,
+      edgeInput = {},
+      ctx,
+      subscriptionId,
+      slotKey,
+    }: JsonRecord
   ) {
     const session = this.#state.sessions[sessionId]
     const unread = this.#channelStore.unread(sessionId)
@@ -2450,6 +3324,10 @@ export class RuntimeSessionManager {
         edgeSourceSessionId,
         notePreview: truncateForLog(note, 200),
         deliveries: deliveredSeqs,
+        // Present when a subscription firing executed this activation; fold
+        // counts the subscription's firings from it and frees the slot.
+        subscriptionId: optionalTrimmedString(subscriptionId),
+        slotKey: optionalTrimmedString(slotKey),
       },
       ctx,
       {
@@ -2941,7 +3819,14 @@ export class RuntimeSessionManager {
     return this.#cmdStartLoop(input, this.#humanCtx())
   }
 
-  #cmdStartLoop(input: JsonRecord = {}, ctx: JsonRecord) {
+  // LoopPolicy is a preset (kernel doc §6.2): starting the loop compiles it
+  // into the two hero-loop subscriptions of §8.2 —
+  //   S1: coder finished        → deliver diff  + activate reviewer (gate master)
+  //   S2: reviewer verdict=issues → deliver review + activate coder  (gate master,
+  //       stop at whenReport verdict / maxFirings, onStop freeze-cluster)
+  // The runtime does the clerical work (matching, stop guards, deliveries,
+  // message assembly); the master only approves or denies each firing.
+  async #cmdStartLoop(input: JsonRecord = {}, ctx: JsonRecord) {
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -2959,7 +3844,8 @@ export class RuntimeSessionManager {
       throw new Error(`Cluster has no LoopPolicy: ${clusterId}`)
     }
 
-    if (!cluster.masterSessionId || !this.#state.sessions[cluster.masterSessionId]) {
+    const masterSessionId = cluster.masterSessionId
+    if (!masterSessionId || !this.#state.sessions[masterSessionId]) {
       throw new Error(`Cluster has no master session: ${clusterId}`)
     }
 
@@ -2968,19 +3854,84 @@ export class RuntimeSessionManager {
       throw new Error(`Cluster has no managed worker session: ${clusterId}`)
     }
 
+    if (
+      this.#loopSubscriptionsForCluster(clusterId).some(
+        (subscription) => subscription.state === 'active'
+      )
+    ) {
+      throw new Error(`Cluster loop is already running: ${clusterId}`)
+    }
+
     const ts = now()
+    const reason =
+      typeof input.reason === 'string' && input.reason.trim().length > 0
+        ? input.reason.trim()
+        : 'Loop started by user.'
+
+    // The reviewer exists up front (§8.2 subscriptions connect existing
+    // nodes; the in-subscription create action lands in a later version).
+    const reviewer = await this.#cmdCreateSession(
+      this.#membraneCreateInput(masterSessionId, {
+        agent: 'claude-code',
+        label: 'Reviewer',
+        cluster: clusterId,
+        prompt: this.#reviewerBootstrapPrompt(),
+        masterReason: 'Loop preset created the reviewer.',
+      }),
+      ctx
+    )
+    const reviewerSessionId = reviewer.sessionId
+
+    const policy = cluster.loopPolicy
+    const s1 = this.#cmdAuthorSubscription(
+      {
+        label: 'S1',
+        preset: `hero-loop:${clusterId}`,
+        sourceSessionId: coderSessionId,
+        on: { on: 'finished' },
+        targetSessionId: reviewerSessionId,
+        action: {
+          kind: 'deliver+activate',
+          topic: 'diff',
+          note: this.#reviewerActivationNote(),
+        },
+        gate: 'master',
+        concurrency: 'coalesce',
+      },
+      ctx
+    )
+    const s2 = this.#cmdAuthorSubscription(
+      {
+        label: 'S2',
+        preset: `hero-loop:${clusterId}`,
+        sourceSessionId: reviewerSessionId,
+        on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+        targetSessionId: coderSessionId,
+        action: {
+          kind: 'deliver+activate',
+          topic: 'review',
+          note: this.#coderActivationNote(),
+        },
+        gate: 'master',
+        concurrency: 'coalesce',
+        stop: {
+          ...(optionalTrimmedString(policy.until?.whenReport?.verdict)
+            ? { whenReport: { verdict: policy.until.whenReport.verdict } }
+            : {}),
+          maxFirings: policy.maxIterations ?? defaultCycleMaxFirings,
+        },
+        onStop: 'freeze-cluster',
+      },
+      ctx
+    )
+
     cluster.loopState = {
-      ...(cluster.loopState ?? {}),
       status: 'running',
       iterations: 0,
       coderSessionId,
-      reviewerSessionId: this.#loopReviewerSessionId(cluster, coderSessionId),
+      reviewerSessionId,
       lastEvent: { type: 'loop.started', ts },
-      lastProcessedEventKey: undefined,
-      reason:
-        typeof input.reason === 'string' && input.reason.trim().length > 0
-          ? input.reason.trim()
-          : 'Loop started by user.',
+      reason,
       startedAt: ts,
       stoppedAt: undefined,
     }
@@ -2990,10 +3941,11 @@ export class RuntimeSessionManager {
       {
         clusterId,
         coderSessionId,
-        reviewerSessionId: cluster.loopState.reviewerSessionId,
+        reviewerSessionId,
+        subscriptionIds: [s1.subscription.id, s2.subscription.id],
       },
       ctx,
-      { reason: ctx.reason ?? cluster.loopState.reason }
+      { reason: ctx.reason ?? reason }
     )
     this.#touch()
     this.#broadcast({
@@ -3002,11 +3954,43 @@ export class RuntimeSessionManager {
       state: this.getState(),
       kernelEventId: startedEvent?.id,
     })
-    this.#queueLoopWakeup(clusterId, {
-      type: 'loop.started',
-      ts,
-      kernelEventId: startedEvent?.id,
-    })
+
+    // Kick the first review: if the coder already finished its work, the
+    // loop starts by reviewing the current state (same as the old wakeup).
+    const coder = this.#state.sessions[coderSessionId]
+    if (coder && coder.status === 'idle') {
+      const syntheticTrigger = {
+        id: startedEvent?.id,
+        type: 'loop.started',
+        payload: { sessionId: coderSessionId },
+      }
+      this.#schedulerChain = this.#schedulerChain
+        .catch(() => undefined)
+        .then(() =>
+          this.#createPendingActivation(
+            {
+              kind: 'pend-activation',
+              subscriptionId: s1.subscription.id,
+              target: reviewerSessionId,
+              action: s1.subscription.action,
+              gate: s1.subscription.gate,
+              masterSessionId:
+                s1.subscription.gate === 'master' ? masterSessionId : undefined,
+              triggerEventId: startedEvent?.id,
+            },
+            syntheticTrigger,
+            this.#subscriptionRuleCtx(s1.subscription.id, startedEvent?.id)
+          )
+        )
+        .catch((error) => {
+          console.error(
+            `Loop kick failed for ${clusterId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        })
+    }
+
     return { state: this.getState() }
   }
 
@@ -3027,11 +4011,7 @@ export class RuntimeSessionManager {
       typeof input.reason === 'string' && input.reason.trim().length > 0
         ? input.reason.trim()
         : 'Loop stopped by user.'
-    this.#stopLoop(clusterId, reason, {
-      event: { type: 'loop.stopped', ts: now() },
-      broadcast: true,
-      ctx,
-    })
+    this.#stopClusterLoopSubscriptions(clusterId, reason, ctx)
 
     if (input.killRunning === true) {
       const cluster = this.#state.clusters[clusterId]
@@ -3045,6 +4025,76 @@ export class RuntimeSessionManager {
     }
 
     return { state: this.getState() }
+  }
+
+  #stopClusterLoopSubscriptions(clusterId, reason, ctx) {
+    const active = this.#loopSubscriptionsForCluster(clusterId).filter(
+      (subscription) => subscription.state === 'active'
+    )
+    for (const subscription of active) {
+      this.#cmdStopSubscription(
+        { subscriptionId: subscription.id, reason },
+        ctx
+      )
+    }
+    const cluster = this.#state.clusters[clusterId]
+    if (cluster?.loopState && active.length > 0) {
+      cluster.loopState = {
+        ...cluster.loopState,
+        status: 'stopped',
+        lastEvent: { type: 'loop.stopped', ts: now() },
+        reason,
+        stoppedAt: now(),
+      }
+      this.#appendKernelEvent('loop.stopped', { clusterId }, ctx, { reason })
+      this.#touch()
+      this.#broadcast({
+        type: 'loop.stopped',
+        clusterId,
+        reason,
+        state: this.getState(),
+      })
+    }
+  }
+
+  #reviewerBootstrapPrompt() {
+    return [
+      'You are the Reviewer in an Orrery hero review loop.',
+      'Your job on each activation: read the diff delivered in your context channel, then call mcp__orrery_membrane__report exactly once with type "verdict" — verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain.',
+      'Do not edit files.',
+      'For now, reply with exactly: ready. Then stop and wait for activations.',
+    ].join('\n')
+  }
+
+  #reviewerActivationNote() {
+    return [
+      'Review the latest diff delivered in your context channel (file paths listed below).',
+      'Do not edit files.',
+      'Call mcp__orrery_membrane__report exactly once with type "verdict": verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain. Then stop.',
+    ].join('\n')
+  }
+
+  #coderActivationNote() {
+    return [
+      'The reviewer reported issues; the review is delivered in your context channel (file paths listed below).',
+      'Fix the listed issues, then stop so the loop can run the reviewer again.',
+    ].join('\n')
+  }
+
+  authorSubscription(input: JsonRecord = {}) {
+    return this.#cmdAuthorSubscription(input, this.#humanCtx())
+  }
+
+  stopSubscription(input: JsonRecord = {}) {
+    return this.#cmdStopSubscription(input, this.#humanCtx())
+  }
+
+  async approveActivation(input: JsonRecord = {}) {
+    return this.#cmdApproveActivation(input, this.#humanCtx())
+  }
+
+  denyActivation(input: JsonRecord = {}) {
+    return this.#cmdDenyActivation(input, this.#humanCtx())
   }
 
   freeze(input: JsonRecord = {}) {
@@ -3256,6 +4306,24 @@ export class RuntimeSessionManager {
         },
       })
       return { ok: true }
+    }
+
+    if (tool === 'approve_activation') {
+      return this.dispatchCommand({
+        kind: 'approve_activation',
+        actor,
+        reason: optionalTrimmedString(request.note) ?? optionalTrimmedString(request.reason),
+        input: { slotKey: request.slotKey, note: request.note },
+      })
+    }
+
+    if (tool === 'deny_activation') {
+      return this.dispatchCommand({
+        kind: 'deny_activation',
+        actor,
+        reason: optionalTrimmedString(request.reason),
+        input: { slotKey: request.slotKey, reason: request.reason },
+      })
     }
 
     if (tool === 'report') {
@@ -4325,6 +5393,76 @@ export class RuntimeSessionManager {
     }
   }
 
+  #normalizeSubscriptions(value, diagnostics: JsonRecord[] = []) {
+    if (!isObject(value)) {
+      return {}
+    }
+    const subscriptions: JsonRecord = {}
+    for (const [id, candidate] of Object.entries(value)) {
+      if (
+        !isObject(candidate) ||
+        !nonEmptyString(candidate.id) ||
+        !isObject(candidate.source) ||
+        !isObject(candidate.on) ||
+        !isObject(candidate.target) ||
+        !isObject(candidate.action)
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'storage.subscription_skipped',
+            'Skipped an invalid persisted subscription.',
+            { id }
+          )
+        )
+        continue
+      }
+      subscriptions[candidate.id] = {
+        ...candidate,
+        gate: validSubscriptionGates.has(candidate.gate) ? candidate.gate : 'master',
+        concurrency: validSubscriptionConcurrencies.has(candidate.concurrency)
+          ? candidate.concurrency
+          : 'coalesce',
+        onStop: validSubscriptionOnStops.has(candidate.onStop)
+          ? candidate.onStop
+          : 'freeze-edge',
+        state: candidate.state === 'stopped' ? 'stopped' : 'active',
+        firings: Number.isInteger(candidate.firings)
+          ? Math.max(0, candidate.firings)
+          : 0,
+      }
+    }
+    return subscriptions
+  }
+
+  #normalizePendingActivations(value, diagnostics: JsonRecord[] = []) {
+    if (!isObject(value)) {
+      return {}
+    }
+    const slots: JsonRecord = {}
+    for (const [slotKey, candidate] of Object.entries(value)) {
+      if (
+        !isObject(candidate) ||
+        !nonEmptyString(candidate.slotKey) ||
+        !nonEmptyString(candidate.subscriptionId) ||
+        !nonEmptyString(candidate.target)
+      ) {
+        diagnostics.push(
+          diagnostic(
+            'storage.pending_activation_skipped',
+            'Skipped an invalid persisted pending activation.',
+            { slotKey }
+          )
+        )
+        continue
+      }
+      slots[candidate.slotKey] = {
+        ...candidate,
+        status: candidate.status === 'approved' ? 'approved' : 'pending',
+      }
+    }
+    return slots
+  }
+
   #normalizeLoopState(loopState) {
     if (!isObject(loopState)) {
       return undefined
@@ -4343,12 +5481,15 @@ export class RuntimeSessionManager {
       reviewerSessionId: nonEmptyString(loopState.reviewerSessionId)
         ? loopState.reviewerSessionId
         : undefined,
-      lastEvent: isObject(loopState.lastEvent)
-        ? this.#serializeLoopEvent(loopState.lastEvent)
-        : undefined,
-      lastProcessedEventKey: nonEmptyString(loopState.lastProcessedEventKey)
-        ? loopState.lastProcessedEventKey
-        : undefined,
+      lastEvent:
+        isObject(loopState.lastEvent) && nonEmptyString(loopState.lastEvent.type)
+          ? {
+              type: loopState.lastEvent.type,
+              ts: nonEmptyString(loopState.lastEvent.ts)
+                ? loopState.lastEvent.ts
+                : undefined,
+            }
+          : undefined,
       reason: nonEmptyString(loopState.reason) ? loopState.reason : undefined,
       startedAt: nonEmptyString(loopState.startedAt)
         ? loopState.startedAt
@@ -4373,529 +5514,33 @@ export class RuntimeSessionManager {
       `You are the Orrery master session for cluster ${cluster.label}.`,
       'Read the graph as a blackboard and coordinate only the sessions in your cluster scope.',
       `The current LoopPolicy is: ${until}; onStop=freeze. ${maxIterations}`,
-      'Do not execute an autonomous loop yet. Discuss the plan with the user and use Orrery membrane tools when asked to create, resume, or report agent work.',
+      'When the loop runs, the runtime will activate you with pending activation requests (each has a slotKey).',
+      'For each request, decide once: call mcp__orrery_membrane__approve_activation with {"slotKey": ...} to allow it (optionally add "note" with extra instructions), or mcp__orrery_membrane__deny_activation with a reason to reject it. Then stop.',
+      'The runtime handles the clerical work (deliveries, message assembly, stop conditions); you only judge whether each firing should proceed.',
     ].join('\n')
   }
 
-  #recoverRunningLoops() {
-    for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
-      if (cluster.loopState?.status === 'running' && !cluster.frozen) {
-        const recoveredEvent = this.#appendKernelEvent(
-          'loop.recovered',
-          { clusterId: cluster.clusterId },
-          { actor: { kind: 'runtime' } },
-          { reason: 'Runtime restarted with a running loop; resuming it.' }
+  // Restart recovery for the intent layer: subscriptions and pending slots
+  // persist in the snapshot; approved slots drain once targets are free.
+  // Master-gated slots that were pending at shutdown stay approvable via
+  // membrane/HTTP (they are not re-notified automatically).
+  #recoverSchedulerState() {
+    this.#schedulerChain = this.#schedulerChain
+      .catch(() => undefined)
+      .then(() => this.#drainApprovedSlots())
+      .catch((error) => {
+        console.error(
+          `Scheduler recovery failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`
         )
-        this.#queueLoopWakeup(cluster.clusterId, {
-          type: 'runtime.recovered',
-          ts: now(),
-          kernelEventId: recoveredEvent?.id,
-        })
-      }
-    }
+      })
   }
 
   #emitRuntimeEvent(event) {
     this.#broadcast(event)
-    this.#queueLoopWakeupsForRuntimeEvent(event)
   }
 
-  #queueLoopWakeupsForRuntimeEvent(event) {
-    const clusterIds = this.#clusterIdsForRuntimeEvent(event)
-    for (const clusterId of clusterIds) {
-      this.#queueLoopWakeup(clusterId, this.#loopEventFromRuntimeEvent(event))
-    }
-  }
-
-  #clusterIdsForRuntimeEvent(event) {
-    if (
-      event.type === 'session.finished' ||
-      event.type === 'session.failed' ||
-      event.type === 'session.killed'
-    ) {
-      const clusterId =
-        this.#managedClusterId(event.sessionId) ??
-        (event.type === 'session.failed' || event.type === 'session.killed'
-          ? this.#masterClusterId(event.sessionId)
-          : undefined)
-      return clusterId ? [clusterId] : []
-    }
-
-    if (event.type === 'report.received') {
-      const clusterId = this.#managedClusterId(event.from)
-      return clusterId ? [clusterId] : []
-    }
-
-    return []
-  }
-
-  #loopEventFromRuntimeEvent(event) {
-    if (event.type === 'report.received') {
-      return {
-        type: event.type,
-        ts: event.report.envelope.ts,
-        from: event.from,
-        reportId: event.report.id,
-        report: event.report,
-        kernelEventId: event.kernelEventId,
-      }
-    }
-
-    return {
-      type: event.type,
-      ts: now(),
-      sessionId: event.sessionId,
-      error: event.error,
-      kernelEventId: event.kernelEventId,
-    }
-  }
-
-  #queueLoopWakeup(clusterId, event) {
-    const previous = this.#loopTasks.get(clusterId) ?? Promise.resolve()
-    const task = previous
-      .catch(() => undefined)
-      .then(() => this.#runLoopWakeup(clusterId, event))
-      .catch((error) => this.#recordLoopError(clusterId, event, error))
-
-    this.#loopTasks.set(clusterId, task)
-    void task.finally(() => {
-      if (this.#loopTasks.get(clusterId) === task) {
-        this.#loopTasks.delete(clusterId)
-      }
-    })
-  }
-
-  async #runLoopWakeup(clusterId, event) {
-    const cluster = this.#state.clusters[clusterId]
-    if (!cluster) {
-      return
-    }
-
-    const loopState = this.#ensureLoopState(cluster)
-    if (loopState.status !== 'running') {
-      return
-    }
-
-    const eventKey = this.#loopEventKey(event)
-    if (eventKey && loopState.lastProcessedEventKey === eventKey) {
-      return
-    }
-
-    loopState.lastEvent = this.#serializeLoopEvent(event)
-    loopState.lastProcessedEventKey = eventKey
-    loopState.reason = `Woke on ${event.type}.`
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-
-    // The hero loop is hardcoded automation (a rule actor); every action it
-    // takes chains back to the kernel event that woke it.
-    const ctx = this.#loopRuleCtx(clusterId, event.kernelEventId)
-
-    if (cluster.frozen) {
-      this.#stopLoop(clusterId, 'Cluster is frozen; loop stopped.', {
-        event,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    if (!cluster.loopPolicy) {
-      this.#stopLoop(clusterId, 'Cluster has no LoopPolicy.', {
-        event,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    const masterSessionId = cluster.masterSessionId
-    const masterSession = masterSessionId
-      ? this.#state.sessions[masterSessionId]
-      : undefined
-    if (!masterSessionId || !masterSession) {
-      this.#stopLoop(clusterId, 'Cluster has no master session.', {
-        event,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    if (
-      masterSession.status === 'killed' ||
-      masterSession.status === 'failed' ||
-      this.#isSessionFrozen(masterSessionId)
-    ) {
-      this.#stopLoop(
-        clusterId,
-        `Master session cannot continue: ${masterSession.status}.`,
-        { event, broadcast: true, ctx }
-      )
-      return
-    }
-
-    if (event.type === 'session.failed' || event.type === 'session.killed') {
-      const killed = event.type === 'session.killed'
-      this.#stopLoop(
-        clusterId,
-        killed
-          ? 'Managed session was killed; loop stopped.'
-          : event.error
-            ? `Managed session failed: ${event.error}`
-            : 'Managed session failed.',
-        { event, broadcast: true, ctx }
-      )
-      return
-    }
-
-    if (event.type === 'report.received') {
-      await this.#handleLoopReport(clusterId, event.report, ctx)
-      return
-    }
-
-    if (
-      event.type === 'session.finished' ||
-      event.type === 'loop.started' ||
-      event.type === 'runtime.recovered'
-    ) {
-      await this.#handleLoopSessionFinished(clusterId, event.sessionId, ctx)
-    }
-  }
-
-  #recordLoopError(clusterId, event, error) {
-    const message = error instanceof Error ? error.message : String(error)
-    this.#stopLoop(clusterId, `Loop error: ${message}`, {
-      event,
-      broadcast: true,
-      ctx: this.#loopRuleCtx(clusterId, event?.kernelEventId),
-    })
-  }
-
-  async #handleLoopSessionFinished(clusterId, finishedSessionId, ctx) {
-    const cluster = this.#state.clusters[clusterId]
-    if (!cluster || cluster.loopState?.status !== 'running') {
-      return
-    }
-
-    const coderSessionId = this.#loopCoderSessionId(cluster)
-    if (!coderSessionId) {
-      this.#stopLoop(clusterId, 'Cluster has no coder session.', {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    const reviewerSessionId = this.#loopReviewerSessionId(cluster, coderSessionId)
-    if (finishedSessionId && reviewerSessionId === finishedSessionId) {
-      this.#setLoopReason(
-        clusterId,
-        'Reviewer finished; waiting for typed report.'
-      )
-      return
-    }
-
-    if (finishedSessionId && finishedSessionId !== coderSessionId) {
-      this.#setLoopReason(clusterId, 'Finished session is outside the hero loop.')
-      return
-    }
-
-    const coder = this.#state.sessions[coderSessionId]
-    if (!coder) {
-      this.#stopLoop(clusterId, 'Coder session is missing.', {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    if (coder.status === 'running' || coder.status === 'pending') {
-      this.#setLoopReason(clusterId, 'Waiting for coder to finish.')
-      return
-    }
-
-    if (
-      coder.status === 'failed' ||
-      coder.status === 'killed' ||
-      this.#isSessionFrozen(coderSessionId)
-    ) {
-      this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    if (!reviewerSessionId) {
-      await this.#createLoopReviewer(clusterId, coderSessionId, ctx)
-      return
-    }
-
-    await this.#resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId, ctx)
-  }
-
-  async #handleLoopReport(clusterId, report, ctx) {
-    const cluster = this.#state.clusters[clusterId]
-    if (!cluster || cluster.loopState?.status !== 'running') {
-      return
-    }
-
-    if (!report || report.payload?.type !== 'verdict') {
-      this.#setLoopReason(clusterId, 'Report is not a verdict; loop is waiting.')
-      return
-    }
-
-    const coderSessionId = this.#loopCoderSessionId(cluster)
-    if (!coderSessionId) {
-      this.#stopLoop(clusterId, 'Cluster has no coder session.', {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    if (report.from === coderSessionId) {
-      this.#setLoopReason(clusterId, 'Coder report ignored for review loop.')
-      return
-    }
-
-    cluster.loopState.reviewerSessionId =
-      cluster.loopState.reviewerSessionId ?? report.from
-
-    const stopVerdict = cluster.loopPolicy?.until?.whenReport?.verdict
-    if (stopVerdict && report.payload.verdict === stopVerdict) {
-      const reason = `Review verdict ${stopVerdict}; freezing loop scope.`
-      this.#stopLoop(clusterId, reason, {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      this.#applyFreeze(
-        {
-          targetId: clusterId,
-          source: cluster.masterSessionId,
-          reason,
-          masterReason: reason,
-        },
-        ctx
-      )
-      return
-    }
-
-    const maxIterations = cluster.loopPolicy?.maxIterations
-    const iterations = cluster.loopState.iterations ?? 0
-    if (maxIterations && iterations >= maxIterations) {
-      const reason = `maxIterations=${maxIterations} reached after verdict ${report.payload.verdict}.`
-      this.#stopLoop(clusterId, reason, {
-        event: cluster.loopState.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      this.#applyFreeze(
-        {
-          targetId: clusterId,
-          source: cluster.masterSessionId,
-          reason,
-          masterReason: reason,
-        },
-        ctx
-      )
-      return
-    }
-
-    await this.#resumeCoderFromReport(clusterId, coderSessionId, report, ctx)
-  }
-
-  async #createLoopReviewer(clusterId, coderSessionId, ctx) {
-    const cluster = this.#state.clusters[clusterId]
-    const masterSessionId = cluster?.masterSessionId
-    if (!cluster || !masterSessionId) {
-      return
-    }
-
-    const coder = this.#state.sessions[coderSessionId]
-    const reason = `Coder ${coder?.label ?? coderSessionId} finished; create reviewer.`
-    // The loop automation acts as a rule actor; the lineage edge still points
-    // at the master session (the loop is the master's automation). The diff
-    // delivery is likewise attributed to the master for now — a transitional
-    // state until G3 subscriptions attribute it to the S1 edge (source coder).
-    const diff = this.#gitDiffForSession(coderSessionId)
-    const result = await this.dispatchCommand({
-      kind: 'create_session',
-      actor: ctx.actor,
-      causeId: ctx.causeId,
-      reason,
-      input: this.#membraneCreateInput(masterSessionId, {
-        agent: 'claude-code',
-        label: 'Reviewer',
-        cluster: clusterId,
-        prompt: this.#reviewerCreatePrompt(nonEmptyString(diff)),
-        context: diff,
-        contextTopic: 'diff',
-        masterReason: reason,
-      }),
-    })
-
-    cluster.loopState = {
-      ...this.#ensureLoopState(cluster),
-      reviewerSessionId: result.sessionId,
-      reason,
-    }
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-  }
-
-  async #resumeLoopReviewer(clusterId, coderSessionId, reviewerSessionId, ctx) {
-    const cluster = this.#state.clusters[clusterId]
-    const masterSessionId = cluster?.masterSessionId
-    const reviewer = this.#state.sessions[reviewerSessionId]
-    if (!cluster || !masterSessionId || !reviewer) {
-      return
-    }
-
-    if (reviewer.status === 'running' || reviewer.status === 'pending') {
-      this.#setLoopReason(clusterId, 'Waiting for reviewer to finish.')
-      return
-    }
-
-    if (
-      reviewer.status === 'failed' ||
-      reviewer.status === 'killed' ||
-      this.#isSessionFrozen(reviewerSessionId)
-    ) {
-      this.#stopLoop(clusterId, 'Reviewer cannot be resumed by the loop.', {
-        event: cluster.loopState?.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    const reason = `Coder finished fixes; resume reviewer ${reviewer.label}.`
-    const diff = this.#gitDiffForSession(coderSessionId)
-    await this.dispatchCommand({
-      kind: 'resume_session',
-      actor: ctx.actor,
-      causeId: ctx.causeId,
-      reason,
-      input: {
-        sessionId: reviewerSessionId,
-        message: this.#reviewerResumeMessage(nonEmptyString(diff)),
-        context: diff,
-        contextTopic: 'diff',
-        edgeSourceSessionId: masterSessionId,
-        masterReason: reason,
-      },
-    })
-    this.#setLoopReason(clusterId, reason)
-  }
-
-  async #resumeCoderFromReport(clusterId, coderSessionId, report, ctx) {
-    const cluster = this.#state.clusters[clusterId]
-    const masterSessionId = cluster?.masterSessionId
-    const coder = this.#state.sessions[coderSessionId]
-    if (!cluster || !masterSessionId || !coder) {
-      return
-    }
-
-    if (coder.status === 'running' || coder.status === 'pending') {
-      this.#setLoopReason(clusterId, 'Coder is already running; waiting.')
-      return
-    }
-
-    if (
-      coder.status === 'failed' ||
-      coder.status === 'killed' ||
-      this.#isSessionFrozen(coderSessionId)
-    ) {
-      this.#stopLoop(clusterId, 'Coder cannot be resumed by the loop.', {
-        event: cluster.loopState?.lastEvent,
-        broadcast: true,
-        ctx,
-      })
-      return
-    }
-
-    const nextIteration = (cluster.loopState?.iterations ?? 0) + 1
-    const reason = `Reviewer reported ${report.payload.verdict}; resume coder for iteration ${nextIteration}.`
-    cluster.loopState = {
-      ...this.#ensureLoopState(cluster),
-      iterations: nextIteration,
-      reason,
-    }
-    this.#touch()
-
-    await this.dispatchCommand({
-      kind: 'resume_session',
-      actor: ctx.actor,
-      causeId: ctx.causeId,
-      reason,
-      input: {
-        sessionId: coderSessionId,
-        message: this.#coderIssueMessage(report, nextIteration),
-        edgeSourceSessionId: masterSessionId,
-        masterReason: reason,
-      },
-    })
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-  }
-
-  #reviewerCreatePrompt(hasDiff) {
-    return [
-      'Review the latest diff for this Orrery hero review loop.',
-      hasDiff
-        ? 'The diff is delivered in your context channel; the file paths are listed below. Read them first.'
-        : 'The coder\'s latest turn produced no workspace diff; if there is nothing to review, report verdict "clean".',
-      'Do not edit files.',
-      'When finished, call mcp__orrery_membrane__report exactly once with type "verdict".',
-      'Use verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain.',
-    ].join('\n')
-  }
-
-  #reviewerResumeMessage(hasDiff) {
-    return [
-      'The coder has finished another turn.',
-      hasDiff
-        ? 'The updated diff is delivered in your context channel; the file paths are listed below. Read them first.'
-        : 'This turn produced no workspace diff; if there is nothing left to review, report verdict "clean".',
-      'Review again, preserving context from earlier findings.',
-      'Call mcp__orrery_membrane__report exactly once with verdict "issues" or "clean".',
-    ].join('\n')
-  }
-
-  #coderIssueMessage(report, iteration) {
-    const issues = Array.isArray(report.payload.issues)
-      ? report.payload.issues
-      : []
-    const issueText =
-      issues.length > 0
-        ? issues
-            .map((issue) => {
-              const location = [
-                issue.file,
-                Number.isFinite(issue.line) ? issue.line : undefined,
-              ]
-                .filter(Boolean)
-                .join(':')
-              return location
-                ? `- ${issue.message} (${location})`
-                : `- ${issue.message}`
-            })
-            .join('\n')
-        : `- ${report.payload.summary ?? report.payload.verdict}`
-
-    return [
-      `Reviewer found issues for loop iteration ${iteration}.`,
-      'Please fix them, then stop so the master loop can run the reviewer again.',
-      '',
-      issueText,
-    ].join('\n')
-  }
 
   #completedTurnCount(session) {
     return (session.runtimeEvents ?? []).filter(
@@ -5330,108 +5975,6 @@ export class RuntimeSessionManager {
     })
   }
 
-  #loopReviewerSessionId(cluster, coderSessionId) {
-    const existing = cluster.loopState?.reviewerSessionId
-    if (
-      existing &&
-      existing !== coderSessionId &&
-      cluster.nodeIds.includes(existing) &&
-      this.#state.sessions[existing]
-    ) {
-      return existing
-    }
-
-    return cluster.nodeIds.find((sessionId) => {
-      if (sessionId === coderSessionId) {
-        return false
-      }
-
-      const session = this.#state.sessions[sessionId]
-      return session && session.role !== 'master'
-    })
-  }
-
-  #ensureLoopState(cluster) {
-    const loopState = cluster.loopState ?? {}
-    const iterations = Number.isInteger(loopState.iterations)
-      ? Math.max(0, loopState.iterations)
-      : 0
-    cluster.loopState = {
-      status: loopState.status === 'running' ? 'running' : 'stopped',
-      iterations,
-      coderSessionId: nonEmptyString(loopState.coderSessionId)
-        ? loopState.coderSessionId
-        : undefined,
-      reviewerSessionId: nonEmptyString(loopState.reviewerSessionId)
-        ? loopState.reviewerSessionId
-        : undefined,
-      lastEvent: isObject(loopState.lastEvent)
-        ? this.#serializeLoopEvent(loopState.lastEvent)
-        : undefined,
-      lastProcessedEventKey: nonEmptyString(loopState.lastProcessedEventKey)
-        ? loopState.lastProcessedEventKey
-        : undefined,
-      reason: nonEmptyString(loopState.reason) ? loopState.reason : undefined,
-      startedAt: nonEmptyString(loopState.startedAt)
-        ? loopState.startedAt
-        : undefined,
-      stoppedAt: nonEmptyString(loopState.stoppedAt)
-        ? loopState.stoppedAt
-        : undefined,
-    }
-
-    return cluster.loopState
-  }
-
-  #setLoopReason(clusterId, reason) {
-    const cluster = this.#state.clusters[clusterId]
-    if (!cluster) {
-      return
-    }
-
-    cluster.loopState = {
-      ...this.#ensureLoopState(cluster),
-      reason,
-    }
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-  }
-
-  #stopLoop(clusterId, reason, { event, broadcast = false, ctx }: JsonRecord = {}) {
-    const cluster = this.#state.clusters[clusterId]
-    if (!cluster) {
-      return
-    }
-
-    const wasRunning = cluster.loopState?.status === 'running'
-    const ts = now()
-    cluster.loopState = {
-      ...this.#ensureLoopState(cluster),
-      status: 'stopped',
-      reason,
-      stoppedAt: ts,
-      lastEvent: this.#serializeLoopEvent(event ?? { type: 'loop.stopped', ts }),
-    }
-    if (wasRunning) {
-      this.#appendKernelEvent(
-        'loop.stopped',
-        { clusterId },
-        ctx ?? this.#loopRuleCtx(clusterId, event?.kernelEventId),
-        { reason }
-      )
-    }
-    this.#touch()
-
-    if (broadcast) {
-      this.#broadcast({
-        type: 'loop.stopped',
-        clusterId,
-        reason,
-        state: this.getState(),
-      })
-    }
-  }
-
   #applyFreeze({ targetId, reason, source, masterReason }: JsonRecord, ctx: JsonRecord) {
     const cluster = this.#state.clusters[targetId]
     const session = this.#state.sessions[targetId]
@@ -5443,10 +5986,7 @@ export class RuntimeSessionManager {
     if (cluster) {
       cluster.frozen = true
       cluster.freezeReason = finalReason
-      this.#stopLoop(cluster.clusterId, finalReason, {
-        event: { type: 'freeze.applied', targetId, ts: now() },
-        ctx,
-      })
+      this.#stopClusterLoopSubscriptions(cluster.clusterId, finalReason, ctx)
       targetSessionIds = [...cluster.nodeIds]
     } else if (session) {
       targetSessionIds = [session.sessionId]
@@ -5454,10 +5994,7 @@ export class RuntimeSessionManager {
         this.#managedClusterId(session.sessionId) ??
         this.#masterClusterId(session.sessionId)
       if (clusterId) {
-        this.#stopLoop(clusterId, finalReason, {
-          event: { type: 'freeze.applied', targetId, ts: now() },
-          ctx,
-        })
+        this.#stopClusterLoopSubscriptions(clusterId, finalReason, ctx)
       }
     } else {
       throw new Error(`Unknown freeze target: ${targetId}`)
@@ -5505,41 +6042,6 @@ export class RuntimeSessionManager {
       state: this.getState(),
     })
     return { ok: true, state: this.getState() }
-  }
-
-  #loopEventKey(event) {
-    if (!event) {
-      return undefined
-    }
-
-    if (event.type === 'report.received' && event.reportId) {
-      return `${event.type}:${event.reportId}`
-    }
-
-    if (event.sessionId) {
-      const session = this.#state.sessions[event.sessionId]
-      return `${event.type}:${event.sessionId}:${
-        session?.finishedAt ?? session?.updatedAt ?? event.ts ?? ''
-      }`
-    }
-
-    return event.ts ? `${event.type}:${event.ts}` : undefined
-  }
-
-  #serializeLoopEvent(event) {
-    if (!event || typeof event !== 'object') {
-      return undefined
-    }
-
-    return {
-      type: typeof event.type === 'string' ? event.type : 'unknown',
-      ts: nonEmptyString(event.ts) ? event.ts : now(),
-      sessionId: nonEmptyString(event.sessionId) ? event.sessionId : undefined,
-      from: nonEmptyString(event.from) ? event.from : undefined,
-      reportId: nonEmptyString(event.reportId) ? event.reportId : undefined,
-      targetId: nonEmptyString(event.targetId) ? event.targetId : undefined,
-      error: nonEmptyString(event.error) ? event.error : undefined,
-    }
   }
 
   #cmdReport(input: JsonRecord = {}, ctx: JsonRecord) {
@@ -6127,6 +6629,11 @@ export class RuntimeSessionManager {
       reports: Array.isArray(source.reports)
         ? source.reports.map((report) => this.#normalizeReport(report))
         : [],
+      subscriptions: this.#normalizeSubscriptions(source.subscriptions, diagnostics),
+      pendingActivations: this.#normalizePendingActivations(
+        source.pendingActivations,
+        diagnostics
+      ),
     }
 
     const sourceSessions = isObject(source.sessions) ? source.sessions : {}

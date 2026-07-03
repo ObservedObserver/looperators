@@ -129,6 +129,16 @@ test('fold projects subscriptions, firings, and pending slots', () => {
   )
   assert.equal(state.pending[slotKey], undefined, 'denial frees the slot')
 
+  applyEvent(
+    state,
+    event('activation.pending', { subscriptionId: 'sub-1', target: 'reviewer' })
+  )
+  applyEvent(
+    state,
+    event('activation.dropped', { subscriptionId: 'sub-1', target: 'reviewer' })
+  )
+  assert.equal(state.pending[slotKey], undefined, 'a dropped slot frees too')
+
   applyEvent(state, event('subscription.stopped', { subscriptionId: 'sub-1' }))
   assert.equal(state.subscriptions['sub-1'].state, 'stopped')
 })

@@ -96,7 +96,7 @@ test('link edges: HTTP endpoints, membrane skill, and removal rules', async () =
     assert.equal(edge.call.source, reviewer.sessionId)
 
     const stateAfterLink = runtime.getState()
-    assert.equal(stateAfterLink.version, 6)
+    assert.equal(stateAfterLink.version, 7)
 
     const duplicate = await postJson('/api/runtime/edges', {
       source: reviewer.sessionId,
@@ -248,14 +248,14 @@ test('link edges survive restart and v5 storage files migrate to v6', async () =
     // kind. Post-G0 the runtime persists to SQLite, so a bare JSON file also
     // exercises the legacy-import path.
     const persisted = runtime.getState()
-    assert.equal(persisted.version, 6)
+    assert.equal(persisted.version, 7)
     persisted.version = 5
     const legacyStorageFile = path.join(tempRoot, 'legacy-runtime-state.json')
     fs.writeFileSync(legacyStorageFile, JSON.stringify(persisted))
 
     const restored = manager({ storageFile: legacyStorageFile })
     const state = restored.getState()
-    assert.equal(state.version, 6, 'v5 storage must migrate to v6 on load')
+    assert.equal(state.version, 7, 'older storage versions must migrate forward on load')
     assert.equal(Object.keys(state.sessions).length, 2, 'sessions must survive')
     const restoredEdge = state.edges.find(
       (candidate) => candidate.edgeId === edge.edgeId

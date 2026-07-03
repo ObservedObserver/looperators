@@ -136,6 +136,46 @@ const tools = [
     },
   },
   {
+    name: 'approve_activation',
+    description:
+      'Allow a pending subscription activation you govern to execute. The runtime then delivers ' +
+      'the trigger payload and activates the target with the assembled message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slotKey: {
+          type: 'string',
+          description: 'The pending activation slot key from the request you received.',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional extra instructions appended to the target activation message.',
+        },
+      },
+      required: ['slotKey'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'deny_activation',
+    description: 'Reject a pending subscription activation you govern.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        slotKey: {
+          type: 'string',
+          description: 'The pending activation slot key from the request you received.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Why the activation is denied (recorded on the blackboard).',
+        },
+      },
+      required: ['slotKey'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'link_sessions',
     description:
       'Declare a visible relationship edge from the current session to another Orrery session/node.',

@@ -141,6 +141,27 @@ export class OrreryClient {
     )
   }
 
+  // Intent layer (G3): author/stop subscriptions and decide pending activations.
+  authorSubscription(input = {}) {
+    return this.#request('POST', '/api/runtime/subscriptions', input)
+  }
+
+  stopSubscription(subscriptionId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/subscriptions/${encodeURIComponent(subscriptionId)}/stop`,
+      input
+    )
+  }
+
+  approveActivation(input = {}) {
+    return this.#request('POST', '/api/runtime/activations/approve', input)
+  }
+
+  denyActivation(input = {}) {
+    return this.#request('POST', '/api/runtime/activations/deny', input)
+  }
+
   // Kernel event log (G0): append-only graph-level facts with actor + causeId.
   // Returns { events, latestSeq }; `since` is an exclusive seq cursor.
   kernelEvents({ since, limit, type } = {}) {

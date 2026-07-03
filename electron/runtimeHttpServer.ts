@@ -373,6 +373,33 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/subscriptions$/,
+      handler: async (request) =>
+        runtime.authorSubscription(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/subscriptions\/([^/]+)\/stop$/,
+      handler: async (request, params) =>
+        runtime.stopSubscription({
+          ...(await readJsonBody(request)),
+          subscriptionId: params.subscriptionId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/activations\/approve$/,
+      handler: async (request) =>
+        runtime.approveActivation(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/activations\/deny$/,
+      handler: async (request) =>
+        runtime.denyActivation(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/node-positions$/,
       handler: async (request) =>
         runtime.updateNodePositions(await readJsonBody(request)),
@@ -451,6 +478,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/edges/') && match[1]) {
     return { edgeId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/subscriptions/') && match[1]) {
+    return { subscriptionId: decodeParam(match[1]) }
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }

@@ -181,6 +181,18 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       }
       break
     }
+    case 'subscription.guarded': {
+      // The static cycle check force-applied a default maxFirings (§6.4).
+      const subscriptionId = asString(payload.subscriptionId)
+      const subscription = subscriptionId
+        ? state.subscriptions[subscriptionId]
+        : undefined
+      const maxFirings = Number(payload.maxFirings)
+      if (subscription && Number.isFinite(maxFirings) && maxFirings > 0) {
+        subscription.stop = { ...(subscription.stop ?? {}), maxFirings }
+      }
+      break
+    }
     case 'activation.pending': {
       const subscriptionId = asString(payload.subscriptionId)
       const target = asString(payload.target)
@@ -207,8 +219,11 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       break
     }
     case 'activation.denied':
-    case 'activation.superseded': {
+    case 'activation.superseded':
+    case 'activation.dropped': {
       // Terminal for the slot: it frees up for the next matching event.
+      // (dropped = the runtime discarded it: subscription stopped, target
+      // killed/failed, or a drop-policy firing.)
       const slotKey = slotKeyFromPayload(payload)
       if (slotKey) {
         delete state.pending[slotKey]

@@ -8,6 +8,7 @@ import {
   cleanupMcpHandoff,
   createMcpHandoff,
   membraneSystemPrompt,
+  membraneToolNames,
 } from '../claudeCliAdapter.js'
 import { legacyClaudeRuntimeEventsFromChunk } from './legacyClaudeRuntimeMapper.js'
 
@@ -178,19 +179,38 @@ function isClaudeEditTool(toolName) {
 
 /**
  * @param {{ toolUseID?: string }} [options]
+ * @param {Record<string, unknown>} [toolInput]
  */
-export function automaticClaudePermissionResult(runtimeSettings, toolName, options) {
+export function automaticClaudePermissionResult(
+  runtimeSettings,
+  toolName,
+  options,
+  toolInput
+) {
   const sdkOptions = options ?? {}
+  // The SDK's runtime validation requires `updatedInput` on allow results
+  // even though the type marks it optional; echo the original input.
+  const allow = {
+    behavior: 'allow',
+    updatedInput: toolInput ?? {},
+    toolUseID: sdkOptions.toolUseID,
+    decisionClassification: 'user_permanent',
+  }
+  // Membrane tools are the sanctioned control surface: the bridge token
+  // already authenticates the session, and headless runs cannot answer
+  // permission prompts. This mirrors the legacy CLI adapter's
+  // --allowedTools exemption — without it, the first gate=master approval
+  // (approve_activation via the SDK provider) wedges on an unanswerable
+  // canUseTool request.
+  if (membraneToolNames.includes(String(toolName))) {
+    return allow
+  }
   const runtimeMode = runtimeSettings?.runtimeMode ?? 'approval-required'
   if (
     runtimeMode === 'full-access' ||
     (runtimeMode === 'auto-accept-edits' && isClaudeEditTool(toolName))
   ) {
-    return {
-      behavior: 'allow',
-      toolUseID: sdkOptions.toolUseID,
-      decisionClassification: 'user_permanent',
-    }
+    return allow
   }
   return undefined
 }
@@ -650,6 +670,9 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
           if (decision === 'accept' || decision === 'approved') {
             resolve({
               behavior: 'allow',
+              // The SDK's runtime validation requires updatedInput on allow
+              // results; echo the original tool input.
+              updatedInput: input ?? {},
               toolUseID: options.toolUseID,
               decisionClassification: 'user_temporary',
             })
@@ -658,6 +681,7 @@ export class ClaudeAgentSdkTurnRun extends EventEmitter {
           if (decision === 'acceptForSession') {
             resolve({
               behavior: 'allow',
+              updatedInput: input ?? {},
               ...(Array.isArray(options.suggestions) &&
               options.suggestions.length > 0
                 ? { updatedPermissions: options.suggestions }
@@ -999,7 +1023,8 @@ class ClaudeAgentSdkSessionController {
     const automaticDecision = automaticClaudePermissionResult(
       current.input.runtimeSettings,
       toolName,
-      options
+      options,
+      toolInput
     )
     if (automaticDecision) {
       return Promise.resolve(automaticDecision)

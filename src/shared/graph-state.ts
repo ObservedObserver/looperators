@@ -14,7 +14,14 @@ import type {
   UserInputAnswerMap,
 } from './provider-runtime';
 
-export const graphStateVersion = 6;
+export const graphStateVersion = 7;
+
+// Intent-layer enums (kernel doc §7.3), mirrored from shared/graph-state.ts.
+export const subscriptionGates = ['auto', 'master', 'human'] as const;
+export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt'] as const;
+export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster'] as const;
+export const subscriptionStates = ['active', 'stopped'] as const;
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered'] as const;
 
 export const sessionStatuses = ['pending', 'running', 'idle', 'failed', 'killed'] as const;
 
@@ -61,6 +68,8 @@ export const graphStateSchema = {
     providerInstances: 'ProviderInstance[]; local provider runtime profiles',
     clusters: 'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
+    subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
+    pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   loopPolicy: {
@@ -529,6 +538,49 @@ export type RuntimeStateDiagnostic = {
   details?: Record<string, unknown>;
 };
 
+// Intent-layer edge (kernel doc §7.3): the stored rule "when source emits
+// this event, target should be delivered to / activated", with its guards.
+export type SubscriptionGate = (typeof subscriptionGates)[number];
+export type SubscriptionConcurrency = (typeof subscriptionConcurrencies)[number];
+export type SubscriptionOnStop = (typeof subscriptionOnStops)[number];
+
+export type SubscriptionSourceRef =
+  | { kind: 'session'; sessionId: SessionId }
+  | { kind: 'cluster'; clusterId: ClusterId };
+
+export type SubscriptionPattern =
+  | { on: 'finished' }
+  | { on: 'failed' }
+  | { on: 'report'; match?: { type?: string; verdict?: string } }
+  | { on: 'delivered'; topic?: string };
+
+export type Subscription = {
+  id: string;
+  source: SubscriptionSourceRef;
+  on: SubscriptionPattern;
+  target: { kind: 'session'; sessionId: SessionId };
+  action: { kind: 'deliver' | 'deliver+activate'; topic?: string; note?: string };
+  gate: SubscriptionGate;
+  concurrency: SubscriptionConcurrency;
+  stop?: { whenReport?: { verdict: string }; maxFirings?: number; deadline?: string };
+  onStop: SubscriptionOnStop;
+  state: 'active' | 'stopped';
+  firings: number;
+  label?: string;
+  createdAt: string;
+};
+
+export type PendingActivation = {
+  slotKey: string;
+  subscriptionId: string;
+  target: SessionId;
+  triggerEventId: string;
+  gate: SubscriptionGate;
+  masterSessionId?: SessionId;
+  status: 'pending' | 'approved';
+  createdAt: string;
+};
+
 export type GraphState = {
   version: number;
   updatedAt: string;
@@ -538,6 +590,8 @@ export type GraphState = {
   providerInstances: ProviderInstance[];
   clusters: Record<ClusterId, Cluster>;
   reports: Report[];
+  subscriptions?: Record<string, Subscription>;
+  pendingActivations?: Record<string, PendingActivation>;
   diagnostics?: RuntimeStateDiagnostic[];
 };
 
@@ -874,5 +928,7 @@ export function createEmptyGraphState(): GraphState {
     })),
     clusters: {},
     reports: [],
+    subscriptions: {},
+    pendingActivations: {},
   };
 }

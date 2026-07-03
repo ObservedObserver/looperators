@@ -41,6 +41,11 @@ Commands:
   edge add <source> <target>            Declare a link edge between two sessions
     [--label <text>] [--reason <text>]
   edge remove <edgeId>                  Remove a link edge (other kinds are history)
+  subs [--json]                         Intent layer: subscriptions + pending activations
+  sub add --spec <json>                 Author a subscription (JSON per kernel doc §7.3)
+  sub stop <id前缀> [--reason <text>]   Stop a subscription
+  activation approve <slotKey> [--note <text>]
+  activation deny <slotKey> [--reason <text>]
   graph [--json]                        Topology: clusters, nodes, edges
   state [--json]                        Runtime state (summary unless --json)
 
@@ -539,6 +544,93 @@ async function commandEvents(client, values, idOrPrefix) {
   printJson(result)
 }
 
+function describeSubscriptionSource(source) {
+  return source?.kind === 'cluster'
+    ? `cluster:${source.clusterId.slice(0, 8)}`
+    : source?.sessionId?.slice(0, 8) ?? '?'
+}
+
+async function commandSubs(client, values) {
+  const state = await client.state()
+  const subscriptions = Object.values(state.subscriptions ?? {})
+  const pending = Object.values(state.pendingActivations ?? {})
+  if (values.json) {
+    printJson({ subscriptions, pendingActivations: pending })
+    return
+  }
+  if (subscriptions.length === 0) {
+    process.stdout.write('No subscriptions.\n')
+  }
+  for (const sub of subscriptions) {
+    const stop = sub.stop
+      ? Object.entries(sub.stop)
+          .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+          .join(' ')
+      : 'none'
+    process.stdout.write(
+      `${sub.id} ${colors.bold(sub.label ?? '')} [${sub.state}] ` +
+        `${describeSubscriptionSource(sub.source)} --${sub.on.on}--> ${sub.target.sessionId.slice(0, 8)} ` +
+        `gate=${sub.gate} ${sub.concurrency} firings=${sub.firings} stop: ${stop}\n`
+    )
+  }
+  for (const slot of pending) {
+    process.stdout.write(
+      colors.dim(
+        `pending ${slot.slotKey} [${slot.status}]${
+          slot.masterSessionId ? ` master=${slot.masterSessionId.slice(0, 8)}` : ''
+        }\n`
+      )
+    )
+  }
+}
+
+async function commandSubAdd(client, values) {
+  assertWritable(values, 'sub add')
+  if (!values.spec) {
+    fail('sub add requires --spec <json>', 2)
+  }
+  let spec
+  try {
+    spec = JSON.parse(values.spec)
+  } catch (error) {
+    fail(`sub add --spec is not valid JSON: ${error.message}`, 2)
+  }
+  const result = await client.authorSubscription(spec)
+  printJson(result)
+}
+
+async function commandSubStop(client, values, idOrPrefix) {
+  assertWritable(values, 'sub stop')
+  if (!idOrPrefix) {
+    fail('sub stop requires a subscription id', 2)
+  }
+  const state = await client.state()
+  const ids = Object.keys(state.subscriptions ?? {}).filter((id) =>
+    id.startsWith(idOrPrefix)
+  )
+  if (ids.length === 0) {
+    fail(`No subscription matches: ${idOrPrefix}`)
+  }
+  if (ids.length > 1) {
+    fail(`Ambiguous subscription prefix ${idOrPrefix}: ${ids.join(', ')}`)
+  }
+  await client.stopSubscription(ids[0], { reason: values.reason })
+  process.stdout.write(`stopped ${ids[0]}\n`)
+}
+
+async function commandActivationDecision(client, values, decision, slotKey) {
+  assertWritable(values, `activation ${decision}`)
+  if (!slotKey) {
+    fail(`activation ${decision} requires a slotKey`, 2)
+  }
+  if (decision === 'approve') {
+    await client.approveActivation({ slotKey, note: values.note })
+  } else {
+    await client.denyActivation({ slotKey, reason: values.reason })
+  }
+  process.stdout.write(`${decision}d ${slotKey}\n`)
+}
+
 function kernelActorLabel(actor) {
   if (!actor || typeof actor !== 'object') {
     return 'unknown'
@@ -735,6 +827,7 @@ async function main() {
       type: { type: 'string' },
       topic: { type: 'string' },
       note: { type: 'string' },
+      spec: { type: 'string' },
       content: { type: 'string' },
       filename: { type: 'string' },
       from: { type: 'string' },
@@ -770,6 +863,28 @@ async function main() {
   }
   if (command === 'kernel') {
     return commandKernel(client, values)
+  }
+  if (command === 'subs') {
+    return commandSubs(client, values)
+  }
+  if (command === 'sub') {
+    switch (subcommand) {
+      case 'add':
+        return commandSubAdd(client, values)
+      case 'stop':
+        return commandSubStop(client, values, target)
+      default:
+        fail(`Unknown sub subcommand: ${subcommand ?? ''}\n\n${usage}`, 2)
+    }
+  }
+  if (command === 'activation') {
+    switch (subcommand) {
+      case 'approve':
+      case 'deny':
+        return commandActivationDecision(client, values, subcommand, target)
+      default:
+        fail(`Unknown activation subcommand: ${subcommand ?? ''}\n\n${usage}`, 2)
+    }
   }
   if (command === 'edge') {
     switch (subcommand) {
