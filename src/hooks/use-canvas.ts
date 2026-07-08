@@ -8,10 +8,12 @@ import {
   applyNodePositionUpdates,
   clusterBoundaryNodes,
   edgeSummary,
+  loopBadgeNodes,
   nodePositionUpdatesFromFlowNodes,
   subscriptionEdgeDescriptors,
   subscriptionPatternLabel,
   subscriptionUntilSummary,
+  timerNodes,
 } from '@/lib/graph-view';
 import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/reports';
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
@@ -40,6 +42,11 @@ export function useCanvas({
   const nodes: Node[] = useMemo(
     () => [
       ...clusterBoundaryNodes(runtimeState),
+      // L4 synthetic presences: clock sources and ring badges. Their
+      // positions derive from session nodes, so they re-place on every
+      // state change and never persist.
+      ...timerNodes(runtimeState),
+      ...loopBadgeNodes(runtimeState),
       ...runtimeState.nodes.map((node) => {
         const session = runtimeState.sessions[node.sessionId];
         const cluster = node.clusterId ? runtimeState.clusters[node.clusterId] : undefined;
@@ -179,7 +186,9 @@ export function useCanvas({
 
   const updateCanvasSelection = useCallback(
     ({ nodes: selectedNodes }: { nodes: Node[] }) => {
-      const nextSelection = selectedNodes.map((node) => node.id).filter((nodeId) => !nodeId.startsWith('cluster:'));
+      const nextSelection = selectedNodes
+        .map((node) => node.id)
+        .filter((nodeId) => !nodeId.startsWith('cluster:') && !nodeId.startsWith('timer:') && !nodeId.startsWith('loop:'));
 
       setSelectedCanvasNodeIds((previousSelection) => (sameStringList(previousSelection, nextSelection) ? previousSelection : nextSelection));
 

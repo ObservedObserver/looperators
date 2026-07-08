@@ -14,6 +14,7 @@ import type {
   GetTerminalInput,
   GraphState,
   KernelEvent,
+  LoopTimelineResult,
   OpenWorkspaceInput,
   OpenWorkspaceResult,
   ProviderSetupStatus,
@@ -60,6 +61,7 @@ export type KernelEventsResult = { events: KernelEvent[]; latestSeq: number };
 export type RuntimeApi = {
   getState: () => Promise<GraphState>;
   getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
+  getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
   getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
@@ -377,6 +379,10 @@ class HttpRuntimeApi implements RuntimeApi {
     }
     const query = params.size > 0 ? `?${params.toString()}` : '';
     return this.#get<KernelEventsResult>(`kernel-events${query}`);
+  }
+
+  getLoopTimeline(input: { loopId: string }) {
+    return this.#get<LoopTimelineResult>(`loops/${encodeURIComponent(input.loopId)}/timeline`);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {

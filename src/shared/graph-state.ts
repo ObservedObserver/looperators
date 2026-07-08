@@ -70,6 +70,7 @@ export const graphStateSchema = {
     reports: 'Report[]',
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
+    loops: 'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   loopPolicy: {
@@ -571,7 +572,9 @@ export type SubscriptionPattern =
   | { on: 'failed' }
   | { on: 'report'; match?: { type?: string; verdict?: string } }
   | { on: 'delivered'; topic?: string }
-  | { on: 'schedule'; everySeconds: number };
+  // Exactly one schedule form: an interval, or a wall-clock daily time
+  // ('HH:MM', runtime-host local) — the cron-shaped case.
+  | { on: 'schedule'; everySeconds?: number; dailyAt?: string };
 
 export type Subscription = {
   id: string;
@@ -602,6 +605,55 @@ export type PendingActivation = {
   createdAt: string;
 };
 
+// --- L4 loop view: the ring as a readable whole (thin projection; the
+// runtime derives these from subscriptions on every read, nothing stored) ---
+
+export type LoopViewStatus = 'spinning' | 'waiting-gate' | 'frozen' | 'stopped' | 'idle';
+
+export type LoopView = {
+  // Sorted member session ids joined with '+'.
+  loopId: string;
+  memberSessionIds: SessionId[];
+  // Ring edges, stopped ones included (a guardrail-stopped ring keeps its face).
+  subscriptionIds: string[];
+  // The subscription whose firings count laps.
+  designatedSubscriptionId: string;
+  lapCount: number;
+  lapCap?: number;
+  status: LoopViewStatus;
+  statusDetail?: string;
+  stopSummary?: string;
+};
+
+export type LoopHop = {
+  activatedEventId: string;
+  ts: string;
+  subscriptionId: string;
+  target: SessionId;
+  trigger?: { eventId: string; type?: string; ts?: string; reason?: string; sourceSessionId?: SessionId };
+  gate?: { actor: KernelEvent['actor']; reason?: string; ts: string };
+  outcome?: { type: 'finished' | 'failed'; ts: string };
+  reports: Array<{ reportId?: string; from?: SessionId; verdict?: string; summary?: string; ts: string }>;
+};
+
+export type LoopLap = {
+  index: number;
+  startTs: string;
+  hops: LoopHop[];
+};
+
+export type LoopTimeline = {
+  loopId: string;
+  laps: LoopLap[];
+  refusals: Array<{ type: 'denied' | 'dropped' | 'superseded'; subscriptionId: string; ts: string; reason?: string; actor: KernelEvent['actor'] }>;
+  stops: Array<{ type: string; subscriptionId: string; ts: string; reason?: string }>;
+};
+
+export type LoopTimelineResult = {
+  loop: LoopView;
+  timeline: LoopTimeline;
+};
+
 export type GraphState = {
   version: number;
   updatedAt: string;
@@ -613,6 +665,7 @@ export type GraphState = {
   reports: Report[];
   subscriptions?: Record<string, Subscription>;
   pendingActivations?: Record<string, PendingActivation>;
+  loops?: LoopView[];
   diagnostics?: RuntimeStateDiagnostic[];
 };
 

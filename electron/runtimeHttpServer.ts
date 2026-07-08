@@ -155,6 +155,17 @@ function notFoundOnUnknownSession<T>(read: () => T): T {
   }
 }
 
+function notFoundOnUnknownLoop<T>(read: () => T): T {
+  try {
+    return read()
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Unknown loop:')) {
+      throw new RuntimeHttpError(404, error.message)
+    }
+    throw error
+  }
+}
+
 function decodeParam(value: string | undefined) {
   try {
     return decodeURIComponent(value ?? '')
@@ -190,6 +201,14 @@ function compileRoutes(
       method: 'GET',
       pattern: /^\/api\/runtime\/sessions$/,
       handler: () => runtime.listSessionSummaries(),
+    },
+    {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/loops\/([^/]+)\/timeline$/,
+      handler: (_request, params) =>
+        notFoundOnUnknownLoop(() =>
+          runtime.getLoopTimeline({ loopId: params.loopId })
+        ),
     },
     {
       method: 'GET',
@@ -494,6 +513,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/subscriptions/') && match[1]) {
     return { subscriptionId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/loops/') && match[1]) {
+    return { loopId: decodeParam(match[1]) }
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }

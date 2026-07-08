@@ -55,8 +55,10 @@ export type EventPattern =
   | { on: 'delivered'; topic?: string }
   // L1 time-based trigger: matches `external.timer` ticks appended by the
   // runtime's timer source for exactly this subscription. Only valid with a
-  // timer source (and vice versa); the runtime enforces the pairing.
-  | { on: 'schedule'; everySeconds: number }
+  // timer source (and vice versa); the runtime enforces the pairing and that
+  // exactly one of the two forms is present: an interval (`everySeconds`) or
+  // a wall-clock daily time (`dailyAt: 'HH:MM'`, runtime-host local time).
+  | { on: 'schedule'; everySeconds?: number; dailyAt?: string }
 
 export type SubscriptionAction =
   | { kind: 'deliver'; topic?: string }

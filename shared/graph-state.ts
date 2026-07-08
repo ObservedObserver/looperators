@@ -88,12 +88,14 @@ export const graphStateSchema = {
       'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations:
       'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
+    loops:
+      'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   subscription: {
     id: 'SubscriptionId',
     source: '{kind:"session",sessionId} | {kind:"cluster",clusterId} | {kind:"timer"}',
-    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds} (timer source only)',
+    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds?|dailyAt?} (timer source only; exactly one form, dailyAt="HH:MM" host-local)',
     target: '{kind:"session",sessionId}',
     action: '{kind:"deliver"|"deliver+activate", topic?, note?}',
     gate: subscriptionGates,
@@ -115,6 +117,17 @@ export const graphStateSchema = {
     masterSessionId: 'SessionId?; governor per LCA rule R1 when gate=master',
     status: '"pending" | "approved"',
     createdAt: 'ISO-8601 string',
+  },
+  loopView: {
+    loopId: 'string; sorted member sessionIds joined with "+"',
+    memberSessionIds: 'SessionId[]',
+    subscriptionIds: 'SubscriptionId[]; ring edges, stopped ones included',
+    designatedSubscriptionId: 'SubscriptionId; its firings count the laps',
+    lapCount: 'number',
+    lapCap: 'number?; min stop.maxFirings across ring edges',
+    status: '"spinning" | "waiting-gate" | "frozen" | "stopped" | "idle"',
+    statusDetail: 'string?',
+    stopSummary: 'string?',
   },
   loopPolicy: {
     until: { whenReport: { verdict: 'string' } },

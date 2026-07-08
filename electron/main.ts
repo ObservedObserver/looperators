@@ -54,6 +54,9 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:kernel-events', (_event, input) =>
     runtime.getKernelEvents(input)
   )
+  ipcMain.handle('orrery:loop-timeline', (_event, input) =>
+    runtime.getLoopTimeline(input)
+  )
   ipcMain.handle('orrery:get-project-context', (_event, input) =>
     runtime.getProjectContext(input)
   )

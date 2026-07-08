@@ -23,3 +23,19 @@ export {
   type StaticCheckResult,
   type StaticCheckViolation,
 } from './static-check.js'
+export {
+  parseDailyAt,
+  normalizeDailyAt,
+  nextDailyOccurrenceMs,
+  scheduleDelayMs,
+  scheduleSummary,
+  type ScheduleOn,
+} from './schedule.js'
+export {
+  loopsOf,
+  loopTimelineOf,
+  type LoopView,
+  type LoopViewStatus,
+  type LoopLap,
+  type LoopTimeline,
+} from './loop-view.js'

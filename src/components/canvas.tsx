@@ -1,9 +1,19 @@
 import { memo } from 'react';
 import { BaseEdge, EdgeLabelRenderer, Handle, type Edge, type EdgeProps, type Node, type NodeProps, Position, getBezierPath } from '@xyflow/react';
-import { Activity, Snowflake } from 'lucide-react';
+import { Activity, Clock, RotateCw, Snowflake } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TermChip } from '@/components/terminal';
-import { type AgentNodeData, type GraphEdgeData, type ClusterNodeData, edgeKindClassNames, edgeKindStrokes, edgeDisplayLabel } from '@/lib/graph-view';
+import {
+  type AgentNodeData,
+  type GraphEdgeData,
+  type ClusterNodeData,
+  type LoopBadgeData,
+  type TimerNodeData,
+  edgeKindClassNames,
+  edgeKindStrokes,
+  edgeDisplayLabel,
+  loopBadgeLabel,
+} from '@/lib/graph-view';
 import { statusLabels, sessionMarker, statePillBase, nodeStatePillCls } from '@/lib/session-display';
 import { formatClock } from '@/lib/format';
 
@@ -131,9 +141,66 @@ export const ClusterBoundaryNode = memo(function ClusterBoundaryNode({ data }: N
   );
 });
 
+// The clock as a canvas presence (L4): the visible origin of a schedule
+// edge, so "the graph wakes itself" reads at a glance.
+export const ClockNode = memo(function ClockNode({ data }: NodeProps<Node<TimerNodeData>>) {
+  return (
+    <div
+      className={cn(
+        'rounded-xl border border-lime-600/50 bg-lime-500/10 px-3 py-2 font-mono shadow-sm',
+        data.stopped && 'border-border bg-muted/40 opacity-70',
+      )}
+    >
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-lime-700 dark:text-lime-300">
+        <Clock className="size-3.5" />
+        <span>{data.label}</span>
+        {data.stopped ? <span className="text-muted-foreground">· stopped</span> : null}
+      </div>
+      <div className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+        {data.lastTickAt ? `last tick ${formatClock(data.lastTickAt)}` : 'no ticks yet'}
+      </div>
+      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-lime-hi" />
+    </div>
+  );
+});
+
+const loopBadgeStatusCls: Record<string, string> = {
+  spinning: 'border-lime-600/50 bg-lime-500/10 text-lime-700 dark:text-lime-300',
+  'waiting-gate': 'border-term-amber/50 bg-term-amber/10 text-amber-700 dark:text-term-amber',
+  frozen: 'border-border bg-muted/60 text-muted-foreground',
+  stopped: 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+  idle: 'border-border bg-card text-muted-foreground',
+};
+
+// The ring badge (L4): the loop as one clickable, readable whole — lap
+// count, state, and stop condition without opening any session.
+export const LoopBadgeNode = memo(function LoopBadgeNode({ data }: NodeProps<Node<LoopBadgeData>>) {
+  const loop = data.loop;
+  return (
+    <div
+      className={cn(
+        'w-[220px] cursor-pointer rounded-xl border px-3 py-2 font-mono shadow-sm transition hover:shadow-md',
+        loopBadgeStatusCls[loop.status] ?? loopBadgeStatusCls.idle,
+      )}
+      title="Open the loop timeline"
+    >
+      <div className="flex items-center gap-1.5 text-[11.5px] font-semibold">
+        <RotateCw className={cn('size-3.5', loop.status === 'spinning' && 'animate-spin [animation-duration:3s]')} />
+        <span>loop</span>
+        <span className="ml-auto tabular-nums">{loopBadgeLabel(loop)}</span>
+      </div>
+      {loop.stopSummary || loop.statusDetail ? (
+        <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{[loop.statusDetail, loop.stopSummary].filter(Boolean).join(' · ')}</div>
+      ) : null}
+    </div>
+  );
+});
+
 export const nodeTypes = {
   agent: AgentNode,
   cluster: ClusterBoundaryNode,
+  clock: ClockNode,
+  loop: LoopBadgeNode,
 };
 
 export function ReadabilityEdge({
@@ -203,7 +270,9 @@ export function ReadabilityEdge({
             <span>{edgeDisplayLabel(edgeData)}</span>
             {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
             {edgeData.issueCount !== undefined ? <span className="tabular-nums">· {edgeData.issueCount} iss</span> : null}
-            {edgeData.kind === 'subscription' && edgeData.gate ? <span>· {edgeData.gate === 'auto' ? '⚡ auto' : edgeData.gate === 'master' ? '◆ master' : '⊘ human'}</span> : null}
+            {edgeData.kind === 'subscription' && edgeData.gate ? (
+              <span>· {edgeData.gate === 'auto' ? '⚡ auto' : edgeData.gate === 'master' ? '◆ master' : '⊘ human'}</span>
+            ) : null}
             {edgeData.kind === 'subscription' && edgeData.firings !== undefined ? (
               <span className="tabular-nums">
                 · {edgeData.firings}

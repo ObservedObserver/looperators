@@ -12,13 +12,13 @@ import type { KernelState, Subscription } from './types.js'
 
 export const defaultCycleMaxFirings = 6
 
-type IntentEdge = {
+export type IntentEdge = {
   subscription: Subscription
   from: string
   to: string
 }
 
-function nodeKeyOfSession(sessionId: string) {
+export function nodeKeyOfSession(sessionId: string) {
   return `session:${sessionId}`
 }
 
@@ -40,10 +40,16 @@ function isGuarded(subscription: Subscription): boolean {
 
 // Expands cluster sources into per-member session edges so that a cycle
 // running through a cluster member is not hidden by the ref indirection.
-function intentEdges(state: KernelState): IntentEdge[] {
+// `includeStopped` is the loop-view variant (L4): a guardrail-stopped ring
+// must keep its shape on the canvas, so the projection enumerates over
+// stopped edges too, while the safety check only ever sees active ones.
+export function intentEdges(
+  state: KernelState,
+  options?: { includeStopped?: boolean }
+): IntentEdge[] {
   const edges: IntentEdge[] = []
   for (const subscription of Object.values(state.subscriptions)) {
-    if (subscription.state !== 'active') {
+    if (subscription.state !== 'active' && !options?.includeStopped) {
       continue
     }
     if (subscription.action.kind === 'deliver') {
@@ -74,7 +80,7 @@ function intentEdges(state: KernelState): IntentEdge[] {
 }
 
 // Tarjan strongly connected components, iterative.
-function stronglyConnectedComponents(
+export function stronglyConnectedComponents(
   nodes: Set<string>,
   adjacency: Map<string, string[]>
 ): Map<string, number> {
@@ -146,7 +152,7 @@ function stronglyConnectedComponents(
   return componentOf
 }
 
-function subgraphHasCycle(nodes: Set<string>, edges: IntentEdge[]): boolean {
+export function subgraphHasCycle(nodes: Set<string>, edges: IntentEdge[]): boolean {
   const adjacency = new Map<string, string[]>()
   for (const edge of edges) {
     if (!adjacency.has(edge.from)) {

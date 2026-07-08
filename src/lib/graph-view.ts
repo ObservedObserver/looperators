@@ -4,6 +4,8 @@ import {
   type GraphEdgeKind,
   type GraphState,
   type KernelEvent,
+  type LoopViewStatus,
+  type LoopView,
   type Report,
   type SessionStatus,
   type Subscription,
@@ -230,7 +232,11 @@ export function subscriptionPatternLabel(subscription: Subscription) {
     return on.topic ? `on delivered(${on.topic})` : 'on delivered';
   }
   if (on.on === 'schedule') {
-    return on.everySeconds % 60 === 0 ? `every ${on.everySeconds / 60}m` : `every ${on.everySeconds}s`;
+    if (on.dailyAt) {
+      return `daily ${on.dailyAt}`;
+    }
+    const everySeconds = on.everySeconds ?? 0;
+    return everySeconds % 60 === 0 ? `every ${everySeconds / 60}m` : `every ${everySeconds}s`;
   }
   return `on ${on.on}`;
 }
@@ -251,8 +257,8 @@ export function subscriptionUntilSummary(subscription: Subscription) {
 // back to its master session so the edge never dangles on a missing node.
 export function subscriptionSourceNodeId(state: GraphState, subscription: Subscription) {
   if (subscription.source.kind === 'timer') {
-    // The clock is not a canvas node yet (L4 renders it); no edge to anchor.
-    return undefined;
+    // The clock renders as its own canvas node (L4); one per subscription.
+    return `timer:${subscription.id}`;
   }
   if (subscription.source.kind !== 'cluster') {
     return subscription.source.sessionId;
@@ -263,6 +269,90 @@ export function subscriptionSourceNodeId(state: GraphState, subscription: Subscr
     return `cluster:${subscription.source.clusterId}`;
   }
   return cluster?.masterSessionId;
+}
+
+// Clock source nodes (L4, closing L1's rendering tail): one small canvas
+// node per timer subscription, parked left of its target. Not draggable —
+// positions derive from the target so they are never persisted.
+export type TimerNodeData = {
+  label: string;
+  lastTickAt?: string;
+  stopped: boolean;
+};
+
+export function timerNodes(state: GraphState): Node<TimerNodeData>[] {
+  const perTarget = new Map<string, number>();
+  return Object.values(state.subscriptions ?? {}).flatMap((subscription) => {
+    if (subscription.source.kind !== 'timer') {
+      return [];
+    }
+    const targetNode = state.nodes.find((node) => node.nodeId === subscription.target.sessionId);
+    if (!targetNode) {
+      return [];
+    }
+    const stacked = perTarget.get(targetNode.nodeId) ?? 0;
+    perTarget.set(targetNode.nodeId, stacked + 1);
+    return [
+      {
+        id: `timer:${subscription.id}`,
+        type: 'clock' as const,
+        position: { x: targetNode.position.x - 240, y: targetNode.position.y + 12 + stacked * 92 },
+        draggable: false,
+        selectable: false,
+        zIndex: 8,
+        data: {
+          label: subscriptionPatternLabel(subscription),
+          lastTickAt: subscription.lastTickAt,
+          stopped: subscription.state === 'stopped',
+        },
+      },
+    ];
+  });
+}
+
+// Ring badges (L4): one per loop projection, floated above the bounding box
+// of the ring's member nodes. Click opens the per-lap timeline.
+export type LoopBadgeData = {
+  loop: LoopView;
+};
+
+export const loopStatusLabels: Record<LoopViewStatus, string> = {
+  spinning: 'spinning',
+  'waiting-gate': 'waiting gate',
+  frozen: 'frozen',
+  stopped: 'stopped',
+  idle: 'idle',
+};
+
+export function loopBadgeLabel(loop: LoopView) {
+  const laps = loop.lapCap !== undefined ? `${loop.lapCount}/${loop.lapCap}` : `${loop.lapCount}`;
+  return `${laps} · ${loopStatusLabels[loop.status]}`;
+}
+
+export function loopBadgeNodes(state: GraphState): Node<LoopBadgeData>[] {
+  return (state.loops ?? []).flatMap((loop) => {
+    const members = loop.memberSessionIds
+      .map((sessionId) => state.nodes.find((node) => node.nodeId === sessionId))
+      .filter((node): node is GraphState['nodes'][number] => Boolean(node));
+    if (members.length === 0) {
+      return [];
+    }
+    const nodeWidth = 300;
+    const minX = Math.min(...members.map((node) => node.position.x));
+    const maxX = Math.max(...members.map((node) => node.position.x + nodeWidth));
+    const minY = Math.min(...members.map((node) => node.position.y));
+    return [
+      {
+        id: `loop:${loop.loopId}`,
+        type: 'loop' as const,
+        position: { x: (minX + maxX) / 2 - 110, y: minY - 76 },
+        draggable: false,
+        selectable: false,
+        zIndex: 30,
+        data: { loop },
+      },
+    ];
+  });
 }
 
 export function subscriptionEdgeDescriptors(state: GraphState) {
@@ -442,7 +532,9 @@ export function isFinitePosition(position: { x: number; y: number }) {
 
 export function nodePositionUpdatesFromFlowNodes(nodes: Node[]): NodePositionUpdate[] {
   return nodes.flatMap((node) => {
-    if (node.id.startsWith('cluster:') || !isFinitePosition(node.position)) {
+    // Synthetic canvas nodes (cluster boundaries, clocks, ring badges)
+    // derive their positions; only session nodes persist theirs.
+    if (node.id.startsWith('cluster:') || node.id.startsWith('timer:') || node.id.startsWith('loop:') || !isFinitePosition(node.position)) {
       return [];
     }
 

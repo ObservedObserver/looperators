@@ -7,7 +7,8 @@ import { canvasPanelMinWidth, type RailTab } from '@/lib/layout-prefs';
 import { edgeKindClassNames, activityTitle, kernelActorLabel, kernelEventLabel, kernelEventSubject } from '@/lib/graph-view';
 import { nodeTypes, edgeTypes } from '@/components/canvas';
 import { WorkingTreeDiffPanel } from '@/components/working-tree-diff-panel';
-import { type Dispatch, type SetStateAction } from 'react';
+import { LoopPanel } from '@/components/loop-panel';
+import { type Dispatch, type SetStateAction, useState } from 'react';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
@@ -34,7 +35,9 @@ const kernelActorClassNames: Record<string, string> = {
 };
 
 export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActiveTab, setActiveClusterId }: SessionGraphPanelProps) {
-  const { runtimeState, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
+  const { runtimeState, setRuntimeState, setRuntimeError, runtimeApi, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
+  // L4 loop timeline panel: opened by clicking a ring badge on the canvas.
+  const [openLoopId, setOpenLoopId] = useState<string>();
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
   const { setPendingLinkedSourceId } = actions;
   const {
@@ -184,7 +187,11 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
             onNodeDragStart={beginCanvasNodeDrag}
             onNodeDragStop={persistCanvasNodePositions}
             onNodeClick={(_event, node) => {
-              if (!node.id.startsWith('cluster:')) {
+              if (node.id.startsWith('loop:')) {
+                setOpenLoopId(node.id.slice('loop:'.length));
+                return;
+              }
+              if (!node.id.startsWith('cluster:') && !node.id.startsWith('timer:')) {
                 const graphNode = runtimeState.nodes.find((candidate) => candidate.nodeId === node.id);
                 if (graphNode?.clusterId) {
                   setActiveClusterId(graphNode.clusterId);
@@ -211,6 +218,41 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
             />
           </ReactFlow>
         </div>
+
+        {openLoopId ? (
+          <LoopPanel
+            loopId={openLoopId}
+            runtimeApi={runtimeApi}
+            runtimeState={runtimeState}
+            latestKernelSeq={kernelEvents.at(-1)?.seq ?? 0}
+            onClose={() => setOpenLoopId(undefined)}
+            onFreezeRing={(memberSessionIds) => {
+              if (!runtimeApi) {
+                return;
+              }
+              // The badge's freeze shortcut is just the existing freeze verb
+              // fanned over the ring's members — no new kernel operator.
+              void (async () => {
+                try {
+                  let lastState: typeof runtimeState | undefined;
+                  for (const sessionId of memberSessionIds) {
+                    const frozen = runtimeState.nodes.find((node) => node.nodeId === sessionId)?.frozen;
+                    if (frozen) {
+                      continue;
+                    }
+                    const result = await runtimeApi.freeze({ target: sessionId, reason: 'Frozen from the ring badge.' });
+                    lastState = result.state;
+                  }
+                  if (lastState) {
+                    setRuntimeState(lastState);
+                  }
+                } catch (error: unknown) {
+                  setRuntimeError(error instanceof Error ? error.message : String(error));
+                }
+              })();
+            }}
+          />
+        ) : null}
 
         {isDiffPanelOpen ? (
           <WorkingTreeDiffPanel

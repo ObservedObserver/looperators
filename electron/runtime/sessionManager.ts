@@ -17,6 +17,11 @@ import {
   evaluate as evaluateSubscriptions,
   eventSourceSession,
   governingMaster,
+  loopsOf,
+  loopTimelineOf,
+  normalizeDailyAt,
+  scheduleDelayMs,
+  scheduleSummary,
   staticCheck,
 } from '../../shared/graph-core/index.js'
 import {
@@ -1659,7 +1664,12 @@ export class RuntimeSessionManager {
   }
 
   getState() {
-    return clone(this.#state)
+    const state = clone(this.#state)
+    // L4 thin projection: rings are derived from the intent graph on every
+    // read, never stored — the loop is a reading of subscriptions, not an
+    // object (proposal L4 "no new storage objects").
+    state.loops = loopsOf(this.#kernelView())
+    return state
   }
 
   // Unified command channel (kernel doc §7.5). All mutating entry points --
@@ -1756,6 +1766,38 @@ export class RuntimeSessionManager {
     return { events, latestSeq: this.#kernelStore.latestSeq() }
   }
 
+  // The whole log in ascending seq order. listEvents caps a single page at
+  // 2000 rows, so page by the last seen seq — a lap timeline must never
+  // silently drop the ring's early laps.
+  #allKernelEvents() {
+    const events = []
+    let sinceSeq = 0
+    for (;;) {
+      const batch = this.#kernelStore.listEvents({ sinceSeq, limit: 2000 })
+      events.push(...batch)
+      if (batch.length < 2000) {
+        return events
+      }
+      sinceSeq = batch[batch.length - 1].seq
+    }
+  }
+
+  // L4 loop timeline: one ring's history, grouped lap by lap from the event
+  // log (pure derivation via graph-core; the kernel stores no loop object).
+  getLoopTimeline(input: JsonRecord = {}) {
+    const loopId = optionalTrimmedString(input.loopId)
+    if (!loopId) {
+      throw new Error('getLoopTimeline requires a loopId')
+    }
+    const view = this.#kernelView()
+    const loop = loopsOf(view).find((candidate) => candidate.loopId === loopId)
+    if (!loop) {
+      throw new Error(`Unknown loop: ${loopId}`)
+    }
+    const timeline = loopTimelineOf(view, this.#allKernelEvents(), loop)
+    return { loop, timeline }
+  }
+
   #humanCtx() {
     return { actor: { kind: 'human' } }
   }
@@ -1780,6 +1822,7 @@ export class RuntimeSessionManager {
         sessionId: session.sessionId,
         status: session.status,
         frozen: node?.frozen === true,
+        freezeReason: node?.freezeReason,
         archived: session.archived === true,
         createdBy: undefined,
       }
@@ -2378,14 +2421,33 @@ export class RuntimeSessionManager {
       pattern.topic = on.topic.trim()
     }
     if (on.on === 'schedule') {
-      const everySeconds = Number(on.everySeconds)
-      const minimum = timerMinIntervalSeconds()
-      if (!Number.isInteger(everySeconds) || everySeconds < minimum) {
+      // Exactly one schedule form: an interval or a wall-clock daily time
+      // (the cron-shaped case the proposal's morning-report scenario needs).
+      const hasInterval = on.everySeconds !== undefined
+      const hasDailyAt = optionalTrimmedString(on.dailyAt) !== undefined
+      if (hasInterval === hasDailyAt) {
         throw new Error(
-          `Subscription schedule.everySeconds must be an integer >= ${minimum}`
+          'Subscription schedule requires exactly one of everySeconds or dailyAt'
         )
       }
-      pattern.everySeconds = everySeconds
+      if (hasDailyAt) {
+        const dailyAt = normalizeDailyAt(on.dailyAt.trim())
+        if (!dailyAt) {
+          throw new Error(
+            'Subscription schedule.dailyAt must be HH:MM (24h, runtime-host local time)'
+          )
+        }
+        pattern.dailyAt = dailyAt
+      } else {
+        const everySeconds = Number(on.everySeconds)
+        const minimum = timerMinIntervalSeconds()
+        if (!Number.isInteger(everySeconds) || everySeconds < minimum) {
+          throw new Error(
+            `Subscription schedule.everySeconds must be an integer >= ${minimum}`
+          )
+        }
+        pattern.everySeconds = everySeconds
+      }
     }
 
     const action = isObject(input.action) ? input.action : { kind: input.action }
@@ -2450,7 +2512,7 @@ export class RuntimeSessionManager {
     // the whole activation message; default to a deterministic template.
     const note = optionalTrimmedString(action.note)
       ?? (source.kind === 'timer'
-        ? `Scheduled activation: this session runs on a timer (every ${pattern.everySeconds}s).`
+        ? `Scheduled activation: this session runs on a timer (${scheduleSummary(pattern as { on: 'schedule' })}).`
         : undefined)
 
     return {
@@ -2546,10 +2608,8 @@ export class RuntimeSessionManager {
   // one immediate catch-up tick, never a replay of the missed backlog.
 
   #timerDelayMs(subscription) {
-    const everyMs = Number(subscription.on?.everySeconds) * 1000
     const anchor = Date.parse(subscription.lastTickAt ?? subscription.createdAt ?? '')
-    const base = Number.isFinite(anchor) ? anchor : Date.now()
-    return Math.max(0, base + everyMs - Date.now())
+    return scheduleDelayMs(subscription.on ?? {}, anchor, Date.now())
   }
 
   #syncTimerForSubscription(subscription) {
@@ -2614,10 +2674,15 @@ export class RuntimeSessionManager {
       {
         subscriptionId,
         targetSessionId: subscription.target.sessionId,
-        everySeconds: subscription.on.everySeconds,
+        ...(subscription.on.everySeconds !== undefined
+          ? { everySeconds: subscription.on.everySeconds }
+          : {}),
+        ...(subscription.on.dailyAt !== undefined
+          ? { dailyAt: subscription.on.dailyAt }
+          : {}),
       },
       { actor: { kind: 'runtime' } },
-      { reason: `Timer tick (every ${subscription.on.everySeconds}s).` }
+      { reason: `Timer tick (${scheduleSummary(subscription.on)}).` }
     )
     subscription.lastTickAt = tickEvent?.ts ?? now()
     this.#touch()
