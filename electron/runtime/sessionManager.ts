@@ -1789,7 +1789,7 @@ export class RuntimeSessionManager {
         target: slot.target,
         triggerEventId: slot.triggerEventId,
         status: slot.status,
-        createdAtSeq: 0,
+        createdAtSeq: Number.isFinite(slot.orderSeq) ? slot.orderSeq : 0,
       }
     }
     return {
@@ -1902,7 +1902,6 @@ export class RuntimeSessionManager {
   }
 
   async #createPendingActivation(decision, event, ctx) {
-    const slotKey = `${decision.subscriptionId}→${decision.target}`
     if (decision.supersedes && this.#state.pendingActivations?.[decision.supersedes]) {
       delete this.#state.pendingActivations[decision.supersedes]
       this.#appendKernelEvent(
@@ -1914,6 +1913,20 @@ export class RuntimeSessionManager {
     }
 
     const subscription = this.#state.subscriptions?.[decision.subscriptionId]
+    this.#state.pendingActivations = this.#state.pendingActivations ?? {}
+    // Queue keeps an ordered backlog (§6.1): a firing that arrives while a
+    // slot is already parked takes a suffixed key instead of overwriting it.
+    // Every entry gets its own pending → approved/denied/… fact chain;
+    // orderSeq (the pending fact's log seq) drives FIFO drain.
+    const baseKey = `${decision.subscriptionId}→${decision.target}`
+    let slotKey = baseKey
+    if (subscription?.concurrency === 'queue') {
+      let ordinal = 2
+      while (this.#state.pendingActivations[slotKey]) {
+        slotKey = `${baseKey}#${ordinal}`
+        ordinal += 1
+      }
+    }
     const slot = {
       slotKey,
       subscriptionId: decision.subscriptionId,
@@ -1925,8 +1938,9 @@ export class RuntimeSessionManager {
       masterSessionId: decision.masterSessionId,
       status: 'pending',
       createdAt: now(),
+      // Set from the pending fact's log seq below; drives FIFO drain.
+      orderSeq: undefined as number | undefined,
     }
-    this.#state.pendingActivations = this.#state.pendingActivations ?? {}
     this.#state.pendingActivations[slotKey] = slot
     const pendingEvent = this.#appendKernelEvent(
       'activation.pending',
@@ -1940,6 +1954,7 @@ export class RuntimeSessionManager {
       },
       ctx
     )
+    slot.orderSeq = pendingEvent?.seq
     this.#touch()
 
     if (decision.gate === 'auto') {
@@ -2080,9 +2095,15 @@ export class RuntimeSessionManager {
   // this is where coalesce's "fire once when idle, with the latest context"
   // becomes real.
   async #drainApprovedSlots() {
+    // Oldest pending fact first: this is the ordered drain for queue
+    // backlogs (§6.1). Coalesce/drop/interrupt hold at most one slot per
+    // edge, so the order is inert for them. Firing a queue entry makes the
+    // target busy, so the rest of its backlog parks until the next drain.
     const slots = Object.values(
       (this.#state.pendingActivations ?? {}) as JsonRecord
-    ).filter((slot) => slot.status === 'approved')
+    )
+      .filter((slot) => slot.status === 'approved')
+      .sort((a, b) => (a.orderSeq ?? 0) - (b.orderSeq ?? 0))
     for (const slot of slots) {
       if (!this.#state.pendingActivations?.[slot.slotKey]) {
         continue
@@ -5762,6 +5783,7 @@ export class RuntimeSessionManager {
       slots[candidate.slotKey] = {
         ...candidate,
         status: candidate.status === 'approved' ? 'approved' : 'pending',
+        orderSeq: Number.isFinite(candidate.orderSeq) ? candidate.orderSeq : undefined,
       }
     }
     return slots

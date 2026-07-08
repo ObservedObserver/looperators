@@ -199,7 +199,11 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       if (!subscriptionId || !target) {
         break
       }
-      const slotKey = pendingSlotKey(subscriptionId, target)
+      // Prefer the explicit slotKey: queue subscriptions keep an ordered
+      // backlog, so a firing may land in a suffixed slot (`…#2`) instead of
+      // the single (subscription, target) slot.
+      const slotKey =
+        asString(payload.slotKey) ?? pendingSlotKey(subscriptionId, target)
       state.pending[slotKey] = {
         slotKey,
         subscriptionId,

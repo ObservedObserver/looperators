@@ -143,6 +143,40 @@ test('fold projects subscriptions, firings, and pending slots', () => {
   assert.equal(state.subscriptions['sub-1'].state, 'stopped')
 })
 
+test('fold keeps queue backlog slots distinct via explicit slotKeys', () => {
+  seq = 0
+  const sub = subscriptionFixture({ id: 'sub-q', concurrency: 'queue', stop: undefined })
+  const baseKey = pendingSlotKey('sub-q', 'reviewer')
+  const queuedKey = `${baseKey}#2`
+  const state = fold([
+    event('subscription.authored', { subscription: sub }),
+    event('activation.pending', {
+      subscriptionId: 'sub-q',
+      target: 'reviewer',
+      slotKey: baseKey,
+    }),
+    event('activation.pending', {
+      subscriptionId: 'sub-q',
+      target: 'reviewer',
+      slotKey: queuedKey,
+    }),
+  ])
+
+  assert.equal(state.pending[baseKey].status, 'pending')
+  assert.equal(state.pending[queuedKey].status, 'pending')
+  assert.ok(
+    state.pending[baseKey].createdAtSeq < state.pending[queuedKey].createdAtSeq,
+    'createdAtSeq orders the backlog'
+  )
+
+  applyEvent(
+    state,
+    event('activated', { subscriptionId: 'sub-q', target: 'reviewer', slotKey: baseKey })
+  )
+  assert.equal(state.pending[baseKey], undefined, 'a terminal fact frees only its own entry')
+  assert.equal(state.pending[queuedKey].status, 'pending', 'the queued entry stays parked')
+})
+
 test('fold counts deliver-only firings on delivered, combined actions on activated', () => {
   seq = 0
   const deliverOnly = subscriptionFixture({

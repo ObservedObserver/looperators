@@ -126,7 +126,9 @@ export type KernelSession = {
 }
 
 export type PendingActivation = {
-  // Slot identity: one slot per (subscription, target) pair (§2.4).
+  // Slot identity: one slot per (subscription, target) pair (§2.4), except
+  // queue subscriptions, whose backlog entries carry an ordinal suffix
+  // (`…#2`, `…#3`) so they coexist; createdAtSeq orders the backlog.
   slotKey: string
   subscriptionId: SubscriptionId
   target: SessionId

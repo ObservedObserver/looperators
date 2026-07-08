@@ -327,6 +327,68 @@ test('coalesce: triggers while the target is busy supersede the slot and fire on
   }
 })
 
+test('queue: triggers while the target is busy build an ordered backlog and fire one by one', async () => {
+  const { manager, cleanup } = harness('orrery-subs-queue-')
+  try {
+    const runtime = manager()
+    const coder = await createIdleSession(runtime, 'Coder')
+    const acceptor = await createIdleSession(runtime, 'Acceptor')
+
+    const authored = runtime.authorSubscription({
+      label: 'S4',
+      sourceSessionId: coder,
+      on: { on: 'finished' },
+      targetSessionId: acceptor,
+      action: { kind: 'deliver+activate', topic: 'changeset' },
+      gate: 'auto',
+      concurrency: 'queue',
+    })
+    const baseSlotKey = `${authored.subscription.id}→${acceptor}`
+    const queuedSlotKey = `${baseSlotKey}#2`
+
+    // Make the acceptor busy for ~1.2s, then let the coder finish twice.
+    await runtime.resumeSession({ sessionId: acceptor, message: 'ORRERY_SLEEP long turn' })
+    await runtime.resumeSession({ sessionId: coder, message: 'first change' })
+    await waitFor(
+      'first approved slot parked',
+      () => runtime.getState().pendingActivations?.[baseSlotKey]?.status === 'approved'
+    )
+    await runtime.resumeSession({ sessionId: coder, message: 'second change' })
+    await waitFor(
+      'second slot queued behind the first',
+      () => runtime.getState().pendingActivations?.[queuedSlotKey]?.status === 'approved'
+    )
+
+    await waitFor(
+      'both queued firings executed after the acceptor went idle',
+      () =>
+        runtime.getState().subscriptions?.[authored.subscription.id]?.firings === 2 &&
+        !runtime.getState().pendingActivations?.[baseSlotKey] &&
+        !runtime.getState().pendingActivations?.[queuedSlotKey] &&
+        runtime.getState().sessions[acceptor]?.status === 'idle',
+      15000
+    )
+
+    const log = kernelEvents(runtime)
+    assert.ok(
+      !log.some((event) => event.type === 'activation.superseded'),
+      'queue never supersedes: both triggers keep their own slot'
+    )
+    const activated = log.filter(
+      (event) =>
+        event.type === 'activated' &&
+        event.payload.subscriptionId === authored.subscription.id
+    )
+    assert.deepEqual(
+      activated.map((event) => event.payload.slotKey),
+      [baseSlotKey, queuedSlotKey],
+      'the backlog drained in trigger order, one activation per trigger'
+    )
+  } finally {
+    cleanup()
+  }
+})
+
 test('deliver-only subscriptions forward the source bundle without activation', async () => {
   const { manager, cleanup } = harness('orrery-subs-deliver-')
   try {
