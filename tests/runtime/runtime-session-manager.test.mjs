@@ -428,6 +428,79 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
   }
 })
 
+test('compiled RuntimeSessionManager lists workspace files for a session', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-workspace-files-test-'))
+  const fakeClaude = path.join(tempRoot, 'claude')
+  const projectRoot = path.join(tempRoot, 'project')
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
+
+  fs.mkdirSync(path.join(projectRoot, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(projectRoot, 'node_modules', 'pkg'), { recursive: true })
+  fs.writeFileSync(path.join(projectRoot, 'README.md'), '# Test project\n')
+  fs.writeFileSync(path.join(projectRoot, 'src', 'app.ts'), 'export const ok = true\n')
+  fs.writeFileSync(path.join(projectRoot, 'node_modules', 'pkg', 'ignored.js'), 'module.exports = true\n')
+  fs.writeFileSync(fakeClaude, fakeClaudeSource())
+  fs.chmodSync(fakeClaude, 0o755)
+  process.env.ORRERY_CLAUDE_BIN = fakeClaude
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+
+  try {
+    const created = await runtime.createSession({
+      prompt: 'workspace file listing',
+      label: 'Workspace Files',
+      cwd: projectRoot,
+    })
+    await waitFor(
+      'workspace file session idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const result = runtime.getWorkspaceFiles({
+      sessionId: created.sessionId,
+      maxDepth: 3,
+      maxEntries: 20,
+    })
+
+    assert.equal(result.cwd, projectRoot)
+    assert.equal(result.totalFiles, 2)
+    assert.equal(result.truncated, false)
+    assert.ok(result.ignoredDirectories.includes('node_modules'))
+    assert.ok(result.entries.some((entry) => entry.path === 'README.md'))
+    assert.ok(
+      result.entries.some((entry) =>
+        entry.children?.some((child) => child.path === 'src/app.ts')
+      )
+    )
+
+    const content = runtime.getWorkspaceFileContent({
+      sessionId: created.sessionId,
+      path: 'src/app.ts',
+    })
+    assert.equal(content.path, 'src/app.ts')
+    assert.equal(content.isBinary, false)
+    assert.match(content.content, /export const ok = true/)
+
+    assert.throws(
+      () =>
+        runtime.getWorkspaceFileContent({
+          sessionId: created.sessionId,
+          path: '../runtime-state.json',
+        }),
+      /must stay inside the project folder/
+    )
+  } finally {
+    runtime.killAll()
+    if (previousClaudeBin === undefined) {
+      delete process.env.ORRERY_CLAUDE_BIN
+    } else {
+      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
+    }
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('compiled RuntimeSessionManager opens an auxiliary terminal for a session', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-terminal-test-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')

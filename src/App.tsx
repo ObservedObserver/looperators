@@ -12,6 +12,7 @@ import { SidebarRail } from '@/components/sidebar-rail';
 import { OrchestratePanel } from '@/components/orchestrate-panel';
 import { ChatDetail } from '@/components/chat-detail';
 import { SessionGraphPanel } from '@/components/session-graph-panel';
+import { SessionWorkspacePanel } from '@/components/session-workspace-panel';
 import { useRuntimeCore } from '@/hooks/use-runtime-core';
 import { useLayoutPrefs } from '@/hooks/use-layout-prefs';
 import { useComposer } from '@/hooks/use-composer';
@@ -28,6 +29,7 @@ import { useOrchestration } from '@/hooks/use-orchestration';
 function App() {
   const [activeTab, setActiveTab] = useState<RailTab>('chat');
   const [showRawEvents, setShowRawEvents] = useState(false);
+  const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [activeClusterId, setActiveClusterId] = useState<string>();
 
@@ -215,7 +217,7 @@ function App() {
 
   return (
     <TooltipProvider>
-      <main ref={splitContainerRef} className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
+      <main ref={splitContainerRef} className="relative flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
         {/* ===== Sidebar: nav + chat list ===== */}
         <SidebarRail core={core} sessionList={sessionList} actions={actions} activeTab={activeTab} setActiveTab={setActiveTab} />
 
@@ -255,6 +257,8 @@ function App() {
                 diff={diff}
                 showRawEvents={showRawEvents}
                 setShowRawEvents={setShowRawEvents}
+                isWorkspacePanelOpen={isWorkspacePanelOpen}
+                setIsWorkspacePanelOpen={setIsWorkspacePanelOpen}
               />
             ) : null}
           </div>
@@ -318,6 +322,16 @@ function App() {
             setActiveClusterId={setActiveClusterId}
           />
         )}
+        {selectedSession && isWorkspacePanelOpen ? (
+          <div className="app-region-no-drag absolute inset-y-0 right-0 z-40 flex max-w-full shadow-2xl">
+            <SessionWorkspacePanel
+              sessionId={selectedSession.sessionId}
+              cwd={selectedSession.cwd}
+              runtimeApi={runtimeApi}
+              onClose={() => setIsWorkspacePanelOpen(false)}
+            />
+          </div>
+        ) : null}
       </main>
     </TooltipProvider>
   );

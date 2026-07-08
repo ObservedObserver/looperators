@@ -237,6 +237,25 @@ export const graphStateSchema = {
       output:
         'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
     },
+    getWorkspaceFiles: {
+      input: {
+        sessionId:
+          'SessionId; resolves the selected chat node to its project cwd',
+        maxDepth: 'number?; preview tree depth, clamped by runtime',
+        maxEntries: 'number?; preview entry cap, clamped by runtime',
+      },
+      output:
+        'WorkspaceFilesResult; recursive file count plus a bounded file tree preview',
+    },
+    getWorkspaceFileContent: {
+      input: {
+        sessionId:
+          'SessionId; resolves the selected chat node to its project cwd',
+        path: 'string; workspace-relative file path',
+        maxBytes: 'number?; content byte cap, clamped by runtime',
+      },
+      output: 'WorkspaceFileContentResult; bounded UTF-8 file preview',
+    },
     openWorkspace: {
       input: {
         cwd: 'string; project folder to open',

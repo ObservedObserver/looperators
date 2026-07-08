@@ -169,6 +169,26 @@ const emptyGitTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 const gitDiffMaxBuffer = 64 * 1024 * 1024
 const uiPatchMaxLength = 2 * 1024 * 1024
 const runtimeTerminalMaxChunks = 1000
+const workspaceFilesMaxDepth = 4
+const workspaceFilesMaxEntries = 500
+const workspaceFilesMaxCountedFiles = 50_000
+const workspaceFileContentMaxBytes = 256 * 1024
+const workspaceFilesIgnoredDirectories = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.next',
+  '.turbo',
+  '.cache',
+  '.venv',
+  'venv',
+  'node_modules',
+  'dist',
+  'dist-electron',
+  'build',
+  'coverage',
+  '__pycache__',
+])
 const runtimeTerminalSentinelPrefix = '__ORRERY_COMMAND_DONE_'
 const runtimeTerminalSentinelPattern =
   /^__ORRERY_COMMAND_DONE_([0-9a-f-]+):(-?\d+)__\s*$/
@@ -281,6 +301,184 @@ function validateRunnableCwd(cwd) {
   }
 
   return resolved
+}
+
+function workspaceFileKind(dirent) {
+  if (dirent.isDirectory()) {
+    return 'directory'
+  }
+  if (dirent.isFile()) {
+    return 'file'
+  }
+  if (dirent.isSymbolicLink()) {
+    return 'symlink'
+  }
+  return 'other'
+}
+
+function normalizeWorkspaceFilesLimit(value, fallback, min, max) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) {
+    return fallback
+  }
+  return Math.max(min, Math.min(max, Math.trunc(parsed)))
+}
+
+function sortedWorkspaceDirents(cwd) {
+  return fs.readdirSync(cwd, { withFileTypes: true }).sort((left, right) => {
+    const leftDirectory = left.isDirectory()
+    const rightDirectory = right.isDirectory()
+    if (leftDirectory !== rightDirectory) {
+      return leftDirectory ? -1 : 1
+    }
+    return left.name.localeCompare(right.name, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    })
+  })
+}
+
+function countWorkspaceFiles(cwd, state) {
+  if (state.truncated || state.totalFiles >= workspaceFilesMaxCountedFiles) {
+    state.truncated = true
+    return
+  }
+
+  let dirents
+  try {
+    dirents = sortedWorkspaceDirents(cwd)
+  } catch {
+    return
+  }
+
+  for (const dirent of dirents) {
+    if (dirent.isDirectory()) {
+      if (workspaceFilesIgnoredDirectories.has(dirent.name)) {
+        continue
+      }
+      countWorkspaceFiles(path.join(cwd, dirent.name), state)
+      if (state.truncated) {
+        return
+      }
+      continue
+    }
+
+    if (dirent.isFile()) {
+      state.totalFiles += 1
+      if (state.totalFiles >= workspaceFilesMaxCountedFiles) {
+        state.truncated = true
+        return
+      }
+    }
+  }
+}
+
+function workspaceEntryForDirent(root, parentRelativePath, dirent) {
+  const relativePath = parentRelativePath
+    ? `${parentRelativePath}/${dirent.name}`
+    : dirent.name
+  const absolutePath = path.join(root, relativePath)
+  const entry: JsonRecord = {
+    path: relativePath,
+    name: dirent.name,
+    kind: workspaceFileKind(dirent),
+  }
+
+  if (dirent.isFile()) {
+    try {
+      entry.size = fs.statSync(absolutePath).size
+    } catch {
+      // Size is metadata for display only; omit it if the file disappeared.
+    }
+  }
+
+  return entry
+}
+
+function buildWorkspaceFileTree(root, parentRelativePath, depth, state) {
+  if (state.remainingEntries <= 0) {
+    state.truncated = true
+    return []
+  }
+
+  const absoluteParent = parentRelativePath
+    ? path.join(root, parentRelativePath)
+    : root
+  let dirents
+  try {
+    dirents = sortedWorkspaceDirents(absoluteParent)
+  } catch {
+    return []
+  }
+
+  const entries = []
+  for (const dirent of dirents) {
+    if (
+      dirent.isDirectory() &&
+      workspaceFilesIgnoredDirectories.has(dirent.name)
+    ) {
+      continue
+    }
+
+    if (state.remainingEntries <= 0) {
+      state.truncated = true
+      break
+    }
+
+    const entry = workspaceEntryForDirent(root, parentRelativePath, dirent)
+    state.remainingEntries -= 1
+
+    if (dirent.isDirectory() && depth < state.maxDepth) {
+      entry.children = buildWorkspaceFileTree(
+        root,
+        entry.path,
+        depth + 1,
+        state
+      )
+    }
+
+    entries.push(entry)
+  }
+
+  return entries
+}
+
+function resolveWorkspaceFilePath(cwd, requestedPath) {
+  if (typeof requestedPath !== 'string' || requestedPath.trim().length === 0) {
+    throw new Error('Workspace file path is required.')
+  }
+
+  const rawPath = requestedPath.trim()
+  if (path.isAbsolute(rawPath)) {
+    throw new Error('Workspace file path must be relative to the project folder.')
+  }
+
+  const normalizedPath = path.normalize(rawPath)
+  if (
+    normalizedPath === '.' ||
+    normalizedPath.startsWith('..') ||
+    path.isAbsolute(normalizedPath)
+  ) {
+    throw new Error('Workspace file path must stay inside the project folder.')
+  }
+
+  const root = fs.realpathSync(cwd)
+  const absolutePath = path.resolve(cwd, normalizedPath)
+  let realFilePath
+  try {
+    realFilePath = fs.realpathSync(absolutePath)
+  } catch {
+    throw new Error(`Workspace file not found: ${normalizedPath}`)
+  }
+
+  if (realFilePath !== root && !realFilePath.startsWith(`${root}${path.sep}`)) {
+    throw new Error('Workspace file path must stay inside the project folder.')
+  }
+
+  return {
+    absolutePath: realFilePath,
+    relativePath: normalizedPath.split(path.sep).join('/'),
+  }
 }
 
 function normalizeOpenWorkspaceTarget(value) {
@@ -3402,6 +3600,107 @@ export class RuntimeSessionManager {
       ignoreWhitespace:
         typeof input === 'object' && input.ignoreWhitespace === true,
     })
+  }
+
+  getWorkspaceFiles(input: JsonRecord | string = {}) {
+    const request = isObject(input) ? input : {}
+    const sessionId =
+      typeof input === 'string'
+        ? input
+        : typeof request.sessionId === 'string' &&
+            request.sessionId.trim().length > 0
+          ? request.sessionId.trim()
+          : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    const session = this.#state.sessions[sessionId]
+    const cwd = validateRunnableCwd(session.cwd)
+    const countState = { totalFiles: 0, truncated: false }
+    countWorkspaceFiles(cwd, countState)
+
+    const treeState = {
+      maxDepth: normalizeWorkspaceFilesLimit(
+        request.maxDepth,
+        workspaceFilesMaxDepth,
+        1,
+        workspaceFilesMaxDepth
+      ),
+      remainingEntries: normalizeWorkspaceFilesLimit(
+        request.maxEntries,
+        workspaceFilesMaxEntries,
+        25,
+        workspaceFilesMaxEntries
+      ),
+      truncated: false,
+    }
+
+    const entries = buildWorkspaceFileTree(cwd, '', 1, treeState)
+    return {
+      sessionId,
+      cwd,
+      generatedAt: now(),
+      totalFiles: countState.totalFiles,
+      entries,
+      truncated: countState.truncated || treeState.truncated,
+      ignoredDirectories: [...workspaceFilesIgnoredDirectories].sort(),
+    }
+  }
+
+  getWorkspaceFileContent(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const sessionId =
+      typeof request.sessionId === 'string' && request.sessionId.trim().length > 0
+        ? request.sessionId.trim()
+        : undefined
+
+    if (!sessionId || !this.#state.sessions[sessionId]) {
+      throw new Error(`Unknown session: ${sessionId ?? ''}`)
+    }
+
+    const session = this.#state.sessions[sessionId]
+    const cwd = validateRunnableCwd(session.cwd)
+    const { absolutePath, relativePath } = resolveWorkspaceFilePath(
+      cwd,
+      request.path
+    )
+    const stat = fs.statSync(absolutePath)
+    if (!stat.isFile()) {
+      throw new Error(`Workspace path is not a file: ${relativePath}`)
+    }
+
+    const maxBytes = normalizeWorkspaceFilesLimit(
+      request.maxBytes,
+      workspaceFileContentMaxBytes,
+      1024,
+      workspaceFileContentMaxBytes
+    )
+    const bytesToRead = Math.min(stat.size, maxBytes + 1)
+    const buffer = Buffer.alloc(bytesToRead)
+    const fd = fs.openSync(absolutePath, 'r')
+    let bytesRead = 0
+    try {
+      bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0)
+    } finally {
+      fs.closeSync(fd)
+    }
+
+    const contentBytes = buffer.subarray(0, Math.min(bytesRead, maxBytes))
+    const truncated = stat.size > maxBytes || bytesRead > maxBytes
+    const isBinary = contentBytes.includes(0)
+
+    return {
+      sessionId,
+      cwd,
+      path: relativePath,
+      generatedAt: now(),
+      size: stat.size,
+      content: isBinary ? '' : contentBytes.toString('utf8'),
+      truncated,
+      isBinary,
+    }
   }
 
   killSession(sessionId) {

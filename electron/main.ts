@@ -113,6 +113,12 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:get-working-tree-diff', (_event, input) =>
     runtime.getWorkingTreeDiff(input)
   )
+  ipcMain.handle('orrery:get-workspace-files', (_event, input) =>
+    runtime.getWorkspaceFiles(input)
+  )
+  ipcMain.handle('orrery:get-workspace-file-content', (_event, input) =>
+    runtime.getWorkspaceFileContent(input)
+  )
   ipcMain.handle('orrery:open-workspace', (_event, input) =>
     runtime.openWorkspace(input)
   )

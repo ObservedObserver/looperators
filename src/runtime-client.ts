@@ -33,6 +33,10 @@ import type {
   UpdateNodePositionsInput,
   UpsertProviderInstanceInput,
   UpsertClusterInput,
+  WorkspaceFileContentInput,
+  WorkspaceFileContentResult,
+  WorkspaceFilesInput,
+  WorkspaceFilesResult,
   WriteTerminalInput,
   WorkingTreeDiffInput,
   WorkingTreeDiffResult,
@@ -75,6 +79,8 @@ export type RuntimeApi = {
   stopMasterLoop: (input: StopMasterLoopInput) => Promise<{ state: GraphState }>;
   freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
   getWorkingTreeDiff: (input: WorkingTreeDiffInput) => Promise<WorkingTreeDiffResult>;
+  getWorkspaceFiles: (input: WorkspaceFilesInput) => Promise<WorkspaceFilesResult>;
+  getWorkspaceFileContent: (input: WorkspaceFileContentInput) => Promise<WorkspaceFileContentResult>;
   openWorkspace: (input: OpenWorkspaceInput) => Promise<OpenWorkspaceResult>;
   createTerminal: (input: CreateTerminalInput) => Promise<RuntimeTerminalResult>;
   getTerminal: (input: GetTerminalInput) => Promise<RuntimeTerminalResult>;
@@ -336,6 +342,14 @@ class HttpRuntimeApi implements RuntimeApi {
 
   getWorkingTreeDiff(input: WorkingTreeDiffInput) {
     return this.#post<WorkingTreeDiffResult>('working-tree-diff', input);
+  }
+
+  getWorkspaceFiles(input: WorkspaceFilesInput) {
+    return this.#post<WorkspaceFilesResult>('workspace-files', input);
+  }
+
+  getWorkspaceFileContent(input: WorkspaceFileContentInput) {
+    return this.#post<WorkspaceFileContentResult>('workspace-file-content', input);
   }
 
   openWorkspace(input: OpenWorkspaceInput) {

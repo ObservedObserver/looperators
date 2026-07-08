@@ -42,6 +42,10 @@ contextBridge.exposeInMainWorld('orrery', {
     freeze: (input) => ipcRenderer.invoke('orrery:freeze', input),
     getWorkingTreeDiff: (input) =>
       ipcRenderer.invoke('orrery:get-working-tree-diff', input),
+    getWorkspaceFiles: (input) =>
+      ipcRenderer.invoke('orrery:get-workspace-files', input),
+    getWorkspaceFileContent: (input) =>
+      ipcRenderer.invoke('orrery:get-workspace-file-content', input),
     openWorkspace: (input) =>
       ipcRenderer.invoke('orrery:open-workspace', input),
     createTerminal: (input) =>

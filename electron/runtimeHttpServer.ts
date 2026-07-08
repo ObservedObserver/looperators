@@ -413,6 +413,18 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/workspace-files$/,
+      handler: async (request) =>
+        runtime.getWorkspaceFiles(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/workspace-file-content$/,
+      handler: async (request) =>
+        runtime.getWorkspaceFileContent(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/open-workspace$/,
       handler: async (request) =>
         runtime.openWorkspace(await readJsonBody(request)),

@@ -181,6 +181,22 @@ export const graphStateSchema = {
       },
       output: 'WorkingTreeDiffResult; current cwd working tree now, checkpoint-compatible range metadata',
     },
+    getWorkspaceFiles: {
+      input: {
+        sessionId: 'SessionId; resolves the selected chat node to its project cwd',
+        maxDepth: 'number?; preview tree depth, clamped by runtime',
+        maxEntries: 'number?; preview entry cap, clamped by runtime',
+      },
+      output: 'WorkspaceFilesResult; recursive file count plus a bounded file tree preview',
+    },
+    getWorkspaceFileContent: {
+      input: {
+        sessionId: 'SessionId; resolves the selected chat node to its project cwd',
+        path: 'string; workspace-relative file path',
+        maxBytes: 'number?; content byte cap, clamped by runtime',
+      },
+      output: 'WorkspaceFileContentResult; bounded UTF-8 file preview',
+    },
     openWorkspace: {
       input: {
         cwd: 'string; project folder to open',
@@ -779,6 +795,49 @@ export type WorkingTreeDiffInput = {
   sessionId: SessionId;
   ignoreWhitespace?: boolean;
   turnId?: string;
+};
+
+export type WorkspaceFileKind = 'file' | 'directory' | 'symlink' | 'other';
+
+export type WorkspaceFileEntry = {
+  path: string;
+  name: string;
+  kind: WorkspaceFileKind;
+  size?: number;
+  children?: WorkspaceFileEntry[];
+};
+
+export type WorkspaceFilesInput = {
+  sessionId: SessionId;
+  maxDepth?: number;
+  maxEntries?: number;
+};
+
+export type WorkspaceFilesResult = {
+  sessionId: SessionId;
+  cwd: string;
+  generatedAt: string;
+  totalFiles: number;
+  entries: WorkspaceFileEntry[];
+  truncated: boolean;
+  ignoredDirectories: string[];
+};
+
+export type WorkspaceFileContentInput = {
+  sessionId: SessionId;
+  path: string;
+  maxBytes?: number;
+};
+
+export type WorkspaceFileContentResult = {
+  sessionId: SessionId;
+  cwd: string;
+  path: string;
+  generatedAt: string;
+  size: number;
+  content: string;
+  truncated: boolean;
+  isBinary: boolean;
 };
 
 export type OpenWorkspaceInput = {
