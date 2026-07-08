@@ -174,6 +174,18 @@ export const graphStateSchema = {
         masterReason: 'string?; explanation shown on freeze edges',
       },
     },
+    createGoalLoop: {
+      input: {
+        workerSessionId: 'SessionId',
+        goal: "string; the natural-language done condition — goes only into the judge's prompts, never parsed",
+        maxLaps: 'number?; default 6 (defaultCycleMaxFirings), guardrail via stop.maxFirings',
+        gate: 'auto|master|human?; default auto — deterministic judging needs no master',
+        onStop: 'freeze-edge|freeze-target|freeze-cluster?; default freeze-edge',
+        judgeProviderInstanceId: "string?; default: the worker's provider (cheap-judge override point)",
+      },
+      output:
+        '{ judgeSessionId, checkSubscription, retrySubscription, state }; L3 preset — compiles into create_session + author_subscription ×2 (worker on finished → judge; judge on report(fail) → worker; both stop at whenReport done + maxFirings), no new kernel verb',
+    },
     getWorkingTreeDiff: {
       input: {
         sessionId: 'SessionId; resolves the selected chat node to its project cwd',
@@ -652,6 +664,25 @@ export type LoopTimeline = {
 export type LoopTimelineResult = {
   loop: LoopView;
   timeline: LoopTimeline;
+};
+
+// L3 goal loop preset: one natural-language goal compiles into a judge
+// session plus two subscriptions; stopping stays deterministic
+// (whenReport done + maxFirings). No new kernel verbs are involved.
+export type CreateGoalLoopInput = {
+  workerSessionId: SessionId;
+  goal: string;
+  maxLaps?: number;
+  gate?: SubscriptionGate;
+  onStop?: SubscriptionOnStop;
+  judgeProviderInstanceId?: string;
+};
+
+export type CreateGoalLoopResult = {
+  judgeSessionId: SessionId;
+  checkSubscription: Subscription;
+  retrySubscription: Subscription;
+  state: GraphState;
 };
 
 export type GraphState = {

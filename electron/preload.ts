@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:kernel-events', input),
     getLoopTimeline: (input) =>
       ipcRenderer.invoke('orrery:loop-timeline', input),
+    createGoalLoop: (input) =>
+      ipcRenderer.invoke('orrery:create-goal-loop', input),
     getProjectContext: (input) =>
       ipcRenderer.invoke('orrery:get-project-context', input),
     getProviderSetupStatus: (input) =>

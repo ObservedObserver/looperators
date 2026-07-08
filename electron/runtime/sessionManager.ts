@@ -2563,6 +2563,36 @@ export class RuntimeSessionManager {
     )
     this.#discardSlotsForSubscription(subscriptionId, ctx)
     this.#syncLoopStateForSubscription(subscription, 'subscription.stopped')
+    // Goal loop pairing (L3): the two compiled edges live and die together
+    // on EVERY stop path — scheduler stops, manual stops, kill sweeps. A
+    // leftover retry edge could otherwise wake the worker on a later fail
+    // report even though the ring can no longer complete a lap. Recursion
+    // bottoms out on the already-stopped early return above.
+    //
+    // Pairing needs the compiled SHAPE, not just the id prefix: the ids are
+    // user-suppliable via author_subscription, so the pair must carry the
+    // preset's full fingerprint (#isGoalPairShape) before it is stopped as
+    // one ring.
+    const pairedId = subscriptionId.startsWith('goal-check-')
+      ? subscriptionId.replace(/^goal-check-/, 'goal-retry-')
+      : subscriptionId.startsWith('goal-retry-')
+        ? subscriptionId.replace(/^goal-retry-/, 'goal-check-')
+        : undefined
+    const paired = pairedId ? this.#state.subscriptions?.[pairedId] : undefined
+    const isPair = subscriptionId.startsWith('goal-check-')
+      ? this.#isGoalPairShape(subscription, paired)
+      : this.#isGoalPairShape(paired, subscription)
+    if (paired && isPair && paired.state === 'active') {
+      this.#cmdStopSubscription(
+        { subscriptionId: pairedId },
+        {
+          ...ctx,
+          reason: `Goal loop ended: ${
+            ctx.reason ?? optionalTrimmedString(input.reason) ?? 'the paired edge stopped.'
+          }`,
+        }
+      )
+    }
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { ok: true, subscription: clone(subscription) }
@@ -4690,6 +4720,222 @@ export class RuntimeSessionManager {
 
   authorSubscription(input: JsonRecord = {}) {
     return this.#cmdAuthorSubscription(input, this.#humanCtx())
+  }
+
+  // ---- L3 goal loop preset: one sentence compiles into a judge ring ----
+  //
+  // Not a new kernel verb: the preset expands into ordinary commands
+  // (create_session + author_subscription ×2), so the log records only
+  // regular facts and the loop stays a reading of subscriptions. The user's
+  // natural-language goal goes exclusively into the judge's prompts; the
+  // ruling stays typed (report verdict done|fail) and the runtime keeps
+  // deciding stop deterministically via whenReport + maxFirings (§6.2).
+
+  // The bootstrap stays goal-free on purpose: the goal sentence has exactly
+  // one home — the check edge's activation note, restated to the judge on
+  // every lap (which also survives judge-side context compaction).
+  #goalJudgeBootstrapPrompt(workerLabel: string) {
+    return [
+      `You are the goal judge for the session "${workerLabel}".`,
+      'You will be activated after each of its turns; each activation carries the goal and the judging instructions.',
+      'For now, reply "ready" and stop. Do not check anything yet.',
+    ].join('\n')
+  }
+
+  #goalJudgeActivationNote(goal: string) {
+    return [
+      `Goal check. The goal: "${goal}"`,
+      '',
+      'Judge ONLY whether the goal is met right now:',
+      '1. Prefer deterministic, executable checks — run the test suite, linter, build, or a script in the workspace — over impressions.',
+      '2. Then call the report tool exactly once with a typed verdict:',
+      '   - {"type":"verdict","verdict":"done","summary":"<one-line proof, e.g. the passing command>"} if the goal is met.',
+      '   - {"type":"verdict","verdict":"fail","summary":"<what is missing>","issues":[{"message":"<concrete failure to fix>"}]} if not.',
+      '3. Do not fix anything yourself. Do not ask questions. Report, then stop.',
+    ].join('\n')
+  }
+
+  // Deliberately goal-free: the worker acts on the judge's TYPED verdict
+  // and issues only — the user's natural language stays in judge prompts
+  // (design constraint 1), and the worker never re-interprets the goal.
+  #goalWorkerRetryNote() {
+    return [
+      'The goal judge reported the goal is not met yet.',
+      'Its verdict and issues are delivered in your context channel. Fix exactly those failures, then finish your turn so the judge can check again.',
+    ].join('\n')
+  }
+
+  // Concurrent-compile guard: the duplicate scan below is a read over live
+  // state, and judge creation awaits — two overlapping calls could both
+  // pass the scan and leave two rings on one worker (TOCTOU).
+  #goalLoopInFlight = new Set<string>()
+
+  // A COMPILED goal ring, not just an id-prefix match: author_subscription
+  // accepts user-chosen ids, so the duplicate guard and the stop pairing
+  // demand the preset's full fingerprint — reciprocal session participants
+  // AND the compiled trigger/action/stop shape on both edges. (A pair that
+  // reproduces all of this by hand IS a goal loop in every observable
+  // respect, so treating it as one is the correct semantics, not a spoof.)
+  #isGoalPairShape(check, retry) {
+    return Boolean(
+      check &&
+        retry &&
+        /^goal-check-/.test(check.id ?? '') &&
+        retry.id === check.id.replace(/^goal-check-/, 'goal-retry-') &&
+        check.source?.kind === 'session' &&
+        retry.source?.kind === 'session' &&
+        retry.source.sessionId === check.target?.sessionId &&
+        retry.target?.sessionId === check.source.sessionId &&
+        check.on?.on === 'finished' &&
+        retry.on?.on === 'report' &&
+        retry.on?.match?.type === 'verdict' &&
+        retry.on?.match?.verdict === 'fail' &&
+        check.action?.kind === 'deliver+activate' &&
+        retry.action?.kind === 'deliver+activate' &&
+        check.stop?.whenReport?.verdict === 'done' &&
+        retry.stop?.whenReport?.verdict === 'done'
+    )
+  }
+
+  #isCompiledGoalCheckEdge(subscription) {
+    if (subscription.state !== 'active' || !/^goal-check-/.test(subscription.id ?? '')) {
+      return false
+    }
+    const retry =
+      this.#state.subscriptions?.[
+        subscription.id.replace(/^goal-check-/, 'goal-retry-')
+      ]
+    return this.#isGoalPairShape(subscription, retry)
+  }
+
+  async createGoalLoop(input: JsonRecord = {}) {
+    const workerSessionId = optionalTrimmedString(input.workerSessionId)
+    const worker = workerSessionId
+      ? this.#state.sessions[workerSessionId]
+      : undefined
+    if (!worker) {
+      throw new Error(`Unknown goal loop worker session: ${workerSessionId ?? ''}`)
+    }
+    if (worker.status === 'killed') {
+      throw new Error('Cannot set a goal on a killed session')
+    }
+    const goal = optionalTrimmedString(input.goal)
+    if (!goal) {
+      throw new Error('A goal loop requires a non-empty goal sentence')
+    }
+    const maxLaps =
+      input.maxLaps === undefined ? defaultCycleMaxFirings : Number(input.maxLaps)
+    if (!Number.isInteger(maxLaps) || maxLaps < 1 || maxLaps > 99) {
+      throw new Error('Goal loop maxLaps must be an integer between 1 and 99')
+    }
+    const gate = optionalTrimmedString(input.gate) ?? 'auto'
+    if (!validSubscriptionGates.has(gate)) {
+      throw new Error('Goal loop gate must be auto, master, or human')
+    }
+    // Everything is validated BEFORE the judge session exists: an invalid
+    // input must never leave a half-compiled preset behind.
+    const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
+    if (!validSubscriptionOnStops.has(onStop)) {
+      throw new Error('Goal loop onStop must be freeze-edge, freeze-target, or freeze-cluster')
+    }
+    const duplicate = Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    ).find(
+      (subscription) =>
+        subscription.source?.kind === 'session' &&
+        subscription.source.sessionId === worker.sessionId &&
+        this.#isCompiledGoalCheckEdge(subscription)
+    )
+    if (duplicate) {
+      throw new Error(
+        `Session already has an active goal loop (${duplicate.id}); stop it before setting a new goal`
+      )
+    }
+    if (this.#goalLoopInFlight.has(worker.sessionId)) {
+      throw new Error(
+        'A goal loop is already being created for this session; wait for it to finish'
+      )
+    }
+    this.#goalLoopInFlight.add(worker.sessionId)
+
+    try {
+      const workerLabel = worker.label ?? worker.sessionId
+      const created = await this.#cmdCreateSession(
+        {
+          prompt: this.#goalJudgeBootstrapPrompt(workerLabel),
+          cwd: worker.cwd,
+          label: `${workerLabel} · judge`,
+          providerKind: worker.providerKind,
+          providerInstanceId:
+            optionalTrimmedString(input.judgeProviderInstanceId) ??
+            worker.providerInstanceId,
+          sourceSessionId: worker.sessionId,
+          linkLabel: 'goal judge',
+        },
+        this.#humanCtx()
+      )
+      const judgeSessionId = created.sessionId
+
+      // The worker was only validated before the awaited judge creation; a
+      // kill landing inside that gap would otherwise leave an active ring
+      // on a dead worker that the earlier kill sweep never saw. Everything
+      // from here to the second authoring is synchronous, so this recheck
+      // closes the gap.
+      const workerNow = this.#state.sessions[worker.sessionId]
+      if (!workerNow || workerNow.status === 'killed') {
+        try {
+          this.killSession(judgeSessionId)
+        } catch {
+          // Best-effort cleanup; the throw below is the real signal.
+        }
+        throw new Error(
+          'The worker session was killed while the goal loop was being created'
+        )
+      }
+
+      // Neutral labels on purpose: the goal sentence would otherwise persist
+      // in subscription.authored facts — it belongs in judge prompts only
+      // (the check edge's note IS the judge's activation prompt).
+      const suffix = randomUUID().slice(0, 8)
+      const stop = { whenReport: { verdict: 'done' }, maxFirings: maxLaps }
+      const check = this.#cmdAuthorSubscription(
+        {
+          id: `goal-check-${suffix}`,
+          label: 'goal check',
+          sourceSessionId: worker.sessionId,
+          on: { on: 'finished' },
+          targetSessionId: judgeSessionId,
+          action: { kind: 'deliver+activate', note: this.#goalJudgeActivationNote(goal) },
+          gate,
+          stop,
+          onStop,
+        },
+        this.#humanCtx()
+      )
+      const retry = this.#cmdAuthorSubscription(
+        {
+          id: `goal-retry-${suffix}`,
+          label: 'goal retry',
+          sourceSessionId: judgeSessionId,
+          on: { on: 'report', match: { type: 'verdict', verdict: 'fail' } },
+          targetSessionId: worker.sessionId,
+          action: { kind: 'deliver+activate', note: this.#goalWorkerRetryNote() },
+          gate,
+          stop,
+          onStop,
+        },
+        this.#humanCtx()
+      )
+
+      return {
+        judgeSessionId,
+        checkSubscription: check.subscription,
+        retrySubscription: retry.subscription,
+        state: this.getState(),
+      }
+    } finally {
+      this.#goalLoopInFlight.delete(worker.sessionId)
+    }
   }
 
   stopSubscription(input: JsonRecord = {}) {

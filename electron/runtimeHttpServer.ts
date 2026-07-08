@@ -399,6 +399,12 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/goal-loops$/,
+      handler: async (request) =>
+        runtime.createGoalLoop(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/subscriptions\/([^/]+)\/stop$/,
       handler: async (request, params) =>
         runtime.stopSubscription({

@@ -271,6 +271,42 @@ export function subscriptionSourceNodeId(state: GraphState, subscription: Subscr
   return cluster?.masterSessionId;
 }
 
+// L3 goal loop fingerprint — mirrors the runtime's #isGoalPairShape: a
+// compiled goal ring is identified by reciprocal session participants AND
+// the preset's trigger/action/stop shape on both edges, never by id alone.
+export function isCompiledGoalPair(check: Subscription | undefined, retry: Subscription | undefined) {
+  return Boolean(
+    check &&
+    retry &&
+    check.id.startsWith('goal-check-') &&
+    retry.id === check.id.replace(/^goal-check-/, 'goal-retry-') &&
+    check.source.kind === 'session' &&
+    retry.source.kind === 'session' &&
+    retry.source.sessionId === check.target.sessionId &&
+    retry.target.sessionId === check.source.sessionId &&
+    check.on.on === 'finished' &&
+    retry.on.on === 'report' &&
+    retry.on.match?.type === 'verdict' &&
+    retry.on.match?.verdict === 'fail' &&
+    check.action.kind === 'deliver+activate' &&
+    retry.action.kind === 'deliver+activate' &&
+    check.stop?.whenReport?.verdict === 'done' &&
+    retry.stop?.whenReport?.verdict === 'done',
+  );
+}
+
+export function activeGoalCheckEdge(subscriptions: Record<string, Subscription> | undefined, sessionId: string) {
+  return Object.values(subscriptions ?? {}).find((subscription) => {
+    if (!subscription.id.startsWith('goal-check-') || subscription.state !== 'active') {
+      return false;
+    }
+    if (subscription.source.kind !== 'session' || subscription.source.sessionId !== sessionId) {
+      return false;
+    }
+    return isCompiledGoalPair(subscription, subscriptions?.[subscription.id.replace(/^goal-check-/, 'goal-retry-')]);
+  });
+}
+
 // Clock source nodes (L4, closing L1's rendering tail): one small canvas
 // node per timer subscription, parked left of its target. Not draggable —
 // positions derive from the target so they are never persisted.

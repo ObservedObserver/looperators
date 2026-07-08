@@ -12,6 +12,8 @@ import type {
   CreateRuntimeSessionResult,
   FreezeInput,
   GetTerminalInput,
+  CreateGoalLoopInput,
+  CreateGoalLoopResult,
   GraphState,
   KernelEvent,
   LoopTimelineResult,
@@ -62,6 +64,7 @@ export type RuntimeApi = {
   getState: () => Promise<GraphState>;
   getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
   getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
+  createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
   getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
@@ -383,6 +386,10 @@ class HttpRuntimeApi implements RuntimeApi {
 
   getLoopTimeline(input: { loopId: string }) {
     return this.#get<LoopTimelineResult>(`loops/${encodeURIComponent(input.loopId)}/timeline`);
+  }
+
+  createGoalLoop(input: CreateGoalLoopInput) {
+    return this.#post<CreateGoalLoopResult>('goal-loops', input);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {
