@@ -30,6 +30,16 @@ function installFakeClaude(tempRoot) {
   fs.writeFileSync(fakeClaude, fakeClaudeSource)
   fs.chmodSync(fakeClaude, 0o755)
   process.env.ORRERY_CLAUDE_BIN = fakeClaude
+  return fakeClaude
+}
+
+function useFakeClaude(runtime, binaryPath) {
+  runtime.upsertProviderInstance({
+    kind: 'legacy-claude-cli',
+    providerInstanceId: 'legacy-claude-cli',
+    label: 'Fake Claude CLI',
+    binaryPath,
+  })
 }
 
 function delay(ms) {
@@ -105,9 +115,10 @@ test('channel store: immutable seq-numbered deliveries with topic supersession',
 
 test('deliver + activate: data plane facts, deterministic preamble, read tracking', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-kernel-'))
-  installFakeClaude(tempRoot)
+  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
+  useFakeClaude(runtime, fakeClaude)
 
   try {
     const a = await runtime.createSession({
@@ -192,9 +203,10 @@ test('deliver + activate: data plane facts, deterministic preamble, read trackin
 
 test('resume decomposes into deliver + activate; plain resumes stay verbatim', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-resume-'))
-  installFakeClaude(tempRoot)
+  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
+  useFakeClaude(runtime, fakeClaude)
 
   try {
     const target = await runtime.createSession({
@@ -263,9 +275,10 @@ test('resume decomposes into deliver + activate; plain resumes stay verbatim', a
 
 test('create_session pre-seeds the channel with handoff context (§8.1)', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-create-'))
-  installFakeClaude(tempRoot)
+  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
+  useFakeClaude(runtime, fakeClaude)
 
   try {
     const source = await runtime.createSession({
@@ -324,9 +337,10 @@ test('create_session pre-seeds the channel with handoff context (§8.1)', async 
 
 test('a spawn failure does not swallow unread deliveries', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-spawnfail-'))
-  installFakeClaude(tempRoot)
+  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
+  useFakeClaude(runtime, fakeClaude)
 
   try {
     const target = await runtime.createSession({
@@ -343,7 +357,7 @@ test('a spawn failure does not swallow unread deliveries', async () => {
     })
 
     // Break the provider binary so the activation run cannot start.
-    process.env.ORRERY_CLAUDE_BIN = path.join(tempRoot, 'missing-binary')
+    useFakeClaude(runtime, path.join(tempRoot, 'missing-binary'))
     await runtime
       .activateSession({ sessionId: target.sessionId, note: 'doomed' })
       .catch(() => undefined)
@@ -357,7 +371,7 @@ test('a spawn failure does not swallow unread deliveries', async () => {
     assert.equal(runtime.getState().sessions[target.sessionId].status, 'failed')
 
     // Restore the binary; the next activation must re-list the delivery.
-    installFakeClaude(tempRoot)
+    useFakeClaude(runtime, fakeClaude)
     await runtime.activateSession({
       sessionId: target.sessionId,
       note: 'retry after failure',
@@ -380,9 +394,10 @@ test('a spawn failure does not swallow unread deliveries', async () => {
 
 test('deliver without content forwards the artifact bundle', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-bundle-'))
-  installFakeClaude(tempRoot)
+  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
+  useFakeClaude(runtime, fakeClaude)
 
   try {
     const a = await runtime.createSession({
