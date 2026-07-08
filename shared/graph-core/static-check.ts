@@ -49,6 +49,13 @@ function intentEdges(state: KernelState): IntentEdge[] {
     if (subscription.action.kind === 'deliver') {
       continue
     }
+    if (subscription.source.kind === 'timer') {
+      // A timer is a pure entry point: nothing in the graph can activate a
+      // clock, so a schedule edge can never lie on a directed cycle.
+      // Frequency runaway is bounded by the runtime's minimum interval, and
+      // an unbounded schedule is a legal permanent listener (§6.4).
+      continue
+    }
     const to = nodeKeyOfSession(subscription.target.sessionId)
     if (subscription.source.kind === 'session') {
       edges.push({

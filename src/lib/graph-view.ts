@@ -229,6 +229,9 @@ export function subscriptionPatternLabel(subscription: Subscription) {
   if (on.on === 'delivered') {
     return on.topic ? `on delivered(${on.topic})` : 'on delivered';
   }
+  if (on.on === 'schedule') {
+    return on.everySeconds % 60 === 0 ? `every ${on.everySeconds / 60}m` : `every ${on.everySeconds}s`;
+  }
   return `on ${on.on}`;
 }
 
@@ -237,10 +240,9 @@ export function subscriptionUntilSummary(subscription: Subscription) {
   if (!stop) {
     return undefined;
   }
-  const parts = [
-    stop.whenReport ? `until ${stop.whenReport.verdict}` : undefined,
-    stop.deadline ? `until ${formatClock(stop.deadline)}` : undefined,
-  ].filter(Boolean);
+  const parts = [stop.whenReport ? `until ${stop.whenReport.verdict}` : undefined, stop.deadline ? `until ${formatClock(stop.deadline)}` : undefined].filter(
+    Boolean,
+  );
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
@@ -248,6 +250,10 @@ export function subscriptionUntilSummary(subscription: Subscription) {
 // the cluster has no managed members (no boundary node is rendered), fall
 // back to its master session so the edge never dangles on a missing node.
 export function subscriptionSourceNodeId(state: GraphState, subscription: Subscription) {
+  if (subscription.source.kind === 'timer') {
+    // The clock is not a canvas node yet (L4 renders it); no edge to anchor.
+    return undefined;
+  }
   if (subscription.source.kind !== 'cluster') {
     return subscription.source.sessionId;
   }
@@ -329,6 +335,8 @@ export function kernelEventLabel(type: string) {
       return 'link';
     case 'edge.removed':
       return 'unlink';
+    case 'external.timer':
+      return 'tick';
     default:
       return type.replaceAll('.', ' ');
   }
@@ -347,8 +355,7 @@ export function kernelActorLabel(state: GraphState, actor: KernelEvent['actor'])
 
 export function kernelEventSubject(state: GraphState, event: KernelEvent) {
   const payload = event.payload ?? {};
-  const gateSuffix =
-    event.type === 'activation.pending' && typeof payload.gate === 'string' ? ` · gate ${payload.gate}` : '';
+  const gateSuffix = event.type === 'activation.pending' && typeof payload.gate === 'string' ? ` · gate ${payload.gate}` : '';
   const target = typeof payload.target === 'string' ? payload.target : undefined;
   const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : undefined;
   const source = typeof payload.source === 'string' ? payload.source : undefined;

@@ -6,7 +6,7 @@ export const subscriptionGates = ['auto', 'master', 'human']
 export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt']
 export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster']
 export const subscriptionStates = ['active', 'stopped']
-export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered']
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule']
 
 export const sessionStatuses = [
   'pending',
@@ -92,8 +92,8 @@ export const graphStateSchema = {
   },
   subscription: {
     id: 'SubscriptionId',
-    source: '{kind:"session",sessionId} | {kind:"cluster",clusterId}',
-    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?}',
+    source: '{kind:"session",sessionId} | {kind:"cluster",clusterId} | {kind:"timer"}',
+    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds} (timer source only)',
     target: '{kind:"session",sessionId}',
     action: '{kind:"deliver"|"deliver+activate", topic?, note?}',
     gate: subscriptionGates,
@@ -104,6 +104,7 @@ export const graphStateSchema = {
     firings: 'number',
     label: 'string?',
     createdAt: 'ISO-8601 string',
+    lastTickAt: 'ISO-8601 string?; timer subscriptions: when the last tick fired',
   },
   pendingActivation: {
     slotKey: 'string; `${subscriptionId}→${target}`',

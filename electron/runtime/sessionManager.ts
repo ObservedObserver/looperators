@@ -89,7 +89,18 @@ const validSubscriptionPatterns = new Set([
   'failed',
   'report',
   'delivered',
+  'schedule',
 ])
+// Source-side minimum interval for timer subscriptions (L1): the guardrail
+// against high-frequency runaway lives on the source, not on the operator.
+// Overridable for tests via ORRERY_TIMER_MIN_INTERVAL_SECONDS.
+const defaultTimerMinIntervalSeconds = 15
+function timerMinIntervalSeconds() {
+  const fromEnv = Number(process.env.ORRERY_TIMER_MIN_INTERVAL_SECONDS)
+  return Number.isFinite(fromEnv) && fromEnv >= 1
+    ? fromEnv
+    : defaultTimerMinIntervalSeconds
+}
 // Kernel facts the subscription scheduler evaluates (§6.1 event patterns).
 // session.killed is not a trigger pattern; it sweeps subscriptions whose
 // participants died (kill parity with the old hero loop).
@@ -99,6 +110,8 @@ const schedulerTriggerEventTypes = new Set([
   'report.received',
   'delivered',
   'session.killed',
+  // L1 timer source ticks (external event source, §2.4).
+  'external.timer',
 ])
 const recoverableActiveStatuses = new Set(['pending', 'running'])
 const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
@@ -1561,6 +1574,8 @@ export class RuntimeSessionManager {
   #kernelStore: KernelStore
   #channelStore: ContextChannelStore
   #schedulerChain: Promise<void> = Promise.resolve()
+  // L1 timer source: one armed timeout per active schedule subscription.
+  #timers = new Map<string, ReturnType<typeof setTimeout>>()
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
@@ -1638,7 +1653,9 @@ export class RuntimeSessionManager {
       providerInstances: this.#state.providerInstances,
     })
     this.#persistState()
+    this.#sweepKilledParticipantSubscriptions()
     this.#recoverSchedulerState()
+    this.#recoverTimers()
   }
 
   getState() {
@@ -2294,6 +2311,7 @@ export class RuntimeSessionManager {
       { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
     )
     this.#syncLoopStateForSubscription(subscription, 'subscription.authored')
+    this.#syncTimerForSubscription(subscription)
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return {
@@ -2320,9 +2338,11 @@ export class RuntimeSessionManager {
       !source ||
       (source.kind === 'session' && !this.#state.sessions[source.sessionId]) ||
       (source.kind === 'cluster' && !this.#state.clusters[source.clusterId]) ||
-      (source.kind !== 'session' && source.kind !== 'cluster')
+      (source.kind !== 'session' && source.kind !== 'cluster' && source.kind !== 'timer')
     ) {
-      throw new Error('Subscription source must be an existing session or cluster')
+      throw new Error(
+        'Subscription source must be an existing session or cluster, or {kind:"timer"}'
+      )
     }
 
     const targetSessionId =
@@ -2334,7 +2354,16 @@ export class RuntimeSessionManager {
 
     const on = isObject(input.on) ? input.on : { on: input.on }
     if (!validSubscriptionPatterns.has(on.on)) {
-      throw new Error(`Subscription pattern must be one of finished|failed|report|delivered`)
+      throw new Error(
+        `Subscription pattern must be one of finished|failed|report|delivered|schedule`
+      )
+    }
+    // Timer source ⟺ schedule pattern: a clock emits nothing but ticks, and
+    // a schedule can be driven by nothing but a clock.
+    if ((source.kind === 'timer') !== (on.on === 'schedule')) {
+      throw new Error(
+        'A schedule pattern requires source {kind:"timer"}, and a timer source requires the schedule pattern'
+      )
     }
     const pattern: JsonRecord = { on: on.on }
     if (on.on === 'report' && isObject(on.match)) {
@@ -2348,6 +2377,16 @@ export class RuntimeSessionManager {
     if (on.on === 'delivered' && optionalTrimmedString(on.topic)) {
       pattern.topic = on.topic.trim()
     }
+    if (on.on === 'schedule') {
+      const everySeconds = Number(on.everySeconds)
+      const minimum = timerMinIntervalSeconds()
+      if (!Number.isInteger(everySeconds) || everySeconds < minimum) {
+        throw new Error(
+          `Subscription schedule.everySeconds must be an integer >= ${minimum}`
+        )
+      }
+      pattern.everySeconds = everySeconds
+    }
 
     const action = isObject(input.action) ? input.action : { kind: input.action }
     if (action.kind === 'create') {
@@ -2355,6 +2394,11 @@ export class RuntimeSessionManager {
     }
     if (action.kind !== 'deliver' && action.kind !== 'deliver+activate') {
       throw new Error('Subscription action must be deliver or deliver+activate')
+    }
+    if (source.kind === 'timer' && action.kind !== 'deliver+activate') {
+      // A clock has no artifacts to forward; a deliver-only schedule would
+      // fire empty deliveries forever.
+      throw new Error('A timer subscription requires action deliver+activate')
     }
 
     const gate = optionalTrimmedString(input.gate)
@@ -2364,6 +2408,14 @@ export class RuntimeSessionManager {
     const concurrency = optionalTrimmedString(input.concurrency) ?? 'coalesce'
     if (!validSubscriptionConcurrencies.has(concurrency)) {
       throw new Error('Subscription concurrency must be coalesce, queue, drop, or interrupt')
+    }
+    if (source.kind === 'timer' && concurrency === 'queue') {
+      // Ticks are fungible: a backlog of stale ticks is exactly the
+      // anti-pattern §6.1 warns about, so timer edges never queue even
+      // though session/cluster edges may keep an ordered backlog.
+      throw new Error(
+        'A timer subscription cannot use queue concurrency; ticks coalesce (or drop/interrupt)'
+      )
     }
     const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
     if (!validSubscriptionOnStops.has(onStop)) {
@@ -2394,18 +2446,27 @@ export class RuntimeSessionManager {
       }
     }
 
+    // A scheduled activation carries no upstream artifacts, so the note is
+    // the whole activation message; default to a deterministic template.
+    const note = optionalTrimmedString(action.note)
+      ?? (source.kind === 'timer'
+        ? `Scheduled activation: this session runs on a timer (every ${pattern.everySeconds}s).`
+        : undefined)
+
     return {
       id: optionalTrimmedString(input.id) ?? `sub-${randomUUID().slice(0, 8)}`,
       source:
         source.kind === 'session'
           ? { kind: 'session', sessionId: source.sessionId }
-          : { kind: 'cluster', clusterId: source.clusterId },
+          : source.kind === 'timer'
+            ? { kind: 'timer' }
+            : { kind: 'cluster', clusterId: source.clusterId },
       on: pattern,
       target: { kind: 'session', sessionId: targetSessionId },
       action: {
         kind: action.kind,
         ...(optionalTrimmedString(action.topic) ? { topic: action.topic.trim() } : {}),
-        ...(optionalTrimmedString(action.note) ? { note: action.note } : {}),
+        ...(note ? { note } : {}),
       },
       gate: gate ?? undefined,
       concurrency,
@@ -2431,6 +2492,7 @@ export class RuntimeSessionManager {
       return { ok: true, subscription: clone(subscription) }
     }
     subscription.state = 'stopped'
+    this.#clearTimer(subscriptionId)
     this.#appendKernelEvent(
       'subscription.stopped',
       { subscriptionId },
@@ -2467,6 +2529,158 @@ export class RuntimeSessionManager {
             reason: 'Participant session was killed.',
           },
           { actor: { kind: 'runtime' }, causeId: event.id }
+        )
+      }
+    }
+  }
+
+  // --- L1 timer source: the clock as an external event source (§2.4) ---
+  //
+  // One armed setTimeout per active schedule subscription. A tick appends an
+  // `external.timer` fact; matching, gate, coalesce, and stop conditions all
+  // run through the ordinary scheduler path — the timer service knows nothing
+  // about activation. Handles are unref'd so an idle runtime can exit.
+  //
+  // Restart catch-up (proposal L1): the next tick is computed from
+  // lastTickAt, so downtime longer than the interval yields delay 0 — exactly
+  // one immediate catch-up tick, never a replay of the missed backlog.
+
+  #timerDelayMs(subscription) {
+    const everyMs = Number(subscription.on?.everySeconds) * 1000
+    const anchor = Date.parse(subscription.lastTickAt ?? subscription.createdAt ?? '')
+    const base = Number.isFinite(anchor) ? anchor : Date.now()
+    return Math.max(0, base + everyMs - Date.now())
+  }
+
+  #syncTimerForSubscription(subscription) {
+    if (!subscription || subscription.on?.on !== 'schedule') {
+      return
+    }
+    this.#clearTimer(subscription.id)
+    if (subscription.state !== 'active') {
+      return
+    }
+    const handle = setTimeout(
+      () => this.#fireTimerTick(subscription.id),
+      this.#timerDelayMs(subscription)
+    )
+    handle.unref?.()
+    this.#timers.set(subscription.id, handle)
+  }
+
+  #clearTimer(subscriptionId) {
+    const handle = this.#timers.get(subscriptionId)
+    if (handle) {
+      clearTimeout(handle)
+      this.#timers.delete(subscriptionId)
+    }
+  }
+
+  #clearAllTimers() {
+    for (const subscriptionId of [...this.#timers.keys()]) {
+      this.#clearTimer(subscriptionId)
+    }
+  }
+
+  #fireTimerTick(subscriptionId) {
+    this.#timers.delete(subscriptionId)
+    const subscription = this.#state.subscriptions?.[subscriptionId]
+    if (
+      !subscription ||
+      subscription.state !== 'active' ||
+      subscription.on?.on !== 'schedule'
+    ) {
+      return
+    }
+    // Kill parity at the source: a killed target can never be activated
+    // again, so ticking it would only churn create/drop pairs forever.
+    const target = this.#state.sessions[subscription.target.sessionId]
+    if (!target || target.status === 'killed') {
+      this.#cmdStopSubscription(
+        {
+          subscriptionId,
+          reason: 'Participant session was killed.',
+        },
+        { actor: { kind: 'runtime' } }
+      )
+      return
+    }
+    // Log first (events are truth): the snapshot's lastTickAt is a cache of
+    // the appended fact's ts, and fold() derives the same value on replay.
+    // No `sessionId` key on purpose: a tick has no source session, and
+    // eventSourceSession() must not mistake the target for one.
+    const tickEvent = this.#appendKernelEvent(
+      'external.timer',
+      {
+        subscriptionId,
+        targetSessionId: subscription.target.sessionId,
+        everySeconds: subscription.on.everySeconds,
+      },
+      { actor: { kind: 'runtime' } },
+      { reason: `Timer tick (every ${subscription.on.everySeconds}s).` }
+    )
+    subscription.lastTickAt = tickEvent?.ts ?? now()
+    this.#touch()
+    this.#syncTimerForSubscription(subscription)
+  }
+
+  #recoverTimers() {
+    for (const subscription of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      if (subscription.on?.on !== 'schedule' || subscription.state !== 'active') {
+        continue
+      }
+      // Reconcile the tick anchor from the event log before arming: the
+      // snapshot may be older than the last appended tick (events are
+      // truth). Exact per-subscription lookup — a bounded tail scan could
+      // miss the latest tick of a quiet, long-interval subscription.
+      const logged = this.#kernelStore.latestEventWithPayloadValue(
+        'external.timer',
+        'subscriptionId',
+        subscription.id
+      )
+      // An unparseable cached anchor counts as missing — otherwise the
+      // NaN comparison would silently discard the exact logged fact.
+      const cachedMs = Date.parse(subscription.lastTickAt ?? '')
+      if (
+        logged &&
+        (!Number.isFinite(cachedMs) || Date.parse(logged.ts) > cachedMs)
+      ) {
+        subscription.lastTickAt = logged.ts
+      }
+      this.#syncTimerForSubscription(subscription)
+    }
+  }
+
+  // Kill parity across restarts: the session.killed scheduler sweep is
+  // async, so a shutdown can persist a snapshot where a participant is
+  // killed but its subscriptions are still active. Re-run the sweep on load
+  // so recovery (and #recoverTimers) never resurrects such an edge.
+  #sweepKilledParticipantSubscriptions() {
+    for (const subscription of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      if (subscription.state !== 'active') {
+        continue
+      }
+      const participants = [
+        subscription.target?.sessionId,
+        subscription.source?.kind === 'session'
+          ? subscription.source.sessionId
+          : undefined,
+      ].filter(Boolean)
+      if (
+        participants.some(
+          (sessionId) => this.#state.sessions[sessionId]?.status === 'killed'
+        )
+      ) {
+        this.#cmdStopSubscription(
+          {
+            subscriptionId: subscription.id,
+            reason: 'Participant session was killed.',
+          },
+          { actor: { kind: 'runtime' } }
         )
       }
     }
@@ -3785,6 +3999,9 @@ export class RuntimeSessionManager {
     for (const terminalId of [...this.#terminalRuns.keys()]) {
       this.closeTerminal({ terminalId })
     }
+    // Armed timers die with the runtime; construction re-arms them from the
+    // persisted subscriptions (with a single catch-up tick if overdue).
+    this.#clearAllTimers()
     this.#providerService?.closeAll?.()
     this.#bridge?.close()
     // The kernel store intentionally stays open: killAll is revivable (the

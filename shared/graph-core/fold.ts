@@ -290,6 +290,18 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       }
       break
     }
+    case 'external.timer': {
+      // The tick anchor folds from the log (events are truth): replay
+      // recovers lastTickAt without depending on snapshot freshness.
+      const subscriptionId = asString(payload.subscriptionId)
+      const subscription = subscriptionId
+        ? state.subscriptions[subscriptionId]
+        : undefined
+      if (subscription) {
+        subscription.lastTickAt = event.ts
+      }
+      break
+    }
     default:
       // Unknown/irrelevant event types fold to a no-op by design: the log
       // may carry facts (interaction.*, storage.*, loop.* pre-G3) that the

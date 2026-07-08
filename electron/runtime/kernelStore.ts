@@ -290,6 +290,28 @@ export class KernelStore {
     return tail ? events.reverse() : events
   }
 
+  // The newest event of `type` whose payload carries `payloadValue` under
+  // `payloadKey`. Exact per-key lookup — unlike a bounded listEvents tail,
+  // this cannot miss an old fact for a quiet subscription.
+  latestEventWithPayloadValue(
+    type: string,
+    payloadKey: string,
+    payloadValue: string
+  ): KernelEvent | undefined {
+    if (this.#closed) {
+      return undefined
+    }
+
+    const row = this.#db
+      .prepare(
+        `SELECT * FROM events
+         WHERE type = ? AND json_extract(payload, ?) = ?
+         ORDER BY seq DESC LIMIT 1`
+      )
+      .get(type, `$.${payloadKey}`, payloadValue) as JsonRecord | undefined
+    return row ? rowToEvent(row) : undefined
+  }
+
   latestSeq(): number {
     if (this.#closed) {
       return 0

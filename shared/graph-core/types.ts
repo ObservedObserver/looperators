@@ -53,6 +53,10 @@ export type EventPattern =
   | { on: 'report'; match?: { type?: string; verdict?: string } }
   // Reserved for G2+: mediated delivery events as trigger sources.
   | { on: 'delivered'; topic?: string }
+  // L1 time-based trigger: matches `external.timer` ticks appended by the
+  // runtime's timer source for exactly this subscription. Only valid with a
+  // timer source (and vice versa); the runtime enforces the pairing.
+  | { on: 'schedule'; everySeconds: number }
 
 export type SubscriptionAction =
   | { kind: 'deliver'; topic?: string }
@@ -76,7 +80,11 @@ export type SubscriptionStop = {
 
 export type NodeRef = { kind: 'session'; sessionId: SessionId }
 export type ClusterRef = { kind: 'cluster'; clusterId: ClusterId }
-export type SourceRef = NodeRef | ClusterRef
+// The clock as a trigger origin (L1). A timer is an event source, not a
+// session: it emits `external.timer` facts into the log (§2.4) and can never
+// receive an edge, so schedule subscriptions cannot lie on a cycle.
+export type TimerRef = { kind: 'timer' }
+export type SourceRef = NodeRef | ClusterRef | TimerRef
 
 export type Subscription = {
   id: SubscriptionId
@@ -90,6 +98,9 @@ export type Subscription = {
   onStop: SubscriptionOnStop
   state: 'active' | 'stopped'
   firings: number
+  // Timer subscriptions: ts of the last external.timer tick. Folded from the
+  // event log (the log is the source of truth; any snapshot copy is a cache).
+  lastTickAt?: string
 }
 
 // --- Governance layer: scope forest (kernel doc §7.4) ---

@@ -21,7 +21,7 @@ export const subscriptionGates = ['auto', 'master', 'human'] as const;
 export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt'] as const;
 export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster'] as const;
 export const subscriptionStates = ['active', 'stopped'] as const;
-export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered'] as const;
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule'] as const;
 
 export const sessionStatuses = ['pending', 'running', 'idle', 'failed', 'killed'] as const;
 
@@ -562,13 +562,16 @@ export type SubscriptionOnStop = (typeof subscriptionOnStops)[number];
 
 export type SubscriptionSourceRef =
   | { kind: 'session'; sessionId: SessionId }
-  | { kind: 'cluster'; clusterId: ClusterId };
+  | { kind: 'cluster'; clusterId: ClusterId }
+  // L1: the clock as a trigger origin; paired exclusively with `schedule`.
+  | { kind: 'timer' };
 
 export type SubscriptionPattern =
   | { on: 'finished' }
   | { on: 'failed' }
   | { on: 'report'; match?: { type?: string; verdict?: string } }
-  | { on: 'delivered'; topic?: string };
+  | { on: 'delivered'; topic?: string }
+  | { on: 'schedule'; everySeconds: number };
 
 export type Subscription = {
   id: string;
@@ -584,6 +587,8 @@ export type Subscription = {
   firings: number;
   label?: string;
   createdAt: string;
+  // Timer subscriptions: when the last tick fired (drives the next-tick anchor).
+  lastTickAt?: string;
 };
 
 export type PendingActivation = {
