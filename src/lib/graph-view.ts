@@ -1,5 +1,6 @@
 import { type Node } from '@xyflow/react';
 import {
+  type ExternalSource,
   type GraphEdge,
   type GraphEdgeKind,
   type GraphState,
@@ -238,6 +239,15 @@ export function subscriptionPatternLabel(subscription: Subscription) {
     const everySeconds = on.everySeconds ?? 0;
     return everySeconds % 60 === 0 ? `every ${everySeconds / 60}m` : `every ${everySeconds}s`;
   }
+  if (on.on === 'external') {
+    const topic = on.topic ? `external.${on.topic}` : 'external';
+    const match = on.match
+      ? Object.entries(on.match)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(',')
+      : undefined;
+    return match ? `on ${topic}(${match})` : `on ${topic}`;
+  }
   return `on ${on.on}`;
 }
 
@@ -259,6 +269,10 @@ export function subscriptionSourceNodeId(state: GraphState, subscription: Subscr
   if (subscription.source.kind === 'timer') {
     // The clock renders as its own canvas node (L4); one per subscription.
     return `timer:${subscription.id}`;
+  }
+  if (subscription.source.kind === 'external') {
+    // External sources render as one shared canvas node per source (L2).
+    return `source:${subscription.source.sourceId}`;
   }
   if (subscription.source.kind !== 'cluster') {
     return subscription.source.sessionId;
@@ -340,6 +354,61 @@ export function timerNodes(state: GraphState): Node<TimerNodeData>[] {
           label: subscriptionPatternLabel(subscription),
           lastTickAt: subscription.lastTickAt,
           stopped: subscription.state === 'stopped',
+        },
+      },
+    ];
+  });
+}
+
+// External source nodes (L2): one canvas node per registered source that
+// backs at least one subscription edge (stopped edges keep their origin —
+// tombstoned sources still render). Parked left of the first target,
+// stacked below any clock nodes on the same target; not draggable, so
+// positions derive from the target and are never persisted.
+export type SourceNodeData = {
+  source: ExternalSource;
+  removed: boolean;
+};
+
+export function sourceNodes(state: GraphState): Node<SourceNodeData>[] {
+  const subscriptions = Object.values(state.subscriptions ?? {});
+  // Clock nodes occupy the first stack slots per target (timerNodes above).
+  const perTarget = new Map<string, number>();
+  for (const subscription of subscriptions) {
+    if (subscription.source.kind === 'timer') {
+      const target = subscription.target.sessionId;
+      if (state.nodes.some((node) => node.nodeId === target)) {
+        perTarget.set(target, (perTarget.get(target) ?? 0) + 1);
+      }
+    }
+  }
+  const placed = new Set<string>();
+  return subscriptions.flatMap((subscription) => {
+    if (subscription.source.kind !== 'external' || placed.has(subscription.source.sourceId)) {
+      return [];
+    }
+    const source = state.sources?.[subscription.source.sourceId];
+    if (!source) {
+      return [];
+    }
+    const targetNode = state.nodes.find((node) => node.nodeId === subscription.target.sessionId);
+    if (!targetNode) {
+      return [];
+    }
+    placed.add(source.id);
+    const stacked = perTarget.get(targetNode.nodeId) ?? 0;
+    perTarget.set(targetNode.nodeId, stacked + 1);
+    return [
+      {
+        id: `source:${source.id}`,
+        type: 'source' as const,
+        position: { x: targetNode.position.x - 240, y: targetNode.position.y + 12 + stacked * 92 },
+        draggable: false,
+        selectable: false,
+        zIndex: 8,
+        data: {
+          source,
+          removed: source.state === 'removed',
         },
       },
     ];
@@ -570,7 +639,13 @@ export function nodePositionUpdatesFromFlowNodes(nodes: Node[]): NodePositionUpd
   return nodes.flatMap((node) => {
     // Synthetic canvas nodes (cluster boundaries, clocks, ring badges)
     // derive their positions; only session nodes persist theirs.
-    if (node.id.startsWith('cluster:') || node.id.startsWith('timer:') || node.id.startsWith('loop:') || !isFinitePosition(node.position)) {
+    if (
+      node.id.startsWith('cluster:') ||
+      node.id.startsWith('timer:') ||
+      node.id.startsWith('loop:') ||
+      node.id.startsWith('source:') ||
+      !isFinitePosition(node.position)
+    ) {
       return [];
     }
 

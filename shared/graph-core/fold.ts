@@ -302,7 +302,47 @@ export function applyEvent(state: KernelState, event: GraphEvent): KernelState {
       }
       break
     }
+    case 'source.registered': {
+      const source = payload.source as
+        | (Record<string, any> & { id?: unknown })
+        | undefined
+      const id = asString(source?.id)
+      if (!source || !id) {
+        break
+      }
+      state.sources[id] = {
+        ...(source as any),
+        id,
+        state: 'active',
+      }
+      break
+    }
+    case 'source.removed': {
+      // Tombstone, not delete: stopped edges keep a renderable origin.
+      const sourceId = asString(payload.sourceId)
+      const source = sourceId ? state.sources[sourceId] : undefined
+      if (source) {
+        source.state = 'removed'
+      }
+      break
+    }
     default:
+      // Accepted external facts (`external.<topic>`, L2) fold their
+      // ingestion anchors back onto the source, so sampling and dedupe
+      // survive replay without snapshot freshness. `external.timer` has no
+      // sourceId and is handled above.
+      if (event.type.startsWith('external.')) {
+        const sourceId = asString(payload.sourceId)
+        const source = sourceId ? state.sources[sourceId] : undefined
+        if (source) {
+          source.lastEventAt = event.ts
+          // Always assigned: a key-less accepted event CLEARS the anchor —
+          // consecutive dedupe compares against the last accepted event
+          // only, never against an older one across a key-less gap.
+          source.lastDedupeKey = asString(payload.dedupeKey)
+        }
+        break
+      }
       // Unknown/irrelevant event types fold to a no-op by design: the log
       // may carry facts (interaction.*, storage.*, loop.* pre-G3) that the
       // kernel state does not project.

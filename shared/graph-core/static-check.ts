@@ -55,11 +55,13 @@ export function intentEdges(
     if (subscription.action.kind === 'deliver') {
       continue
     }
-    if (subscription.source.kind === 'timer') {
-      // A timer is a pure entry point: nothing in the graph can activate a
-      // clock, so a schedule edge can never lie on a directed cycle.
-      // Frequency runaway is bounded by the runtime's minimum interval, and
-      // an unbounded schedule is a legal permanent listener (§6.4).
+    if (subscription.source.kind === 'timer' || subscription.source.kind === 'external') {
+      // Timers and external sources are pure entry points: nothing in the
+      // graph can activate a clock or a watcher, so their edges can never
+      // lie on a directed cycle. Frequency runaway is bounded at the source
+      // (runtime minimum interval for timers, source-side sampling for
+      // external emits), and an unbounded listener is legal (§6.4). Cycles
+      // among the downstream session edges still hit the checks below.
       continue
     }
     const to = nodeKeyOfSession(subscription.target.sessionId)

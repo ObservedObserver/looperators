@@ -20,6 +20,7 @@
     "runtime:http:serve": "node dist-electron/electron/runtimeHttpServerCli.js",
     "runtime:spike": "node scripts/claude-stream-json-spike.mjs finish",
     "runtime:spike:kill": "node scripts/claude-stream-json-spike.mjs kill",
+    "emit": "node scripts/emit-external-event.mjs",
     "test": "npm run test:kernel",
     "test:kernel": "npm run build:electron && node --test --test-concurrency=4 tests/runtime/*.test.mjs tests/graph-core/*.test.mjs",
     "test:kernel:orchestration": "npm run build:electron && node scripts/canvas-orchestration-smoke.mjs",

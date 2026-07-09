@@ -16,7 +16,11 @@ import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
+  externalIngestionDecision,
+  externalSourceKinds,
+  externalSourceSummary,
   governingMaster,
+  isValidExternalTopic,
   loopsOf,
   loopTimelineOf,
   normalizeDailyAt,
@@ -28,6 +32,7 @@ import {
   ContextChannelStore,
   activationPreamble,
 } from './contextChannel.js'
+import { createExternalSourceAdapter } from './externalSourceAdapters.js'
 import {
   KernelStore,
   kernelActorKinds,
@@ -95,7 +100,11 @@ const validSubscriptionPatterns = new Set([
   'report',
   'delivered',
   'schedule',
+  'external',
 ])
+// The emit payload rides the kernel log and the target's channel; cap it so
+// a chatty adapter cannot bloat either (the log is forever).
+const externalPayloadMaxBytes = 16 * 1024
 // Source-side minimum interval for timer subscriptions (L1): the guardrail
 // against high-frequency runaway lives on the source, not on the operator.
 // Overridable for tests via ORRERY_TIMER_MIN_INTERVAL_SECONDS.
@@ -1581,6 +1590,7 @@ export class RuntimeSessionManager {
   #schedulerChain: Promise<void> = Promise.resolve()
   // L1 timer source: one armed timeout per active schedule subscription.
   #timers = new Map<string, ReturnType<typeof setTimeout>>()
+  #externalAdapters = new Map<string, { start: () => void; stop: () => void }>()
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
@@ -1661,10 +1671,14 @@ export class RuntimeSessionManager {
     this.#sweepKilledParticipantSubscriptions()
     this.#recoverSchedulerState()
     this.#recoverTimers()
+    this.#recoverExternalSourceAnchors()
   }
 
   getState() {
     const state = clone(this.#state)
+    // Transport secrets stay runtime-plane: they persist with the snapshot
+    // but never leave through the read API (IPC, HTTP state, broadcasts).
+    delete state.sourceTokens
     // L4 thin projection: rings are derived from the intent graph on every
     // read, never stored — the loop is a reading of subscriptions, not an
     // object (proposal L4 "no new storage objects").
@@ -1859,6 +1873,7 @@ export class RuntimeSessionManager {
       scopes,
       pending,
       links: {},
+      sources: clone(this.#state.sources ?? {}),
     }
   }
 
@@ -1871,7 +1886,13 @@ export class RuntimeSessionManager {
   // Single-threaded scheduler (§2.4): kernel facts are processed strictly in
   // append order through one promise chain.
   #enqueueSchedulerEvent(event) {
-    if (!schedulerTriggerEventTypes.has(event.type)) {
+    // External facts are `external.<topic>` with source-declared topics, so
+    // the trigger set is open-ended by prefix (L2); everything else stays
+    // on the exact-type allowlist.
+    if (
+      !schedulerTriggerEventTypes.has(event.type) &&
+      !event.type.startsWith('external.')
+    ) {
       return
     }
     if (this.#activeSubscriptionCount() === 0 && Object.keys(this.#state.pendingActivations ?? {}).length === 0) {
@@ -1994,6 +2015,12 @@ export class RuntimeSessionManager {
       triggerEventId: event.id,
       sourceSessionId: eventSourceSession(event),
       reportId: event.type === 'report.received' ? event.payload.reportId : undefined,
+      // External triggers have no source session to bundle artifacts from;
+      // the emit payload itself is the firing's data (delivered on execute).
+      externalEvent:
+        event.type.startsWith('external.') && event.type !== 'external.timer'
+          ? { type: event.type, ts: event.ts, payload: clone(event.payload ?? {}) }
+          : undefined,
       gate: decision.gate,
       masterSessionId: decision.masterSessionId,
       status: 'pending',
@@ -2039,14 +2066,38 @@ export class RuntimeSessionManager {
   }
 
   #pendingRequestText(slot, subscription) {
+    // External triggers have no source session: name the registered source
+    // and show the event itself, so the gate decision is informed.
+    const external = slot.externalEvent
+    const externalSource = external
+      ? this.#state.sources?.[external.payload?.sourceId]
+      : undefined
     const sourceLabel = slot.sourceSessionId
       ? this.#state.sessions[slot.sourceSessionId]?.label ?? slot.sourceSessionId
-      : 'unknown'
+      : externalSource
+        ? externalSourceSummary(externalSource)
+        : external
+          ? external.payload?.sourceId ?? 'external source'
+          : 'unknown'
     const targetLabel =
       this.#state.sessions[slot.target]?.label ?? slot.target
+    const trigger = slot.reportId
+      ? `report ${slot.reportId}`
+      : external
+        ? `external event ${external.type}`
+        : 'a finished turn'
+    let eventLine
+    if (external) {
+      const { sourceId: _sourceId, ...payload } = external.payload ?? {}
+      const rendered = JSON.stringify(payload)
+      eventLine = `Event payload: ${
+        rendered.length > 600 ? `${rendered.slice(0, 600)}…` : rendered
+      }`
+    }
     return [
       `Pending activation requires your decision (slotKey: ${slot.slotKey}).`,
-      `Subscription ${subscription?.label ?? slot.subscriptionId}: ${sourceLabel} → ${targetLabel}, triggered by ${slot.reportId ? `report ${slot.reportId}` : 'a finished turn'} from ${sourceLabel}.`,
+      `Subscription ${subscription?.label ?? slot.subscriptionId}: ${sourceLabel} → ${targetLabel}, triggered by ${trigger} from ${sourceLabel}.`,
+      ...(eventLine ? [eventLine] : []),
       `To allow it, call mcp__orrery_membrane__approve_activation exactly once with {"slotKey":"${slot.slotKey}"} — you may add "note" with extra instructions for the target.`,
       `To reject it, call mcp__orrery_membrane__deny_activation exactly once with {"slotKey":"${slot.slotKey}","reason":"..."}.`,
       'Then stop.',
@@ -2223,6 +2274,24 @@ export class RuntimeSessionManager {
             ctx
           )
         }
+      } else if (slot.externalEvent) {
+        // The emit payload is what the target acts on (proposal L2: "deliver
+        // 的内容是失败日志") — rendered as a channel entry like a report.
+        this.#deliverToChannel(
+          {
+            target: slot.target,
+            from: undefined,
+            topic: subscription.action.topic,
+            entries: [
+              {
+                name: 'external-event.md',
+                content: this.#renderExternalEventMarkdown(slot.externalEvent),
+              },
+            ],
+            subscriptionId: slot.subscriptionId,
+          },
+          ctx
+        )
       }
 
       const note = [subscription.action.note, slot.approvalNote]
@@ -2292,6 +2361,23 @@ export class RuntimeSessionManager {
     } else {
       lines.push('', JSON.stringify(payload, null, 2))
     }
+    return `${lines.join('\n')}\n`
+  }
+
+  #renderExternalEventMarkdown(externalEvent) {
+    const payload = { ...(externalEvent.payload ?? {}) }
+    const sourceId = payload.sourceId
+    delete payload.sourceId
+    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
+    const lines = [
+      `# External event: ${externalEvent.type}`,
+      `Source: ${source ? externalSourceSummary(source) : sourceId ?? 'unknown'}`,
+      `At: ${externalEvent.ts}`,
+      '',
+      '```json',
+      JSON.stringify(payload, null, 2),
+      '```',
+    ]
     return `${lines.join('\n')}\n`
   }
 
@@ -2381,11 +2467,24 @@ export class RuntimeSessionManager {
       !source ||
       (source.kind === 'session' && !this.#state.sessions[source.sessionId]) ||
       (source.kind === 'cluster' && !this.#state.clusters[source.clusterId]) ||
-      (source.kind !== 'session' && source.kind !== 'cluster' && source.kind !== 'timer')
+      (source.kind !== 'session' &&
+        source.kind !== 'cluster' &&
+        source.kind !== 'timer' &&
+        source.kind !== 'external')
     ) {
       throw new Error(
-        'Subscription source must be an existing session or cluster, or {kind:"timer"}'
+        'Subscription source must be an existing session or cluster, {kind:"timer"}, or {kind:"external",sourceId}'
       )
+    }
+    let externalSource
+    if (source.kind === 'external') {
+      const sourceId = optionalTrimmedString(source.sourceId)
+      externalSource = sourceId ? this.#state.sources?.[sourceId] : undefined
+      if (!externalSource || externalSource.state !== 'active') {
+        throw new Error(
+          `Subscription external source must be a registered, active source (got: ${sourceId ?? ''})`
+        )
+      }
     }
 
     const targetSessionId =
@@ -2398,7 +2497,7 @@ export class RuntimeSessionManager {
     const on = isObject(input.on) ? input.on : { on: input.on }
     if (!validSubscriptionPatterns.has(on.on)) {
       throw new Error(
-        `Subscription pattern must be one of finished|failed|report|delivered|schedule`
+        `Subscription pattern must be one of finished|failed|report|delivered|schedule|external`
       )
     }
     // Timer source ⟺ schedule pattern: a clock emits nothing but ticks, and
@@ -2406,6 +2505,13 @@ export class RuntimeSessionManager {
     if ((source.kind === 'timer') !== (on.on === 'schedule')) {
       throw new Error(
         'A schedule pattern requires source {kind:"timer"}, and a timer source requires the schedule pattern'
+      )
+    }
+    // Same pairing for L2: an external source emits nothing but its own
+    // facts, and the external pattern can be driven by nothing else.
+    if ((source.kind === 'external') !== (on.on === 'external')) {
+      throw new Error(
+        'An external pattern requires source {kind:"external",sourceId}, and an external source requires the external pattern'
       )
     }
     const pattern: JsonRecord = { on: on.on }
@@ -2419,6 +2525,37 @@ export class RuntimeSessionManager {
     }
     if (on.on === 'delivered' && optionalTrimmedString(on.topic)) {
       pattern.topic = on.topic.trim()
+    }
+    if (on.on === 'external') {
+      // Topic narrows by fact name; it is optional but must agree with the
+      // source's declared topic when present (one topic per source in v1 —
+      // a mismatch would be a subscription that can never fire).
+      const topic = optionalTrimmedString(on.topic)
+      if (topic !== undefined) {
+        if (topic !== externalSource.topic) {
+          throw new Error(
+            `Subscription external topic must match the source's topic (${externalSource.topic})`
+          )
+        }
+        pattern.topic = topic
+      }
+      if (on.match !== undefined) {
+        if (!isObject(on.match)) {
+          throw new Error('Subscription external match must be an object of string fields')
+        }
+        const match = {}
+        for (const [key, value] of Object.entries(on.match)) {
+          if (typeof value !== 'string' || value.length === 0 || !key.trim()) {
+            throw new Error(
+              'Subscription external match values must be non-empty strings'
+            )
+          }
+          match[key.trim()] = value
+        }
+        if (Object.keys(match).length > 0) {
+          pattern.match = match
+        }
+      }
     }
     if (on.on === 'schedule') {
       // Exactly one schedule form: an interval or a wall-clock daily time
@@ -2461,6 +2598,11 @@ export class RuntimeSessionManager {
       // A clock has no artifacts to forward; a deliver-only schedule would
       // fire empty deliveries forever.
       throw new Error('A timer subscription requires action deliver+activate')
+    }
+    if (source.kind === 'external' && action.kind !== 'deliver+activate') {
+      // The emit payload is delivered as part of the activation; a
+      // deliver-only external edge has no source session to bundle from.
+      throw new Error('An external subscription requires action deliver+activate')
     }
 
     const gate = optionalTrimmedString(input.gate)
@@ -2513,7 +2655,9 @@ export class RuntimeSessionManager {
     const note = optionalTrimmedString(action.note)
       ?? (source.kind === 'timer'
         ? `Scheduled activation: this session runs on a timer (${scheduleSummary(pattern as { on: 'schedule' })}).`
-        : undefined)
+        : source.kind === 'external'
+          ? `External activation: triggered by ${externalSourceSummary(externalSource)}. The triggering event is in your channel as external-event.md.`
+          : undefined)
 
     return {
       id: optionalTrimmedString(input.id) ?? `sub-${randomUUID().slice(0, 8)}`,
@@ -2522,7 +2666,9 @@ export class RuntimeSessionManager {
           ? { kind: 'session', sessionId: source.sessionId }
           : source.kind === 'timer'
             ? { kind: 'timer' }
-            : { kind: 'cluster', clusterId: source.clusterId },
+            : source.kind === 'external'
+              ? { kind: 'external', sourceId: externalSource.id }
+              : { kind: 'cluster', clusterId: source.clusterId },
       on: pattern,
       target: { kind: 'session', sessionId: targetSessionId },
       action: {
@@ -2777,6 +2923,296 @@ export class RuntimeSessionManager {
           },
           { actor: { kind: 'runtime' } }
         )
+      }
+    }
+  }
+
+  // --- L2 external event sources: the ingestion choke point (§2.4) ---
+  //
+  // A source is an explicitly registered entity; adapters (script, git,
+  // webhook) are thin translators that all converge on emitExternalEvent.
+  // The choke point owns validation, source-side sampling, and dedupe; an
+  // accepted emit appends one `external.<topic>` fact and everything
+  // downstream (matching, gate, concurrency, stop) is the ordinary
+  // scheduler path — exactly the L1 timer pattern, generalized.
+
+  registerExternalSource(input: JsonRecord = {}) {
+    const request = isObject(input) ? input : {}
+    const kind = optionalTrimmedString(request.kind)
+    if (!kind || !externalSourceKinds.has(kind)) {
+      throw new Error(
+        `External source kind must be one of ${[...externalSourceKinds].join('|')}`
+      )
+    }
+    const topic = optionalTrimmedString(request.topic) ?? kind
+    if (!isValidExternalTopic(topic)) {
+      throw new Error(
+        'External source topic must be a lowercase slug ([a-z][a-z0-9_-]*); "timer" is reserved'
+      )
+    }
+    const id = optionalTrimmedString(request.id) ?? `src-${randomUUID().slice(0, 8)}`
+    if (this.#state.sources?.[id]) {
+      throw new Error(`External source id already exists: ${id}`)
+    }
+    let minIntervalSeconds
+    if (request.minIntervalSeconds !== undefined) {
+      minIntervalSeconds = Number(request.minIntervalSeconds)
+      if (!Number.isFinite(minIntervalSeconds) || minIntervalSeconds < 0) {
+        throw new Error('External source minIntervalSeconds must be a number >= 0')
+      }
+    }
+    const config = isObject(request.config) ? clone(request.config) : {}
+    if (kind === 'script') {
+      if (!optionalTrimmedString(config.command)) {
+        throw new Error('A script source requires config.command')
+      }
+      if (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== 'string'))) {
+        throw new Error('Script source config.args must be an array of strings')
+      }
+      const mode = config.mode ?? 'lines'
+      if (mode !== 'lines' && mode !== 'exit') {
+        throw new Error('Script source config.mode must be "lines" or "exit"')
+      }
+      if (mode === 'exit') {
+        const everySeconds = Number(config.everySeconds ?? 60)
+        if (!Number.isInteger(everySeconds) || everySeconds < 5) {
+          throw new Error('Script source config.everySeconds must be an integer >= 5')
+        }
+        config.everySeconds = everySeconds
+      }
+      config.mode = mode
+    }
+    if (kind === 'git') {
+      const repoPath = optionalTrimmedString(config.repoPath)
+      if (!repoPath || !fs.existsSync(repoPath)) {
+        throw new Error('A git source requires config.repoPath pointing at an existing repository')
+      }
+      config.repoPath = repoPath
+      if (config.pollSeconds !== undefined) {
+        const pollSeconds = Number(config.pollSeconds)
+        if (!Number.isFinite(pollSeconds) || pollSeconds < 1) {
+          throw new Error('Git source config.pollSeconds must be a number >= 1')
+        }
+        config.pollSeconds = pollSeconds
+      }
+    }
+    const source = {
+      id,
+      kind,
+      topic,
+      label: optionalTrimmedString(request.label),
+      config,
+      ...(minIntervalSeconds !== undefined ? { minIntervalSeconds } : {}),
+      state: 'active',
+      createdAt: now(),
+    }
+    // Transport secrets are runtime-plane, not kernel facts: the ingestion
+    // decision never reads the token, so it stays out of the event log.
+    // Webhook-kind sources get one by default (their endpoint faces out).
+    const token =
+      optionalTrimmedString(request.token) ??
+      (kind === 'webhook' ? randomUUID() : undefined)
+    if (token) {
+      this.#state.sourceTokens = this.#state.sourceTokens ?? {}
+      this.#state.sourceTokens[id] = token
+    }
+    this.#state.sources = this.#state.sources ?? {}
+    this.#state.sources[id] = source
+    this.#appendKernelEvent(
+      'source.registered',
+      { source: clone(source) },
+      { actor: { kind: 'human' } },
+      { reason: optionalTrimmedString(request.reason) }
+    )
+    this.#syncAdapterForSource(source)
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { source: clone(source), ...(token ? { token } : {}) }
+  }
+
+  removeExternalSource(input: JsonRecord = {}) {
+    const sourceId = optionalTrimmedString(input.sourceId)
+    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
+    if (!source) {
+      throw new Error(`Unknown external source: ${sourceId ?? ''}`)
+    }
+    if (source.state === 'removed') {
+      return { ok: true, source: clone(source) }
+    }
+    source.state = 'removed'
+    this.#appendKernelEvent(
+      'source.removed',
+      { sourceId },
+      { actor: { kind: 'human' } },
+      { reason: optionalTrimmedString(input.reason) }
+    )
+    // Participant parity with killed sessions: an edge whose source is gone
+    // can never fire again, so leaving it active would only mislead.
+    for (const subscription of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      if (
+        subscription.state === 'active' &&
+        subscription.source?.kind === 'external' &&
+        subscription.source.sourceId === sourceId
+      ) {
+        this.#cmdStopSubscription(
+          { subscriptionId: subscription.id, reason: 'External source was removed.' },
+          { actor: { kind: 'runtime' } }
+        )
+      }
+    }
+    this.#syncAdapterForSource(source)
+    if (this.#state.sourceTokens) {
+      delete this.#state.sourceTokens[sourceId]
+    }
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { ok: true, source: clone(source) }
+  }
+
+  // Accept-or-drop for one emit. Dropped emits return {ok:false} and append
+  // NOTHING — sampling exists to keep a chatty source out of the log; the
+  // adapter re-emits current state on its next beat.
+  emitExternalEvent(input: JsonRecord = {}) {
+    const sourceId = optionalTrimmedString(input.sourceId)
+    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
+    if (!source) {
+      throw new Error(`Unknown external source: ${sourceId ?? ''}`)
+    }
+    const topic = optionalTrimmedString(input.topic)
+    if (topic !== undefined && topic !== source.topic) {
+      throw new Error(
+        `Emit topic must match the source's declared topic (${source.topic})`
+      )
+    }
+    const payload = input.payload === undefined ? {} : input.payload
+    if (!isObject(payload)) {
+      throw new Error('Emit payload must be a JSON object')
+    }
+    for (const reserved of ['sourceId', 'dedupeKey', 'subscriptionId', 'sessionId']) {
+      if (payload[reserved] !== undefined) {
+        throw new Error(`Emit payload must not use the reserved key "${reserved}"`)
+      }
+    }
+    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > externalPayloadMaxBytes) {
+      throw new Error(
+        `Emit payload exceeds ${externalPayloadMaxBytes} bytes; deliver a pointer (path/URL), not the artifact`
+      )
+    }
+    const dedupeKey = optionalTrimmedString(input.dedupeKey)
+
+    const decision = externalIngestionDecision(source, { dedupeKey }, Date.now())
+    if (decision.ok !== true) {
+      return { ok: false, dropped: true, reason: decision.reason }
+    }
+
+    const event = this.#appendKernelEvent(
+      `external.${source.topic}`,
+      {
+        ...clone(payload),
+        sourceId: source.id,
+        ...(dedupeKey ? { dedupeKey } : {}),
+      },
+      { actor: { kind: 'runtime' } },
+      { reason: `External emit (${externalSourceSummary(source)}).` }
+    )
+    // Snapshot anchors are caches of the appended fact (fold derives the
+    // same values on replay). lastDedupeKey tracks the last accepted
+    // event's key INCLUDING its absence — a key-less accepted event breaks
+    // the "consecutive" chain, so a later repeat of an older key passes.
+    source.lastEventAt = event?.ts ?? now()
+    source.lastDedupeKey = dedupeKey
+    this.#touch()
+    return { ok: true, eventId: event?.id, type: `external.${source.topic}` }
+  }
+
+  // Transport-layer auth for the HTTP ingestion path: sources without a
+  // token accept unauthenticated local emits; sources with one require it.
+  verifyExternalSourceToken(sourceId, token) {
+    const required = this.#state.sourceTokens?.[sourceId]
+    if (!required) {
+      return true
+    }
+    return typeof token === 'string' && token === required
+  }
+
+  // Adapter lifecycle: script/git sources run a watcher owned by the
+  // runtime; webhook and manual sources are pure ingestion-endpoint
+  // consumers. Adapter failures land on source.lastError (runtime-plane
+  // operational status, never a kernel fact).
+  #syncAdapterForSource(source) {
+    const existing = this.#externalAdapters.get(source.id)
+    if (existing) {
+      existing.stop()
+      this.#externalAdapters.delete(source.id)
+    }
+    if (source.state !== 'active') {
+      return
+    }
+    const adapter = createExternalSourceAdapter(source, {
+      emit: (input) => {
+        const result = this.emitExternalEvent({ sourceId: source.id, ...input })
+        if (result.ok) {
+          const live = this.#state.sources?.[source.id]
+          if (live?.lastError) {
+            delete live.lastError
+            this.#touch()
+          }
+        }
+        return result
+      },
+      onError: (message) => this.#recordSourceError(source.id, message),
+    })
+    if (adapter) {
+      this.#externalAdapters.set(source.id, adapter)
+      adapter.start()
+    }
+  }
+
+  #recordSourceError(sourceId, message) {
+    const source = this.#state.sources?.[sourceId]
+    if (source && source.lastError !== message) {
+      source.lastError = message
+      this.#touch()
+    }
+  }
+
+  #stopAllExternalAdapters() {
+    for (const adapter of this.#externalAdapters.values()) {
+      try {
+        adapter.stop()
+      } catch {
+        // Best-effort teardown.
+      }
+    }
+    this.#externalAdapters.clear()
+  }
+
+  // Reconcile ingestion anchors from the event log before adapters start:
+  // the snapshot may be older than the last appended fact (events are
+  // truth). Exact per-source lookup, mirroring #recoverTimers.
+  #recoverExternalSourceAnchors() {
+    for (const source of Object.values((this.#state.sources ?? {}) as JsonRecord)) {
+      const logged = this.#kernelStore.latestEventWithPayloadValue(
+        `external.${source.topic}`,
+        'sourceId',
+        source.id
+      )
+      if (logged) {
+        // Unconditional: both anchors are caches of appended facts, so the
+        // log's latest accepted event is always at least as fresh as any
+        // snapshot copy — and the dedupe anchor is that event's key
+        // INCLUDING its absence (a key-less accepted event breaks the
+        // "consecutive" chain). A freshness guard here would let a stale
+        // snapshot key with an equal timestamp survive recovery.
+        source.lastEventAt = logged.ts
+        source.lastDedupeKey = optionalTrimmedString(logged.payload?.dedupeKey)
+      }
+      // Adapters restart regardless of emit history — a source registered
+      // just before shutdown has no logged event yet and must still wake.
+      if (source.state === 'active') {
+        this.#syncAdapterForSource(source)
       }
     }
   }
@@ -4097,6 +4533,9 @@ export class RuntimeSessionManager {
     // Armed timers die with the runtime; construction re-arms them from the
     // persisted subscriptions (with a single catch-up tick if overdue).
     this.#clearAllTimers()
+    // Source adapters likewise: construction restarts them from the
+    // persisted registry (#recoverExternalSourceAnchors).
+    this.#stopAllExternalAdapters()
     this.#providerService?.closeAll?.()
     this.#bridge?.close()
     // The kernel store intentionally stays open: killAll is revivable (the

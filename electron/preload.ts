@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:loop-timeline', input),
     createGoalLoop: (input) =>
       ipcRenderer.invoke('orrery:create-goal-loop', input),
+    registerExternalSource: (input) =>
+      ipcRenderer.invoke('orrery:register-external-source', input),
+    removeExternalSource: (input) =>
+      ipcRenderer.invoke('orrery:remove-external-source', input),
+    emitExternalEvent: (input) =>
+      ipcRenderer.invoke('orrery:emit-external-event', input),
     getProjectContext: (input) =>
       ipcRenderer.invoke('orrery:get-project-context', input),
     getProviderSetupStatus: (input) =>

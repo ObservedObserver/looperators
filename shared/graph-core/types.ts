@@ -59,6 +59,13 @@ export type EventPattern =
   // exactly one of the two forms is present: an interval (`everySeconds`) or
   // a wall-clock daily time (`dailyAt: 'HH:MM'`, runtime-host local time).
   | { on: 'schedule'; everySeconds?: number; dailyAt?: string }
+  // L2 external trigger: matches `external.<topic>` facts appended by the
+  // runtime's ingestion choke point on behalf of a registered source. Which
+  // source the fact came from is identity (payload.sourceId), checked in
+  // evaluate() against the subscription's external SourceRef — like timer
+  // ticks. `topic` narrows by fact name, `match` by flat string-equality on
+  // payload fields (same shape as report match, but source-declared keys).
+  | { on: 'external'; topic?: string; match?: Record<string, string> }
 
 export type SubscriptionAction =
   | { kind: 'deliver'; topic?: string }
@@ -86,7 +93,12 @@ export type ClusterRef = { kind: 'cluster'; clusterId: ClusterId }
 // session: it emits `external.timer` facts into the log (§2.4) and can never
 // receive an edge, so schedule subscriptions cannot lie on a cycle.
 export type TimerRef = { kind: 'timer' }
-export type SourceRef = NodeRef | ClusterRef | TimerRef
+// A registered external event source as a trigger origin (L2). Like a
+// timer, a source is not a session: it only ever appends `external.<topic>`
+// facts through the runtime's ingestion choke point and can never receive
+// an edge, so external subscriptions cannot lie on a cycle by themselves.
+export type ExternalSourceRef = { kind: 'external'; sourceId: string }
+export type SourceRef = NodeRef | ClusterRef | TimerRef | ExternalSourceRef
 
 export type Subscription = {
   id: SubscriptionId
@@ -103,6 +115,36 @@ export type Subscription = {
   // Timer subscriptions: ts of the last external.timer tick. Folded from the
   // event log (the log is the source of truth; any snapshot copy is a cache).
   lastTickAt?: string
+}
+
+// --- External event sources (L2, kernel doc §2.4) ---
+
+export type ExternalSourceKind = 'script' | 'git' | 'webhook' | 'manual'
+
+// A registered source entity, folded from `source.registered` /
+// `source.removed` facts. Sources are explicit registrations — the vetoed
+// route ("infer triggers from side effects") stays vetoed: a watcher only
+// exists because a registration fact says so, and it only speaks by
+// appending explicit `external.<topic>` facts.
+export type ExternalSource = {
+  id: string
+  kind: ExternalSourceKind
+  // Fact name this source emits under: events are `external.<topic>`.
+  // Slug, validated at registration; 'timer' is reserved for L1.
+  topic: string
+  label?: string
+  // Adapter configuration, opaque to the kernel (command/args for script,
+  // repo path/refs for git). The runtime interprets it; fold just carries it.
+  config: Record<string, any>
+  // Source-side sampling (proposal L2 guardrail 1): the ingestion choke
+  // point rejects emits arriving sooner than this after the last accepted
+  // one. A source parameter, not a subscription operator.
+  minIntervalSeconds?: number
+  state: 'active' | 'removed'
+  // Ingestion anchors, folded from the log like Subscription.lastTickAt
+  // (any snapshot copy is a cache; replay recovers them).
+  lastEventAt?: string
+  lastDedupeKey?: string
 }
 
 // --- Governance layer: scope forest (kernel doc §7.4) ---
@@ -166,6 +208,9 @@ export type KernelState = {
   // Live pending-activation slots keyed by slotKey (only non-terminal ones).
   pending: Record<string, PendingActivation>
   links: Record<string, DeclaredLink>
+  // Registered external event sources (L2). Removed sources stay as
+  // tombstones so stopped edges keep a renderable origin on the canvas.
+  sources: Record<string, ExternalSource>
 }
 
 export function createEmptyKernelState(): KernelState {
@@ -176,6 +221,7 @@ export function createEmptyKernelState(): KernelState {
     scopes: {},
     pending: {},
     links: {},
+    sources: {},
   }
 }
 

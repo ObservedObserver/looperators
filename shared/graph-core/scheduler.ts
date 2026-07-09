@@ -106,6 +106,28 @@ export function matchesPattern(pattern: EventPattern, event: GraphEvent): boolea
       // Tick identity (which subscription this tick belongs to) is checked
       // in evaluate(), where the subscription is in scope.
       return event.type === 'external.timer'
+    case 'external': {
+      // Source identity (which registered source emitted this fact) is
+      // checked in evaluate(), like tick identity. Here: fact name and
+      // payload-field equality only. Strict string equality on match values
+      // by design — sources declare flat string fields for routing.
+      if (!event.type.startsWith('external.') || event.type === 'external.timer') {
+        return false
+      }
+      if (pattern.topic !== undefined && event.type !== `external.${pattern.topic}`) {
+        return false
+      }
+      const match = pattern.match
+      if (!match) {
+        return true
+      }
+      for (const [key, value] of Object.entries(match)) {
+        if (payload[key] !== value) {
+          return false
+        }
+      }
+      return true
+    }
   }
   return false
 }
@@ -115,8 +137,8 @@ function sourceMatches(
   subscription: Subscription,
   sourceSession: SessionId | undefined
 ): boolean {
-  if (subscription.source.kind === 'timer') {
-    // Timer relevance is by tick identity, decided in evaluate().
+  if (subscription.source.kind === 'timer' || subscription.source.kind === 'external') {
+    // Timer/external relevance is by emit identity, decided in evaluate().
     return false
   }
   if (!sourceSession) {
@@ -133,9 +155,10 @@ function sourceSessions(state: KernelState, subscription: Subscription): Session
   if (subscription.source.kind === 'session') {
     return [subscription.source.sessionId]
   }
-  if (subscription.source.kind === 'timer') {
-    // A clock is not a session; the edge's only participant is its target
-    // (whenReport observation narrows to the target's own verdicts).
+  if (subscription.source.kind === 'timer' || subscription.source.kind === 'external') {
+    // A clock or an external source is not a session; the edge's only
+    // participant is its target (whenReport observation narrows to the
+    // target's own verdicts).
     return []
   }
   const scope = state.scopes[subscription.source.clusterId]
@@ -226,11 +249,15 @@ export function evaluate(state: KernelState, event: GraphEvent): SchedulerDecisi
 
     const sourceSession = eventSourceSession(event)
     // Timer edges have no source session; a tick is relevant to exactly the
-    // subscription it was appended for (payload.subscriptionId).
+    // subscription it was appended for (payload.subscriptionId). External
+    // edges are relevant to exactly the source that emitted the fact
+    // (payload.sourceId) — many subscriptions may listen to one source.
     const relevant =
       subscription.source.kind === 'timer'
         ? (event.payload ?? {}).subscriptionId === subscription.id
-        : sourceMatches(state, subscription, sourceSession)
+        : subscription.source.kind === 'external'
+          ? (event.payload ?? {}).sourceId === subscription.source.sourceId
+          : sourceMatches(state, subscription, sourceSession)
     const matched = relevant && matchesPattern(subscription.on, event)
 
     // Stop conditions observe beyond the source (deadline: any event;

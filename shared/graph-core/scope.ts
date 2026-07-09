@@ -83,7 +83,7 @@ function sourceSessionsOf(state: KernelState, source: SourceRef): SessionId[] {
   if (source.kind === 'session') {
     return [source.sessionId]
   }
-  if (source.kind === 'timer') {
+  if (source.kind === 'timer' || source.kind === 'external') {
     return []
   }
   const scope = state.scopes[source.clusterId]
@@ -98,9 +98,10 @@ export function governingMaster(
 ): SessionId | undefined {
   const sources = sourceSessionsOf(state, subscription.source)
   const target = subscription.target.sessionId
-  // R1 degenerates for timer sources: the clock lives in no scope, so the
-  // LCA collapses to the target's own chain — its nearest ancestor master.
-  if (subscription.source.kind === 'timer') {
+  // R1 degenerates for timer and external sources: neither lives in any
+  // scope, so the LCA collapses to the target's own chain — its nearest
+  // ancestor master.
+  if (subscription.source.kind === 'timer' || subscription.source.kind === 'external') {
     return masterOfScopeOrAncestors(state, scopeChain(state, target)[0])
   }
   // For cluster sources, the LCA of the cluster and the target is the same

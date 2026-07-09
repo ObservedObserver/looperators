@@ -112,7 +112,7 @@ function applyCors(
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   response.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Last-Event-ID'
+    'Content-Type,Last-Event-ID,X-Orrery-Source-Token'
   )
   response.setHeader('Access-Control-Max-Age', '600')
 }
@@ -160,6 +160,20 @@ function notFoundOnUnknownLoop<T>(read: () => T): T {
     return read()
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Unknown loop:')) {
+      throw new RuntimeHttpError(404, error.message)
+    }
+    throw error
+  }
+}
+
+function notFoundOnUnknownSource<T>(read: () => T): T {
+  try {
+    return read()
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith('Unknown external source:')
+    ) {
       throw new RuntimeHttpError(404, error.message)
     }
     throw error
@@ -414,6 +428,39 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/sources$/,
+      handler: async (request) =>
+        runtime.registerExternalSource(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sources\/([^/]+)\/remove$/,
+      handler: async (request, params) => {
+        const body = await readJsonBody(request)
+        return notFoundOnUnknownSource(() =>
+          runtime.removeExternalSource({ ...body, sourceId: params.sourceId })
+        )
+      },
+    },
+    {
+      // The L2 ingestion endpoint — this IS the webhook form of a source:
+      // point any local sender (curl, CI hook relay, npm run emit) at it.
+      method: 'POST',
+      pattern: /^\/api\/runtime\/external-events$/,
+      handler: async (request) => {
+        const body = await readJsonBody(request)
+        const headerToken = request.headers['x-orrery-source-token']
+        const token =
+          typeof headerToken === 'string' ? headerToken : body.token
+        delete body.token
+        if (!runtime.verifyExternalSourceToken(body.sourceId, token)) {
+          throw new RuntimeHttpError(401, 'Invalid or missing source token')
+        }
+        return notFoundOnUnknownSource(() => runtime.emitExternalEvent(body))
+      },
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/activations\/approve$/,
       handler: async (request) =>
         runtime.approveActivation(await readJsonBody(request)),
@@ -522,6 +569,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/loops/') && match[1]) {
     return { loopId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/sources/') && match[1]) {
+    return { sourceId: decodeParam(match[1]) }
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }

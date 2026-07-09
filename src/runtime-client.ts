@@ -14,6 +14,8 @@ import type {
   GetTerminalInput,
   CreateGoalLoopInput,
   CreateGoalLoopResult,
+  EmitExternalEventInput,
+  EmitExternalEventResult,
   GraphState,
   KernelEvent,
   LoopTimelineResult,
@@ -23,6 +25,8 @@ import type {
   ProviderSetupStatusInput,
   ProjectContext,
   ProjectContextInput,
+  RegisterExternalSourceInput,
+  RegisterExternalSourceResult,
   RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
@@ -65,6 +69,9 @@ export type RuntimeApi = {
   getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
   getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
   createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
+  registerExternalSource: (input: RegisterExternalSourceInput) => Promise<RegisterExternalSourceResult>;
+  removeExternalSource: (input: { sourceId: string; reason?: string }) => Promise<{ ok: boolean }>;
+  emitExternalEvent: (input: EmitExternalEventInput) => Promise<EmitExternalEventResult>;
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
   getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
@@ -390,6 +397,18 @@ class HttpRuntimeApi implements RuntimeApi {
 
   createGoalLoop(input: CreateGoalLoopInput) {
     return this.#post<CreateGoalLoopResult>('goal-loops', input);
+  }
+
+  registerExternalSource(input: RegisterExternalSourceInput) {
+    return this.#post<RegisterExternalSourceResult>('sources', input);
+  }
+
+  removeExternalSource(input: { sourceId: string; reason?: string }) {
+    return this.#post<{ ok: boolean }>(`sources/${encodeURIComponent(input.sourceId)}/remove`, input);
+  }
+
+  emitExternalEvent(input: EmitExternalEventInput) {
+    return this.#post<EmitExternalEventResult>('external-events', input);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {

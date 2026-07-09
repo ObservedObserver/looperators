@@ -21,7 +21,7 @@ export const subscriptionGates = ['auto', 'master', 'human'] as const;
 export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt'] as const;
 export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster'] as const;
 export const subscriptionStates = ['active', 'stopped'] as const;
-export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule'] as const;
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule', 'external'] as const;
 
 export const sessionStatuses = ['pending', 'running', 'idle', 'failed', 'killed'] as const;
 
@@ -71,6 +71,8 @@ export const graphStateSchema = {
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     loops: 'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
+    sources:
+      'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   loopPolicy: {
@@ -577,7 +579,9 @@ export type SubscriptionSourceRef =
   | { kind: 'session'; sessionId: SessionId }
   | { kind: 'cluster'; clusterId: ClusterId }
   // L1: the clock as a trigger origin; paired exclusively with `schedule`.
-  | { kind: 'timer' };
+  | { kind: 'timer' }
+  // L2: a registered external source; paired exclusively with `external`.
+  | { kind: 'external'; sourceId: string };
 
 export type SubscriptionPattern =
   | { on: 'finished' }
@@ -586,7 +590,56 @@ export type SubscriptionPattern =
   | { on: 'delivered'; topic?: string }
   // Exactly one schedule form: an interval, or a wall-clock daily time
   // ('HH:MM', runtime-host local) — the cron-shaped case.
-  | { on: 'schedule'; everySeconds?: number; dailyAt?: string };
+  | { on: 'schedule'; everySeconds?: number; dailyAt?: string }
+  // L2: `external.<topic>` facts from the edge's source; match is strict
+  // string equality on payload fields.
+  | { on: 'external'; topic?: string; match?: Record<string, string> };
+
+// L2 registered external event source (facts are `external.<topic>`).
+// Removed sources stay as tombstones so stopped edges keep their origin.
+export type ExternalSourceKind = 'script' | 'git' | 'webhook' | 'manual';
+
+export type ExternalSource = {
+  id: string;
+  kind: ExternalSourceKind;
+  topic: string;
+  label?: string;
+  config: Record<string, any>;
+  minIntervalSeconds?: number;
+  state: 'active' | 'removed';
+  createdAt: string;
+  lastEventAt?: string;
+  lastDedupeKey?: string;
+  // Adapter-side operational error (runtime-plane; cleared on the next
+  // accepted emit).
+  lastError?: string;
+};
+
+export type RegisterExternalSourceInput = {
+  id?: string;
+  kind: ExternalSourceKind;
+  topic?: string;
+  label?: string;
+  config?: Record<string, any>;
+  minIntervalSeconds?: number;
+  token?: string;
+};
+
+export type RegisterExternalSourceResult = {
+  source: ExternalSource;
+  token?: string;
+};
+
+export type EmitExternalEventInput = {
+  sourceId: string;
+  topic?: string;
+  payload?: Record<string, any>;
+  dedupeKey?: string;
+};
+
+export type EmitExternalEventResult =
+  | { ok: true; eventId?: string; type: string }
+  | { ok: false; dropped: true; reason: string };
 
 export type Subscription = {
   id: string;
@@ -697,6 +750,7 @@ export type GraphState = {
   subscriptions?: Record<string, Subscription>;
   pendingActivations?: Record<string, PendingActivation>;
   loops?: LoopView[];
+  sources?: Record<string, ExternalSource>;
   diagnostics?: RuntimeStateDiagnostic[];
 };
 

@@ -60,6 +60,15 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:create-goal-loop', (_event, input) =>
     runtime.createGoalLoop(input)
   )
+  ipcMain.handle('orrery:register-external-source', (_event, input) =>
+    runtime.registerExternalSource(input)
+  )
+  ipcMain.handle('orrery:remove-external-source', (_event, input) =>
+    runtime.removeExternalSource(input)
+  )
+  ipcMain.handle('orrery:emit-external-event', (_event, input) =>
+    runtime.emitExternalEvent(input)
+  )
   ipcMain.handle('orrery:get-project-context', (_event, input) =>
     runtime.getProjectContext(input)
   )

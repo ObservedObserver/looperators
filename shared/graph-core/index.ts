@@ -32,6 +32,16 @@ export {
   type ScheduleOn,
 } from './schedule.js'
 export {
+  externalSourceKinds,
+  reservedExternalTopics,
+  isValidExternalTopic,
+  defaultMinIntervalSecondsByKind,
+  sourceMinIntervalSeconds,
+  externalIngestionDecision,
+  externalSourceSummary,
+  type IngestionDecision,
+} from './external.js'
+export {
   loopsOf,
   loopTimelineOf,
   type LoopView,

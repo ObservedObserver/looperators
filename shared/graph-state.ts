@@ -6,7 +6,7 @@ export const subscriptionGates = ['auto', 'master', 'human']
 export const subscriptionConcurrencies = ['coalesce', 'queue', 'drop', 'interrupt']
 export const subscriptionOnStops = ['freeze-edge', 'freeze-target', 'freeze-cluster']
 export const subscriptionStates = ['active', 'stopped']
-export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule']
+export const subscriptionPatterns = ['finished', 'failed', 'report', 'delivered', 'schedule', 'external']
 
 export const sessionStatuses = [
   'pending',
@@ -90,12 +90,29 @@ export const graphStateSchema = {
       'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     loops:
       'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
+    sources:
+      'Record<sourceId, ExternalSource>; L2 registered external event sources (removed ones stay as tombstones)',
     diagnostics: 'RuntimeStateDiagnostic[]?',
+  },
+  externalSource: {
+    id: 'string',
+    kind: '"script" | "git" | "webhook" | "manual"',
+    topic: 'string; facts are `external.<topic>`; "timer" reserved',
+    label: 'string?',
+    config: 'Record<string, any>; adapter config, opaque to the kernel',
+    minIntervalSeconds:
+      'number?; source-side sampling — too-soon emits are dropped, not delayed (defaults per kind)',
+    state: '"active" | "removed"',
+    createdAt: 'ISO-8601 string',
+    lastEventAt: 'ISO-8601 string?; last accepted emit (folded from the log)',
+    lastDedupeKey: 'string?; consecutive-duplicate suppression anchor',
+    lastError:
+      'string?; adapter-side operational error (runtime-plane cache, cleared on the next accepted emit; never a kernel fact)',
   },
   subscription: {
     id: 'SubscriptionId',
-    source: '{kind:"session",sessionId} | {kind:"cluster",clusterId} | {kind:"timer"}',
-    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds?|dailyAt?} (timer source only; exactly one form, dailyAt="HH:MM" host-local)',
+    source: '{kind:"session",sessionId} | {kind:"cluster",clusterId} | {kind:"timer"} | {kind:"external",sourceId}',
+    on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds?|dailyAt?} (timer source only; exactly one form, dailyAt="HH:MM" host-local) | {on:"external",topic?,match?:Record<string,string>} (external source only; match is strict string equality on payload fields)',
     target: '{kind:"session",sessionId}',
     action: '{kind:"deliver"|"deliver+activate", topic?, note?}',
     gate: subscriptionGates,
@@ -251,6 +268,34 @@ export const graphStateSchema = {
       },
       output:
         '{ judgeSessionId, checkSubscription, retrySubscription, state }; L3 preset — compiles into create_session + author_subscription ×2 (worker on finished → judge; judge on report(fail) → worker; both stop at whenReport done + maxFirings), no new kernel verb',
+    },
+    registerExternalSource: {
+      input: {
+        kind: '"script" | "git" | "webhook" | "manual"',
+        topic: 'string?; default = kind; facts are `external.<topic>`',
+        label: 'string?',
+        config: 'Record<string, any>?; adapter config (script: command; git: repoPath)',
+        minIntervalSeconds: 'number?; source-side sampling, defaults per kind',
+        token: 'string?; transport auth for HTTP emits (webhook kind gets one by default)',
+      },
+      output:
+        '{ source, token? }; L2 — registers an explicit event source; the token is runtime-plane and never enters the kernel log',
+    },
+    removeExternalSource: {
+      input: { sourceId: 'string', reason: 'string?' },
+      output:
+        '{ ok, source }; tombstones the source and stops its subscriptions (participant parity)',
+    },
+    emitExternalEvent: {
+      input: {
+        sourceId: 'string',
+        topic: 'string?; must equal the source topic when present',
+        payload:
+          'Record<string, any>?; flat JSON, <=16KB, reserved keys sourceId/dedupeKey/subscriptionId/sessionId rejected',
+        dedupeKey: 'string?; consecutive duplicates are dropped',
+      },
+      output:
+        '{ ok: true, eventId, type } | { ok: false, dropped: true, reason }; the L2 ingestion choke point — accepted emits append one `external.<topic>` fact and ride the ordinary scheduler',
     },
     getWorkingTreeDiff: {
       input: {
@@ -443,5 +488,9 @@ export function createEmptyGraphState() {
     reports: [],
     subscriptions: {},
     pendingActivations: {},
+    sources: {},
+    // Transport secrets for the HTTP ingestion path — runtime-plane only,
+    // never appended to the kernel log.
+    sourceTokens: {},
   }
 }

@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { BaseEdge, EdgeLabelRenderer, Handle, type Edge, type EdgeProps, type Node, type NodeProps, Position, getBezierPath } from '@xyflow/react';
-import { Activity, Clock, RotateCw, Snowflake } from 'lucide-react';
+import { Activity, Clock, GitBranch, RotateCw, Snowflake, SquareTerminal, Webhook, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TermChip } from '@/components/terminal';
 import {
@@ -8,6 +8,7 @@ import {
   type GraphEdgeData,
   type ClusterNodeData,
   type LoopBadgeData,
+  type SourceNodeData,
   type TimerNodeData,
   edgeKindClassNames,
   edgeKindStrokes,
@@ -164,6 +165,45 @@ export const ClockNode = memo(function ClockNode({ data }: NodeProps<Node<TimerN
   );
 });
 
+const sourceKindIcons: Record<string, typeof Activity> = {
+  git: GitBranch,
+  script: SquareTerminal,
+  webhook: Webhook,
+  manual: Zap,
+};
+
+// An external event source as a canvas presence (L2): the visible origin
+// of an external edge — the graph listens to the outside world.
+export const SourceNode = memo(function SourceNode({ data }: NodeProps<Node<SourceNodeData>>) {
+  const source = data.source;
+  const Icon = sourceKindIcons[source.kind] ?? Activity;
+  return (
+    <div
+      className={cn(
+        'max-w-[220px] rounded-xl border border-sky-600/50 bg-sky-500/10 px-3 py-2 font-mono shadow-sm',
+        data.removed && 'border-border bg-muted/40 opacity-70',
+      )}
+      title={source.lastError ?? undefined}
+    >
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-sky-700 dark:text-sky-300">
+        <Icon className="size-3.5 shrink-0" />
+        <span className="truncate">{source.label ?? `external.${source.topic}`}</span>
+        {data.removed ? <span className="shrink-0 text-muted-foreground">· removed</span> : null}
+      </div>
+      <div className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
+        {source.lastError ? (
+          <span className="text-rose-600 dark:text-rose-400">adapter error</span>
+        ) : source.lastEventAt ? (
+          `last event ${formatClock(source.lastEventAt)}`
+        ) : (
+          'no events yet'
+        )}
+      </div>
+      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-sky-500" />
+    </div>
+  );
+});
+
 const loopBadgeStatusCls: Record<string, string> = {
   spinning: 'border-lime-600/50 bg-lime-500/10 text-lime-700 dark:text-lime-300',
   'waiting-gate': 'border-term-amber/50 bg-term-amber/10 text-amber-700 dark:text-term-amber',
@@ -201,6 +241,7 @@ export const nodeTypes = {
   cluster: ClusterBoundaryNode,
   clock: ClockNode,
   loop: LoopBadgeNode,
+  source: SourceNode,
 };
 
 export function ReadabilityEdge({
