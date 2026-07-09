@@ -162,6 +162,36 @@ export class OrreryClient {
     return this.#request('POST', '/api/runtime/activations/deny', input)
   }
 
+  // L4 loop view: the ring's per-lap timeline, derived from the log.
+  getLoopTimeline(loopId) {
+    return this.#request(
+      'GET',
+      `/api/runtime/loops/${encodeURIComponent(loopId)}/timeline`
+    )
+  }
+
+  // L3 goal loop preset: compiles one NL goal into a judge + two edges.
+  createGoalLoop(input = {}) {
+    return this.#request('POST', '/api/runtime/goal-loops', input)
+  }
+
+  // L2 external sources: registry + the ingestion choke point.
+  registerExternalSource(input = {}) {
+    return this.#request('POST', '/api/runtime/sources', input)
+  }
+
+  removeExternalSource(sourceId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/sources/${encodeURIComponent(sourceId)}/remove`,
+      input
+    )
+  }
+
+  emitExternalEvent(input = {}) {
+    return this.#request('POST', '/api/runtime/external-events', input)
+  }
+
   // Kernel event log (G0): append-only graph-level facts with actor + causeId.
   // Returns { events, latestSeq }; `since` is an exclusive seq cursor.
   kernelEvents({ since, limit, type } = {}) {
@@ -617,13 +647,31 @@ export class OrreryHarness extends OrreryClient {
     const storageFile =
       options.storageFile ?? path.join(tempRoot, 'orrery-runtime-state.json')
 
+    // Headless runs are routinely driven from INSIDE an agent session (the
+    // acceptance flow is agent-operated). The driving agent's environment
+    // poisons spawned providers two ways: the Claude CLI refuses to start
+    // when it sees its own session markers (CLAUDECODE), and the driver's
+    // OAuth handoff variables (ANTHROPIC_BASE_URL + CLAUDE_CODE_*) shadow
+    // the user's normal keychain login, yielding "Not logged in" turns.
+    // Scrub the whole family so the child looks like a plain user shell.
+    // Scrub the inherited base FIRST, then apply explicit overrides — a
+    // caller who deliberately passes ANTHROPIC_BASE_URL (proxy/test setup)
+    // via options.env must win over the scrub.
+    const env = { ...process.env }
+    for (const key of Object.keys(env)) {
+      if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key.startsWith('CLAUDE_AGENT_SDK')) {
+        delete env[key]
+      }
+    }
+    delete env.ANTHROPIC_BASE_URL
+    delete env.CLAUDE_EFFORT
+    Object.assign(env, {
+      ORRERY_RUNTIME_HTTP_PORT: String(options.port ?? 0),
+      ORRERY_RUNTIME_STORAGE_FILE: storageFile,
+      ...options.env,
+    })
     const child = spawn(process.execPath, [cliPath], {
-      env: {
-        ...process.env,
-        ORRERY_RUNTIME_HTTP_PORT: String(options.port ?? 0),
-        ORRERY_RUNTIME_STORAGE_FILE: storageFile,
-        ...options.env,
-      },
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 

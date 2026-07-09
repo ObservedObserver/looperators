@@ -5308,6 +5308,13 @@ export class RuntimeSessionManager {
           providerInstanceId:
             optionalTrimmedString(input.judgeProviderInstanceId) ??
             worker.providerInstanceId,
+          // The judge inherits the worker's runtime settings: its checks run
+          // in the same workspace under the same declared trust level (a
+          // read-only judge could not even run the test suite the goal
+          // demands), and the same model unless a provider override says so.
+          ...(isObject(worker.runtimeSettings)
+            ? { runtimeSettings: clone(worker.runtimeSettings) }
+            : {}),
           sourceSessionId: worker.sessionId,
           linkLabel: 'goal judge',
         },

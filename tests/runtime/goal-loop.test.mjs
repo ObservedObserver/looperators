@@ -204,6 +204,35 @@ test('a goal sentence compiles into a judge ring that stops itself at done', asy
   }
 })
 
+test('the judge inherits the worker runtime settings (trust level and model)', async () => {
+  const { manager, cleanup } = harness('orrery-goal-settings-')
+  try {
+    const runtime = manager()
+    const created = await runtime.createSession({
+      prompt: 'bootstrap settings worker',
+      label: 'Settings Worker',
+      cwd: process.cwd(),
+      runtimeSettings: { runtimeMode: 'auto-accept-edits', model: 'cheap-model-x' },
+    })
+    await waitFor(
+      'settings worker idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const compiled = await runtime.createGoalLoop({
+      workerSessionId: created.sessionId,
+      goal: 'until the settings suite is green',
+    })
+    const judge = runtime.getState().sessions[compiled.judgeSessionId]
+    // A read-only judge could not even run the checks the goal demands: the
+    // judge works in the same workspace under the same declared trust level.
+    assert.equal(judge.runtimeSettings?.runtimeMode, 'auto-accept-edits')
+    assert.equal(judge.runtimeSettings?.model, 'cheap-model-x')
+  } finally {
+    cleanup()
+  }
+})
+
 test('the lap cap ends a goal loop whose judge never says done', async () => {
   const { manager, cleanup } = harness('orrery-goal-cap-')
   try {
