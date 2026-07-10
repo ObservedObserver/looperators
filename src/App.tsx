@@ -13,6 +13,7 @@ import { OrchestratePanel } from '@/components/orchestrate-panel';
 import { ChatDetail } from '@/components/chat-detail';
 import { SessionGraphPanel } from '@/components/session-graph-panel';
 import { SessionWorkspacePanel } from '@/components/session-workspace-panel';
+import { TemplateLibraryPanel } from '@/components/template-library';
 import { useRuntimeCore } from '@/hooks/use-runtime-core';
 import { useLayoutPrefs } from '@/hooks/use-layout-prefs';
 import { useComposer } from '@/hooks/use-composer';
@@ -30,6 +31,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<RailTab>('chat');
   const [showRawEvents, setShowRawEvents] = useState(false);
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
+  const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [activeClusterId, setActiveClusterId] = useState<string>();
 
@@ -219,7 +221,17 @@ function App() {
     <TooltipProvider>
       <main ref={splitContainerRef} className="relative flex h-dvh min-h-0 overflow-hidden bg-background text-foreground">
         {/* ===== Sidebar: nav + chat list ===== */}
-        <SidebarRail core={core} sessionList={sessionList} actions={actions} activeTab={activeTab} setActiveTab={setActiveTab} />
+        <SidebarRail
+          core={core}
+          sessionList={sessionList}
+          actions={actions}
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          onStartWorkflow={() => {
+            setGraphCollapsed(false);
+            setIsWorkflowLibraryOpen(true);
+          }}
+        />
 
         {/* ===== Detail: selected chat or orchestrate ===== */}
         <section
@@ -300,15 +312,15 @@ function App() {
           <div className="flex h-dvh shrink-0 flex-col items-center gap-3 border-l border-border bg-background px-1.5 py-3">
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Show session graph" onClick={() => setGraphCollapsed(false)}>
+                <Button variant="ghost" size="icon" aria-label="Show Agent graph" onClick={() => setGraphCollapsed(false)}>
                   <PanelRightOpen className="size-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="left">{graphForcedCollapsed ? 'Widen window to show session graph' : 'Show session graph'}</TooltipContent>
+              <TooltipContent side="left">{graphForcedCollapsed ? 'Widen window to show Agent graph' : 'Show Agent graph'}</TooltipContent>
             </Tooltip>
             <span className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground [writing-mode:vertical-rl]">
               <Activity className="size-3.5 text-accent-ink" />
-              Session graph
+              Agent graph
             </span>
           </div>
         ) : (
@@ -318,6 +330,8 @@ function App() {
             actions={actions}
             diff={diff}
             canvas={canvas}
+            isWorkflowLibraryOpen={isWorkflowLibraryOpen}
+            setIsWorkflowLibraryOpen={setIsWorkflowLibraryOpen}
             setActiveTab={setActiveTab}
             setActiveClusterId={setActiveClusterId}
           />
@@ -329,6 +343,29 @@ function App() {
               cwd={selectedSession.cwd}
               runtimeApi={runtimeApi}
               onClose={() => setIsWorkspacePanelOpen(false)}
+            />
+          </div>
+        ) : null}
+        {effectiveGraphCollapsed && isWorkflowLibraryOpen ? (
+          <div
+            className="app-region-no-drag absolute inset-y-0 right-0 z-50 flex max-w-full shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-label="New Workflow"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setIsWorkflowLibraryOpen(false);
+              }
+            }}
+          >
+            <TemplateLibraryPanel
+              runtimeApi={runtimeApi}
+              runtimeState={runtimeState}
+              onClose={() => setIsWorkflowLibraryOpen(false)}
+              onStateChange={setRuntimeState}
+              onError={setRuntimeError}
+              autoFocusClose
             />
           </div>
         ) : null}

@@ -153,7 +153,7 @@ export function ChatDetail({
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Chat</span>
               <h2 className="min-w-0 flex-1 truncate text-[14px] font-semibold" title={selectedSession ? sessionDisplayLabel(selectedSession) : undefined}>
-                {selectedSession ? sessionDisplayLabel(selectedSession) : pendingLinkedSource ? 'Linked Chat' : 'New Chat'}
+                {selectedSession ? sessionDisplayLabel(selectedSession) : pendingLinkedSource ? 'New Agent' : 'New Chat'}
               </h2>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -217,14 +217,14 @@ export function ChatDetail({
                       variant="outline"
                       size="sm"
                       disabled={!isRuntimeAvailable}
-                      aria-label="Start linked chat"
+                      aria-label="Create Agent from this Chat"
                       onClick={startLinkedChat}
                     >
                       <GitBranch className="size-3.5" />
-                      <span className="hidden @[34rem]:inline">Linked</span>
+                      <span className="hidden @[34rem]:inline">New Agent</span>
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Start a linked chat from this chat</TooltipContent>
+                  <TooltipContent>Create one Agent from this Chat. Use New Workflow for ongoing automation.</TooltipContent>
                 </Tooltip>
               ) : null}
               {selectedSession ? (
@@ -368,6 +368,12 @@ export function ChatDetail({
         <div className="shrink-0 border-t border-border bg-card p-2.5">
           {!selectedSession ? (
             <>
+              {pendingLinkedSource ? (
+                <div className="app-region-no-drag mb-2 rounded-lg border border-accent-ink/25 bg-accent-ink/[0.06] px-3 py-2 font-mono text-[10.5px] leading-4 text-muted-foreground">
+                  <span className="font-medium text-foreground">Creating one Agent from {pendingLinkedSource.label}.</span> This records where it came from; it
+                  does not add ongoing automation. Use New Workflow to keep Agents connected.
+                </div>
+              ) : null}
               {!isRuntimeAvailable ? (
                 <div className="app-region-no-drag mb-2 flex items-start gap-2 rounded-lg border border-term-amber/35 bg-term-amber/10 px-3 py-2 font-mono text-[11px] leading-4 text-term-amber">
                   <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
@@ -458,7 +464,7 @@ export function ChatDetail({
                 aria-multiline="true"
                 aria-disabled={composerDisabled}
                 contentEditable={!composerDisabled}
-                data-placeholder={selectedSession ? 'Message this chat' : pendingLinkedSource ? 'Start a linked chat' : 'Start a new chat'}
+                data-placeholder={selectedSession ? 'Message this chat' : pendingLinkedSource ? 'Describe what this Agent should do' : 'Start a new chat'}
                 suppressContentEditableWarning
                 onInput={(event) => setMessage(event.currentTarget.innerText)}
                 onPaste={handleComposerPaste}
@@ -515,14 +521,14 @@ export function ChatDetail({
                         disabled={
                           !isRuntimeAvailable || (selectedSession ? !canResume || isResuming : isCreating || !newCwdValidation.ok) || !composerHasPayload
                         }
-                        aria-label={!selectedSession && pendingLinkedSource ? 'Create linked chat' : 'Send'}
+                        aria-label={!selectedSession && pendingLinkedSource ? 'Create Agent' : 'Send'}
                         onClick={sendChatMessage}
                       >
                         <ArrowUp className="size-4" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {!selectedSession && pendingLinkedSource ? `Create linked chat · ${sendShortcutHint}` : `Send · ${sendShortcutHint}`}
+                      {!selectedSession && pendingLinkedSource ? `Create Agent · ${sendShortcutHint}` : `Send · ${sendShortcutHint}`}
                     </TooltipContent>
                   </Tooltip>
                 )}

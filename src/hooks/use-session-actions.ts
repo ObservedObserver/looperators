@@ -182,11 +182,11 @@ export function useSessionActions({
             model: newModel,
             reasoningEffort: newReasoningEffort,
           }),
-          label: `${sourceSessionId ? 'Linked Chat' : 'New Chat'} ${sessions.length + 1}`,
+          label: `${sourceSessionId ? 'Agent' : 'New Chat'} ${sessions.length + 1}`,
           ...(sourceSessionId
             ? {
                 sourceSessionId,
-                linkLabel: 'linked chat',
+                linkLabel: 'created from chat',
               }
             : {}),
         });

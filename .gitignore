@@ -161,3 +161,4 @@ acceptance-screenshots/
 
 # Headless acceptance run artifacts
 output/acceptance/
+output/ui-acceptance/

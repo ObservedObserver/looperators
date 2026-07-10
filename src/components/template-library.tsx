@@ -1,27 +1,27 @@
 import { useEffect, useState } from 'react';
-import { BookMarked, LibraryBig, Play, Save, Trash2, X } from 'lucide-react';
+import { BookMarked, ChevronRight, Play, Save, Trash2, Workflow, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { GraphState, TemplateDescriptor, TemplateSlot } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
+import { partitionWorkflowIds, primaryWorkflowCatalog, type WorkflowEntry } from '@shared/workflow-catalog';
 
-// The relation template library (L6): pick a template, fill two or three
-// slots, and the runtime compiles it into ordinary subscriptions that land
-// on the canvas. The renderer is compile-free on purpose — descriptors
-// (names, taglines, slot definitions) arrive as data from listTemplates,
-// so the single compile face stays in shared/templates.ts.
+// Product-facing New Workflow entry. Templates remain the compile mechanism,
+// but the first-run UI is organized around outcomes rather than operators.
 export function TemplateLibraryPanel({
   runtimeApi,
   runtimeState,
   onClose,
   onStateChange,
   onError,
+  autoFocusClose = false,
 }: {
   runtimeApi: RuntimeApi | undefined;
   runtimeState: GraphState;
   onClose: () => void;
   onStateChange: (state: GraphState) => void;
   onError: (message: string) => void;
+  autoFocusClose?: boolean;
 }) {
   const [templates, setTemplates] = useState<TemplateDescriptor[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -37,6 +37,11 @@ export function TemplateLibraryPanel({
   const sources = Object.values(runtimeState.sources ?? {}).filter((source) => source.state === 'active');
   const subscriptions = Object.values(runtimeState.subscriptions ?? {});
   const selected = templates.find((template) => template.id === selectedId);
+  const catalogById = new Map<string, WorkflowEntry>(primaryWorkflowCatalog.map((entry) => [entry.id, entry]));
+  const partitioned = partitionWorkflowIds(templates.map((template) => template.id));
+  const templateById = new Map(templates.map((template) => [template.id, template]));
+  const primaryTemplates = partitioned.primary.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
+  const moreTemplates = partitioned.more.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
 
   const loadTemplates = async () => {
     if (!runtimeApi) {
@@ -93,13 +98,13 @@ export function TemplateLibraryPanel({
       const result = await runtimeApi.applyTemplate({ templateId: selected.id, params });
       onStateChange(result.state);
       const parts = [
-        ...(result.subscriptionIds.length ? [`${result.subscriptionIds.length} subscription(s) landed`] : []),
-        ...(result.createdSessionIds.length ? [`${result.createdSessionIds.length} session(s) created`] : []),
+        ...(result.subscriptionIds.length ? [`${result.subscriptionIds.length} relationship(s) created`] : []),
+        ...(result.createdSessionIds.length ? [`${result.createdSessionIds.length} Agent(s) created`] : []),
         // One-shot templates (handoff) leave nothing standing — say what
         // actually happened instead of reporting zero subscriptions.
-        ...(result.deliveredTo?.length ? [`handed off to ${result.deliveredTo.length} session(s)`] : []),
+        ...(result.deliveredTo?.length ? [`handed off to ${result.deliveredTo.length} Agent(s)`] : []),
       ];
-      setFeedback(`${selected.name}: ${parts.join(', ') || 'nothing to do'}`);
+      setFeedback(`${selected.name}: ${parts.join(', ') || 'ready'}`);
       setSlotValues({});
     } catch (error: unknown) {
       onError(error instanceof Error ? error.message : String(error));
@@ -154,7 +159,9 @@ export function TemplateLibraryPanel({
           value={slotValues[slot.key] ?? ''}
           onChange={(event) => setSlotValues((values) => ({ ...values, [slot.key]: event.target.value }))}
         >
-          <option value="">{slot.required ? 'pick a session…' : (slot.help ?? 'none (optional)')}</option>
+          <option value="">
+            {slot.required ? (sessions.length ? 'pick an Agent…' : 'no Agents yet — start a Chat first') : (slot.help ?? 'none (optional)')}
+          </option>
           {sessions.map((session) => (
             <option key={session.sessionId} value={session.sessionId}>
               {session.label ?? session.sessionId}
@@ -223,124 +230,137 @@ export function TemplateLibraryPanel({
     );
   };
 
+  const templateCard = (template: TemplateDescriptor, entry?: WorkflowEntry) => {
+    const isSelected = template.id === selectedId;
+    return (
+      <li key={template.id} className={cn('rounded-xl border bg-card p-3', isSelected ? 'border-lime-hi/50 ring-1 ring-lime-hi/25' : 'border-border')}>
+        <button type="button" className="block w-full text-left" onClick={() => pick(template.id)}>
+          <div className="flex items-center gap-2 text-[12px] font-medium">
+            <BookMarked className={cn('size-3.5 shrink-0', entry ? 'text-sky-600 dark:text-sky-300' : 'text-term-amber')} />
+            <span className="min-w-0 flex-1 truncate">{entry?.name ?? template.name}</span>
+            <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', isSelected && 'rotate-90')} />
+          </div>
+          {entry ? (
+            <div className="mt-1.5 space-y-1 text-[10.5px] leading-4 text-muted-foreground">
+              <p>{entry.summary}</p>
+              <p className="text-term-faint">Needs: {entry.needs}</p>
+              <p className="text-term-faint">Result: {entry.result}</p>
+            </div>
+          ) : (
+            <div className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
+              <p>{template.tagline}</p>
+              <p className="text-term-faint">Result: {template.handsOff}</p>
+            </div>
+          )}
+        </button>
+
+        {isSelected ? (
+          <div className="mt-2.5 space-y-2 border-t border-border/70 pt-2.5">
+            {template.slots.map((slot) => (
+              <label key={slot.key} className="block space-y-1">
+                <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                  {slot.label}
+                  {slot.required ? '' : ' (optional)'}
+                </span>
+                {slotField(slot)}
+                {slot.help ? <span className="block text-[10px] leading-3.5 text-term-faint">{slot.help}</span> : null}
+              </label>
+            ))}
+            <Button
+              className="h-8 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
+              size="sm"
+              disabled={!runtimeApi || isSubmitting || missingRequired}
+              onClick={() => void apply()}
+            >
+              <Play className="size-3" />
+              Create workflow
+            </Button>
+          </div>
+        ) : null}
+
+        {!template.builtin && !isSelected ? (
+          <div className="mt-1.5 flex justify-end">
+            <Button
+              className="h-6 px-2 font-mono text-[10px] uppercase tracking-[0.06em]"
+              variant="ghost"
+              size="sm"
+              onClick={() => void removeTemplate(template.id)}
+            >
+              <Trash2 className="size-3" />
+              Remove
+            </Button>
+          </div>
+        ) : null}
+      </li>
+    );
+  };
+
   return (
     <aside className="flex w-[360px] shrink-0 flex-col border-l border-border bg-background font-mono">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
-        <LibraryBig className="size-4 text-accent-ink" />
-        <h2 className="text-[12px] uppercase tracking-[0.14em] text-foreground">Templates</h2>
-        <Button className="ml-auto" variant="ghost" size="icon" aria-label="Close templates" onClick={onClose}>
+        <Workflow className="size-4 text-accent-ink" />
+        <h2 className="text-[12px] uppercase tracking-[0.14em] text-foreground">New Workflow</h2>
+        <Button className="ml-auto" variant="ghost" size="icon" aria-label="Close New Workflow" autoFocus={autoFocusClose} onClick={onClose}>
           <X className="size-4" />
         </Button>
       </header>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-        <p className="text-[10.5px] leading-4 text-muted-foreground">
-          Pick a template, fill the blanks, and ready-made relations land on the canvas — gates, stops, and guardrails included. What lands is the real compiled
-          thing: ordinary subscriptions (or, for Handoff, one immediate delivery and activation).
-        </p>
+        <div className="rounded-xl border border-accent-ink/20 bg-accent-ink/[0.05] p-3 text-[10.5px] leading-4 text-muted-foreground">
+          <p className="font-medium text-foreground">Chats start one Agent. Workflows connect Agents.</p>
+          <p className="mt-1">Choose the result you want. Orrery will place the relationship on the graph.</p>
+        </div>
 
-        <ul className="space-y-2">
-          {templates.map((template) => {
-            const isSelected = template.id === selectedId;
-            return (
-              <li
-                key={template.id}
-                className={cn('rounded-lg border bg-card p-2.5', isSelected ? 'border-lime-hi/50 ring-1 ring-lime-hi/25' : 'border-border')}
-              >
-                <button type="button" className="block w-full text-left" onClick={() => pick(template.id)}>
-                  <div className="flex items-center gap-1.5 text-[11.5px] font-medium">
-                    <BookMarked className={cn('size-3.5 shrink-0', template.builtin ? 'text-sky-600 dark:text-sky-300' : 'text-term-amber')} />
-                    <span className="truncate">{template.name}</span>
-                    <span className="ml-auto shrink-0 text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
-                      {template.builtin ? 'built-in' : 'saved'}
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[10.5px] leading-4 text-muted-foreground">
-                    <div>{template.tagline}</div>
-                    <div className="text-term-faint">交出去的:{template.handsOff}</div>
-                  </div>
-                </button>
-
-                {isSelected ? (
-                  <div className="mt-2 space-y-2 border-t border-border/70 pt-2">
-                    {template.slots.map((slot) => (
-                      <label key={slot.key} className="block space-y-1">
-                        <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
-                          {slot.label}
-                          {slot.required ? '' : ' (optional)'}
-                        </span>
-                        {slotField(slot)}
-                        {slot.help ? <span className="block text-[10px] leading-3.5 text-term-faint">{slot.help}</span> : null}
-                      </label>
-                    ))}
-                    <Button
-                      className="h-7 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
-                      size="sm"
-                      disabled={!runtimeApi || isSubmitting || missingRequired}
-                      onClick={() => void apply()}
-                    >
-                      <Play className="size-3" />
-                      Apply template
-                    </Button>
-                  </div>
-                ) : null}
-
-                {!template.builtin && !isSelected ? (
-                  <div className="mt-1.5 flex justify-end">
-                    <Button
-                      className="h-6 px-2 font-mono text-[10px] uppercase tracking-[0.06em]"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void removeTemplate(template.id)}
-                    >
-                      <Trash2 className="size-3" />
-                      Remove
-                    </Button>
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
+        <div>
+          <p className="mb-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Start with a common workflow</p>
+          <ul className="space-y-2">{primaryTemplates.map((template) => templateCard(template, catalogById.get(template.id)))}</ul>
+        </div>
         {feedback ? <p className="text-[10.5px] leading-4 text-lime-700 dark:text-lime-300">{feedback}</p> : null}
 
-        {subscriptions.length > 0 ? (
-          <div className="rounded-lg border border-border bg-card p-2.5">
-            <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
-              <Save className="size-3.5" />
-              Save as template
+        <details className="rounded-xl border border-border bg-card p-3">
+          <summary className="cursor-pointer text-[10.5px] uppercase tracking-[0.1em] text-muted-foreground">More workflows · Advanced</summary>
+          <ul className="mt-2 space-y-2">{moreTemplates.map((template) => templateCard(template))}</ul>
+
+          {subscriptions.length > 0 ? (
+            <div className="mt-3 border-t border-border pt-3">
+              <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
+                <Save className="size-3.5" />
+                Save relationships as template
+              </div>
+              <p className="mt-1 text-[10px] leading-3.5 text-term-faint">
+                Advanced: select existing automated relationships and turn their Agent endpoints into reusable blanks.
+              </p>
+              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                {subscriptions.map((subscription) => (
+                  <li key={subscription.id}>
+                    <label className="flex items-center gap-2 text-[10.5px]">
+                      <input
+                        type="checkbox"
+                        className="accent-lime-600"
+                        checked={saveSelection[subscription.id] ?? false}
+                        onChange={(event) => setSaveSelection((selection) => ({ ...selection, [subscription.id]: event.target.checked }))}
+                      />
+                      <span className="truncate">
+                        {subscription.label ?? subscription.id}
+                        {subscription.state === 'stopped' ? ' · stopped' : ''}
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <input className={cn(slotInputCls, 'mt-2')} placeholder="template name" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
+              <Button
+                className="mt-2 h-7 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
+                size="sm"
+                variant="outline"
+                disabled={!runtimeApi || isSubmitting || saveName.trim().length === 0 || !Object.values(saveSelection).some(Boolean)}
+                onClick={() => void saveTemplate()}
+              >
+                Save template
+              </Button>
             </div>
-            <p className="mt-1 text-[10px] leading-3.5 text-term-faint">Tick edges below; their session endpoints become fill-in slots.</p>
-            <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-              {subscriptions.map((subscription) => (
-                <li key={subscription.id}>
-                  <label className="flex items-center gap-2 text-[10.5px]">
-                    <input
-                      type="checkbox"
-                      className="accent-lime-600"
-                      checked={saveSelection[subscription.id] ?? false}
-                      onChange={(event) => setSaveSelection((selection) => ({ ...selection, [subscription.id]: event.target.checked }))}
-                    />
-                    <span className="truncate">
-                      {subscription.label ?? subscription.id}
-                      {subscription.state === 'stopped' ? ' · stopped' : ''}
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-            <input className={cn(slotInputCls, 'mt-2')} placeholder="template name" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
-            <Button
-              className="mt-2 h-7 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
-              size="sm"
-              variant="outline"
-              disabled={!runtimeApi || isSubmitting || saveName.trim().length === 0 || !Object.values(saveSelection).some(Boolean)}
-              onClick={() => void saveTemplate()}
-            >
-              Save template
-            </Button>
-          </div>
-        ) : null}
+          ) : null}
+        </details>
       </div>
     </aside>
   );

@@ -1,5 +1,5 @@
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import { Activity, FileText, LibraryBig, Moon, PanelRightClose, Sun, Webhook } from 'lucide-react';
+import { Activity, FileText, MessageSquarePlus, Moon, PanelRightClose, Sun, Webhook, Workflow } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -16,6 +16,7 @@ import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
 import { type DiffPanelState } from '@/hooks/use-diff-panel';
 import { type CanvasState } from '@/hooks/use-canvas';
+import { workflowEmptyState } from '@shared/workflow-catalog';
 
 type SessionGraphPanelProps = {
   core: RuntimeCoreState;
@@ -23,6 +24,8 @@ type SessionGraphPanelProps = {
   actions: SessionActionsState;
   diff: DiffPanelState;
   canvas: CanvasState;
+  isWorkflowLibraryOpen: boolean;
+  setIsWorkflowLibraryOpen: Dispatch<SetStateAction<boolean>>;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
   setActiveClusterId: Dispatch<SetStateAction<string | undefined>>;
 };
@@ -36,16 +39,24 @@ const kernelActorClassNames: Record<string, string> = {
   runtime: 'border-slate-500/40 bg-slate-500/10 text-slate-600 dark:text-slate-300',
 };
 
-export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActiveTab, setActiveClusterId }: SessionGraphPanelProps) {
+export function SessionGraphPanel({
+  core,
+  layout,
+  actions,
+  diff,
+  canvas,
+  isWorkflowLibraryOpen,
+  setIsWorkflowLibraryOpen,
+  setActiveTab,
+  setActiveClusterId,
+}: SessionGraphPanelProps) {
   const { runtimeState, setRuntimeState, setRuntimeError, runtimeApi, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
   // L4 loop timeline panel: opened by clicking a ring badge on the canvas.
   const [openLoopId, setOpenLoopId] = useState<string>();
   // L2 trigger-source directory: opened from the header or a source node.
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
-  // L6 relation template library: opened from the header.
-  const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
-  const { setPendingLinkedSourceId } = actions;
+  const { setPendingLinkedSourceId, startNewChat } = actions;
   const {
     isDiffPanelOpen,
     setIsDiffPanelOpen,
@@ -57,6 +68,7 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
     openWorkingTreeDiff,
   } = diff;
   const { edges, canvasNodes, updateCanvasNodePositions, beginCanvasNodeDrag, persistCanvasNodePositions, updateCanvasSelection } = canvas;
+  const emptyState = workflowEmptyState(Object.keys(runtimeState.sessions).length);
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-background" style={{ minWidth: canvasPanelMinWidth }}>
@@ -64,7 +76,7 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex shrink-0 items-center gap-2 text-[12px] text-foreground">
             <Activity className="size-4 text-accent-ink" />
-            Session graph
+            Agent graph
           </span>
           <span className="truncate text-[12px] text-muted-foreground">Code-agent chats and handoffs</span>
         </div>
@@ -72,25 +84,29 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
         <div className="flex shrink-0 items-center gap-2">
           <Button
             className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
-            variant={isTemplatesOpen ? 'secondary' : 'outline'}
+            variant={isWorkflowLibraryOpen ? 'secondary' : 'outline'}
             size="sm"
             disabled={!runtimeApi}
-            onClick={() => setIsTemplatesOpen((open) => !open)}
+            onClick={() => setIsWorkflowLibraryOpen((open) => !open)}
           >
-            <LibraryBig className="size-3.5" />
-            <span className="truncate">Templates</span>
+            <Workflow className="size-3.5" />
+            <span className="truncate">New Workflow</span>
           </Button>
 
-          <Button
-            className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
-            variant={isSourcesOpen ? 'secondary' : 'outline'}
-            size="sm"
-            disabled={!runtimeApi}
-            onClick={() => setIsSourcesOpen((open) => !open)}
-          >
-            <Webhook className="size-3.5" />
-            <span className="truncate">Sources</span>
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={isSourcesOpen ? 'secondary' : 'ghost'}
+                size="icon"
+                disabled={!runtimeApi}
+                aria-label="Advanced event sources"
+                onClick={() => setIsSourcesOpen((open) => !open)}
+              >
+                <Webhook className="size-3.5" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Advanced event sources</TooltipContent>
+          </Tooltip>
 
           <Button
             className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
@@ -105,11 +121,11 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
 
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" aria-label="Hide session graph" onClick={() => setGraphCollapsed(true)}>
+              <Button variant="ghost" size="icon" aria-label="Hide Agent graph" onClick={() => setGraphCollapsed(true)}>
                 <PanelRightClose className="size-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Hide session graph</TooltipContent>
+            <TooltipContent>Hide Agent graph</TooltipContent>
           </Tooltip>
 
           <Tooltip>
@@ -130,6 +146,34 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
 
       <div className="flex min-h-0 flex-1">
         <div className="relative min-h-0 flex-1">
+          {emptyState.show ? (
+            <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center p-8">
+              <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-border bg-background/92 p-5 text-center shadow-sm backdrop-blur">
+                <div className="mx-auto flex size-10 items-center justify-center rounded-xl border border-accent-ink/25 bg-accent-ink/10">
+                  <Workflow className="size-5 text-accent-ink" />
+                </div>
+                <h2 className="mt-3 text-sm font-semibold text-foreground">Start with one Agent — or connect several</h2>
+                <p className="mt-1.5 text-[12px] leading-5 text-muted-foreground">
+                  A Chat starts one Agent now. A Workflow connects Agents so work can be handed off, reviewed, or repeated toward a goal.
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  {emptyState.actions.map((action) =>
+                    action === 'start-chat' ? (
+                      <Button key={action} className="font-mono text-[10.5px] uppercase tracking-[0.06em]" variant="outline" onClick={startNewChat}>
+                        <MessageSquarePlus className="size-3.5" />
+                        Start a chat
+                      </Button>
+                    ) : (
+                      <Button key={action} className="font-mono text-[10.5px] uppercase tracking-[0.06em]" onClick={() => setIsWorkflowLibraryOpen(true)}>
+                        <Workflow className="size-3.5" />
+                        Build a workflow
+                      </Button>
+                    ),
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
           {kernelEvents.length > 0 ? (
             <div className="pointer-events-none absolute bottom-3 left-14 z-10 w-[320px] max-w-[calc(100%-4.5rem)] opacity-80 transition-opacity hover:opacity-100">
               <div className="pointer-events-auto rounded-lg border border-border bg-background/88 font-mono shadow-sm backdrop-blur">
@@ -286,11 +330,11 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
           />
         ) : null}
 
-        {isTemplatesOpen ? (
+        {isWorkflowLibraryOpen ? (
           <TemplateLibraryPanel
             runtimeApi={runtimeApi}
             runtimeState={runtimeState}
-            onClose={() => setIsTemplatesOpen(false)}
+            onClose={() => setIsWorkflowLibraryOpen(false)}
             onStateChange={setRuntimeState}
             onError={(message) => setRuntimeError(message)}
           />

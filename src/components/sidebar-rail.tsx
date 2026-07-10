@@ -1,4 +1,4 @@
-import { Archive, MessagesSquare, Orbit, type LucideIcon, ArchiveRestore, FileText, GitBranch, MessageSquarePlus, Search, X } from 'lucide-react';
+import { Archive, MessagesSquare, Orbit, type LucideIcon, ArchiveRestore, FileText, GitBranch, MessageSquarePlus, Search, Workflow, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -27,7 +27,7 @@ import { type SessionActionsState } from '@/hooks/use-session-actions';
 
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
-  { id: 'orchestrate', label: 'Orchestrate', icon: Orbit },
+  { id: 'orchestrate', label: 'Advanced', icon: Orbit },
 ];
 
 type SidebarRailProps = {
@@ -36,9 +36,10 @@ type SidebarRailProps = {
   actions: SessionActionsState;
   activeTab: RailTab;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
+  onStartWorkflow: () => void;
 };
 
-export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTab }: SidebarRailProps) {
+export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTab, onStartWorkflow }: SidebarRailProps) {
   const {
     runtimeClient,
     isRuntimeAvailable,
@@ -83,10 +84,14 @@ export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTa
           {runtimeModeLabel}
         </Badge>
       </header>
-      <div className="app-region-no-drag shrink-0 px-3 pb-2">
+      <div className="app-region-no-drag grid shrink-0 gap-1.5 px-3 pb-2">
         <Button className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]" onClick={startNewChat}>
           <MessageSquarePlus className="size-4" />
           New Chat
+        </Button>
+        <Button className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]" variant="outline" onClick={onStartWorkflow}>
+          <Workflow className="size-4" />
+          New Workflow
         </Button>
       </div>
       <div className="app-region-no-drag shrink-0 px-3 pb-3 pt-1">

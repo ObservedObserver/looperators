@@ -76,9 +76,9 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 font-mono text-[12px]">
               <Orbit className="size-3.5 text-accent-ink" />
-              <span className="text-foreground">Workflows</span>
+              <span className="text-foreground">Advanced orchestration</span>
             </div>
-            <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">Review loop setup</p>
+            <p className="mt-1 font-mono text-[11px] leading-4 text-muted-foreground">Master and cluster controls for governed workflows</p>
           </div>
           <span
             className={cn(

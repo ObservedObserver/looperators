@@ -142,8 +142,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
     handsOff: '上下文搬运(一次性命令)',
     builtin: true,
     slots: [
-      sessionSlot('source', 'From session'),
-      sessionSlot('target', 'To session'),
+      sessionSlot('source', 'From Agent'),
+      sessionSlot('target', 'To Agent'),
       {
         key: 'note',
         label: 'Handoff note',
@@ -160,8 +160,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
     handsOff: '注意力(deliver-only,不激活)',
     builtin: true,
     slots: [
-      sessionSlot('source', 'Watched session'),
-      sessionSlot('watcher', 'Watcher session'),
+      sessionSlot('source', 'Watched Agent'),
+      sessionSlot('watcher', 'Summary Agent'),
       {
         key: 'note',
         label: 'Delivery note',
@@ -178,10 +178,10 @@ export const builtinTemplates: TemplateDescriptor[] = [
     handsOff: '循环的发动机(reviewer 报 clean 即停)',
     builtin: true,
     slots: [
-      sessionSlot('coder', 'Coder session'),
-      sessionSlot('reviewer', 'Reviewer session', {
+      sessionSlot('coder', 'Coder Agent'),
+      sessionSlot('reviewer', 'Reviewer Agent', {
         required: false,
-        help: 'Leave empty to create a reviewer next to the coder',
+        help: 'Leave empty to create a Reviewer Agent next to the Coder',
       }),
       {
         key: 'maxLaps',
@@ -201,7 +201,7 @@ export const builtinTemplates: TemplateDescriptor[] = [
     handsOff: '停止条件',
     builtin: true,
     slots: [
-      sessionSlot('worker', 'Worker session'),
+      sessionSlot('worker', 'Worker Agent'),
       {
         key: 'goal',
         label: 'The goal (one sentence defining done)',
@@ -227,7 +227,7 @@ export const builtinTemplates: TemplateDescriptor[] = [
     handsOff: '触发时机',
     builtin: true,
     slots: [
-      sessionSlot('target', 'Session to wake'),
+      sessionSlot('target', 'Agent to wake'),
       { key: 'schedule', label: 'Schedule', kind: 'schedule', required: true },
       {
         key: 'instruction',
@@ -252,7 +252,7 @@ export const builtinTemplates: TemplateDescriptor[] = [
         required: true,
         help: 'Register sources in the Sources panel first',
       },
-      sessionSlot('target', 'Responder session'),
+      sessionSlot('target', 'Responder Agent'),
       {
         key: 'instruction',
         label: 'What to do when the event fires',
