@@ -93,7 +93,7 @@ async function createIdleSession(runtime, label, extra = {}) {
   return created.sessionId
 }
 
-test('the built-ins are listed as data and applying handoff lands a one-shot edge', async () => {
+test('the built-ins are listed as data and handoff is an IMMEDIATE one-shot — idle source, instant activation', async () => {
   const { manager, cleanup } = harness('orrery-l6-handoff-')
   try {
     const runtime = manager()
@@ -112,8 +112,12 @@ test('the built-ins are listed as data and applying handoff lands a one-shot edg
     )
     assert.ok(templates.every((template) => template.builtin))
 
+    // Both sessions are IDLE: the kernel §8.1 handoff must fire right now,
+    // not on the source's next finished turn.
     const builder = await createIdleSession(runtime, 'builder')
     const deployer = await createIdleSession(runtime, 'deployer')
+    const subscriptionsBefore = Object.keys(runtime.getState().subscriptions ?? {}).length
+    const messagesBefore = runtime.getState().sessions[deployer].messages.length
 
     const applied = await runtime.applyTemplate({
       templateId: 'handoff',
@@ -121,17 +125,31 @@ test('the built-ins are listed as data and applying handoff lands a one-shot edg
     })
     assert.equal(applied.templateId, 'handoff')
     assert.deepEqual(applied.createdSessionIds, [])
-    assert.equal(applied.subscriptionIds.length, 1)
+    assert.deepEqual(applied.subscriptionIds, [], 'a handoff is a command — nothing standing remains')
+    assert.deepEqual(applied.deliveredTo, [deployer])
 
-    const subscription = runtime.getState().subscriptions[applied.subscriptionIds[0]]
-    assert.match(subscription.id, /^handoff-[0-9a-f]{8}$/)
-    assert.deepEqual(subscription.source, { kind: 'session', sessionId: builder })
-    assert.deepEqual(subscription.target, { kind: 'session', sessionId: deployer })
-    assert.deepEqual(subscription.on, { on: 'finished' })
-    assert.equal(subscription.action.kind, 'deliver+activate')
-    assert.deepEqual(subscription.stop, { maxFirings: 1 })
-    assert.equal(subscription.preset, 'template:handoff')
-    assert.match(subscription.action.note, /Handoff/)
+    // The target was activated immediately (a real turn ran on it) and the
+    // delivery rode the ordinary channel with the handoff topic.
+    await waitFor(
+      'deployer ran its handoff turn',
+      () =>
+        runtime.getState().sessions[deployer].status === 'idle' &&
+        runtime.getState().sessions[deployer].messages.length > messagesBefore
+    )
+    assert.equal(
+      Object.keys(runtime.getState().subscriptions ?? {}).length,
+      subscriptionsBefore,
+      'no subscription was created'
+    )
+    const { events } = runtime.getKernelEvents({ limit: 500 })
+    const delivered = events.find(
+      (event) => event.type === 'delivered' && event.payload?.topic === 'handoff'
+    )
+    assert.ok(delivered, 'the handoff delivery is a kernel fact with topic handoff')
+    const activated = events.find(
+      (event) => event.type === 'activated' && event.payload?.sessionId === deployer
+    )
+    assert.ok(activated, 'the activation is a kernel fact on the target')
   } finally {
     cleanup()
   }
@@ -355,6 +373,46 @@ test('slot validation fails BEFORE anything is created — no orphan sessions, n
   }
 })
 
+test('the review pair lives and dies together: stopping one edge stops both (any stop path)', async () => {
+  const { manager, cleanup } = harness('orrery-l6-review-pair-stop-')
+  try {
+    const runtime = manager()
+    const coder = await createIdleSession(runtime, 'coder')
+    const reviewer = await createIdleSession(runtime, 'reviewer')
+    const applied = await runtime.applyTemplate({
+      templateId: 'review-until-clean',
+      params: { coder, reviewer, maxLaps: 2 },
+    })
+    const [passId, fixId] = applied.subscriptionIds
+
+    // Stopping the REVERSE edge must take the forward edge with it — the
+    // failed-run artifact showed a cap-stopped review-pass leaving
+    // review-fix lingering active while the loop badge already said
+    // stopped. All stop paths (cap, whenReport, manual, kill sweep) funnel
+    // through the same verb, so a manual stop pins the pairing.
+    runtime.stopSubscription({ subscriptionId: fixId, reason: 'testing the pair' })
+
+    const state = runtime.getState()
+    assert.equal(state.subscriptions[fixId].state, 'stopped')
+    assert.equal(state.subscriptions[passId].state, 'stopped', 'the paired edge stopped too')
+    const { events } = runtime.getKernelEvents({ limit: 500 })
+    const pairedStop = events.find(
+      (event) =>
+        event.type === 'subscription.stopped' &&
+        event.payload?.subscriptionId === passId
+    )
+    assert.match(pairedStop.reason ?? '', /Review loop ended/)
+
+    // And the ring projection agrees: no half-stopped zombie.
+    const ring = (state.loops ?? []).find((loop) => loop.memberSessionIds.includes(coder))
+    if (ring) {
+      assert.equal(ring.status, 'stopped')
+    }
+  } finally {
+    cleanup()
+  }
+})
+
 test('a coder killed during template apply never ends up with a ring or an orphan reviewer', async () => {
   const { manager, cleanup } = harness('orrery-l6-kill-race-')
   try {
@@ -457,17 +515,17 @@ test('save → list → apply: a canvas ring becomes a template and rebinds to n
 
     // Two same-prefix edges in one saved template must not overwrite each
     // other on apply: the second falls back to a runtime-generated id.
-    const h1 = await runtime.applyTemplate({
-      templateId: 'handoff',
-      params: { source: coder, target: reviewer },
+    const w1 = await runtime.applyTemplate({
+      templateId: 'watch-and-summarize',
+      params: { source: coder, watcher: reviewer },
     })
-    const h2 = await runtime.applyTemplate({
-      templateId: 'handoff',
-      params: { source: coder, target: newReviewer },
+    const w2 = await runtime.applyTemplate({
+      templateId: 'watch-and-summarize',
+      params: { source: coder, watcher: newReviewer },
     })
     const doubled = runtime.saveTemplate({
-      name: 'double handoff',
-      subscriptionIds: [...h1.subscriptionIds, ...h2.subscriptionIds],
+      name: 'double watch',
+      subscriptionIds: [...w1.subscriptionIds, ...w2.subscriptionIds],
     })
     const reapplied = await runtime.applyTemplate({
       templateId: doubled.template.id,
@@ -495,15 +553,15 @@ test('saved templates survive a restart and removeTemplate really removes', asyn
     const a = await createIdleSession(runtime, 'a')
     const b = await createIdleSession(runtime, 'b')
     const ring = await runtime.applyTemplate({
-      templateId: 'handoff',
-      params: { source: a, target: b },
+      templateId: 'watch-and-summarize',
+      params: { source: a, watcher: b },
     })
     // The plan's kernel-purity invariant, pinned: saving and removing
     // templates appends NOTHING to the kernel log — templates are
     // runtime-plane config, and only the snapshot carries them.
     const seqBeforeSave = runtime.getKernelEvents({ limit: 1 }).latestSeq
     const saved = runtime.saveTemplate({
-      name: 'my handoff',
+      name: 'my watch',
       subscriptionIds: ring.subscriptionIds,
     })
     assert.equal(

@@ -38,17 +38,15 @@ test('the six proposal templates are registered, in the proposal order', () => {
 
 // ---- handoff ----
 
-test('handoff compiles to a one-shot deliver+activate edge', () => {
+test('handoff compiles to a one-shot command step — no subscription, kernel doc §8.1', () => {
   const plan = compileBuiltinTemplate('handoff', { source: 's-a', target: 's-b' })
   assert.equal(plan.steps.length, 1)
   const step = plan.steps[0]
-  assert.equal(step.kind, 'author-subscription')
-  assert.deepEqual(step.input.source, { session: 's-a' })
-  assert.deepEqual(step.input.target, { session: 's-b' })
-  assert.deepEqual(step.input.on, { on: 'finished' })
-  assert.equal(step.input.action.kind, 'deliver+activate')
-  assert.deepEqual(step.input.stop, { maxFirings: 1 })
-  assert.match(step.input.action.note, /Handoff/)
+  assert.equal(step.kind, 'handoff', 'a handoff is a command, not a standing relation')
+  assert.deepEqual(step.source, { session: 's-a' })
+  assert.deepEqual(step.target, { session: 's-b' })
+  assert.equal(step.topic, 'handoff')
+  assert.match(step.note, /Handoff/)
 })
 
 test('handoff prefers the caller note over the default', () => {
@@ -57,7 +55,7 @@ test('handoff prefers the caller note over the default', () => {
     target: 's-b',
     note: 'Deploy what the builder produced.',
   })
-  assert.equal(plan.steps[0].input.action.note, 'Deploy what the builder produced.')
+  assert.equal(plan.steps[0].note, 'Deploy what the builder produced.')
 })
 
 // ---- watch & summarize ----
@@ -248,6 +246,16 @@ test('number slots coerce strings and reject non-positive or fractional values',
   assert.throws(
     () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 0 }),
     /positive integer/
+  )
+  // Number.isInteger(1e100) is true — a cap that large is no guardrail;
+  // number slots demand safe integers under the product ceiling.
+  assert.throws(
+    () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 1e100 }),
+    /positive integer \(1-999\)/
+  )
+  assert.throws(
+    () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 1000 }),
+    /positive integer \(1-999\)/
   )
 })
 

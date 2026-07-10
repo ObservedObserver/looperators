@@ -693,6 +693,9 @@ export type ApplyTemplateResult = {
   templateId: string;
   createdSessionIds: SessionId[];
   subscriptionIds: string[];
+  // Sessions that received a one-shot handoff (delivery + activation);
+  // handoffs are commands, not subscriptions, so nothing standing remains.
+  deliveredTo?: SessionId[];
   judgeSessionId?: SessionId;
   state: GraphState;
 };

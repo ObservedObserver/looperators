@@ -66,6 +66,12 @@ export type TemplatePlanStep =
       linkLabel?: string;
     }
   | { kind: 'author-subscription'; input: PlanSubscriptionInput }
+  // A one-shot deliver+activate command (kernel doc §8.1): a handoff is
+  // NOT a standing relation, so it lands as an immediate delivery of the
+  // source's artifact bundle plus one activation — no subscription exists
+  // afterwards and an idle source hands off right now, not on its next
+  // finished turn.
+  | { kind: 'handoff'; source: PlanEndpoint; target: PlanEndpoint; topic: string; note: string }
   | {
       kind: 'goal-loop';
       input: { workerSessionId: string; goal: string; maxLaps?: number };
@@ -298,8 +304,11 @@ export function validateSlotParams(templateName: string, slots: TemplateSlot[], 
           value = undefined;
         } else {
           const num = Number(raw);
-          if (!Number.isInteger(num) || num <= 0) {
-            throw new Error(`Template "${templateName}" slot "${slot.label}" must be a positive integer`);
+          // Safe integer + a product ceiling: every number slot is a lap or
+          // firing count, and `1e100` passes Number.isInteger — a cap that
+          // large is no guardrail at all.
+          if (!Number.isSafeInteger(num) || num <= 0 || num > 999) {
+            throw new Error(`Template "${templateName}" slot "${slot.label}" must be a positive integer (1-999)`);
           }
           value = num;
         }
@@ -367,21 +376,11 @@ export function compileBuiltinTemplate(templateId: string, params: Record<string
       return {
         steps: [
           {
-            kind: 'author-subscription',
-            input: {
-              idPrefix: 'handoff',
-              label: 'handoff',
-              source: session(filled.source),
-              on: { on: 'finished' },
-              target: session(filled.target),
-              action: {
-                kind: 'deliver+activate',
-                topic: 'handoff',
-                note: (filled.note as string | undefined) ?? handoffDefaultNote,
-              },
-              // A handoff is a one-shot command, not a standing relation.
-              stop: { maxFirings: 1 },
-            },
+            kind: 'handoff',
+            source: session(filled.source),
+            target: session(filled.target),
+            topic: 'handoff',
+            note: (filled.note as string | undefined) ?? handoffDefaultNote,
           },
         ],
       };

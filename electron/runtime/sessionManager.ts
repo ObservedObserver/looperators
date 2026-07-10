@@ -2715,35 +2715,57 @@ export class RuntimeSessionManager {
     )
     this.#discardSlotsForSubscription(subscriptionId, ctx)
     this.#syncLoopStateForSubscription(subscription, 'subscription.stopped')
-    // Goal loop pairing (L3): the two compiled edges live and die together
-    // on EVERY stop path — scheduler stops, manual stops, kill sweeps. A
-    // leftover retry edge could otherwise wake the worker on a later fail
-    // report even though the ring can no longer complete a lap. Recursion
-    // bottoms out on the already-stopped early return above.
+    // Compiled-ring pairing: the two edges of a compiled pair live and die
+    // together on EVERY stop path — scheduler stops (whenReport, cap),
+    // manual stops, kill sweeps. A leftover reverse edge could otherwise
+    // linger active (polluting lists and, for goal rings, waking the worker
+    // on a later fail report) even though the ring can no longer complete a
+    // lap. Recursion bottoms out on the already-stopped early return above.
     //
-    // Pairing needs the compiled SHAPE, not just the id prefix: the ids are
+    // Pairing needs the compiled SHAPE, not just the id prefix: ids are
     // user-suppliable via author_subscription, so the pair must carry the
-    // preset's full fingerprint (#isGoalPairShape) before it is stopped as
-    // one ring.
-    const pairedId = subscriptionId.startsWith('goal-check-')
-      ? subscriptionId.replace(/^goal-check-/, 'goal-retry-')
-      : subscriptionId.startsWith('goal-retry-')
-        ? subscriptionId.replace(/^goal-retry-/, 'goal-check-')
-        : undefined
-    const paired = pairedId ? this.#state.subscriptions?.[pairedId] : undefined
-    const isPair = subscriptionId.startsWith('goal-check-')
-      ? this.#isGoalPairShape(subscription, paired)
-      : this.#isGoalPairShape(paired, subscription)
-    if (paired && isPair && paired.state === 'active') {
-      this.#cmdStopSubscription(
-        { subscriptionId: pairedId },
-        {
-          ...ctx,
-          reason: `Goal loop ended: ${
-            ctx.reason ?? optionalTrimmedString(input.reason) ?? 'the paired edge stopped.'
-          }`,
-        }
-      )
+    // preset's full fingerprint before it is stopped as one ring. Goal
+    // rings (L3) and review rings (L6 template) each have their own
+    // fingerprint; forward = the edge whose prefix is listed first.
+    const ringPairings = [
+      {
+        forwardPrefix: 'goal-check-',
+        reversePrefix: 'goal-retry-',
+        shape: (forward, reverse) => this.#isGoalPairShape(forward, reverse),
+        label: 'Goal loop',
+      },
+      {
+        forwardPrefix: 'review-pass-',
+        reversePrefix: 'review-fix-',
+        shape: (forward, reverse) => this.#isReviewPairShape(forward, reverse),
+        label: 'Review loop',
+      },
+    ]
+    for (const pairing of ringPairings) {
+      const isForward = subscriptionId.startsWith(pairing.forwardPrefix)
+      const isReverse = subscriptionId.startsWith(pairing.reversePrefix)
+      if (!isForward && !isReverse) {
+        continue
+      }
+      const pairedId = isForward
+        ? subscriptionId.replace(pairing.forwardPrefix, pairing.reversePrefix)
+        : subscriptionId.replace(pairing.reversePrefix, pairing.forwardPrefix)
+      const paired = this.#state.subscriptions?.[pairedId]
+      const isPair = isForward
+        ? pairing.shape(subscription, paired)
+        : pairing.shape(paired, subscription)
+      if (paired && isPair && paired.state === 'active') {
+        this.#cmdStopSubscription(
+          { subscriptionId: pairedId },
+          {
+            ...ctx,
+            reason: `${pairing.label} ended: ${
+              ctx.reason ?? optionalTrimmedString(input.reason) ?? 'the paired edge stopped.'
+            }`,
+          }
+        )
+      }
+      break
     }
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
@@ -5253,6 +5275,32 @@ export class RuntimeSessionManager {
     return this.#isGoalPairShape(subscription, retry)
   }
 
+  // The L6 review-until-clean template's ring fingerprint, the goal-pair
+  // discipline applied to review edges: coder finished → reviewer, reviewer
+  // report(issues) → coder, both stopping at verdict clean. Without this,
+  // a cap-stopped review-pass leaves review-fix lingering active — the
+  // canvas badge says stopped while a zombie reverse edge pollutes lists.
+  #isReviewPairShape(pass, fix) {
+    return Boolean(
+      pass &&
+        fix &&
+        /^review-pass-/.test(pass.id ?? '') &&
+        fix.id === pass.id.replace(/^review-pass-/, 'review-fix-') &&
+        pass.source?.kind === 'session' &&
+        fix.source?.kind === 'session' &&
+        fix.source.sessionId === pass.target?.sessionId &&
+        fix.target?.sessionId === pass.source.sessionId &&
+        pass.on?.on === 'finished' &&
+        fix.on?.on === 'report' &&
+        fix.on?.match?.type === 'verdict' &&
+        fix.on?.match?.verdict === 'issues' &&
+        pass.action?.kind === 'deliver+activate' &&
+        fix.action?.kind === 'deliver+activate' &&
+        pass.stop?.whenReport?.verdict === 'clean' &&
+        fix.stop?.whenReport?.verdict === 'clean'
+    )
+  }
+
   async createGoalLoop(input: JsonRecord = {}) {
     const workerSessionId = optionalTrimmedString(input.workerSessionId)
     const worker = workerSessionId
@@ -5353,36 +5401,65 @@ export class RuntimeSessionManager {
       // Optional provenance tag (the L6 template library passes
       // `template:goal-loop`); pairing/stop logic never reads it.
       const preset = optionalTrimmedString(input.preset)
-      const check = this.#cmdAuthorSubscription(
-        {
-          id: `goal-check-${suffix}`,
-          label: 'goal check',
-          ...(preset ? { preset } : {}),
-          sourceSessionId: worker.sessionId,
-          on: { on: 'finished' },
-          targetSessionId: judgeSessionId,
-          action: { kind: 'deliver+activate', note: this.#goalJudgeActivationNote(goal) },
-          gate,
-          stop,
-          onStop,
-        },
-        this.#humanCtx()
-      )
-      const retry = this.#cmdAuthorSubscription(
-        {
-          id: `goal-retry-${suffix}`,
-          label: 'goal retry',
-          ...(preset ? { preset } : {}),
-          sourceSessionId: judgeSessionId,
-          on: { on: 'report', match: { type: 'verdict', verdict: 'fail' } },
-          targetSessionId: worker.sessionId,
-          action: { kind: 'deliver+activate', note: this.#goalWorkerRetryNote() },
-          gate,
-          stop,
-          onStop,
-        },
-        this.#humanCtx()
-      )
+      // Compile compensation: authoring can fail after the judge exists
+      // (static-check refusal, invalid input on a delegated call). Without
+      // the unwind below, a half-compiled ring strands an orphan judge —
+      // and the template executor's own rollback cannot reach resources it
+      // never got ids for.
+      let check
+      let retry
+      try {
+        check = this.#cmdAuthorSubscription(
+          {
+            id: `goal-check-${suffix}`,
+            label: 'goal check',
+            ...(preset ? { preset } : {}),
+            sourceSessionId: worker.sessionId,
+            on: { on: 'finished' },
+            targetSessionId: judgeSessionId,
+            action: { kind: 'deliver+activate', note: this.#goalJudgeActivationNote(goal) },
+            gate,
+            stop,
+            onStop,
+          },
+          this.#humanCtx()
+        )
+        retry = this.#cmdAuthorSubscription(
+          {
+            id: `goal-retry-${suffix}`,
+            label: 'goal retry',
+            ...(preset ? { preset } : {}),
+            sourceSessionId: judgeSessionId,
+            on: { on: 'report', match: { type: 'verdict', verdict: 'fail' } },
+            targetSessionId: worker.sessionId,
+            action: { kind: 'deliver+activate', note: this.#goalWorkerRetryNote() },
+            gate,
+            stop,
+            onStop,
+          },
+          this.#humanCtx()
+        )
+      } catch (error) {
+        if (check) {
+          try {
+            this.#cmdStopSubscription(
+              {
+                subscriptionId: check.subscription.id,
+                reason: 'Goal loop compile aborted before completing the ring.',
+              },
+              { actor: { kind: 'runtime' } }
+            )
+          } catch {
+            // Best-effort cleanup; the rethrow below is the real signal.
+          }
+        }
+        try {
+          this.killSession(judgeSessionId)
+        } catch {
+          // Best-effort cleanup only.
+        }
+        throw error
+      }
 
       return {
         judgeSessionId,
@@ -5433,6 +5510,15 @@ export class RuntimeSessionManager {
         requireSession(step.inheritFromSessionId, 'session to inherit from')
       } else if (step.kind === 'goal-loop') {
         requireSession(step.input.workerSessionId, 'worker')
+      } else if (step.kind === 'handoff') {
+        for (const [endpoint, role] of [
+          [step.source, 'handoff source'],
+          [step.target, 'handoff target'],
+        ] as const) {
+          if ('session' in endpoint) {
+            requireSession(endpoint.session, role)
+          }
+        }
       } else {
         for (const [endpoint, role] of [
           [step.input.source, 'source'],
@@ -5472,6 +5558,10 @@ export class RuntimeSessionManager {
     const refs = new Map<string, string>()
     const createdSessionIds = []
     const subscriptionIds = []
+    // Sessions that received a one-shot handoff (kernel doc §8.1: a
+    // command, not a subscription) — reported so the UI can say what
+    // actually happened when nothing standing was created.
+    const deliveredTo = []
     let judgeSessionId
 
     const resolveSession = (endpoint) => {
@@ -5539,6 +5629,30 @@ export class RuntimeSessionManager {
           )
           refs.set(step.ref, created.sessionId)
           createdSessionIds.push(created.sessionId)
+        } else if (step.kind === 'handoff') {
+          // The kernel §8.1 one-shot: deliver the source's artifact bundle,
+          // activate the target once, leave NOTHING standing. An idle
+          // source hands off immediately — this is a command, so there is
+          // no edge to linger as active afterwards.
+          const from = resolveSession(step.source)
+          const to = resolveSession(step.target)
+          for (const sessionId of [from, to]) {
+            const session = this.#state.sessions[sessionId]
+            if (!session || session.status === 'killed') {
+              throw new Error(
+                'A participant session was killed while the template was being applied'
+              )
+            }
+          }
+          this.#cmdDeliver(
+            { sessionId: to, source: from, topic: step.topic },
+            this.#humanCtx()
+          )
+          await this.#cmdActivate(
+            { sessionId: to, note: step.note },
+            this.#humanCtx()
+          )
+          deliveredTo.push(to)
         } else if (step.kind === 'goal-loop') {
           // Whole-ring delegation: the L3 preset owns judge creation, the
           // duplicate guard, and the paired stop; the preset tag keeps the
@@ -5609,6 +5723,7 @@ export class RuntimeSessionManager {
       templateId,
       createdSessionIds,
       subscriptionIds,
+      ...(deliveredTo.length > 0 ? { deliveredTo } : {}),
       ...(judgeSessionId ? { judgeSessionId } : {}),
       state: this.getState(),
     }

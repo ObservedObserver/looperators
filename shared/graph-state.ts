@@ -311,7 +311,7 @@ export const graphStateSchema = {
           'Record<slotKey, any>?; slot values — session ids, external source ids, text, numbers, { everySeconds | dailyAt } for schedule slots',
       },
       output:
-        '{ templateId, createdSessionIds, subscriptionIds, judgeSessionId?, state }; expands into ordinary commands (author_subscription / create_session / the goal-loop preset) — no new kernel verbs, what lands is regular subscriptions',
+        '{ templateId, createdSessionIds, subscriptionIds, deliveredTo?, judgeSessionId?, state }; expands into ordinary commands (author_subscription / create_session / deliver+activate / the goal-loop preset) — no new kernel verbs. Handoff is a one-shot command (kernel doc §8.1): an immediate delivery + activation, no subscription remains',
     },
     saveTemplate: {
       input: {

@@ -118,8 +118,30 @@ export async function run({ orrery, provider, workDir, log }) {
 
   // The retry edge wakes the coder with exactly those issues; the fix lap
   // ends with the reviewer reporting clean and the ring stopping itself.
-  const cleanReport = await orrery.waitForReport(
-    { verdict: 'clean' },
+  // Fail FAST if the ring caps out instead: once both edges are stopped
+  // without a clean verdict, no future lap can produce one — waiting the
+  // full timeout would only mask the failure mode.
+  const cleanReport = await orrery.waitFor(
+    'clean verdict before the ring caps out',
+    async () => {
+      const state = await orrery.state()
+      const clean = (state.reports ?? []).find(
+        (report) => report.payload?.verdict === 'clean' && report.from === reviewerId
+      )
+      if (clean) {
+        return { done: true, value: clean }
+      }
+      const passState = state.subscriptions[passId]?.state
+      const fixState = state.subscriptions[fixId]?.state
+      if (passState === 'stopped' && fixState === 'stopped') {
+        throw new Error(
+          'the ring stopped (lap cap reached) without ever reporting clean'
+        )
+      }
+      return {
+        detail: `pass=${passState} fix=${fixState}, ${(state.reports ?? []).length} reports`,
+      }
+    },
     { timeoutMs: 600_000 }
   )
   assert.equal(cleanReport.from, reviewerId, 'the clean verdict comes from the reviewer')

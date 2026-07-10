@@ -92,8 +92,14 @@ export function TemplateLibraryPanel({
       }
       const result = await runtimeApi.applyTemplate({ templateId: selected.id, params });
       onStateChange(result.state);
-      const created = result.createdSessionIds.length;
-      setFeedback(`${selected.name}: ${result.subscriptionIds.length} subscription(s) landed${created ? `, ${created} session(s) created` : ''}`);
+      const parts = [
+        ...(result.subscriptionIds.length ? [`${result.subscriptionIds.length} subscription(s) landed`] : []),
+        ...(result.createdSessionIds.length ? [`${result.createdSessionIds.length} session(s) created`] : []),
+        // One-shot templates (handoff) leave nothing standing — say what
+        // actually happened instead of reporting zero subscriptions.
+        ...(result.deliveredTo?.length ? [`handed off to ${result.deliveredTo.length} session(s)`] : []),
+      ];
+      setFeedback(`${selected.name}: ${parts.join(', ') || 'nothing to do'}`);
       setSlotValues({});
     } catch (error: unknown) {
       onError(error instanceof Error ? error.message : String(error));
@@ -227,8 +233,8 @@ export function TemplateLibraryPanel({
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         <p className="text-[10.5px] leading-4 text-muted-foreground">
-          Pick a template, fill the blanks, and ready-made subscriptions land on the canvas — gates, stops, and guardrails included. What lands is the real
-          compiled relation; open any edge to learn the parameters.
+          Pick a template, fill the blanks, and ready-made relations land on the canvas — gates, stops, and guardrails included. What lands is the real compiled
+          thing: ordinary subscriptions (or, for Handoff, one immediate delivery and activation).
         </p>
 
         <ul className="space-y-2">
@@ -302,7 +308,7 @@ export function TemplateLibraryPanel({
               <Save className="size-3.5" />
               Save as template
             </div>
-            <p className="mt-1 text-[10px] leading-3.5 text-term-faint">Pick edges from the canvas; their session endpoints become fill-in slots.</p>
+            <p className="mt-1 text-[10px] leading-3.5 text-term-faint">Tick edges below; their session endpoints become fill-in slots.</p>
             <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
               {subscriptions.map((subscription) => (
                 <li key={subscription.id}>
