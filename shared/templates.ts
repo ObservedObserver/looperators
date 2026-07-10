@@ -22,6 +22,8 @@ export type TemplateSlot = {
   required: boolean;
   placeholder?: string;
   defaultValue?: string | number;
+  min?: number;
+  max?: number;
   help?: string;
 };
 
@@ -187,6 +189,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
         kind: 'number',
         required: false,
         defaultValue: defaultReviewMaxLaps,
+        min: 1,
+        max: 999,
       },
     ],
   },
@@ -211,6 +215,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
         kind: 'number',
         required: false,
         defaultValue: defaultReviewMaxLaps,
+        min: 1,
+        max: 99,
       },
     ],
   },
@@ -260,6 +266,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
         kind: 'number',
         required: false,
         defaultValue: defaultReactiveFixerMaxFirings,
+        min: 1,
+        max: 999,
       },
     ],
   },
@@ -304,11 +312,14 @@ export function validateSlotParams(templateName: string, slots: TemplateSlot[], 
           value = undefined;
         } else {
           const num = Number(raw);
-          // Safe integer + a product ceiling: every number slot is a lap or
-          // firing count, and `1e100` passes Number.isInteger — a cap that
-          // large is no guardrail at all.
-          if (!Number.isSafeInteger(num) || num <= 0 || num > 999) {
-            throw new Error(`Template "${templateName}" slot "${slot.label}" must be a positive integer (1-999)`);
+          // Safe integer + slot-specific product bounds. Goal loop delegates
+          // to the L3 runtime verb whose public contract is 1-99; keeping the
+          // bound on the descriptor makes the shared compiler and runtime
+          // agree while allowing other firing-count slots to use 1-999.
+          const min = slot.min ?? 1;
+          const max = slot.max ?? 999;
+          if (!Number.isSafeInteger(num) || num < min || num > max) {
+            throw new Error(`Template "${templateName}" slot "${slot.label}" must be an integer (${min}-${max})`);
           }
           value = num;
         }

@@ -214,6 +214,8 @@ export function TemplateLibraryPanel({
       <input
         className={cn(slotInputCls, slot.kind === 'number' && 'tabular-nums')}
         type={slot.kind === 'number' ? 'number' : 'text'}
+        min={slot.kind === 'number' ? slot.min : undefined}
+        max={slot.kind === 'number' ? slot.max : undefined}
         placeholder={slot.placeholder ?? (slot.defaultValue !== undefined ? `default: ${slot.defaultValue}` : undefined)}
         value={slotValues[slot.key] ?? ''}
         onChange={(event) => setSlotValues((values) => ({ ...values, [slot.key]: event.target.value }))}

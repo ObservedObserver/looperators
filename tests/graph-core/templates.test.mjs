@@ -232,7 +232,7 @@ test('unknown template and unknown slot keys are named in the error', () => {
   )
 })
 
-test('number slots coerce strings and reject non-positive or fractional values', () => {
+test('number slots coerce strings and enforce their descriptor-specific bounds', () => {
   const slots = builtinTemplateById.get('review-until-clean').slots
   const filled = validateSlotParams('Review until clean', slots, {
     coder: 's-c',
@@ -241,21 +241,40 @@ test('number slots coerce strings and reject non-positive or fractional values',
   assert.equal(filled.maxLaps, 5)
   assert.throws(
     () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 2.5 }),
-    /positive integer/
+    /integer \(1-999\)/
   )
   assert.throws(
     () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 0 }),
-    /positive integer/
+    /integer \(1-999\)/
   )
   // Number.isInteger(1e100) is true — a cap that large is no guardrail;
   // number slots demand safe integers under the product ceiling.
   assert.throws(
     () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 1e100 }),
-    /positive integer \(1-999\)/
+    /integer \(1-999\)/
   )
   assert.throws(
     () => validateSlotParams('Review until clean', slots, { coder: 's-c', maxLaps: 1000 }),
-    /positive integer \(1-999\)/
+    /integer \(1-999\)/
+  )
+
+  const goalSlots = builtinTemplateById.get('goal-loop').slots
+  assert.equal(
+    validateSlotParams('Goal loop', goalSlots, {
+      worker: 's-w',
+      goal: 'done',
+      maxLaps: 99,
+    }).maxLaps,
+    99
+  )
+  assert.throws(
+    () =>
+      validateSlotParams('Goal loop', goalSlots, {
+        worker: 's-w',
+        goal: 'done',
+        maxLaps: 100,
+      }),
+    /integer \(1-99\)/
   )
 })
 

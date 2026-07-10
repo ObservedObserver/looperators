@@ -175,7 +175,9 @@ function sourceSessions(state: KernelState, subscription: Subscription): Session
 //   edge, but a verdict from either end of the relationship does.
 // - deadline observes the passage of time: any event whose ts is past the
 //   deadline stops the subscription, regardless of where it came from.
-// - maxFirings is checked at fire attempts only (a matching source event).
+// - maxFirings prevents a firing attempt once persisted/replayed state is
+//   already at its cap. The runtime also stops immediately after the action
+//   that reaches the cap, so no N+1 event is required for lifecycle cleanup.
 function stopReason(
   state: KernelState,
   subscription: Subscription,

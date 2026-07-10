@@ -1675,6 +1675,7 @@ export class RuntimeSessionManager {
     })
     this.#persistState()
     this.#sweepKilledParticipantSubscriptions()
+    this.#sweepExhaustedSubscriptions()
     this.#recoverSchedulerState()
     this.#recoverTimers()
     this.#recoverExternalSourceAnchors()
@@ -1952,6 +1953,7 @@ export class RuntimeSessionManager {
           if (subscription) {
             subscription.firings += 1
             this.#touch()
+            await this.#stopSubscriptionAtMaxFirings(subscription, ctx)
           }
         } catch (error) {
           console.error(
@@ -2318,6 +2320,7 @@ export class RuntimeSessionManager {
       subscription.firings += 1
       this.#syncLoopStateForSubscription(subscription, 'activated')
       this.#touch()
+      await this.#stopSubscriptionAtMaxFirings(subscription, ctx)
       this.#broadcast({ type: 'runtime.state', state: this.getState() })
     } catch (error) {
       console.error(
@@ -2955,6 +2958,24 @@ export class RuntimeSessionManager {
     }
   }
 
+  // Snapshots created before immediate-cap stopping may contain an active
+  // subscription whose firing count already equals its cap. Reconcile those
+  // on load so restart cannot resurrect an exhausted timer/listener or leave
+  // the canvas claiming it is active until another matching event arrives.
+  #sweepExhaustedSubscriptions() {
+    for (const subscription of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      const decision = this.#maxFiringsStopDecision(subscription)
+      if (decision) {
+        void this.#stopSubscriptionWithOnStop(decision, {
+          actor: { kind: 'runtime' },
+          reason: decision.reason,
+        })
+      }
+    }
+  }
+
   // --- L2 external event sources: the ingestion choke point (§2.4) ---
   //
   // A source is an explicitly registered entity; adapters (script, git,
@@ -3297,6 +3318,31 @@ export class RuntimeSessionManager {
         },
         ctx
       )
+    }
+  }
+
+  #maxFiringsStopDecision(subscription) {
+    const maxFirings = subscription?.stop?.maxFirings
+    if (
+      !subscription ||
+      subscription.state !== 'active' ||
+      !Number.isInteger(maxFirings) ||
+      subscription.firings < maxFirings
+    ) {
+      return undefined
+    }
+    return {
+      kind: 'stop-subscription',
+      subscriptionId: subscription.id,
+      onStop: subscription.onStop,
+      reason: `maxFirings=${maxFirings} reached.`,
+    }
+  }
+
+  async #stopSubscriptionAtMaxFirings(subscription, ctx) {
+    const decision = this.#maxFiringsStopDecision(subscription)
+    if (decision) {
+      await this.#stopSubscriptionWithOnStop(decision, ctx)
     }
   }
 
@@ -5644,13 +5690,20 @@ export class RuntimeSessionManager {
               )
             }
           }
+          // Handoff is one logical command even though the kernel records its
+          // two facts separately. Preflight before writing the channel so a
+          // busy/frozen target cannot make Apply reject after leaving an
+          // invisible partial delivery. #cmdActivate checks again immediately
+          // after delivery, closing the normal command-level TOCTOU window.
+          const ctx = this.#humanCtx()
+          this.#assertActivatable(to, ctx)
           this.#cmdDeliver(
             { sessionId: to, source: from, topic: step.topic },
-            this.#humanCtx()
+            ctx
           )
           await this.#cmdActivate(
             { sessionId: to, note: step.note },
-            this.#humanCtx()
+            ctx
           )
           deliveredTo.push(to)
         } else if (step.kind === 'goal-loop') {

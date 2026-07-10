@@ -656,6 +656,8 @@ export type TemplateSlot = {
   required: boolean;
   placeholder?: string;
   defaultValue?: string | number;
+  min?: number;
+  max?: number;
   help?: string;
 };
 

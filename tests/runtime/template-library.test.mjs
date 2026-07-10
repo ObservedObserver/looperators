@@ -19,6 +19,7 @@ const readArg = (name) => {
   const index = args.indexOf(name)
   return index >= 0 ? args[index + 1] : undefined
 }
+const prompt = readArg('-p') ?? ''
 const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
 function emit(value) {
   process.stdout.write(JSON.stringify(value) + '\\n')
@@ -29,7 +30,11 @@ emit({
   session_id: backendSessionId,
   message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
 })
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
+if (prompt.includes('ORRERY_DELAY')) {
+  setInterval(() => {}, 1000)
+} else {
+  emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
+}
 `
 
 function installFakeClaude(tempRoot) {
@@ -150,6 +155,67 @@ test('the built-ins are listed as data and handoff is an IMMEDIATE one-shot — 
       (event) => event.type === 'activated' && event.payload?.sessionId === deployer
     )
     assert.ok(activated, 'the activation is a kernel fact on the target')
+  } finally {
+    cleanup()
+  }
+})
+
+test('handoff preflights busy and frozen targets without leaving a partial delivery', async () => {
+  const { manager, cleanup } = harness('orrery-l6-handoff-atomic-')
+  try {
+    const runtime = manager()
+    const source = await createIdleSession(runtime, 'source')
+    const frozenTarget = await createIdleSession(runtime, 'frozen target')
+    const busyTarget = await createIdleSession(runtime, 'busy target')
+    runtime.freeze({ target: frozenTarget, reason: 'hold' })
+    await runtime.resumeSession({ sessionId: busyTarget, message: 'ORRERY_DELAY' })
+    await waitFor(
+      'busy handoff target running',
+      () => runtime.getState().sessions[busyTarget]?.status === 'running'
+    )
+
+    for (const [target, error] of [
+      [frozenTarget, /Frozen session cannot be resumed/],
+      [busyTarget, /Session is already running/],
+    ]) {
+      const before = runtime.getKernelEvents({ limit: 500 }).events
+      const deliveredBefore = before.filter(
+        (event) =>
+          event.type === 'delivered' &&
+          event.payload?.target === target &&
+          event.payload?.topic === 'handoff'
+      ).length
+      const activatedBefore = before.filter(
+        (event) => event.type === 'activated' && event.payload?.sessionId === target
+      ).length
+
+      await assert.rejects(
+        runtime.applyTemplate({
+          templateId: 'handoff',
+          params: { source, target },
+        }),
+        error
+      )
+
+      const after = runtime.getKernelEvents({ limit: 500 }).events
+      assert.equal(
+        after.filter(
+          (event) =>
+            event.type === 'delivered' &&
+            event.payload?.target === target &&
+            event.payload?.topic === 'handoff'
+        ).length,
+        deliveredBefore,
+        'failed handoff leaves no unread channel delivery'
+      )
+      assert.equal(
+        after.filter(
+          (event) => event.type === 'activated' && event.payload?.sessionId === target
+        ).length,
+        activatedBefore,
+        'failed handoff never activates the target'
+      )
+    }
   } finally {
     cleanup()
   }

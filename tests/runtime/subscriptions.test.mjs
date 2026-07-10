@@ -440,6 +440,50 @@ test('deliver-only subscriptions forward the source bundle without activation', 
   }
 })
 
+test('maxFirings stops immediately after the firing that reaches the cap', async () => {
+  const { manager, cleanup } = harness('orrery-subs-immediate-cap-')
+  try {
+    const runtime = manager()
+    const source = await createIdleSession(runtime, 'Source')
+    const observer = await createIdleSession(runtime, 'Observer')
+    const authored = runtime.authorSubscription({
+      label: 'one-shot-feed',
+      sourceSessionId: source,
+      on: { on: 'finished' },
+      targetSessionId: observer,
+      action: { kind: 'deliver', topic: 'once' },
+      gate: 'auto',
+      stop: { maxFirings: 1 },
+    })
+
+    await runtime.resumeSession({ sessionId: source, message: 'fire once' })
+    await waitFor(
+      'first firing reaches its cap and stops',
+      () => runtime.getState().subscriptions[authored.subscription.id]?.state === 'stopped'
+    )
+
+    const stopped = runtime.getState().subscriptions[authored.subscription.id]
+    assert.equal(stopped.firings, 1)
+    const events = kernelEvents(runtime)
+    const delivered = events.find(
+      (event) =>
+        event.type === 'delivered' &&
+        event.payload.subscriptionId === authored.subscription.id
+    )
+    const stoppedEvent = events.find(
+      (event) =>
+        event.type === 'subscription.stopped' &&
+        event.payload.subscriptionId === authored.subscription.id
+    )
+    assert.ok(delivered, 'the capped firing still executes once')
+    assert.ok(stoppedEvent, 'the subscription stops without an N+1 source event')
+    assert.match(stoppedEvent.reason, /maxFirings=1/)
+    assert.ok(stoppedEvent.seq > delivered.seq, 'stop follows the final executed action')
+  } finally {
+    cleanup()
+  }
+})
+
 test('gate authority follows master reassignment (live R1 routing)', async () => {
   const { manager, cleanup } = harness('orrery-subs-reassign-')
   try {
@@ -878,7 +922,7 @@ test('hero loop preset compiles to S1/S2 and walks the §12.5 sequence', async (
   }
 })
 
-test('hero loop maxFirings guard stops the loop instead of firing past the cap', async () => {
+test('hero loop maxFirings guard stops as soon as the capped firing executes', async () => {
   const { manager, cleanup } = harness('orrery-subs-max-')
   try {
     const runtime = manager()
@@ -936,18 +980,9 @@ test('hero loop maxFirings guard stops the loop instead of firing past the cap',
       source: master.sessionId,
       input: { slotKey: s2Slot },
     })
-    await waitFor(
-      'iteration 1 done',
-      () => runtime.getState().subscriptions[s2.id].firings === 1,
-      12000
-    )
-
-    // Second issues verdict hits the cap: stop + freeze, no firing.
-    await runtime.handleMembraneRequest({
-      tool: 'report',
-      source: reviewerId,
-      input: { type: 'verdict', verdict: 'issues', issues: [{ message: 'second pass' }] },
-    })
+    // The first accepted retry is the cap. It still executes, then the whole
+    // paired ring stops and freezes immediately — no second report is needed
+    // merely to discover that maxFirings was already exhausted.
     await waitFor(
       'maxFirings stop + freeze',
       () =>
