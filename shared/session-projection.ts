@@ -179,11 +179,30 @@ function projectedTurnDiffs(events) {
   return sortByCreatedAt([...turnDiffs.values()])
 }
 
+function assistantMessageKey(event) {
+  return event.itemId ?? event.turnId ?? 'unknown-turn'
+}
+
 function projectedAssistantMessages(session, events) {
-  const assistantByTurn = new Map()
-  const sawTextDeltaByTurn = new Set()
+  const assistantByKey = new Map()
+  const sawTextDeltaByKey = new Set()
 
   for (const event of events) {
+    if (event.type === 'message.completed' && event.message.role === 'assistant') {
+      const key = event.message.providerItemId ?? event.message.runId ?? event.message.id
+      const existing = assistantByKey.get(key)
+      assistantByKey.set(key, {
+        id: existing?.id ?? event.message.id,
+        content: event.message.content,
+        ts: event.message.ts,
+        runId: event.message.runId,
+        providerItemId: event.message.providerItemId,
+        phase: event.message.phase,
+        status: 'complete',
+      })
+      continue
+    }
+
     if (
       event.type !== 'content.delta' ||
       event.streamKind !== 'assistant_text' ||
@@ -192,23 +211,25 @@ function projectedAssistantMessages(session, events) {
       continue
     }
 
-    const turnId = event.turnId ?? event.itemId ?? 'unknown-turn'
-    const existing = assistantByTurn.get(turnId) ?? {
-      id: `${session.sessionId}:${turnId}:assistant`,
+    const key = assistantMessageKey(event)
+    const existing = assistantByKey.get(key) ?? {
+      id: `${session.sessionId}:${key}:assistant`,
       content: '',
       ts: event.ts,
+      runId: event.turnId ?? key,
+      providerItemId: event.itemId,
       status: 'streaming',
     }
 
     let applied = false
     if (event.isSnapshot) {
-      if (!sawTextDeltaByTurn.has(turnId)) {
+      if (!sawTextDeltaByKey.has(key)) {
         existing.content = event.text
         applied = true
       }
     } else {
       existing.content += event.text
-      sawTextDeltaByTurn.add(turnId)
+      sawTextDeltaByKey.add(key)
       applied = true
     }
     if (!applied) {
@@ -216,7 +237,7 @@ function projectedAssistantMessages(session, events) {
     }
     existing.ts = event.ts
     existing.status = 'streaming'
-    assistantByTurn.set(turnId, existing)
+    assistantByKey.set(key, existing)
   }
 
   const completedTurns = new Set(
@@ -225,14 +246,16 @@ function projectedAssistantMessages(session, events) {
       .map((event) => event.turnId)
   )
 
-  const projectedMessages = [...assistantByTurn.entries()].map(([turnId, message]) => ({
+  const projectedMessages = [...assistantByKey.values()].map((message) => ({
     id: message.id,
     sessionId: session.sessionId,
     role: 'assistant',
     content: message.content,
     ts: message.ts,
-    runId: turnId,
-    status: completedTurns.has(turnId) ? 'complete' : message.status,
+    runId: message.runId,
+    providerItemId: message.providerItemId,
+    phase: message.phase,
+    status: message.runId && completedTurns.has(message.runId) ? 'complete' : message.status,
   }))
   const projectedRunIds = new Set(projectedMessages.map((message) => message.runId))
   const persistedMessages = session.messages

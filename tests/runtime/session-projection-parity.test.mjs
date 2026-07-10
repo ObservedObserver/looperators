@@ -75,6 +75,7 @@ function fixtureSession() {
         type: 'content.delta',
         streamKind: 'assistant_text',
         turnId: 'turn-1',
+        itemId: 'provider-message-1',
         text: 'streamed ',
       },
       {
@@ -83,6 +84,7 @@ function fixtureSession() {
         type: 'content.delta',
         streamKind: 'assistant_text',
         turnId: 'turn-1',
+        itemId: 'provider-message-1',
         text: 'snapshot must be skipped after deltas',
         isSnapshot: true,
       },
@@ -92,7 +94,24 @@ function fixtureSession() {
         type: 'content.delta',
         streamKind: 'assistant_text',
         turnId: 'turn-1',
+        itemId: 'provider-message-1',
         text: 'answer',
+      },
+      {
+        id: 'event-message-completed',
+        ts: '2026-07-01T00:00:05.100Z',
+        type: 'message.completed',
+        message: {
+          id: 'message-provider-completed',
+          sessionId: 'session-parity',
+          role: 'assistant',
+          content: 'completed answer',
+          ts: '2026-07-01T00:00:05.100Z',
+          runId: 'turn-1',
+          providerItemId: 'provider-message-1',
+          phase: 'final_answer',
+          status: 'complete',
+        },
       },
       {
         id: 'event-item-started',
@@ -201,9 +220,9 @@ test('electron session-projection mirror matches the renderer implementation', a
     assert.deepEqual(electronResult, rendererResult)
     assert.equal(electronResult.status, 'idle')
     assert.equal(
-      electronResult.messages.some((message) => message.content === 'streamed answer'),
+      electronResult.messages.some((message) => message.content === 'completed answer' && message.phase === 'final_answer'),
       true,
-      'fixture must exercise the streamed-assistant path'
+      'fixture must exercise the completed assistant path'
     )
   } finally {
     renderer.cleanup()

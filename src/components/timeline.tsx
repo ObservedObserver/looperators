@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { Check, ClipboardCheck, FileText, Image as ImageIcon, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -55,47 +55,74 @@ export function MessageAttachmentStrip({ attachments }: { attachments?: ChatAtta
   );
 }
 
-export function ChatMessage({ message, agent }: { message: AgentMessage; agent?: string }) {
-  const isUser = message.role === 'user';
-  const isStreaming = message.status === 'streaming';
-  const hasText = message.content.trim().length > 0;
-  const senderLabel = assistantLabel(agent);
+type ChatMessageProps = { message: AgentMessage; agent?: string };
 
-  return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
-      <div className="mb-1.5 flex items-center gap-2">
+function sameMessageAttachments(left: AgentMessage, right: AgentMessage) {
+  const leftAttachments = left.attachments ?? [];
+  const rightAttachments = right.attachments ?? [];
+  return leftAttachments.length === rightAttachments.length && leftAttachments.every((attachment, index) => attachment.id === rightAttachments[index]?.id);
+}
+
+export const ChatMessage = memo(
+  function ChatMessage({ message, agent }: ChatMessageProps) {
+    const isUser = message.role === 'user';
+    const isStreaming = message.status === 'streaming';
+    const hasText = message.content.trim().length > 0;
+    const senderLabel = assistantLabel(agent);
+    const isCommentary = message.phase === 'commentary';
+
+    return (
+      <div
+        className={cn('border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0', isCommentary ? 'bg-ink-soft/25 text-term-dim' : undefined)}
+        data-message-phase={message.phase}
+      >
+        <div className="mb-1.5 flex items-center gap-2">
+          {isUser ? (
+            <span className="text-[11px] text-term-faint">you</span>
+          ) : (
+            <>
+              <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_var(--term-green)]" />
+              <span className={cn('text-[11px]', isCommentary ? 'text-term-dim2' : 'text-term-emerald')}>{senderLabel}</span>
+            </>
+          )}
+          {isStreaming ? <span className="text-[10px] text-term-amber">streaming</span> : null}
+          <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">{formatClockSeconds(message.ts)}</span>
+        </div>
         {isUser ? (
-          <span className="text-[11px] text-term-faint">you</span>
+          <>
+            <div className="flex gap-2 text-[13px] leading-6">
+              <span className="shrink-0 text-lime-hi">❯</span>
+              <span className="whitespace-pre-wrap break-words text-term-name">{message.content}</span>
+            </div>
+            <MessageAttachmentStrip attachments={message.attachments} />
+          </>
         ) : (
           <>
-            <span className="size-1.5 rounded-full bg-term-green shadow-[0_0_8px_var(--term-green)]" />
-            <span className="text-[11px] text-term-emerald">{senderLabel}</span>
+            {hasText || isStreaming ? (
+              <div className={cn('text-[13px] leading-6', isCommentary ? 'text-term-dim' : 'text-term-name')}>
+                <AgentMarkdown text={message.content} streaming={isStreaming} />
+                {isStreaming ? <span className="orrery-caret ml-1" /> : null}
+              </div>
+            ) : null}
           </>
         )}
-        {isStreaming ? <span className="text-[10px] text-term-amber">streaming</span> : null}
-        <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">{formatClockSeconds(message.ts)}</span>
       </div>
-      {isUser ? (
-        <>
-          <div className="flex gap-2 text-[13px] leading-6">
-            <span className="shrink-0 text-lime-hi">❯</span>
-            <span className="whitespace-pre-wrap break-words text-term-name">{message.content}</span>
-          </div>
-          <MessageAttachmentStrip attachments={message.attachments} />
-        </>
-      ) : (
-        <>
-          {hasText || isStreaming ? (
-            <div className="text-[13px] leading-6 text-term-name">
-              <AgentMarkdown text={message.content} streaming={isStreaming} />
-              {isStreaming ? <span className="orrery-caret ml-1" /> : null}
-            </div>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
+    );
+  },
+  (previous, next) => {
+    const left = previous.message;
+    const right = next.message;
+    return (
+      previous.agent === next.agent &&
+      left.id === right.id &&
+      left.content === right.content &&
+      left.status === right.status &&
+      left.phase === right.phase &&
+      left.ts === right.ts &&
+      sameMessageAttachments(left, right)
+    );
+  },
+);
 
 export function TurnBoundaryRow({ entry }: { entry: Extract<SessionTimelineEntry, { kind: 'turn' }> }) {
   return (

@@ -330,6 +330,14 @@ export type ProviderRuntimeEvent =
   | {
       id: string;
       ts: string;
+      type: 'message.completed';
+      sessionId: SessionId;
+      message: AgentMessage;
+      raw?: RawEnvelope;
+    }
+  | {
+      id: string;
+      ts: string;
       type: 'item.started';
       sessionId: SessionId;
       item: RuntimeItem;

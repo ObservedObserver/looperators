@@ -71,10 +71,8 @@ export const graphStateSchema = {
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     loops: 'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
-    sources:
-      'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
-    templates:
-      'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config, snapshot-persisted, never kernel facts',
+    sources: 'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
+    templates: 'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config, snapshot-persisted, never kernel facts',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   loopPolicy: {
@@ -478,6 +476,8 @@ export type AgentMessage = {
   attachments?: ChatAttachment[];
   ts: string;
   runId?: string;
+  providerItemId?: string;
+  phase?: string;
   status?: 'streaming' | 'complete' | 'failed';
 };
 
@@ -639,9 +639,7 @@ export type EmitExternalEventInput = {
   dedupeKey?: string;
 };
 
-export type EmitExternalEventResult =
-  | { ok: true; eventId?: string; type: string }
-  | { ok: false; dropped: true; reason: string };
+export type EmitExternalEventResult = { ok: true; eventId?: string; type: string } | { ok: false; dropped: true; reason: string };
 
 // L6 relation template library. Built-in templates and user-saved ones are
 // served as data (descriptors with slot definitions) so the renderer stays
@@ -1129,13 +1127,12 @@ export type RuntimeEvent =
       type: 'session.stream';
       sessionId: SessionId;
       chunk: AgentStreamChunk;
-      state: GraphState;
+      providerEvents?: ProviderRuntimeEvent[];
     }
   | {
       type: 'provider.runtime';
       sessionId: SessionId;
       providerEvent: ProviderRuntimeEvent;
-      state: GraphState;
     }
   | { type: 'session.finished'; sessionId: SessionId; state: GraphState }
   | {

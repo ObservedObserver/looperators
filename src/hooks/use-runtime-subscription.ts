@@ -2,6 +2,9 @@ import { type Dispatch, type SetStateAction, useEffect } from 'react';
 
 import type { GraphState, KernelEvent, RuntimeTerminal } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
+import { applyLightweightRuntimeEvent } from '../../shared/runtime-state-patch';
+
+const streamRenderBatchMs = 50;
 
 export function useRuntimeSubscription({
   runtimeApi,
@@ -26,6 +29,31 @@ export function useRuntimeSubscription({
     }
 
     let isMounted = true;
+    let streamBatchTimer: number | undefined;
+    let pendingStreamEvents: Parameters<typeof applyLightweightRuntimeEvent>[1][] = [];
+
+    const discardPendingStreamEvents = () => {
+      pendingStreamEvents = [];
+      if (streamBatchTimer !== undefined) {
+        window.clearTimeout(streamBatchTimer);
+        streamBatchTimer = undefined;
+      }
+    };
+
+    const flushPendingStreamEvents = () => {
+      streamBatchTimer = undefined;
+      const events = pendingStreamEvents;
+      pendingStreamEvents = [];
+      if (events.length === 0) {
+        return;
+      }
+      setRuntimeState((current) => events.reduce<GraphState>((next, event) => applyLightweightRuntimeEvent(next, event) as GraphState, current));
+    };
+
+    const enqueueStreamEvent = (event: Parameters<typeof applyLightweightRuntimeEvent>[1]) => {
+      pendingStreamEvents.push(event);
+      streamBatchTimer ??= window.setTimeout(flushPendingStreamEvents, streamRenderBatchMs);
+    };
     runtimeApi
       .getState()
       .then((state) => {
@@ -56,7 +84,12 @@ export function useRuntimeSubscription({
 
     const unsubscribe = runtimeApi.onEvent((event) => {
       if ('state' in event) {
+        // A boundary snapshot already contains every earlier delta. Dropping
+        // the queued patches preserves event order without replaying them.
+        discardPendingStreamEvents();
         setRuntimeState(event.state);
+      } else if (event.type === 'provider.runtime' || event.type === 'session.stream') {
+        enqueueStreamEvent(event);
       }
       if ('terminal' in event) {
         syncTerminalFromEvent(event.terminal);
@@ -68,6 +101,7 @@ export function useRuntimeSubscription({
 
     return () => {
       isMounted = false;
+      discardPendingStreamEvents();
       unsubscribe();
     };
   }, [ingestKernelEvents, restoreCwdFallback, runtimeApi, setRuntimeError, setRuntimeState, setSelectedSessionId, syncTerminalFromEvent]);

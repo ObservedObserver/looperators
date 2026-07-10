@@ -412,6 +412,15 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
         (event) => event.type === 'session.resumed' && event.sessionId === sessionId
       )
     )
+    const streamEvents = emittedEvents.filter(
+      (event) => event.type === 'session.stream'
+    )
+    assert.ok(streamEvents.length > 0)
+    assert.equal(streamEvents.every((event) => !('state' in event)), true)
+    assert.equal(
+      streamEvents.every((event) => Array.isArray(event.providerEvents)),
+      true
+    )
 
     const restored = manager({ storageFile })
     assert.equal(restored.getState().sessions[sessionId].sessionId, sessionId)
@@ -818,12 +827,16 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
   const markerFile = path.join(tempRoot, 'codex-thread.json')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const project = path.join(tempRoot, 'project')
+  const emittedEvents = []
 
   fs.mkdirSync(project, { recursive: true })
   fs.writeFileSync(fakeCodex, fakeCodexAppServerSource(markerFile))
   fs.chmodSync(fakeCodex, 0o755)
 
-  const runtime = new RuntimeSessionManager({ storageFile })
+  const runtime = new RuntimeSessionManager({
+    storageFile,
+    broadcastRuntimeEvent: (event) => emittedEvents.push(event),
+  })
 
   try {
     runtime.upsertProviderInstance({
@@ -863,6 +876,11 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
     assert.equal(marker.params.approvalPolicy, 'never')
     assert.equal(marker.params.sandbox, 'danger-full-access')
     assert.equal(marker.params.model, 'gpt-5-codex')
+    const providerEvents = emittedEvents.filter(
+      (event) => event.type === 'provider.runtime'
+    )
+    assert.ok(providerEvents.length > 0)
+    assert.equal(providerEvents.every((event) => !('state' in event)), true)
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

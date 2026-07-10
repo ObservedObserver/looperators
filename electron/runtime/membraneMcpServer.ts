@@ -6,7 +6,13 @@ function loadBridgeCredentials() {
   const bootstrapFile = process.env.ORRERY_MEMBRANE_BOOTSTRAP_FILE
   if (typeof bootstrapFile === 'string' && bootstrapFile.length > 0) {
     const raw = fs.readFileSync(bootstrapFile, 'utf8')
-    fs.rmSync(bootstrapFile, { force: true })
+    // Some MCP clients (Codex app-server) spawn the server several times per
+    // run — discovery, inventory, session — so the bootstrap file must
+    // survive until the run's handoff dir is cleaned up. Claude runs spawn
+    // once and keep the delete-after-read hygiene.
+    if (process.env.ORRERY_MEMBRANE_BOOTSTRAP_KEEP !== '1') {
+      fs.rmSync(bootstrapFile, { force: true })
+    }
     const parsed = JSON.parse(raw)
     return {
       bridgeUrl: parsed.bridgeUrl,

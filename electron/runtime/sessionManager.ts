@@ -1602,6 +1602,8 @@ export class RuntimeSessionManager {
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
   #bridge: MembraneBridge
   #providerService: ProviderService
+  #snapshotPersistTimer: ReturnType<typeof setTimeout> | undefined
+  #snapshotPersistDelayMs = 750
 
   constructor({
     storageFile,
@@ -1609,6 +1611,7 @@ export class RuntimeSessionManager {
     emitRuntimeEvent,
     broadcast,
     emit,
+    snapshotPersistDelayMs,
   }: JsonRecord = {}) {
     this.#storageFile =
       typeof storageFile === 'string' && storageFile.length > 0
@@ -1624,6 +1627,12 @@ export class RuntimeSessionManager {
             : typeof emit === 'function'
               ? emit
               : undefined
+    if (
+      Number.isFinite(snapshotPersistDelayMs) &&
+      snapshotPersistDelayMs >= 0
+    ) {
+      this.#snapshotPersistDelayMs = snapshotPersistDelayMs
+    }
     this.#kernelStore = new KernelStore({
       databaseFile: this.#storageFile
         ? kernelDatabaseFileFor(this.#storageFile)
@@ -3800,10 +3809,10 @@ export class RuntimeSessionManager {
         {
           id: 'mcp',
           label: 'MCP / tools',
-          status: providerKind === 'codex' ? 'unknown' : 'ok',
+          status: 'ok',
           message:
             providerKind === 'codex'
-              ? 'Codex app-server tool/MCP availability is reported through runtime events during a turn.'
+              ? 'Orrery membrane MCP bridge is mounted per-thread for Codex sessions.'
               : 'Orrery membrane MCP bridge is available for Claude sessions.',
         },
       ],
@@ -4598,6 +4607,7 @@ export class RuntimeSessionManager {
   }
 
   killAll() {
+    this.#persistState()
     for (const sessionId of this.#runs.keys()) {
       this.killSession(sessionId)
     }
@@ -5261,10 +5271,11 @@ export class RuntimeSessionManager {
       '',
       'Judge ONLY whether the goal is met right now:',
       '1. Prefer deterministic, executable checks — run the test suite, linter, build, or a script in the workspace — over impressions.',
-      '2. Then call the report tool exactly once with a typed verdict:',
+      '2. Then CALL the mcp__orrery_membrane__report TOOL exactly once with a typed verdict:',
       '   - {"type":"verdict","verdict":"done","summary":"<one-line proof, e.g. the passing command>"} if the goal is met.',
       '   - {"type":"verdict","verdict":"fail","summary":"<what is missing>","issues":[{"message":"<concrete failure to fix>"}]} if not.',
-      '3. Do not fix anything yourself. Do not ask questions. Report, then stop.',
+      '3. The verdict only counts when submitted through that tool call — a verdict written as a plain chat message is discarded and the goal loop stalls.',
+      '4. Do not fix anything yourself. Do not ask questions. Report via the tool, then stop.',
     ].join('\n')
   }
 
@@ -6372,15 +6383,19 @@ export class RuntimeSessionManager {
     truncateChunks(session.chunks)
 
     this.#appendNativeProviderEvent(session, streamChunk, chunk)
-    this.#appendLegacyProviderRuntimeEvents(sessionId, streamChunk, chunk)
+    const providerEvents = this.#appendLegacyProviderRuntimeEvents(
+      sessionId,
+      streamChunk,
+      chunk
+    )
     this.#appendAssistantMessage(sessionId, chunk)
     session.updatedAt = streamChunk.ts
-    this.#touch()
+    this.#touchDeferred()
     this.#broadcast({
       type: 'session.stream',
       sessionId,
       chunk: streamChunk,
-      state: this.getState(),
+      providerEvents,
     })
   }
 
@@ -6465,12 +6480,11 @@ export class RuntimeSessionManager {
     }
 
     session.updatedAt = normalizedEvent.ts ?? now()
-    this.#touch()
+    this.#touchDeferred()
     this.#broadcast({
       type: 'provider.runtime',
       sessionId,
       providerEvent: normalizedEvent,
-      state: this.getState(),
     })
   }
 
@@ -6528,6 +6542,7 @@ export class RuntimeSessionManager {
     for (const event of events) {
       this.#appendProviderRuntimeEvent(sessionId, event)
     }
+    return events
   }
 
   #appendProviderRuntimeEvent(sessionId, event) {
@@ -8241,11 +8256,27 @@ export class RuntimeSessionManager {
     this.#persistState()
   }
 
+  #touchDeferred() {
+    this.#state.updatedAt = now()
+    if (this.#snapshotPersistTimer) {
+      return
+    }
+    this.#snapshotPersistTimer = setTimeout(() => {
+      this.#snapshotPersistTimer = undefined
+      this.#persistState()
+    }, this.#snapshotPersistDelayMs)
+    this.#snapshotPersistTimer.unref?.()
+  }
+
   #broadcast(event) {
     this.#emitRuntimeEventToHost?.(event)
   }
 
   #persistState() {
+    if (this.#snapshotPersistTimer) {
+      clearTimeout(this.#snapshotPersistTimer)
+      this.#snapshotPersistTimer = undefined
+    }
     this.#kernelStore.saveSnapshot(this.#state)
   }
 

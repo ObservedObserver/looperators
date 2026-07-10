@@ -236,6 +236,97 @@ test('projectSession preserves persisted assistant turns and ignores late snapsh
   )
 })
 
+test('projectSession upserts completed Codex agent messages by provider item id and preserves phase', async () => {
+  const { projectSession } = await loadProjectionModule()
+  const sessionId = 'session-1'
+  const projection = projectSession(
+    baseSession({
+      messages: [
+        {
+          id: 'persisted-stream',
+          sessionId,
+          role: 'assistant',
+          content: 'partial draft',
+          ts: '2026-06-29T00:00:01.000Z',
+          runId: 'turn-a',
+          status: 'streaming',
+        },
+      ],
+      runtimeEvents: [
+        {
+          id: 'delta-1',
+          ts: '2026-06-29T00:00:02.000Z',
+          type: 'content.delta',
+          sessionId,
+          turnId: 'turn-a',
+          itemId: 'codex-item-1',
+          streamKind: 'assistant_text',
+          text: 'draft ',
+        },
+        {
+          id: 'message-completed',
+          ts: '2026-06-29T00:00:03.000Z',
+          type: 'message.completed',
+          sessionId,
+          message: {
+            id: `${sessionId}:codex-item-1:assistant`,
+            sessionId,
+            role: 'assistant',
+            content: 'authoritative final',
+            ts: '2026-06-29T00:00:03.000Z',
+            runId: 'turn-a',
+            providerItemId: 'codex-item-1',
+            phase: 'final_answer',
+            status: 'complete',
+          },
+        },
+        {
+          id: 'commentary-completed',
+          ts: '2026-06-29T00:00:04.000Z',
+          type: 'message.completed',
+          sessionId,
+          message: {
+            id: `${sessionId}:codex-item-2:assistant`,
+            sessionId,
+            role: 'assistant',
+            content: 'intermediate note',
+            ts: '2026-06-29T00:00:04.000Z',
+            runId: 'turn-a',
+            providerItemId: 'codex-item-2',
+            phase: 'commentary',
+            status: 'complete',
+          },
+        },
+        {
+          id: 'complete',
+          ts: '2026-06-29T00:00:05.000Z',
+          type: 'turn.completed',
+          sessionId,
+          turnId: 'turn-a',
+        },
+      ],
+    })
+  )
+
+  const assistantMessages = projection.messages.filter(
+    (message) => message.role === 'assistant'
+  )
+
+  assert.equal(assistantMessages.length, 2)
+  assert.equal(
+    assistantMessages.find((message) => message.providerItemId === 'codex-item-1')?.content,
+    'authoritative final'
+  )
+  assert.equal(
+    assistantMessages.find((message) => message.providerItemId === 'codex-item-1')?.phase,
+    'final_answer'
+  )
+  assert.equal(
+    assistantMessages.find((message) => message.providerItemId === 'codex-item-2')?.phase,
+    'commentary'
+  )
+})
+
 test('projectSession projects plans turn diffs and work into a unified timeline', async () => {
   const { projectSession } = await loadProjectionModule()
   const sessionId = 'session-1'

@@ -76,6 +76,44 @@ function outputFromItem(item) {
   return undefined
 }
 
+function contentBlockText(block) {
+  if (typeof block === 'string') {
+    return block
+  }
+  if (!block || typeof block !== 'object') {
+    return ''
+  }
+  if (typeof block.text === 'string') {
+    return block.text
+  }
+  if (typeof block.content === 'string') {
+    return block.content
+  }
+  return ''
+}
+
+function agentMessageText(item) {
+  if (typeof item?.text === 'string') {
+    return item.text
+  }
+  if (typeof item?.content === 'string') {
+    return item.content
+  }
+  if (Array.isArray(item?.content)) {
+    return item.content.map(contentBlockText).join('')
+  }
+  if (typeof item?.message === 'string') {
+    return item.message
+  }
+  if (typeof item?.message?.content === 'string') {
+    return item.message.content
+  }
+  if (Array.isArray(item?.message?.content)) {
+    return item.message.content.map(contentBlockText).join('')
+  }
+  return ''
+}
+
 function questionText(question, index) {
   const header =
     typeof question?.header === 'string' && question.header.trim().length > 0
@@ -298,23 +336,6 @@ function runtimeItemFromThreadItem({ sessionId, turnId, ts, item, raw }) {
     }
   }
 
-  if (type === 'reasoning') {
-    return {
-      id,
-      sessionId,
-      turnId,
-      kind: 'reasoning',
-      providerName: 'reasoning',
-      title: 'reasoning',
-      status: 'completed',
-      output: [...(item.summary ?? []), ...(item.content ?? [])].join('\n'),
-      startedAt: ts,
-      updatedAt: ts,
-      completedAt: ts,
-      raw,
-    }
-  }
-
   return undefined
 }
 
@@ -453,6 +474,32 @@ export function codexRuntimeEventsFromMessage({
     }
     case 'item/completed': {
       const completedTs = isoFromMs(params.completedAtMs)
+      if (params.item?.type === 'agentMessage') {
+        const providerItemId =
+          typeof params.item.id === 'string' ? params.item.id : params.itemId
+        return [
+          {
+            ...eventBase({ sessionId, turnId, ts: completedTs, raw }),
+            type: 'message.completed',
+            message: {
+              id: providerItemId
+                ? `${sessionId}:${providerItemId}:assistant`
+                : `${sessionId}:${turnId}:assistant`,
+              sessionId,
+              role: 'assistant',
+              content: agentMessageText(params.item),
+              ts: completedTs,
+              runId: turnId,
+              providerItemId,
+              ...(typeof params.item.phase === 'string'
+                ? { phase: params.item.phase }
+                : {}),
+              status: 'complete',
+            },
+          },
+        ]
+      }
+
       const item = runtimeItemFromThreadItem({
         sessionId,
         turnId,

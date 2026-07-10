@@ -1,4 +1,4 @@
-import { Children, isValidElement, useCallback, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Children, isValidElement, memo, useCallback, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components, type UrlTransform } from 'react-markdown';
 import rehypeSanitize, { defaultSchema, type Options as SanitizeOptions } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
@@ -176,7 +176,7 @@ const markdownUrlTransform: UrlTransform = (url) => {
   return defaultUrlTransform(url);
 };
 
-export function AgentMarkdown({ text, streaming = false, className }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, streaming = false, className }: AgentMarkdownProps) {
   const normalized = useMemo(() => preprocessAgentMarkdown(text, streaming), [streaming, text]);
 
   return (
@@ -193,4 +193,4 @@ export function AgentMarkdown({ text, streaming = false, className }: AgentMarkd
       </ReactMarkdown>
     </div>
   );
-}
+});

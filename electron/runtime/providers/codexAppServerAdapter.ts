@@ -1,10 +1,22 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import { CodexJsonRpcClient } from './codexJsonRpcClient.js'
 import {
   codexRuntimeEventsFromMessage,
   codexRuntimeEventsFromRequest,
 } from './codexRuntimeMapper.js'
+import {
+  cleanupMcpHandoff,
+  createMcpHandoff,
+  membraneSystemPrompt,
+} from '../claudeCliAdapter.js'
+
+// Codex qualifies MCP tools as `<server>__<tool>`, so registering the bridge
+// server under this name yields model-facing tool names identical to the
+// Claude adapters' (`mcp__orrery_membrane__report`, ...) — every membrane
+// prompt in the runtime works verbatim across providers.
+export const codexMembraneServerName = 'mcp__orrery_membrane'
 
 type RuntimeSettings = Record<string, any>
 
@@ -86,7 +98,41 @@ function sandboxPolicyForCodex(sandbox, cwd) {
   }
 }
 
-function threadStartParams({ cwd, runtimeSettings }) {
+// Per-thread config overrides that mount the membrane MCP server for this
+// run only — nothing is written to the user's config.toml. thread/start and
+// thread/resume both accept the same `config` + `developerInstructions`
+// overrides (each Orrery turn is a fresh app-server process, so the mount
+// must ride every thread call).
+function membraneThreadParams(mcpHandoff) {
+  if (!mcpHandoff?.configPath) {
+    return {}
+  }
+
+  const handoffConfig = JSON.parse(fs.readFileSync(mcpHandoff.configPath, 'utf8'))
+  const server = handoffConfig?.mcpServers?.orrery_membrane
+  if (!server) {
+    return {}
+  }
+
+  return {
+    config: {
+      mcp_servers: {
+        [codexMembraneServerName]: {
+          command: server.command,
+          args: server.args,
+          env: server.env,
+        },
+      },
+    },
+    developerInstructions: membraneSystemPrompt(),
+  }
+}
+
+export function codexMembraneThreadParamsForTest(mcpHandoff) {
+  return membraneThreadParams(mcpHandoff)
+}
+
+function threadStartParams({ cwd, runtimeSettings, mcpHandoff }) {
   const config = runtimeModeToCodexConfig(runtimeSettings)
   return {
     cwd,
@@ -99,6 +145,7 @@ function threadStartParams({ cwd, runtimeSettings }) {
     ...(runtimeSettings?.serviceTier
       ? { serviceTier: runtimeSettings.serviceTier }
       : {}),
+    ...membraneThreadParams(mcpHandoff),
   }
 }
 
@@ -161,6 +208,34 @@ function turnStartParams({ threadId, prompt, attachments, cwd, runtimeSettings }
       ? { effort: runtimeSettings.reasoningEffort }
       : {}),
   }
+}
+
+// Codex routes MCP tool-call approvals through mcpServer/elicitation/request
+// (with `_meta.codex_approval_kind`), even under approvalPolicy "never".
+// Membrane tools are the sanctioned control surface — the bridge token
+// already authenticates the session and headless runs cannot answer
+// interactive prompts — so they are always accepted, mirroring the Claude
+// adapters' --allowedTools / canUseTool exemption. Other servers' tool
+// approvals follow the runtime mode; true elicitations (interactive user
+// input, no approval kind) are declined in unattended runs.
+function elicitationResponse(message, runtimeSettings: RuntimeSettings = {}) {
+  const params = message.params ?? {}
+  const approvalKind = params?._meta?.codex_approval_kind
+  if (typeof approvalKind === 'string') {
+    if (params.serverName === codexMembraneServerName) {
+      return { action: 'accept', content: {} }
+    }
+    if (runtimeSettings.runtimeMode === 'full-access') {
+      return { action: 'accept', content: {} }
+    }
+    return { action: 'decline' }
+  }
+
+  return { action: 'decline' }
+}
+
+export function codexElicitationResponseForTest(message, runtimeSettings) {
+  return elicitationResponse(message, runtimeSettings)
 }
 
 function autoResponseForRequest(message) {
@@ -293,6 +368,8 @@ export class CodexAppServerRun extends EventEmitter {
   #turnCompleted = false
   #pendingRequests = new Map()
   #providerInstance
+  #mcpHandoff
+  #runtimeSettings
 
   constructor({
     prompt,
@@ -303,12 +380,20 @@ export class CodexAppServerRun extends EventEmitter {
     runtimeSettings,
     attachments,
     providerInstance,
+    membrane,
   }) {
     super()
     this.#threadId = backendSessionId
     this.#orreryTurnId = turnId
     this.#sessionId = sessionId
     this.#providerInstance = providerInstance
+    this.#runtimeSettings = runtimeSettings
+    // keepBootstrap: Codex spawns the MCP server several times per run
+    // (discovery, inventory, session), so the credentials file must survive
+    // until the handoff dir is cleaned up at run close.
+    this.#mcpHandoff = membrane
+      ? createMcpHandoff(membrane, { keepBootstrap: true })
+      : undefined
     void this.#run({ prompt, attachments, cwd, runtimeSettings })
   }
 
@@ -389,14 +474,22 @@ export class CodexAppServerRun extends EventEmitter {
         ? await this.#client.request(
             'thread/resume',
             {
-              ...threadStartParams({ cwd, runtimeSettings }),
+              ...threadStartParams({
+                cwd,
+                runtimeSettings,
+                mcpHandoff: this.#mcpHandoff,
+              }),
               threadId: this.#threadId,
             },
             { timeoutMs: 60000 }
           )
         : await this.#client.request(
             'thread/start',
-            threadStartParams({ cwd, runtimeSettings }),
+            threadStartParams({
+              cwd,
+              runtimeSettings,
+              mcpHandoff: this.#mcpHandoff,
+            }),
             {
               timeoutMs: 90000,
             }
@@ -434,6 +527,18 @@ export class CodexAppServerRun extends EventEmitter {
             clearTimeout(timeout)
             reject(error)
           })
+          // A killed or crashed app-server emits neither turn/completed nor
+          // an error; settle promptly so the run closes, the membrane token
+          // is revoked, and the credentials handoff dir is removed instead
+          // of surviving until the turn timeout.
+          this.once('clientClosed', () => {
+            clearTimeout(timeout)
+            if (this.#killRequested || this.#turnCompleted) {
+              resolve()
+            } else {
+              reject(new Error('Codex app-server closed before turn completion.'))
+            }
+          })
         })
       }
     } catch (error) {
@@ -447,6 +552,7 @@ export class CodexAppServerRun extends EventEmitter {
       this.#closed = true
       this.#clearPendingRequests()
       this.#client?.close()
+      cleanupMcpHandoff(this.#mcpHandoff)
       this.emit('close', {
         code,
         signal,
@@ -461,6 +567,7 @@ export class CodexAppServerRun extends EventEmitter {
     this.#client.on('error', (error) => this.emit('error', error))
     this.#client.on('notification', (message) => this.#handleNotification(message))
     this.#client.on('request', (message) => this.#handleRequest(message))
+    this.#client.on('close', () => this.emit('clientClosed'))
   }
 
   #emitNative(message) {
@@ -500,6 +607,14 @@ export class CodexAppServerRun extends EventEmitter {
   }
 
   #handleRequest(message) {
+    if (message.method === 'mcpServer/elicitation/request') {
+      this.#client.respond(
+        message.id,
+        elicitationResponse(message, this.#runtimeSettings)
+      )
+      return
+    }
+
     const events = codexRuntimeEventsFromRequest({
       sessionId: this.#sessionId,
       turnId: this.#orreryTurnId,

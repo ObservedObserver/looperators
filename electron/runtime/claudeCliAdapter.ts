@@ -132,7 +132,7 @@ function writeJson0600(filePath, value) {
   fs.chmodSync(filePath, 0o600)
 }
 
-export function createMcpHandoff(membrane) {
+export function createMcpHandoff(membrane, { keepBootstrap = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-membrane-'))
   fs.chmodSync(dir, 0o700)
 
@@ -151,6 +151,9 @@ export function createMcpHandoff(membrane) {
         args: [membraneServerPath],
         env: {
           ORRERY_MEMBRANE_BOOTSTRAP_FILE: bootstrapPath,
+          // Multi-spawn MCP clients (Codex) re-read the bootstrap file on
+          // every reconnect; the 0700 handoff dir is removed at run close.
+          ...(keepBootstrap ? { ORRERY_MEMBRANE_BOOTSTRAP_KEEP: '1' } : {}),
         },
       },
     },

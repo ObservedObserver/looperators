@@ -23,6 +23,21 @@ function sameStringList(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function canvasNodesRenderSignature(nodes: Node[]) {
+  return JSON.stringify(
+    nodes.map((node) => {
+      const data = node.data as Record<string, unknown>;
+      if (node.type !== 'agent' || (data.status !== 'running' && data.status !== 'pending')) {
+        return node;
+      }
+      const stableData = { ...data };
+      delete stableData.description;
+      delete stableData.lastActivityTs;
+      return { ...node, data: stableData };
+    }),
+  );
+}
+
 export function useCanvas({
   runtimeApi,
   runtimeState,
@@ -83,6 +98,7 @@ export function useCanvas({
     [runtimeState],
   );
   const [canvasNodes, setCanvasNodes] = useState<Node[]>(nodes);
+  const canvasNodesSignatureRef = useRef(canvasNodesRenderSignature(nodes));
   const isDraggingCanvasNodeRef = useRef(false);
 
   const edges: Edge[] = useMemo(() => {
@@ -148,9 +164,15 @@ export function useCanvas({
   }, [reportsById, runtimeState]);
 
   useEffect(() => {
-    if (!isDraggingCanvasNodeRef.current) {
-      setCanvasNodes(nodes);
+    if (isDraggingCanvasNodeRef.current) {
+      return;
     }
+    const signature = canvasNodesRenderSignature(nodes);
+    if (signature === canvasNodesSignatureRef.current) {
+      return;
+    }
+    canvasNodesSignatureRef.current = signature;
+    setCanvasNodes(nodes);
   }, [nodes]);
 
   const updateCanvasNodePositions = useCallback((changes: NodeChange[]) => {
