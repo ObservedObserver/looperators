@@ -144,6 +144,21 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const invalidTerminalSession = await invalidTerminalSessionResponse.json()
     assert.match(invalidTerminalSession.error, /Unknown session/)
 
+    const missingLoopStopResponse = await fetch(
+      `${base}/api/runtime/loops/missing-loop/stop`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:48273',
+        },
+        body: JSON.stringify({ reason: 'test stop' }),
+      }
+    )
+    assert.equal(missingLoopStopResponse.status, 404)
+    const missingLoopStop = await missingLoopStopResponse.json()
+    assert.match(missingLoopStop.error, /Unknown loop/)
+
     const optionsResponse = await fetch(`${base}/api/runtime/state`, {
       method: 'OPTIONS',
       headers: { Origin: 'http://127.0.0.1:48273' },

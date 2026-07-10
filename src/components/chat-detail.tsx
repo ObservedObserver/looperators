@@ -14,7 +14,8 @@ import { RuntimeInteractionPanel } from '@/components/runtime-interaction-panel'
 import { ProviderEventDrawer } from '@/components/provider-event-drawer';
 import { ProviderSetupDiagnostics } from '@/components/provider-settings';
 import { ComposerAttachmentPill } from '@/components/composer-attachment-pill';
-import { type Dispatch, type SetStateAction } from 'react';
+import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
+import { type ProviderSetupStatus } from '@/shared/graph-state';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
 import { type ComposerState } from '@/hooks/use-composer';
@@ -23,6 +24,7 @@ import { type TerminalPanelState } from '@/hooks/use-terminal-panel';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
 import { type InteractionsState } from '@/hooks/use-interactions';
 import { type DiffPanelState } from '@/hooks/use-diff-panel';
+import { providerSetupProfileFingerprint, selectProviderSetupProfile } from '@shared/provider-setup';
 
 const isMacPlatform = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
@@ -39,6 +41,8 @@ type ChatDetailProps = {
   diff: DiffPanelState;
   showRawEvents: boolean;
   setShowRawEvents: Dispatch<SetStateAction<boolean>>;
+  providerSetupSessionId?: string;
+  setProviderSetupSessionId: Dispatch<SetStateAction<string | undefined>>;
   isWorkspacePanelOpen: boolean;
   setIsWorkspacePanelOpen: Dispatch<SetStateAction<boolean>>;
 };
@@ -54,6 +58,8 @@ export function ChatDetail({
   diff,
   showRawEvents,
   setShowRawEvents,
+  providerSetupSessionId,
+  setProviderSetupSessionId,
   isWorkspacePanelOpen,
   setIsWorkspacePanelOpen,
 }: ChatDetailProps) {
@@ -117,6 +123,63 @@ export function ChatDetail({
     chooseNewChatProject,
     saveProviderInstance,
   } = newChat;
+  const providerSetupSession = selectedSession?.sessionId === providerSetupSessionId ? selectedSession : undefined;
+  const providerSetupProviderKind = providerSetupSession?.providerKind;
+  const providerSetupProviderInstanceId = providerSetupSession?.providerInstanceId;
+  const providerSetupCwd = providerSetupSession?.cwd;
+  const providerSetupProfile = providerSetupProviderKind
+    ? selectProviderSetupProfile(providerInstances, providerSetupProviderKind, providerSetupProviderInstanceId)
+    : undefined;
+  const providerSetupProfileKey = providerSetupProfileFingerprint(providerSetupProfile);
+  const [selectedProviderSetupStatus, setSelectedProviderSetupStatus] = useState<ProviderSetupStatus>();
+  const [isLoadingSelectedProviderSetup, setIsLoadingSelectedProviderSetup] = useState(false);
+
+  useEffect(() => {
+    if (providerSetupSessionId && selectedSession?.sessionId !== providerSetupSessionId) {
+      setProviderSetupSessionId(undefined);
+    }
+  }, [providerSetupSessionId, selectedSession?.sessionId, setProviderSetupSessionId]);
+
+  useEffect(() => {
+    if (!providerSetupProviderKind || !providerSetupProviderInstanceId || !runtimeApi) {
+      setSelectedProviderSetupStatus(undefined);
+      setIsLoadingSelectedProviderSetup(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingSelectedProviderSetup(true);
+    runtimeApi
+      .getProviderSetupStatus({
+        providerKind: providerSetupProviderKind,
+        providerInstanceId: providerSetupProviderInstanceId,
+        cwd: providerSetupCwd,
+      })
+      .then((status) => {
+        if (!cancelled) setSelectedProviderSetupStatus(status);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSelectedProviderSetupStatus({
+          providerKind: providerSetupProviderKind,
+          providerInstanceId: providerSetupProviderInstanceId,
+          generatedAt: new Date().toISOString(),
+          checks: [
+            {
+              id: 'setup-status',
+              label: 'Setup status',
+              status: 'error',
+              message: error instanceof Error ? error.message : String(error),
+            },
+          ],
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingSelectedProviderSetup(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [providerSetupCwd, providerSetupProfileKey, providerSetupProviderInstanceId, providerSetupProviderKind, runtimeApi]);
   const {
     isTerminalPanelOpen,
     isOpeningTerminal,
@@ -240,10 +303,16 @@ export function ChatDetail({
                 <TooltipTrigger asChild>
                   <Button
                     className="app-region-no-drag size-7"
-                    variant={showRawEvents ? 'secondary' : 'ghost'}
+                    variant={showRawEvents || providerSetupSession ? 'secondary' : 'ghost'}
                     size="icon"
                     aria-label="Diagnostics"
-                    onClick={() => setShowRawEvents((current) => !current)}
+                    onClick={() => {
+                      if (providerSetupSession) {
+                        setProviderSetupSessionId(undefined);
+                      } else {
+                        setShowRawEvents((current) => !current);
+                      }
+                    }}
                   >
                     <Braces className="size-3.5" />
                   </Button>
@@ -314,7 +383,21 @@ export function ChatDetail({
           onAnswer={answerRuntimeUserInput}
         />
 
-        {showRawEvents ? (
+        {providerSetupSession ? (
+          <ProviderSetupDiagnostics
+            isRuntimeAvailable={isRuntimeAvailable}
+            runtimeStatusText={runtimeStatusText}
+            providerKind={providerSetupSession.providerKind}
+            providerInstanceId={providerSetupSession.providerInstanceId}
+            providerInstances={providerInstances}
+            runtimeError={runtimeError}
+            setupStatus={selectedProviderSetupStatus}
+            isLoadingSetupStatus={isLoadingSelectedProviderSetup}
+            savingProviderInstanceId={savingProviderInstanceId}
+            providerInstanceError={providerInstanceError}
+            onSaveProviderInstance={saveProviderInstance}
+          />
+        ) : showRawEvents ? (
           selectedSession ? (
             <ProviderEventDrawer session={selectedSession} />
           ) : (

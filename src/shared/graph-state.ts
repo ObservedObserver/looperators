@@ -71,7 +71,7 @@ export const graphStateSchema = {
     reports: 'Report[]',
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
-    loops: 'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
+    loops: 'LoopView[]?; derived on read, never stored — exact compiled Review/Goal instances plus generic cyclic SCCs',
     sources: 'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
     templates: 'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config, snapshot-persisted, never kernel facts',
     diagnostics: 'RuntimeStateDiagnostic[]?',
@@ -760,10 +760,13 @@ export type PendingActivation = {
 // runtime derives these from subscriptions on every read, nothing stored) ---
 
 export type LoopViewStatus = 'spinning' | 'waiting-gate' | 'frozen' | 'stopped' | 'idle';
+export type LoopViewKind = 'review' | 'goal' | 'generic';
 
 export type LoopView = {
-  // Sorted member session ids joined with '+'.
+  // Compiled workflows use their forward relationship id; generic rings use
+  // sorted member ids.
   loopId: string;
+  kind: LoopViewKind;
   memberSessionIds: SessionId[];
   // Ring edges, stopped ones included (a guardrail-stopped ring keeps its face).
   subscriptionIds: string[];
@@ -774,10 +777,15 @@ export type LoopView = {
   status: LoopViewStatus;
   statusDetail?: string;
   stopSummary?: string;
+  createdAt?: string;
+  terminal?: { type: string; ts: string; reason?: string };
 };
 
 export type LoopHop = {
   activatedEventId: string;
+  activatedSeq: number;
+  causeId?: string;
+  slotKey?: string;
   ts: string;
   subscriptionId: string;
   target: SessionId;
@@ -971,6 +979,12 @@ export type StartMasterLoopInput = {
 
 export type StopMasterLoopInput = {
   clusterId: ClusterId;
+  reason?: string;
+  killRunning?: boolean;
+};
+
+export type StopLoopInput = {
+  loopId: string;
   reason?: string;
   killRunning?: boolean;
 };

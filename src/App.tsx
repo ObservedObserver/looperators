@@ -30,6 +30,7 @@ import { useOrchestration } from '@/hooks/use-orchestration';
 function App() {
   const [activeTab, setActiveTab] = useState<RailTab>('chat');
   const [showRawEvents, setShowRawEvents] = useState(false);
+  const [providerSetupSessionId, setProviderSetupSessionId] = useState<string>();
   const [isWorkspacePanelOpen, setIsWorkspacePanelOpen] = useState(false);
   const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
@@ -272,6 +273,8 @@ function App() {
                 diff={diff}
                 showRawEvents={showRawEvents}
                 setShowRawEvents={setShowRawEvents}
+                providerSetupSessionId={providerSetupSessionId}
+                setProviderSetupSessionId={setProviderSetupSessionId}
                 isWorkspacePanelOpen={isWorkspacePanelOpen}
                 setIsWorkspacePanelOpen={setIsWorkspacePanelOpen}
               />
@@ -340,6 +343,12 @@ function App() {
             openLoopId={openLoopId}
             setOpenLoopId={setOpenLoopId}
             requestWorkflowClose={() => workflowCloseRequestRef.current?.()}
+            onOpenProviderSetup={(sessionId) => {
+              setSelectedSessionId(sessionId);
+              setActiveTab('chat');
+              setShowRawEvents(false);
+              setProviderSetupSessionId(sessionId);
+            }}
           />
         )}
         {selectedSession && isWorkspacePanelOpen ? (

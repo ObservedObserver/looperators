@@ -64,6 +64,7 @@ test('a two-session ring projects one loop with laps and cap', () => {
   assert.equal(loops.length, 1)
   const [loop] = loops
   assert.equal(loop.loopId, 'coder+reviewer')
+  assert.equal(loop.kind, 'generic')
   assert.deepEqual(loop.memberSessionIds, ['coder', 'reviewer'])
   assert.deepEqual(loop.subscriptionIds, ['sub-a', 'sub-b'])
   assert.equal(loop.designatedSubscriptionId, 'sub-a', 'max firings designates')
@@ -167,6 +168,51 @@ test('status: a fully stopped ring is stopped', () => {
   assert.equal(loops[0].status, 'stopped')
 })
 
+function reviewPair(suffix, overrides = {}) {
+  const stop = { whenReport: { verdict: 'clean' }, maxFirings: 6 }
+  return [
+    sub(`review-pass-${suffix}`, 'coder', 'reviewer', {
+      label: 'review pass',
+      stop,
+      createdAt: overrides.createdAt ?? '2026-07-10T12:00:00.000Z',
+      ...overrides.pass,
+    }),
+    sub(`review-fix-${suffix}`, 'reviewer', 'coder', {
+      label: 'blocking issues',
+      on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+      stop,
+      createdAt: overrides.createdAt ?? '2026-07-10T12:00:00.001Z',
+      ...overrides.fix,
+    }),
+  ]
+}
+
+test('compiled review pair is an exact workflow instance and excludes an unrelated edge', () => {
+  const state = kernelState({
+    sessions: [session('coder'), session('reviewer')],
+    subscriptions: [...reviewPair('one'), sub('unrelated', 'coder', 'reviewer')],
+  })
+  const loops = loopsOf(state)
+  assert.equal(loops.length, 1)
+  assert.equal(loops[0].loopId, 'review-pass-one')
+  assert.equal(loops[0].kind, 'review')
+  assert.deepEqual(loops[0].subscriptionIds, ['review-fix-one', 'review-pass-one'])
+})
+
+test('repeated review workflows on the same participants remain separate instances', () => {
+  const state = kernelState({
+    sessions: [session('coder'), session('reviewer')],
+    subscriptions: [
+      ...reviewPair('old', { createdAt: '2026-07-10T11:00:00.000Z', pass: { state: 'stopped' }, fix: { state: 'stopped' } }),
+      ...reviewPair('new', { createdAt: '2026-07-10T12:00:00.000Z' }),
+    ],
+  })
+  const loops = loopsOf(state)
+  assert.deepEqual(loops.map((loop) => loop.loopId), ['review-pass-new', 'review-pass-old'])
+  assert.equal(loops.find((loop) => loop.loopId === 'review-pass-old').status, 'stopped')
+  assert.equal(loops.find((loop) => loop.loopId === 'review-pass-new').status, 'idle')
+})
+
 // --- Per-lap timeline grouping ---
 
 let seq = 0
@@ -243,6 +289,9 @@ test('loopTimelineOf groups hops into laps at the designated edge', () => {
   const [hop1, hop2] = lap1.hops
   assert.equal(hop1.subscriptionId, 'sub-a')
   assert.equal(hop1.target, 'reviewer')
+  assert.equal(hop1.activatedSeq, events.find((event) => event.id === 'act-1').seq)
+  assert.equal(hop1.causeId, finishedA.id)
+  assert.equal(hop1.slotKey, 'k-a')
   assert.equal(hop1.trigger.type, 'session.finished')
   assert.equal(hop1.trigger.sourceSessionId, 'coder')
   assert.match(hop1.gate.reason, /Auto gate/)
@@ -306,4 +355,29 @@ test('loopTimelineOf collects refusals and stop facts', () => {
   assert.equal(timeline.refusals[0].reason, 'Not now.')
   assert.equal(timeline.stops.length, 1)
   assert.match(timeline.stops[0].reason, /maxFirings/)
+})
+
+test('exact workflow timeline excludes reports before authoring and after terminal stop', () => {
+  seq = 0
+  const state = kernelState({
+    sessions: [session('coder'), session('reviewer')],
+    subscriptions: reviewPair('window', {
+      pass: { state: 'stopped' },
+      fix: { state: 'stopped' },
+    }),
+  })
+  const loop = loopsOf(state)[0]
+  const events = [
+    evt('report.received', { reportId: 'old', from: 'reviewer', verdict: 'clean', summary: 'old generation' }),
+    evt('subscription.authored', { subscription: state.subscriptions['review-pass-window'] }),
+    evt('subscription.authored', { subscription: state.subscriptions['review-fix-window'] }),
+    evt('activated', { target: 'reviewer', sessionId: 'reviewer', subscriptionId: 'review-pass-window' }),
+    evt('report.received', { reportId: 'current', from: 'reviewer', verdict: 'issues', summary: 'current generation' }),
+    evt('subscription.stopped', { subscriptionId: 'review-pass-window' }, { reason: 'Stopped by user.' }),
+    evt('subscription.stopped', { subscriptionId: 'review-fix-window' }, { reason: 'Review loop ended.' }),
+    evt('report.received', { reportId: 'later', from: 'reviewer', verdict: 'clean', summary: 'later generation' }),
+  ]
+  const timeline = loopTimelineOf(state, events, loop)
+  assert.deepEqual(timeline.laps.flatMap((lap) => lap.hops.flatMap((hop) => hop.reports.map((report) => report.reportId))), ['current'])
+  assert.equal(timeline.stops.length, 2)
 })

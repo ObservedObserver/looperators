@@ -44,6 +44,7 @@ import type {
   StartReviewWorkflowInput,
   StartReviewWorkflowResult,
   StopMasterLoopInput,
+  StopLoopInput,
   UpdateNodePositionsInput,
   UpsertProviderInstanceInput,
   UpsertClusterInput,
@@ -101,6 +102,7 @@ export type RuntimeApi = {
   updateNodePositions: (input: UpdateNodePositionsInput) => Promise<{ state: GraphState }>;
   startMasterLoop: (input: StartMasterLoopInput) => Promise<{ state: GraphState }>;
   stopMasterLoop: (input: StopMasterLoopInput) => Promise<{ state: GraphState }>;
+  stopLoop: (input: StopLoopInput) => Promise<{ state: GraphState }>;
   freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
   getWorkingTreeDiff: (input: WorkingTreeDiffInput) => Promise<WorkingTreeDiffResult>;
   getWorkspaceFiles: (input: WorkspaceFilesInput) => Promise<WorkspaceFilesResult>;
@@ -358,6 +360,10 @@ class HttpRuntimeApi implements RuntimeApi {
 
   stopMasterLoop(input: StopMasterLoopInput) {
     return this.#post<{ state: GraphState }>(`clusters/${encodeURIComponent(input.clusterId)}/stop-loop`, input);
+  }
+
+  stopLoop(input: StopLoopInput) {
+    return this.#post<{ state: GraphState }>(`loops/${encodeURIComponent(input.loopId)}/stop`, input);
   }
 
   freeze(input: FreezeInput) {

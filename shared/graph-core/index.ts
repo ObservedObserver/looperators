@@ -45,6 +45,7 @@ export {
   loopsOf,
   loopTimelineOf,
   type LoopView,
+  type LoopViewKind,
   type LoopViewStatus,
   type LoopLap,
   type LoopTimeline,

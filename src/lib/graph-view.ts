@@ -15,6 +15,7 @@ import {
 import { compactId, formatClock } from '@/lib/format';
 import { reportIssueCount, reportSummary } from '@/lib/reports';
 import { sessionLabel } from '@/lib/session-display';
+import { deriveLoopProductView, type LoopProductView } from '@shared/loop-product';
 
 export type AgentNodeData = {
   label: string;
@@ -419,6 +420,7 @@ export function sourceNodes(state: GraphState): Node<SourceNodeData>[] {
 // of the ring's member nodes. Click opens the per-lap timeline.
 export type LoopBadgeData = {
   loop: LoopView;
+  product: LoopProductView;
 };
 
 export const loopStatusLabels: Record<LoopViewStatus, string> = {
@@ -432,6 +434,22 @@ export const loopStatusLabels: Record<LoopViewStatus, string> = {
 export function loopBadgeLabel(loop: LoopView) {
   const laps = loop.lapCap !== undefined ? `${loop.lapCount}/${loop.lapCap}` : `${loop.lapCount}`;
   return `${laps} · ${loopStatusLabels[loop.status]}`;
+}
+
+export function loopProductSessions(state: GraphState) {
+  return Object.fromEntries(
+    Object.values(state.sessions).map((session) => {
+      const node = state.nodes.find((candidate) => candidate.sessionId === session.sessionId);
+      return [
+        session.sessionId,
+        {
+          ...session,
+          frozen: node?.frozen,
+          freezeReason: node?.freezeReason,
+        },
+      ];
+    }),
+  );
 }
 
 export function loopBadgeNodes(state: GraphState): Node<LoopBadgeData>[] {
@@ -454,7 +472,15 @@ export function loopBadgeNodes(state: GraphState): Node<LoopBadgeData>[] {
         draggable: false,
         selectable: false,
         zIndex: 30,
-        data: { loop },
+        data: {
+          loop,
+          product: deriveLoopProductView({
+            loop,
+            sessions: loopProductSessions(state),
+            subscriptions: state.subscriptions,
+            reports: state.reports,
+          }),
+        },
       },
     ];
   });

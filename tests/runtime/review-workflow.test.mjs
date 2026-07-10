@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js';
+import { deriveLoopProductView } from '../../dist-electron/shared/loop-product.js';
 
 const fakeClaudeSource = `#!/usr/bin/env node
 const args = process.argv.slice(2)
@@ -30,10 +31,10 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-function harness(prefix, runtimeOptions = {}) {
+function harness(prefix, runtimeOptions = {}, providerSource = fakeClaudeSource) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const fakeClaude = path.join(root, 'claude');
-  fs.writeFileSync(fakeClaude, fakeClaudeSource);
+  fs.writeFileSync(fakeClaude, providerSource);
   fs.chmodSync(fakeClaude, 0o755);
   process.env.ORRERY_CLAUDE_BIN = fakeClaude;
   const runtime = new RuntimeSessionManager({ storageFile: path.join(root, 'state.json'), ...runtimeOptions });
@@ -147,6 +148,52 @@ test('a start failure after the first participant exists unwinds the live graph'
     assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions));
     assert.deepEqual(Object.keys(after.subscriptions ?? {}), Object.keys(before.subscriptions ?? {}));
     assert.equal(after.nodes.length, before.nodes.length);
+  } finally {
+    cleanup();
+  }
+});
+
+test('a participant failure identifies the failed Reviewer and workflow phase headlessly', async () => {
+  const failingReviewerSource = `#!/usr/bin/env node
+const args = process.argv.slice(2)
+const readArg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
+const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
+const prompt = readArg('-p') ?? ''
+const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
+if (prompt.includes('Blocking rule:')) {
+  process.stderr.write('review provider failed before verdict\\n')
+  process.exitCode = 2
+} else {
+  emit({ type: 'assistant', session_id: backendSessionId, message: { content: [{ type: 'text', text: 'coder done' }] } })
+  emit({ type: 'result', session_id: backendSessionId, result: 'done' })
+}
+`;
+  const { runtime, cleanup } = harness('orrery-review-workflow-failure-', {}, failingReviewerSource);
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'review-legacy',
+      kind: 'legacy-claude-cli',
+      label: 'Review legacy',
+    });
+    const started = await runtime.startReviewWorkflow(input(process.cwd()));
+    await waitFor(
+      'Reviewer failure',
+      () => runtime.getState().sessions[started.reviewerSessionId]?.status === 'failed',
+    );
+    const state = runtime.getState();
+    const loop = state.loops.find((candidate) => candidate.loopId === started.loop.loopId);
+    const timeline = runtime.getLoopTimeline({ loopId: loop.loopId }).timeline;
+    const product = deriveLoopProductView({
+      loop,
+      sessions: state.sessions,
+      subscriptions: state.subscriptions,
+      reports: state.reports,
+      timeline,
+    });
+    assert.equal(product.phase, 'failed');
+    assert.equal(product.responsibleSessionId, started.reviewerSessionId);
+    assert.match(product.headline, /Reviewer failed/);
+    assert.equal(product.canRetry, false);
   } finally {
     cleanup();
   }

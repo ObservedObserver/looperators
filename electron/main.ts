@@ -57,6 +57,9 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:loop-timeline', (_event, input) =>
     runtime.getLoopTimeline(input)
   )
+  ipcMain.handle('orrery:stop-loop', (_event, input) =>
+    runtime.stopLoop(input)
+  )
   ipcMain.handle('orrery:create-goal-loop', (_event, input) =>
     runtime.createGoalLoop(input)
   )

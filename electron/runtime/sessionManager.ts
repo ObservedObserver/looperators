@@ -1597,6 +1597,7 @@ export class RuntimeSessionManager {
   #runContext = new Map<string, JsonRecord>()
   #terminals = new Map<string, JsonRecord>()
   #terminalRuns = new Map<string, RuntimeTerminalRun>()
+  #loopTerminalFacts = new Map<string, JsonRecord>()
   #storageFile: string | undefined
   #kernelStore: KernelStore
   #channelStore: ContextChannelStore
@@ -1705,7 +1706,7 @@ export class RuntimeSessionManager {
     // L4 thin projection: rings are derived from the intent graph on every
     // read, never stored — the loop is a reading of subscriptions, not an
     // object (proposal L4 "no new storage objects").
-    state.loops = loopsOf(this.#kernelView())
+    state.loops = this.#loopViewsWithTerminalFacts(this.#kernelView())
     return state
   }
 
@@ -1819,6 +1820,31 @@ export class RuntimeSessionManager {
     }
   }
 
+  #loopViewsWithTerminalFacts(view, events = undefined) {
+    const loops = loopsOf(view)
+    const stopped = loops.filter((loop) => loop.status === 'stopped')
+    if (stopped.length === 0) {
+      return loops
+    }
+    const keyOf = (loop) => `${loop.loopId}\u0000${[...loop.subscriptionIds].sort().join('\u0000')}`
+    const missing = stopped.filter(
+      (loop) => events !== undefined || !this.#loopTerminalFacts.has(keyOf(loop))
+    )
+    if (missing.length > 0) {
+      const authoritativeEvents = events ?? this.#allKernelEvents()
+      for (const loop of missing) {
+        const terminal = loopTimelineOf(view, authoritativeEvents, loop).stops.at(-1)
+        if (terminal) {
+          this.#loopTerminalFacts.set(keyOf(loop), terminal)
+        }
+      }
+    }
+    return loops.map((loop) => {
+      const terminal = this.#loopTerminalFacts.get(keyOf(loop))
+      return terminal ? { ...loop, terminal } : loop
+    })
+  }
+
   // L4 loop timeline: one ring's history, grouped lap by lap from the event
   // log (pure derivation via graph-core; the kernel stores no loop object).
   getLoopTimeline(input: JsonRecord = {}) {
@@ -1827,11 +1853,14 @@ export class RuntimeSessionManager {
       throw new Error('getLoopTimeline requires a loopId')
     }
     const view = this.#kernelView()
-    const loop = loopsOf(view).find((candidate) => candidate.loopId === loopId)
+    const events = this.#allKernelEvents()
+    const loop = this.#loopViewsWithTerminalFacts(view, events).find(
+      (candidate) => candidate.loopId === loopId
+    )
     if (!loop) {
       throw new Error(`Unknown loop: ${loopId}`)
     }
-    const timeline = loopTimelineOf(view, this.#allKernelEvents(), loop)
+    const timeline = loopTimelineOf(view, events, loop)
     return { loop, timeline }
   }
 
@@ -2725,6 +2754,10 @@ export class RuntimeSessionManager {
       return { ok: true, subscription: clone(subscription) }
     }
     subscription.state = 'stopped'
+    // A generic ring can become non-cyclic after its first stopped edge and
+    // receive more terminal facts as paired/remaining edges stop. Recompute
+    // summaries after every new stop; subsequent reads are cached again.
+    this.#loopTerminalFacts.clear()
     this.#clearTimer(subscriptionId)
     this.#appendKernelEvent(
       'subscription.stopped',
@@ -5200,7 +5233,37 @@ export class RuntimeSessionManager {
     return this.#cmdStopLoop(input, this.#humanCtx())
   }
 
+  stopLoop(input: JsonRecord = {}) {
+    return this.#cmdStopLoop(input, this.#humanCtx())
+  }
+
   #cmdStopLoop(input: JsonRecord = {}, ctx: JsonRecord) {
+    const loopId = optionalTrimmedString(input.loopId)
+    if (loopId) {
+      const loop = loopsOf(this.#kernelView()).find(
+        (candidate) => candidate.loopId === loopId
+      )
+      if (!loop) {
+        throw new Error(`Unknown loop: ${loopId}`)
+      }
+      const reason =
+        optionalTrimmedString(input.reason) ?? 'Stopped by user from Loop panel.'
+      for (const subscriptionId of loop.subscriptionIds) {
+        const subscription = this.#state.subscriptions?.[subscriptionId]
+        if (subscription?.state === 'active') {
+          this.#cmdStopSubscription({ subscriptionId, reason }, ctx)
+        }
+      }
+      if (input.killRunning === true) {
+        for (const sessionId of loop.memberSessionIds) {
+          if (this.#runs.has(sessionId)) {
+            this.#cmdKillSession({ sessionId }, ctx)
+          }
+        }
+      }
+      return { state: this.getState() }
+    }
+
     const clusterId =
       typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
         ? input.clusterId.trim()
@@ -5615,9 +5678,7 @@ export class RuntimeSessionManager {
 
       const state = this.getState()
       const loop = state.loops?.find(
-        (candidate) =>
-          candidate.memberSessionIds.includes(coderSessionId) &&
-          candidate.memberSessionIds.includes(reviewerSessionId)
+        (candidate) => candidate.subscriptionIds.includes(passId)
       )
       return {
         coderSessionId,

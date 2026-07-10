@@ -1,9 +1,10 @@
 // Loop view projection (proposal L4): give a ring a face.
 //
-// Pure rendering-side derivation, no new storage objects. A "loop" is a
-// cyclic strongly connected component of the intent graph (activating
-// subscriptions only, cluster sources expanded per member — the same edge
-// enumeration the static safety check uses, §6.4). The projection includes
+// Pure rendering-side derivation, no new storage objects. Compiled Review
+// and Goal workflows project as exact two-relationship instances; remaining
+// activation relationships project as cyclic strongly connected components
+// (cluster sources expanded per member — the same edge enumeration the
+// static safety check uses, §6.4). The projection includes
 // stopped subscriptions on purpose: a guardrail-stopped ring ("6/6 ·
 // stopped") is exactly the state the badge exists to explain, so stopping
 // must not dissolve the ring's shape.
@@ -30,12 +31,13 @@ import {
 } from './static-check.js'
 
 export type LoopViewStatus = 'spinning' | 'waiting-gate' | 'frozen' | 'stopped' | 'idle'
+export type LoopViewKind = 'review' | 'goal' | 'generic'
 
 export type LoopView = {
-  // Stable identity: sorted member session ids joined with '+'. Membership
-  // change means a different ring, so identity following membership is the
-  // honest choice.
+  // Compiled workflows use their forward relationship id as instance
+  // identity. Generic rings retain membership identity for compatibility.
   loopId: string
+  kind: LoopViewKind
   memberSessionIds: string[]
   subscriptionIds: SubscriptionId[]
   // The subscription whose firings count laps (max firings, ties → smallest
@@ -48,6 +50,9 @@ export type LoopView = {
   status: LoopViewStatus
   statusDetail?: string
   stopSummary?: string
+  createdAt?: string
+  // Runtime may enrich stopped loops from the authoritative kernel log.
+  terminal?: { type: string; ts: string; reason?: string }
 }
 
 function ringStopSummary(subscriptions: Subscription[], lapCap?: number) {
@@ -113,10 +118,122 @@ function ringStatus(
   return { status: 'idle' }
 }
 
-// Enumerates the cyclic SCCs of the intent graph (stopped edges included)
-// as loop views, sorted by loopId for stable rendering.
+function exactPair(
+  forward: Subscription,
+  reverse: Subscription | undefined,
+  kind: 'review' | 'goal'
+) {
+  const forwardPrefix = kind === 'review' ? 'review-pass-' : 'goal-check-'
+  const reversePrefix = kind === 'review' ? 'review-fix-' : 'goal-retry-'
+  const issueVerdict = kind === 'review' ? 'issues' : 'fail'
+  const doneVerdict = kind === 'review' ? 'clean' : 'done'
+  return Boolean(
+    reverse &&
+      forward.id.startsWith(forwardPrefix) &&
+      reverse.id === forward.id.replace(forwardPrefix, reversePrefix) &&
+      forward.source.kind === 'session' &&
+      reverse.source.kind === 'session' &&
+      reverse.source.sessionId === forward.target.sessionId &&
+      reverse.target.sessionId === forward.source.sessionId &&
+      forward.on.on === 'finished' &&
+      reverse.on.on === 'report' &&
+      reverse.on.match?.type === 'verdict' &&
+      reverse.on.match?.verdict === issueVerdict &&
+      forward.action.kind === 'deliver+activate' &&
+      reverse.action.kind === 'deliver+activate' &&
+      forward.stop?.whenReport?.verdict === doneVerdict &&
+      reverse.stop?.whenReport?.verdict === doneVerdict
+  )
+}
+
+function loopFromEdges(
+  state: KernelState,
+  loopId: string,
+  kind: LoopViewKind,
+  componentEdges: IntentEdge[]
+): LoopView {
+  const memberSessionIds = [
+    ...new Set(componentEdges.flatMap((edge) => [edge.from, edge.to])),
+  ]
+    .map((key) => key.replace(/^session:/, ''))
+    .sort()
+  const subscriptions = [
+    ...new Map(
+      componentEdges.map((edge) => [edge.subscription.id, edge.subscription])
+    ).values(),
+  ].sort((left, right) => left.id.localeCompare(right.id))
+  const designated = subscriptions.reduce((best, candidate) =>
+    candidate.firings > best.firings ? candidate : best
+  )
+  const caps = subscriptions
+    .map((subscription) => subscription.stop?.maxFirings)
+    .filter((cap): cap is number => cap !== undefined)
+  const lapCap = caps.length > 0 ? Math.min(...caps) : undefined
+  const { status, statusDetail } = ringStatus(
+    state,
+    memberSessionIds,
+    subscriptions,
+    componentEdges
+  )
+  const createdAt = subscriptions
+    .map((subscription) => subscription.createdAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0]
+  return {
+    loopId,
+    kind,
+    memberSessionIds,
+    subscriptionIds: subscriptions.map((subscription) => subscription.id),
+    designatedSubscriptionId: designated.id,
+    lapCount: designated.firings,
+    lapCap,
+    status,
+    statusDetail,
+    stopSummary: ringStopSummary(subscriptions, lapCap),
+    createdAt,
+  }
+}
+
+// Enumerates exact compiled workflow instances first, then generic cyclic
+// SCCs from all remaining relationships. This prevents a destructive Loop
+// action or product status from absorbing unrelated edges merely because
+// they share the same participants.
 export function loopsOf(state: KernelState): LoopView[] {
-  const edges = intentEdges(state, { includeStopped: true })
+  const allEdges = intentEdges(state, { includeStopped: true })
+  const edgesBySubscription = new Map<string, IntentEdge[]>()
+  for (const edge of allEdges) {
+    const bucket = edgesBySubscription.get(edge.subscription.id) ?? []
+    bucket.push(edge)
+    edgesBySubscription.set(edge.subscription.id, bucket)
+  }
+
+  const loops: LoopView[] = []
+  const claimed = new Set<SubscriptionId>()
+  const subscriptions = state.subscriptions
+  for (const forward of Object.values(subscriptions).sort((left, right) => left.id.localeCompare(right.id))) {
+    const kind = forward.id.startsWith('review-pass-')
+      ? 'review'
+      : forward.id.startsWith('goal-check-')
+        ? 'goal'
+        : undefined
+    if (!kind) continue
+    const reverseId = forward.id.replace(
+      kind === 'review' ? 'review-pass-' : 'goal-check-',
+      kind === 'review' ? 'review-fix-' : 'goal-retry-'
+    )
+    const reverse = subscriptions[reverseId]
+    if (!exactPair(forward, reverse, kind)) continue
+    const pairEdges = [
+      ...(edgesBySubscription.get(forward.id) ?? []),
+      ...(edgesBySubscription.get(reverseId) ?? []),
+    ]
+    if (pairEdges.length === 0) continue
+    claimed.add(forward.id)
+    claimed.add(reverseId)
+    loops.push(loopFromEdges(state, forward.id, kind, pairEdges))
+  }
+
+  const edges = allEdges.filter((edge) => !claimed.has(edge.subscription.id))
   const nodes = new Set<string>()
   const adjacency = new Map<string, string[]>()
   for (const edge of edges) {
@@ -149,44 +266,11 @@ export function loopsOf(state: KernelState): LoopView[] {
     edgesByComponent.get(from)!.push(edge)
   }
 
-  const loops: LoopView[] = []
   for (const componentEdges of edgesByComponent.values()) {
-    const memberSessionIds = [
-      ...new Set(
-        componentEdges.flatMap((edge) => [edge.from, edge.to])
-      ),
-    ]
+    const memberSessionIds = [...new Set(componentEdges.flatMap((edge) => [edge.from, edge.to]))]
       .map((key) => key.replace(/^session:/, ''))
       .sort()
-    const subscriptions = [
-      ...new Map(
-        componentEdges.map((edge) => [edge.subscription.id, edge.subscription])
-      ).values(),
-    ].sort((left, right) => left.id.localeCompare(right.id))
-    const designated = subscriptions.reduce((best, candidate) =>
-      candidate.firings > best.firings ? candidate : best
-    )
-    const caps = subscriptions
-      .map((subscription) => subscription.stop?.maxFirings)
-      .filter((cap): cap is number => cap !== undefined)
-    const lapCap = caps.length > 0 ? Math.min(...caps) : undefined
-    const { status, statusDetail } = ringStatus(
-      state,
-      memberSessionIds,
-      subscriptions,
-      componentEdges
-    )
-    loops.push({
-      loopId: memberSessionIds.join('+'),
-      memberSessionIds,
-      subscriptionIds: subscriptions.map((subscription) => subscription.id),
-      designatedSubscriptionId: designated.id,
-      lapCount: designated.firings,
-      lapCap,
-      status,
-      statusDetail,
-      stopSummary: ringStopSummary(subscriptions, lapCap),
-    })
+    loops.push(loopFromEdges(state, memberSessionIds.join('+'), 'generic', componentEdges))
   }
   return loops.sort((left, right) => left.loopId.localeCompare(right.loopId))
 }
@@ -196,6 +280,9 @@ export function loopsOf(state: KernelState): LoopView[] {
 
 export type LoopHop = {
   activatedEventId: string
+  activatedSeq: number
+  causeId?: string
+  slotKey?: string
   ts: string
   subscriptionId: SubscriptionId
   target: string
@@ -262,7 +349,35 @@ export function loopTimelineOf(
 ): LoopTimeline {
   const subscriptionIds = new Set(loop.subscriptionIds)
   const members = new Set(loop.memberSessionIds)
-  const ordered = [...events].sort((left, right) => left.seq - right.seq)
+  const allOrdered = [...events].sort((left, right) => left.seq - right.seq)
+  const authoredSeqs = allOrdered
+    .filter((event) => {
+      if (event.type !== 'subscription.authored') return false
+      const subscription = (event.payload ?? {}).subscription
+      return Boolean(
+        subscription &&
+          typeof subscription === 'object' &&
+          typeof (subscription as { id?: unknown }).id === 'string' &&
+          subscriptionIds.has((subscription as { id: string }).id)
+      )
+    })
+    .map((event) => event.seq)
+  const startSeq = authoredSeqs.length > 0 ? Math.min(...authoredSeqs) : 0
+  const allStopped = loop.subscriptionIds.every(
+    (subscriptionId) => state.subscriptions[subscriptionId]?.state === 'stopped'
+  )
+  const terminalSeqs = allStopped
+    ? allOrdered
+        .filter(
+          (event) =>
+            (event.type === 'subscription.stopped' || event.type === 'subscription.guarded') &&
+            subscriptionIds.has(payloadString(event, 'subscriptionId') ?? '') &&
+            event.seq >= startSeq
+        )
+        .map((event) => event.seq)
+    : []
+  const endSeq = terminalSeqs.length > 0 ? Math.max(...terminalSeqs) : Number.POSITIVE_INFINITY
+  const ordered = allOrdered.filter((event) => event.seq >= startSeq && event.seq <= endSeq)
   const byId = new Map(ordered.map((event) => [event.id, event]))
 
   const hops: Array<LoopHop & { seq: number }> = []
@@ -295,6 +410,9 @@ export function loopTimelineOf(
       hops.push({
         seq: event.seq,
         activatedEventId: event.id,
+        activatedSeq: event.seq,
+        causeId: event.causeId,
+        slotKey,
         ts: event.ts,
         subscriptionId,
         target: payloadString(event, 'target') ?? payloadString(event, 'sessionId') ?? '',

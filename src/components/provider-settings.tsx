@@ -6,6 +6,7 @@ import { TermLabel, termInputCls, termTextareaCls } from '@/components/terminal'
 import { type ProviderSetupStatus } from '@/shared/graph-state';
 import { type ProviderInstance, type ProviderKind } from '@/shared/provider-runtime';
 import { providerOption, providerInstanceForKind, launchArgsText, providerInstanceFromDraft, providerSetupHints } from '@/lib/provider-catalog';
+import { selectProviderSetupProfile } from '@shared/provider-setup';
 
 export function providerSetupCheckClassName(status: ProviderSetupStatus['checks'][number]['status']) {
   switch (status) {
@@ -22,6 +23,7 @@ export function providerSetupCheckClassName(status: ProviderSetupStatus['checks'
 
 export function ProviderInstanceSettingsPanel({
   providerKind,
+  providerInstanceId,
   providerInstances,
   disabled,
   savingInstanceId,
@@ -29,13 +31,24 @@ export function ProviderInstanceSettingsPanel({
   onSave,
 }: {
   providerKind: ProviderKind;
+  providerInstanceId?: string;
   providerInstances: ProviderInstance[];
   disabled?: boolean;
   savingInstanceId?: string;
   error?: string;
   onSave: (instance: ProviderInstance) => void;
 }) {
-  const instance = providerInstanceForKind(providerInstances, providerKind);
+  const exactInstance = selectProviderSetupProfile(providerInstances, providerKind, providerInstanceId);
+  const instance =
+    exactInstance ??
+    (providerInstanceId
+      ? {
+          ...providerInstanceForKind([], providerKind),
+          providerInstanceId,
+          label: `${providerOption(providerKind).label} (${providerInstanceId})`,
+        }
+      : providerInstanceForKind(providerInstances, providerKind));
+  const isReferencedInstanceMissing = Boolean(providerInstanceId && !exactInstance);
   const instanceId = instance.providerInstanceId;
   const instanceLabel = instance.label;
   const instanceBinaryPath = instance.binaryPath ?? '';
@@ -68,6 +81,12 @@ export function ProviderInstanceSettingsPanel({
       </div>
 
       <div className="grid gap-2">
+        {isReferencedInstanceMissing ? (
+          <div className="rounded-md border border-term-amber/35 bg-term-amber/10 px-2 py-1.5 text-[11px] leading-4 text-term-amber">
+            Referenced profile <span className="font-semibold">{providerInstanceId}</span> is missing. Saving recreates that exact profile; no other profile
+            will be changed.
+          </div>
+        ) : null}
         <label className="grid gap-1">
           <TermLabel>label</TermLabel>
           <input className={termInputCls} value={label} disabled={disabled || isSaving} onChange={(event) => setLabel(event.target.value)} />
@@ -150,6 +169,7 @@ export function ProviderSetupDiagnostics({
   isRuntimeAvailable,
   runtimeStatusText,
   providerKind,
+  providerInstanceId,
   providerInstances,
   runtimeError,
   setupStatus,
@@ -161,6 +181,7 @@ export function ProviderSetupDiagnostics({
   isRuntimeAvailable: boolean;
   runtimeStatusText: string;
   providerKind: ProviderKind;
+  providerInstanceId?: string;
   providerInstances: ProviderInstance[];
   runtimeError?: string;
   setupStatus?: ProviderSetupStatus;
@@ -176,7 +197,7 @@ export function ProviderSetupDiagnostics({
     <div className="border-b border-ink-line bg-ink px-3.5 py-3 font-mono">
       <div className="mb-2 flex items-center gap-2">
         <Braces className="size-3.5 text-term-cyan" />
-        <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">Diagnostics</span>
+        <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">Provider setup</span>
         <span
           className={cn(
             'ml-auto rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.08em]',
@@ -190,6 +211,7 @@ export function ProviderSetupDiagnostics({
       <div className="space-y-2">
         <ProviderInstanceSettingsPanel
           providerKind={providerKind}
+          providerInstanceId={providerInstanceId}
           providerInstances={providerInstances}
           disabled={!isRuntimeAvailable}
           savingInstanceId={savingProviderInstanceId}

@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { deriveLoopProductView } from '../../dist-electron/shared/loop-product.js'
 import {
   KernelStore,
   kernelDatabaseFileFor,
@@ -116,6 +117,30 @@ function authorRing(runtime, coder, reviewer, overrides = {}) {
   return { subA, subB }
 }
 
+function authorReviewPair(runtime, coder, reviewer, suffix) {
+  const stop = { whenReport: { verdict: 'clean' }, maxFirings: 6 }
+  runtime.authorSubscription({
+    id: `review-pass-${suffix}`,
+    label: 'review pass',
+    sourceSessionId: coder,
+    on: { on: 'finished' },
+    targetSessionId: reviewer,
+    action: { kind: 'deliver+activate' },
+    gate: 'auto',
+    stop,
+  })
+  runtime.authorSubscription({
+    id: `review-fix-${suffix}`,
+    label: 'blocking issues',
+    sourceSessionId: reviewer,
+    on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+    targetSessionId: coder,
+    action: { kind: 'deliver+activate' },
+    gate: 'auto',
+    stop,
+  })
+}
+
 test('a live two-session ring projects a loop, spins to its cap, and reads lap by lap', async () => {
   const { manager, cleanup } = harness('orrery-loop-live-')
   try {
@@ -184,6 +209,14 @@ test('a live two-session ring projects a loop, spins to its cap, and reads lap b
         timeline.stops.every((stop) => /maxFirings/i.test(stop.reason ?? '')),
       'the timeline explains why the ring stopped'
     )
+    const product = deriveLoopProductView({
+      loop: fetched,
+      sessions: state.sessions,
+      subscriptions: state.subscriptions,
+      reports: state.reports,
+      timeline,
+    })
+    assert.equal(product.phase, 'stopped-cap')
 
     assert.throws(
       () => runtime.getLoopTimeline({ loopId: 'no-such-loop' }),
@@ -215,6 +248,101 @@ test('an unguarded ring gets the default guardrail and freeze shows on the badge
     const frozen = runtime.getState().loops[0]
     assert.equal(frozen.status, 'frozen')
     assert.equal(frozen.statusDetail, 'Overnight hold.')
+  } finally {
+    cleanup()
+  }
+})
+
+test('product stopLoop stops the whole ring and later finishes cannot reactivate it', async () => {
+  const { manager, cleanup } = harness('orrery-loop-product-stop-')
+  try {
+    const runtime = manager()
+    const coder = await createIdleSession(runtime, 'Coder')
+    const reviewer = await createIdleSession(runtime, 'Reviewer')
+    authorRing(runtime, coder, reviewer, {
+      a: { stop: { maxFirings: 6 } },
+      b: { stop: { maxFirings: 6 } },
+    })
+    const loopId = [coder, reviewer].sort().join('+')
+
+    const stopped = runtime.stopLoop({
+      loopId,
+      reason: 'Stopped by user from Loop panel.',
+    })
+    assert.equal(stopped.state.loops[0].status, 'stopped')
+    assert.equal(stopped.state.subscriptions['ring-a'].state, 'stopped')
+    assert.equal(stopped.state.subscriptions['ring-b'].state, 'stopped')
+
+    const before = runtime.getKernelEvents().latestSeq
+    await runtime.resumeSession({ sessionId: coder, message: 'finish after automation stopped' })
+    await waitFor(
+      'coder finishes after manual stop',
+      () => runtime.getState().sessions[coder]?.status === 'idle'
+    )
+    await delay(100)
+    const after = runtime.getState()
+    assert.equal(after.subscriptions['ring-a'].firings, 0)
+    assert.equal(after.subscriptions['ring-b'].firings, 0)
+    const postStopActivations = runtime
+      .getKernelEvents({ since: before })
+      .events.filter(
+        (event) =>
+          event.type === 'activated' &&
+          ['ring-a', 'ring-b'].includes(event.payload?.subscriptionId)
+      )
+    assert.equal(postStopActivations.length, 0)
+
+    const timeline = runtime.getLoopTimeline({ loopId }).timeline
+    assert.equal(timeline.stops.length, 2)
+    assert.ok(
+      timeline.stops.every((stop) => /Stopped by user from Loop panel/.test(stop.reason ?? '')),
+      'the product reason survives in both stop facts'
+    )
+    const product = deriveLoopProductView({
+      loop: after.loops[0],
+      sessions: after.sessions,
+      subscriptions: after.subscriptions,
+      reports: after.reports,
+      timeline,
+    })
+    assert.equal(product.phase, 'stopped-manual')
+  } finally {
+    cleanup()
+  }
+})
+
+test('product stop targets one compiled Review instance, not unrelated or repeated relationships', async () => {
+  const { manager, cleanup } = harness('orrery-loop-exact-stop-')
+  try {
+    const runtime = manager()
+    const coder = await createIdleSession(runtime, 'Coder')
+    const reviewer = await createIdleSession(runtime, 'Reviewer')
+    authorReviewPair(runtime, coder, reviewer, 'old')
+    authorReviewPair(runtime, coder, reviewer, 'new')
+    runtime.authorSubscription({
+      id: 'unrelated-delivery',
+      sourceSessionId: coder,
+      on: { on: 'finished' },
+      targetSessionId: reviewer,
+      action: { kind: 'deliver+activate' },
+      gate: 'auto',
+      stop: { maxFirings: 6 },
+    })
+
+    const before = runtime.getState()
+    assert.deepEqual(
+      before.loops.filter((loop) => loop.kind === 'review').map((loop) => loop.loopId).sort(),
+      ['review-pass-new', 'review-pass-old']
+    )
+    runtime.stopLoop({ loopId: 'review-pass-old', reason: 'Stopped by user from Loop panel.' })
+    const after = runtime.getState()
+    assert.equal(after.subscriptions['review-pass-old'].state, 'stopped')
+    assert.equal(after.subscriptions['review-fix-old'].state, 'stopped')
+    assert.equal(after.subscriptions['review-pass-new'].state, 'active')
+    assert.equal(after.subscriptions['review-fix-new'].state, 'active')
+    assert.equal(after.subscriptions['unrelated-delivery'].state, 'active')
+    const oldLoop = after.loops.find((loop) => loop.loopId === 'review-pass-old')
+    assert.match(oldLoop.terminal?.reason ?? '', /Stopped by user/)
   } finally {
     cleanup()
   }

@@ -89,7 +89,7 @@ export const graphStateSchema = {
     pendingActivations:
       'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
     loops:
-      'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
+      'LoopView[]?; derived on read, never stored — exact compiled Review/Goal instances plus generic cyclic SCCs',
     sources:
       'Record<sourceId, ExternalSource>; L2 registered external event sources (removed ones stay as tombstones)',
     templates:
@@ -276,6 +276,11 @@ export const graphStateSchema = {
         '{ coder: new|existing endpoint + work prompt, reviewer: new|existing endpoint + independent provider config + review instruction, blocking: any-issue|p0-p1|custom, maxLaps }; one product-level transaction',
       output:
         '{ coderSessionId, reviewerSessionId, createdSessionIds, subscriptionIds, loop, state }; creates/binds both endpoints, authors the paired review ring, then starts the Coder. A new Reviewer stays provider-cold until the first delivered diff (no ready turn)',
+    },
+    stopLoop: {
+      input:
+        '{ loopId, reason?, killRunning? }; stops every active relationship in the derived ring. By default an Agent turn already running is allowed to finish; killRunning is an explicit opt-in',
+      output: '{ state }; no stored Loop object is created',
     },
     registerExternalSource: {
       input: {

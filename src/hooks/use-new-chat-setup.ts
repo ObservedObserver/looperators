@@ -8,6 +8,7 @@ import { defaultWorkspaceCwd, demoMode, latestSessionCwd, projectNameFromCwd, pr
 import { invalidCwdsFromDiagnostics } from '@/lib/diagnostics';
 import { providerInstanceForKind } from '@/lib/provider-catalog';
 import { sessionSort } from '@/lib/session-display';
+import { providerSetupProfileFingerprint } from '@shared/provider-setup';
 
 export function useNewChatSetup({
   runtimeApi,
@@ -48,6 +49,7 @@ export function useNewChatSetup({
   const providerSetupSeqRef = useRef(0);
 
   const newProviderInstance = providerInstanceForKind(providerInstances, newProviderKind);
+  const newProviderInstanceSetupKey = providerSetupProfileFingerprint(newProviderInstance);
 
   const changeNewProviderKind = useCallback((providerKind: ProviderKind) => {
     setNewProviderKind(providerKind);
@@ -226,7 +228,7 @@ export function useNewChatSetup({
     return () => {
       isMounted = false;
     };
-  }, [newCwd, newProviderInstance.binaryPath, newProviderInstance.providerInstanceId, newProviderKind, runtimeApi, selectedSession, showRawEvents]);
+  }, [newCwd, newProviderInstance.providerInstanceId, newProviderInstanceSetupKey, newProviderKind, runtimeApi, selectedSession, showRawEvents]);
 
   useEffect(() => {
     if (newWorkMode === 'worktree' && newProjectContext?.cwd === newCwd.trim() && newProjectContext.isGitRepo === false) {

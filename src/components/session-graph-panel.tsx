@@ -30,6 +30,7 @@ type SessionGraphPanelProps = {
   openLoopId: string | undefined;
   setOpenLoopId: Dispatch<SetStateAction<string | undefined>>;
   requestWorkflowClose: () => void;
+  onOpenProviderSetup: (sessionId: string) => void;
 };
 
 const kernelActorClassNames: Record<string, string> = {
@@ -54,6 +55,7 @@ export function SessionGraphPanel({
   openLoopId,
   setOpenLoopId,
   requestWorkflowClose,
+  onOpenProviderSetup,
 }: SessionGraphPanelProps) {
   const { runtimeState, setRuntimeState, setRuntimeError, runtimeApi, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
   // L4 loop timeline panel: opened by clicking a ring badge on the canvas.
@@ -312,6 +314,17 @@ export function SessionGraphPanel({
             runtimeState={runtimeState}
             latestKernelSeq={kernelEvents.at(-1)?.seq ?? 0}
             onClose={() => setOpenLoopId(undefined)}
+            onStateChange={setRuntimeState}
+            onOpenAgent={(sessionId) => {
+              setSelectedSessionId(sessionId);
+              setActiveTab('chat');
+            }}
+            onOpenProviderSetup={onOpenProviderSetup}
+            onOpenDiff={(sessionId) => {
+              setSelectedSessionId(sessionId);
+              setActiveTab('chat');
+              setIsDiffPanelOpen(true);
+            }}
             onFreezeRing={(memberSessionIds) => {
               if (!runtimeApi) {
                 return;

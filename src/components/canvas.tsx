@@ -13,7 +13,6 @@ import {
   edgeKindClassNames,
   edgeKindStrokes,
   edgeDisplayLabel,
-  loopBadgeLabel,
 } from '@/lib/graph-view';
 import { statusLabels, sessionMarker, statePillBase, nodeStatePillCls } from '@/lib/session-display';
 import { formatClock } from '@/lib/format';
@@ -205,33 +204,42 @@ export const SourceNode = memo(function SourceNode({ data }: NodeProps<Node<Sour
 });
 
 const loopBadgeStatusCls: Record<string, string> = {
-  spinning: 'border-lime-600/50 bg-lime-500/10 text-lime-700 dark:text-lime-300',
-  'waiting-gate': 'border-term-amber/50 bg-term-amber/10 text-amber-700 dark:text-term-amber',
-  frozen: 'border-border bg-muted/60 text-muted-foreground',
-  stopped: 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-300',
-  idle: 'border-border bg-card text-muted-foreground',
+  active: 'border-lime-600/50 bg-lime-500/10 text-lime-700 dark:text-lime-300',
+  waiting: 'border-term-amber/50 bg-term-amber/10 text-amber-700 dark:text-term-amber',
+  success: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+  warning: 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+  danger: 'border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+  neutral: 'border-border bg-muted/60 text-muted-foreground',
 };
 
 // The ring badge (L4): the loop as one clickable, readable whole — lap
 // count, state, and stop condition without opening any session.
 export const LoopBadgeNode = memo(function LoopBadgeNode({ data }: NodeProps<Node<LoopBadgeData>>) {
   const loop = data.loop;
+  const product = data.product;
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open Loop details: ${product.headline}, lap ${product.lapLabel}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          event.currentTarget.click();
+        }
+      }}
       className={cn(
-        'w-[220px] cursor-pointer rounded-xl border px-3 py-2 font-mono shadow-sm transition hover:shadow-md',
-        loopBadgeStatusCls[loop.status] ?? loopBadgeStatusCls.idle,
+        'w-[220px] cursor-pointer rounded-xl border px-3 py-2 font-mono shadow-sm transition hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-hi/60',
+        loopBadgeStatusCls[product.tone] ?? loopBadgeStatusCls.neutral,
       )}
       title="Open the loop timeline"
     >
       <div className="flex items-center gap-1.5 text-[11.5px] font-semibold">
-        <RotateCw className={cn('size-3.5', loop.status === 'spinning' && 'animate-spin [animation-duration:3s]')} />
-        <span>loop</span>
-        <span className="ml-auto tabular-nums">{loopBadgeLabel(loop)}</span>
+        <RotateCw className={cn('size-3.5', product.tone === 'active' && 'animate-spin [animation-duration:3s]')} />
+        <span className="truncate">{product.headline}</span>
+        <span className="ml-auto shrink-0 tabular-nums">{loop.lapCap === undefined ? loop.lapCount : `${loop.lapCount}/${loop.lapCap}`}</span>
       </div>
-      {loop.stopSummary || loop.statusDetail ? (
-        <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{[loop.statusDetail, loop.stopSummary].filter(Boolean).join(' · ')}</div>
-      ) : null}
+      <div className="mt-0.5 truncate text-[10px] text-muted-foreground">{product.stopReason ?? product.detail}</div>
     </div>
   );
 });

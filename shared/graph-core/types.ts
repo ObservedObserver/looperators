@@ -112,6 +112,9 @@ export type Subscription = {
   onStop: SubscriptionOnStop
   state: 'active' | 'stopped'
   firings: number
+  // Runtime-authored subscriptions carry this timestamp. Older folded
+  // fixtures may omit it, so projections must treat it as optional.
+  createdAt?: string
   // Timer subscriptions: ts of the last external.timer tick. Folded from the
   // event log (the log is the source of truth; any snapshot copy is a cache).
   lastTickAt?: string

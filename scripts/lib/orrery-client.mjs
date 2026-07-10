@@ -170,6 +170,14 @@ export class OrreryClient {
     )
   }
 
+  stopLoop(loopId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/loops/${encodeURIComponent(loopId)}/stop`,
+      input
+    )
+  }
+
   // L3 goal loop preset: compiles one NL goal into a judge + two edges.
   createGoalLoop(input = {}) {
     return this.#request('POST', '/api/runtime/goal-loops', input)

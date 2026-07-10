@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:kernel-events', input),
     getLoopTimeline: (input) =>
       ipcRenderer.invoke('orrery:loop-timeline', input),
+    stopLoop: (input) => ipcRenderer.invoke('orrery:stop-loop', input),
     createGoalLoop: (input) =>
       ipcRenderer.invoke('orrery:create-goal-loop', input),
     startReviewWorkflow: (input) =>

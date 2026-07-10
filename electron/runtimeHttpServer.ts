@@ -225,6 +225,16 @@ function compileRoutes(
         ),
     },
     {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/loops\/([^/]+)\/stop$/,
+      handler: async (request, params) => {
+        const body = await readJsonBody(request)
+        return notFoundOnUnknownLoop(() =>
+          runtime.stopLoop({ ...body, loopId: params.loopId })
+        )
+      },
+    },
+    {
       method: 'GET',
       pattern: /^\/api\/runtime\/kernel-events$/,
       handler: (request) => {
