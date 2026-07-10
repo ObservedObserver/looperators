@@ -344,7 +344,7 @@ test('membrane MCP server keeps the bootstrap file only when asked to', async ()
   }
 })
 
-function writeFakeCodexAppServer(dir, { exitAfterTurnStartMs }) {
+function writeFakeCodexAppServer(dir, { exitAfterTurnStartMs, turnCompletion }) {
   const requestLog = path.join(dir, 'requests.jsonl')
   // The fake is the `codex` binary itself (shebang script), mirroring the
   // JSON-RPC client test above: it receives `app-server --listen stdio://`
@@ -373,6 +373,13 @@ process.stdin.on('data', (chunk) => {
     if (message.method === 'turn/start') {
       respond({ turn: { id: 'turn-1' } })
       const exitAfter = ${JSON.stringify(exitAfterTurnStartMs)}
+      const turnCompletion = ${JSON.stringify(turnCompletion ?? null)}
+      if (turnCompletion) {
+        setTimeout(() => process.stdout.write(JSON.stringify({
+          method: 'turn/completed',
+          params: { threadId: 'thread-1', turn: turnCompletion }
+        }) + '\\n'), 10)
+      }
       if (exitAfter !== null) setTimeout(() => process.exit(0), exitAfter)
     }
   }
@@ -439,6 +446,52 @@ test('Codex run mounts the membrane per thread and settles when the app-server d
       fs.existsSync(membraneServer.env.ORRERY_MEMBRANE_BOOTSTRAP_FILE),
       false,
       'the credentials handoff is cleaned up when the run closes'
+    )
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('Codex failed turn is a failed run instead of a successful idle completion', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-codex-failed-turn-'))
+  const { fakeCodex } = writeFakeCodexAppServer(tempRoot, {
+    exitAfterTurnStartMs: null,
+    turnCompletion: {
+      id: 'turn-1',
+      status: 'failed',
+      error: { message: 'selected model requires a newer Codex runtime' },
+    },
+  })
+  const run = new CodexAppServerRun({
+    prompt: 'hello',
+    cwd: tempRoot,
+    sessionId: 'session-1',
+    turnId: 'orrery-turn-1',
+    runtimeSettings: { runtimeMode: 'full-access', model: 'future-model' },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+
+  try {
+    const errors = []
+    run.on('error', (error) => errors.push(error))
+    const closed = await Promise.race([
+      new Promise((resolve) => run.once('close', resolve)),
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(new Error('failed Codex turn did not close')), 15000)
+      ),
+    ])
+    assert.equal(closed.code, 1)
+    assert.ok(
+      errors.some((error) => /requires a newer Codex runtime/.test(error.message)),
+      'the native turn failure reaches the runtime error path'
     )
   } finally {
     run.kill()

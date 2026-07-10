@@ -19,6 +19,13 @@ import {
   templateDescriptors,
 } from '../../shared/templates.js'
 import {
+  coderActivationInstruction,
+  coderFixInstruction,
+  reviewerActivationInstruction,
+  reviewerBootstrapInstruction,
+  validateReviewWorkflowStart,
+} from '../../shared/review-workflow.js'
+import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
@@ -3871,7 +3878,12 @@ export class RuntimeSessionManager {
     return this.#cmdCreateSession(input, this.#humanCtx())
   }
 
-  async #cmdCreateSession(input: JsonRecord = {}, ctx: JsonRecord) {
+  async #cmdCreateSession(
+    input: JsonRecord = {},
+    ctx: JsonRecord,
+    options: JsonRecord = {}
+  ) {
+    const deferStart = options.deferStart === true
     const sessionId = randomUUID()
     const role = input.role === 'master' ? 'master' : 'worker'
     const cluster =
@@ -3963,7 +3975,7 @@ export class RuntimeSessionManager {
       cwd,
       project: workspace.project,
       role,
-      status: 'pending',
+      status: deferStart ? 'idle' : 'pending',
       createdAt: ts,
       updatedAt: ts,
       chunks: [],
@@ -3974,6 +3986,7 @@ export class RuntimeSessionManager {
       runtimeUserInputRequests: [],
       runtimePlans: [],
       runtimeSettings,
+      ...(deferStart ? { prepared: true } : {}),
       messages: [
         {
           id: randomUUID(),
@@ -3995,7 +4008,7 @@ export class RuntimeSessionManager {
       role,
       agent: provider.agent,
       clusterId: cluster,
-      status: 'pending',
+      status: deferStart ? 'idle' : 'pending',
       position: {
         x: 96 + (this.#state.nodes.length % 4) * 280,
         y: 96 + Math.floor(this.#state.nodes.length / 4) * 180,
@@ -4053,6 +4066,20 @@ export class RuntimeSessionManager {
     }
     this.#touch()
     this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
+
+    if (deferStart) {
+      return {
+        sessionId,
+        state: this.getState(),
+        preparedRun: {
+          prompt: providerPrompt,
+          attachments,
+          userMessageId: this.#state.sessions[sessionId].messages[0].id,
+          activationEventId: createdEvent?.id,
+          channelReadSeqs: handoffDelivery ? [handoffDelivery.seq] : [],
+        },
+      }
+    }
 
     await this.#startRun(sessionId, {
       prompt: providerPrompt,
@@ -4316,9 +4343,13 @@ export class RuntimeSessionManager {
       channelDir: this.#channelStore.channelDir(sessionId),
     })
     const content = [note, preamble].filter(Boolean).join('\n\n')
+    const firstPreparedTurn = session.prepared === true
+    const providerMessage = firstPreparedTurn
+      ? [session.prompt, content].filter(Boolean).join('\n\n')
+      : content
     const providerPrompt = providerPromptContent({
       providerKind: session.providerKind,
-      message: content,
+      message: providerMessage,
       context: undefined,
       attachments,
     })
@@ -4391,10 +4422,13 @@ export class RuntimeSessionManager {
     // Broadcast keeps the runtime-plane name the renderer already consumes.
     this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
 
+    if (firstPreparedTurn) {
+      delete session.prepared
+    }
     await this.#startRun(sessionId, {
       prompt: providerPrompt,
       attachments,
-      runKind: 'resume',
+      runKind: firstPreparedTurn ? 'create' : 'resume',
       userMessageId: userMessage.id,
       activationEventId: activatedEvent?.id,
       channelReadSeqs: listedSeqs,
@@ -4569,7 +4603,16 @@ export class RuntimeSessionManager {
       return { ok: false, state: this.getState() }
     }
 
+    const context = this.#runContext.get(sessionId)
+    if (context) {
+      // Mark intent before provider teardown: close/error events may arrive
+      // synchronously or race the state update below.
+      context.killRequested = true
+    }
     const ok = run.kill()
+    if (!ok && context) {
+      delete context.killRequested
+    }
     if (ok) {
       session.status = 'killed'
       session.updatedAt = now()
@@ -4588,7 +4631,6 @@ export class RuntimeSessionManager {
         { sessionId },
         ctx
       )
-      const context = this.#runContext.get(sessionId)
       if (context) {
         // The provider run's close handler re-broadcasts session.killed once
         // the process actually exits; point it at this kernel fact.
@@ -5358,6 +5400,333 @@ export class RuntimeSessionManager {
     )
   }
 
+  #activeReviewPairRole(sessionId) {
+    for (const pass of Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord
+    )) {
+      if (
+        pass.state !== 'active' ||
+        pass.source?.kind !== 'session' ||
+        !/^review-pass-/.test(pass.id ?? '')
+      ) {
+        continue
+      }
+      const fix = this.#state.subscriptions?.[
+        pass.id.replace(/^review-pass-/, 'review-fix-')
+      ]
+      if (
+        fix?.state === 'active' &&
+        this.#isReviewPairShape(pass, fix)
+      ) {
+        if (pass.source.sessionId === sessionId) return 'Coder'
+        if (pass.target?.sessionId === sessionId) return 'Reviewer'
+      }
+    }
+    return undefined
+  }
+
+  // Product-facing Review until clean compiler. Unlike the older template
+  // path, this accepts new or existing endpoints and commits the whole ring
+  // before the first Coder turn. New Reviewers stay provider-cold until the
+  // first diff arrives; there is no synthetic "ready" turn.
+  async startReviewWorkflow(input: JsonRecord = {}) {
+    const sessionSummaries = {}
+    for (const session of Object.values(this.#state.sessions as JsonRecord)) {
+      const node = this.#state.nodes.find(
+        (candidate) => candidate.sessionId === session.sessionId
+      )
+      sessionSummaries[session.sessionId] = {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        status: session.status,
+        frozen: node?.frozen === true,
+      }
+    }
+    const validation = validateReviewWorkflowStart(input as any, {
+      sessions: sessionSummaries,
+      providerInstanceIds: this.#state.providerInstances.map(
+        (instance) => instance.providerInstanceId
+      ),
+    })
+    if (!validation.ok) {
+      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+    }
+
+    const coderInput = input.coder as JsonRecord
+    const reviewerInput = input.reviewer as JsonRecord
+    if (
+      coderInput.kind === 'existing' &&
+      reviewerInput.kind === 'existing' &&
+      coderInput.sessionId === reviewerInput.sessionId
+    ) {
+      throw new Error('Coder and Reviewer must be different Agents.')
+    }
+
+    const ctx = this.#humanCtx()
+    const createdSessionIds: string[] = []
+    const subscriptionIds: string[] = []
+    let coderSessionId: string
+    let reviewerSessionId: string
+    let preparedCoderRun
+    let existingCoderCheckpoint
+
+    try {
+      if (coderInput.kind === 'new') {
+        const created = await this.#cmdCreateSession(
+          {
+            prompt: coderActivationInstruction(String(coderInput.prompt)),
+            cwd: coderInput.cwd,
+            workMode: coderInput.workMode,
+            branch: coderInput.branch,
+            label: optionalTrimmedString(coderInput.label) ?? 'Coder',
+            providerKind: coderInput.providerKind,
+            providerInstanceId: coderInput.providerInstanceId,
+            runtimeSettings: coderInput.runtimeSettings,
+          },
+          ctx,
+          { deferStart: true }
+        )
+        coderSessionId = created.sessionId
+        preparedCoderRun = created.preparedRun
+        createdSessionIds.push(coderSessionId)
+      } else {
+        coderSessionId = optionalTrimmedString(coderInput.sessionId)
+        this.#assertActivatable(coderSessionId, ctx)
+        existingCoderCheckpoint = {
+          session: clone(this.#state.sessions[coderSessionId]),
+          nodeStatus: this.#state.nodes.find(
+            (node) => node.sessionId === coderSessionId
+          )?.status,
+        }
+      }
+
+      const coder = this.#state.sessions[coderSessionId]
+      if (reviewerInput.kind === 'new') {
+        const created = await this.#cmdCreateSession(
+          {
+            prompt: reviewerBootstrapInstruction(reviewerInput.instruction),
+            cwd: coder.cwd,
+            workMode: 'local',
+            label: optionalTrimmedString(reviewerInput.label) ?? 'Reviewer',
+            providerKind: reviewerInput.providerKind,
+            providerInstanceId: reviewerInput.providerInstanceId,
+            runtimeSettings: reviewerInput.runtimeSettings,
+            sourceSessionId: coderSessionId,
+            linkLabel: 'review partner',
+          },
+          ctx,
+          { deferStart: true }
+        )
+        reviewerSessionId = created.sessionId
+        createdSessionIds.push(reviewerSessionId)
+      } else {
+        reviewerSessionId = optionalTrimmedString(reviewerInput.sessionId)
+        this.#assertActivatable(reviewerSessionId, ctx)
+        if (this.#state.sessions[reviewerSessionId].cwd !== coder.cwd) {
+          throw new Error(
+            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.'
+          )
+        }
+      }
+
+      const suffix = randomUUID().slice(0, 8)
+      const passId = `review-pass-${suffix}`
+      const fixId = `review-fix-${suffix}`
+      // Track intended ids before authoring so compensation also reaches the
+      // edge whose author command mutated state but failed while broadcasting.
+      subscriptionIds.push(passId, fixId)
+      const stop = {
+        whenReport: { verdict: 'clean' },
+        maxFirings: Number(input.maxLaps),
+      }
+      const pass = this.#cmdAuthorSubscription(
+        {
+          id: passId,
+          label: 'review pass',
+          preset: 'review-workflow',
+          sourceSessionId: coderSessionId,
+          on: { on: 'finished' },
+          targetSessionId: reviewerSessionId,
+          action: {
+            kind: 'deliver+activate',
+            topic: 'diff',
+            note: reviewerActivationInstruction(
+              String(reviewerInput.instruction),
+              input.blocking as any
+            ),
+          },
+          gate: 'auto',
+          concurrency: 'coalesce',
+          stop,
+          onStop: 'freeze-edge',
+        },
+        ctx
+      )
+      const fix = this.#cmdAuthorSubscription(
+        {
+          id: fixId,
+          label: 'blocking issues',
+          preset: 'review-workflow',
+          sourceSessionId: reviewerSessionId,
+          on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+          targetSessionId: coderSessionId,
+          action: {
+            kind: 'deliver+activate',
+            topic: 'review',
+            note: coderFixInstruction(),
+          },
+          gate: 'auto',
+          concurrency: 'coalesce',
+          stop,
+          onStop: 'freeze-edge',
+        },
+        ctx
+      )
+      // The normalized ids are pinned above; retain these assertions close to
+      // the compiler boundary in case authoring ever rewrites explicit ids.
+      if (pass.subscription.id !== passId || fix.subscription.id !== fixId) {
+        throw new Error('Review workflow relationship ids changed during authoring.')
+      }
+
+      // The first provider invocation is deliberately last. At this point
+      // both endpoints and both guarded relationships are already visible to
+      // the scheduler, so even an instant Coder finish cannot outrun the ring.
+      if (coderInput.kind === 'new') {
+        delete this.#state.sessions[coderSessionId].prepared
+        await this.#startRun(coderSessionId, {
+          ...preparedCoderRun,
+          runKind: 'create',
+        })
+      } else {
+        await this.#cmdResumeSession(
+          {
+            sessionId: coderSessionId,
+            message: coderActivationInstruction(String(coderInput.prompt)),
+          },
+          ctx
+        )
+      }
+      if (this.#state.sessions[coderSessionId]?.status === 'failed') {
+        throw new Error(
+          this.#state.sessions[coderSessionId].error ??
+            'The Coder provider could not start.'
+        )
+      }
+
+      const state = this.getState()
+      const loop = state.loops?.find(
+        (candidate) =>
+          candidate.memberSessionIds.includes(coderSessionId) &&
+          candidate.memberSessionIds.includes(reviewerSessionId)
+      )
+      return {
+        coderSessionId,
+        reviewerSessionId,
+        createdSessionIds,
+        subscriptionIds,
+        loop,
+        state,
+      }
+    } catch (error) {
+      // Compensation is renderer-clean: a failed one-click start must return
+      // to the editable Draft, not leave a stopped half-ring or waiting
+      // participant on the canvas. Kernel facts already emitted remain an
+      // audit trail, but live intent/session state is removed atomically.
+      for (const subscriptionId of subscriptionIds) {
+        this.#discardWorkflowSubscription(subscriptionId)
+      }
+      for (const sessionId of [...createdSessionIds].reverse()) {
+        this.#discardWorkflowSession(sessionId)
+      }
+      if (
+        coderInput.kind === 'existing' &&
+        coderSessionId &&
+        existingCoderCheckpoint &&
+        !this.#runs.has(coderSessionId)
+      ) {
+        this.#state.sessions[coderSessionId] = existingCoderCheckpoint.session
+        const node = this.#state.nodes.find(
+          (candidate) => candidate.sessionId === coderSessionId
+        )
+        if (node && existingCoderCheckpoint.nodeStatus) {
+          node.status = existingCoderCheckpoint.nodeStatus
+        }
+      }
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      throw error
+    }
+  }
+
+  #discardWorkflowSubscription(subscriptionId: string) {
+    this.#clearTimer(subscriptionId)
+    for (const [slotKey, slot] of Object.entries(
+      (this.#state.pendingActivations ?? {}) as JsonRecord
+    )) {
+      if (slot.subscriptionId === subscriptionId) {
+        delete this.#state.pendingActivations[slotKey]
+      }
+    }
+    delete this.#state.subscriptions?.[subscriptionId]
+  }
+
+  #discardWorkflowSession(sessionId: string) {
+    const run = this.#runs.get(sessionId)
+    if (run) {
+      try {
+        run.kill()
+      } catch {
+        // Best-effort provider compensation; live graph cleanup still runs.
+      }
+    }
+    const session = this.#state.sessions[sessionId]
+    if (session?.project?.workMode === 'worktree' && session.project.repoRoot) {
+      try {
+        gitOutput(session.project.repoRoot, [
+          'worktree',
+          'remove',
+          '--force',
+          session.cwd,
+        ])
+      } catch {
+        // The worktree may already have been removed or never fully created.
+      }
+      if (session.project.branch?.startsWith('orrery/')) {
+        try {
+          gitOutput(session.project.repoRoot, [
+            'branch',
+            '-D',
+            session.project.branch,
+          ])
+        } catch {
+          // Generated branch cleanup is best-effort compensation.
+        }
+      }
+    }
+    delete this.#state.sessions[sessionId]
+    this.#state.nodes = this.#state.nodes.filter(
+      (node) => node.sessionId !== sessionId
+    )
+    this.#state.edges = this.#state.edges.filter(
+      (edge) => edge.source !== sessionId && edge.target !== sessionId
+    )
+    for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
+      cluster.nodeIds = cluster.nodeIds.filter((id) => id !== sessionId)
+      if (cluster.masterSessionId === sessionId) {
+        delete cluster.masterSessionId
+      }
+    }
+    this.#runContext.delete(sessionId)
+    try {
+      fs.rmSync(this.#channelStore.channelDir(sessionId), {
+        recursive: true,
+        force: true,
+      })
+    } catch {
+      // Channel cleanup is best-effort and outside the product graph.
+    }
+  }
+
   async createGoalLoop(input: JsonRecord = {}) {
     const workerSessionId = optionalTrimmedString(input.workerSessionId)
     const worker = workerSessionId
@@ -5999,6 +6368,12 @@ export class RuntimeSessionManager {
     const request = isObject(input) ? input : {}
 
     if (tool === 'create_session') {
+      const reviewRole = this.#activeReviewPairRole(source)
+      if (reviewRole) {
+        throw new Error(
+          `${reviewRole} is already assigned to an active Review until clean workflow. Do not create another session; continue your assigned work and finish so Orrery can advance the existing review pair.`
+        )
+      }
       const result = await this.dispatchCommand({
         kind: 'create_session',
         actor,
@@ -6279,7 +6654,14 @@ export class RuntimeSessionManager {
     )
     run.on('stderr', (data) => this.#appendProviderStderr(sessionId, data))
     run.on('result', (event) => this.#recordResult(sessionId, event))
-    run.on('error', (error) => this.#failSession(sessionId, error.message))
+    run.on('error', (error) => {
+      const current = this.#state.sessions[sessionId]
+      const context = this.#runContext.get(sessionId)
+      if (current?.status === 'killed' || context?.killRequested === true) {
+        return
+      }
+      this.#failSession(sessionId, error.message)
+    })
     run.on('close', ({ code, signal, killed }) => {
       this.#runs.delete(sessionId)
       this.#bridge.revokeRunToken(membraneToken)
@@ -6319,6 +6701,15 @@ export class RuntimeSessionManager {
           // exit is only its completion, not a second fact.
           kernelEventId: context?.killedEventId,
         })
+        return
+      }
+
+      // The provider error event is the terminal authority for a failed run.
+      // It already called #failSession (and emitted exactly one kernel fact);
+      // close only supplies process metadata and must not fail the same turn a
+      // second time, because `on: failed` relationships observe those facts.
+      if (current.status === 'failed') {
+        this.#touch()
         return
       }
 
@@ -8269,7 +8660,18 @@ export class RuntimeSessionManager {
   }
 
   #broadcast(event) {
-    this.#emitRuntimeEventToHost?.(event)
+    try {
+      this.#emitRuntimeEventToHost?.(event)
+    } catch (error) {
+      // Host observers are outside the command transaction. A renderer/SSE
+      // notification failure must never turn a committed mutation into a
+      // thrown command (or strand resources before compensation can see ids).
+      console.error(
+        `Runtime event broadcast failed (${event?.type ?? 'unknown'}): ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
   }
 
   #persistState() {

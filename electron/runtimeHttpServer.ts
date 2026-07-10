@@ -472,6 +472,12 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/review-workflows$/,
+      handler: async (request) =>
+        runtime.startReviewWorkflow(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/templates\/save$/,
       handler: async (request) =>
         runtime.saveTemplate(await readJsonBody(request)),

@@ -13,6 +13,7 @@ import type {
   UserInputRequest,
   UserInputAnswerMap,
 } from './provider-runtime';
+import type { ReviewWorkflowStartInput } from '@shared/review-workflow';
 
 export const graphStateVersion = 7;
 
@@ -516,6 +517,10 @@ export type AgentSession = {
   runtimeSettings?: ProviderRuntimeSettings;
   effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig;
   archived?: boolean;
+  // Runtime-created workflow participants can exist without a provider turn
+  // until their first relationship activation. The UI renders these as
+  // waiting Agents; ordinary createSession never exposes this transient.
+  prepared?: boolean;
 };
 
 export type RuntimeTerminalChunk = {
@@ -697,6 +702,17 @@ export type ApplyTemplateResult = {
   // handoffs are commands, not subscriptions, so nothing standing remains.
   deliveredTo?: SessionId[];
   judgeSessionId?: SessionId;
+  state: GraphState;
+};
+
+export type StartReviewWorkflowInput = ReviewWorkflowStartInput;
+
+export type StartReviewWorkflowResult = {
+  coderSessionId: SessionId;
+  reviewerSessionId: SessionId;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
+  loop?: LoopView;
   state: GraphState;
 };
 

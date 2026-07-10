@@ -175,6 +175,25 @@ export class OrreryClient {
     return this.#request('POST', '/api/runtime/goal-loops', input)
   }
 
+  // Interaction P1: one product-level transaction creates/binds both Agents,
+  // installs the review ring, then starts the Coder. Apply the acceptance
+  // model preset independently to each new endpoint.
+  async startReviewWorkflow(input = {}) {
+    const coder =
+      input.coder?.kind === 'new'
+        ? await this.#withModelPreset(input.coder)
+        : input.coder
+    const reviewer =
+      input.reviewer?.kind === 'new'
+        ? await this.#withModelPreset(input.reviewer)
+        : input.reviewer
+    return this.#request('POST', '/api/runtime/review-workflows', {
+      ...input,
+      coder,
+      reviewer,
+    })
+  }
+
   // L2 external sources: registry + the ingestion choke point.
   registerExternalSource(input = {}) {
     return this.#request('POST', '/api/runtime/sources', input)

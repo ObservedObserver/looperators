@@ -1,5 +1,5 @@
 import '@xyflow/react/dist/style.css';
-import { type KeyboardEvent as ReactKeyboardEvent, useState } from 'react';
+import { type KeyboardEvent as ReactKeyboardEvent, useRef, useState } from 'react';
 import { Activity, PanelRightOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -34,6 +34,9 @@ function App() {
   const [isWorkflowLibraryOpen, setIsWorkflowLibraryOpen] = useState(false);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
   const [activeClusterId, setActiveClusterId] = useState<string>();
+  const [workflowNotice, setWorkflowNotice] = useState<string>();
+  const [openLoopId, setOpenLoopId] = useState<string>();
+  const workflowCloseRequestRef = useRef<(() => void) | undefined>(undefined);
 
   const core = useRuntimeCore();
   const {
@@ -334,6 +337,9 @@ function App() {
             setIsWorkflowLibraryOpen={setIsWorkflowLibraryOpen}
             setActiveTab={setActiveTab}
             setActiveClusterId={setActiveClusterId}
+            openLoopId={openLoopId}
+            setOpenLoopId={setOpenLoopId}
+            requestWorkflowClose={() => workflowCloseRequestRef.current?.()}
           />
         )}
         {selectedSession && isWorkspacePanelOpen ? (
@@ -346,9 +352,9 @@ function App() {
             />
           </div>
         ) : null}
-        {effectiveGraphCollapsed && isWorkflowLibraryOpen ? (
+        {isWorkflowLibraryOpen ? (
           <div
-            className="app-region-no-drag absolute inset-y-0 right-0 z-50 flex max-w-full shadow-2xl"
+            className="app-region-no-drag absolute bottom-0 right-0 top-14 z-50 flex max-w-full shadow-2xl"
             role="dialog"
             aria-modal="true"
             aria-label="New Workflow"
@@ -366,8 +372,25 @@ function App() {
               onStateChange={setRuntimeState}
               onError={setRuntimeError}
               autoFocusClose
+              defaultCwd={newCwd}
+              onWorkflowStarted={({ coderSessionId, loopId }) => {
+                setSelectedSessionId(coderSessionId);
+                setActiveTab('chat');
+                setOpenLoopId(loopId);
+                setWorkflowNotice('Coder started · Reviewer waiting');
+              }}
+              requestCloseRef={workflowCloseRequestRef}
             />
           </div>
+        ) : null}
+        {workflowNotice ? (
+          <button
+            type="button"
+            className="app-region-no-drag absolute bottom-4 left-1/2 z-[70] -translate-x-1/2 rounded-xl border border-lime-500/35 bg-background/95 px-4 py-2 font-mono text-[11px] text-lime-700 shadow-lg backdrop-blur dark:text-lime-300"
+            onClick={() => setWorkflowNotice(undefined)}
+          >
+            {workflowNotice}
+          </button>
         ) : null}
       </main>
     </TooltipProvider>

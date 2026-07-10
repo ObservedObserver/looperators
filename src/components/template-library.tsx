@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type MutableRefObject } from 'react';
 import { BookMarked, ChevronRight, Play, Save, Trash2, Workflow, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { GraphState, TemplateDescriptor, TemplateSlot } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
 import { partitionWorkflowIds, primaryWorkflowCatalog, type WorkflowEntry } from '@shared/workflow-catalog';
+import { ReviewWorkflowComposer } from '@/components/review-workflow-composer';
 
 // Product-facing New Workflow entry. Templates remain the compile mechanism,
 // but the first-run UI is organized around outcomes rather than operators.
@@ -15,6 +16,9 @@ export function TemplateLibraryPanel({
   onStateChange,
   onError,
   autoFocusClose = false,
+  defaultCwd,
+  onWorkflowStarted,
+  requestCloseRef,
 }: {
   runtimeApi: RuntimeApi | undefined;
   runtimeState: GraphState;
@@ -22,6 +26,9 @@ export function TemplateLibraryPanel({
   onStateChange: (state: GraphState) => void;
   onError: (message: string) => void;
   autoFocusClose?: boolean;
+  defaultCwd: string;
+  onWorkflowStarted: (result: { coderSessionId: string; loopId?: string }) => void;
+  requestCloseRef?: MutableRefObject<(() => void) | undefined>;
 }) {
   const [templates, setTemplates] = useState<TemplateDescriptor[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -32,6 +39,8 @@ export function TemplateLibraryPanel({
   // Save-as-template: a subscription multi-select plus a name.
   const [saveName, setSaveName] = useState('');
   const [saveSelection, setSaveSelection] = useState<Record<string, boolean>>({});
+  const [reviewDraftDirty, setReviewDraftDirty] = useState(false);
+  const [discardAction, setDiscardAction] = useState<{ type: 'close' } | { type: 'select'; nextId?: string }>();
 
   const sessions = Object.values(runtimeState.sessions).filter((session) => session.status !== 'killed');
   const sources = Object.values(runtimeState.sources ?? {}).filter((source) => source.state === 'active');
@@ -60,12 +69,39 @@ export function TemplateLibraryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once per open; saves/removes refresh explicitly
   }, [runtimeApi]);
 
-  const pick = (templateId: string) => {
-    setSelectedId((current) => (current === templateId ? undefined : templateId));
+  const commitPick = (nextId?: string) => {
+    setSelectedId(nextId);
     setSlotValues({});
     setScheduleModes({});
     setFeedback(undefined);
   };
+
+  const pick = (templateId: string) => {
+    const nextId = selectedId === templateId ? undefined : templateId;
+    if (selectedId === 'review-until-clean' && reviewDraftDirty) {
+      setDiscardAction({ type: 'select', nextId });
+      return;
+    }
+    commitPick(nextId);
+  };
+
+  const requestClose = useCallback(() => {
+    if (selectedId === 'review-until-clean' && reviewDraftDirty) {
+      setDiscardAction({ type: 'close' });
+      return;
+    }
+    onClose();
+  }, [onClose, reviewDraftDirty, selectedId]);
+
+  useEffect(() => {
+    if (!requestCloseRef) return;
+    requestCloseRef.current = requestClose;
+    return () => {
+      if (requestCloseRef.current === requestClose) {
+        requestCloseRef.current = undefined;
+      }
+    };
+  }, [requestClose, requestCloseRef]);
 
   const slotParam = (slot: TemplateSlot): unknown => {
     const raw = (slotValues[slot.key] ?? '').trim();
@@ -254,7 +290,21 @@ export function TemplateLibraryPanel({
           )}
         </button>
 
-        {isSelected ? (
+        {isSelected && template.id === 'review-until-clean' ? (
+          <ReviewWorkflowComposer
+            runtimeApi={runtimeApi}
+            runtimeState={runtimeState}
+            defaultCwd={defaultCwd}
+            onStateChange={onStateChange}
+            onError={onError}
+            onDirtyChange={setReviewDraftDirty}
+            onStarted={(result) => {
+              setReviewDraftDirty(false);
+              onWorkflowStarted(result);
+              onClose();
+            }}
+          />
+        ) : isSelected ? (
           <div className="mt-2.5 space-y-2 border-t border-border/70 pt-2.5">
             {template.slots.map((slot) => (
               <label key={slot.key} className="block space-y-1">
@@ -296,16 +346,55 @@ export function TemplateLibraryPanel({
   };
 
   return (
-    <aside className="flex w-[360px] shrink-0 flex-col border-l border-border bg-background font-mono">
+    <aside
+      className={cn(
+        'flex max-w-full shrink-0 flex-col border-l border-border bg-background font-mono',
+        selectedId === 'review-until-clean' ? 'w-[440px]' : 'w-[360px]',
+      )}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          requestClose();
+        }
+      }}
+    >
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
         <Workflow className="size-4 text-accent-ink" />
         <h2 className="text-[12px] uppercase tracking-[0.14em] text-foreground">New Workflow</h2>
-        <Button className="ml-auto" variant="ghost" size="icon" aria-label="Close New Workflow" autoFocus={autoFocusClose} onClick={onClose}>
+        <Button className="ml-auto" variant="ghost" size="icon" aria-label="Close New Workflow" autoFocus={autoFocusClose} onClick={requestClose}>
           <X className="size-4" />
         </Button>
       </header>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {discardAction ? (
+          <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 text-[10.5px] leading-4">
+            <p className="font-medium text-foreground">Discard this Review workflow draft?</p>
+            <p className="mt-1 text-muted-foreground">Nothing has run or been added to the graph yet.</p>
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" variant="outline" className="h-7 flex-1 text-[10px]" onClick={() => setDiscardAction(undefined)}>
+                Keep editing
+              </Button>
+              <Button
+                size="sm"
+                className="h-7 flex-1 text-[10px]"
+                onClick={() => {
+                  setReviewDraftDirty(false);
+                  const action = discardAction;
+                  setDiscardAction(undefined);
+                  if (action.type === 'close') {
+                    onClose();
+                  } else {
+                    commitPick(action.nextId);
+                  }
+                }}
+              >
+                Discard draft
+              </Button>
+            </div>
+          </div>
+        ) : null}
         <div className="rounded-xl border border-accent-ink/20 bg-accent-ink/[0.05] p-3 text-[10.5px] leading-4 text-muted-foreground">
           <p className="font-medium text-foreground">Chats start one Agent. Workflows connect Agents.</p>
           <p className="mt-1">Choose the result you want. Orrery will place the relationship on the graph.</p>

@@ -271,6 +271,12 @@ export const graphStateSchema = {
       output:
         '{ judgeSessionId, checkSubscription, retrySubscription, state }; L3 preset — compiles into create_session + author_subscription ×2 (worker on finished → judge; judge on report(fail) → worker; both stop at whenReport done + maxFirings), no new kernel verb',
     },
+    startReviewWorkflow: {
+      input:
+        '{ coder: new|existing endpoint + work prompt, reviewer: new|existing endpoint + independent provider config + review instruction, blocking: any-issue|p0-p1|custom, maxLaps }; one product-level transaction',
+      output:
+        '{ coderSessionId, reviewerSessionId, createdSessionIds, subscriptionIds, loop, state }; creates/binds both endpoints, authors the paired review ring, then starts the Coder. A new Reviewer stays provider-cold until the first delivered diff (no ready turn)',
+    },
     registerExternalSource: {
       input: {
         kind: '"script" | "git" | "webhook" | "manual"',

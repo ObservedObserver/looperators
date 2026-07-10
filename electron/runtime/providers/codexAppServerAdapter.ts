@@ -366,6 +366,7 @@ export class CodexAppServerRun extends EventEmitter {
   #orreryTurnId
   #sessionId
   #turnCompleted = false
+  #turnError
   #pendingRequests = new Map()
   #providerInstance
   #mcpHandoff
@@ -541,6 +542,9 @@ export class CodexAppServerRun extends EventEmitter {
           })
         })
       }
+      if (this.#turnError) {
+        throw this.#turnError
+      }
     } catch (error) {
       if (this.#killRequested) {
         signal = 'SIGTERM'
@@ -601,6 +605,14 @@ export class CodexAppServerRun extends EventEmitter {
     }
 
     if (message.method === 'turn/completed') {
+      const turn = message.params?.turn
+      if (turn?.status === 'failed') {
+        const detail =
+          typeof turn.error?.message === 'string' && turn.error.message.length > 0
+            ? turn.error.message
+            : 'Codex turn failed.'
+        this.#turnError = new Error(detail)
+      }
       this.#turnCompleted = true
       this.emit('turnCompleted')
     }

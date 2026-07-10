@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:loop-timeline', input),
     createGoalLoop: (input) =>
       ipcRenderer.invoke('orrery:create-goal-loop', input),
+    startReviewWorkflow: (input) =>
+      ipcRenderer.invoke('orrery:start-review-workflow', input),
     registerExternalSource: (input) =>
       ipcRenderer.invoke('orrery:register-external-source', input),
     removeExternalSource: (input) =>

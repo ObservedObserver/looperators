@@ -9,7 +9,6 @@ import { nodeTypes, edgeTypes } from '@/components/canvas';
 import { WorkingTreeDiffPanel } from '@/components/working-tree-diff-panel';
 import { LoopPanel } from '@/components/loop-panel';
 import { SourceDirectoryPanel } from '@/components/source-directory';
-import { TemplateLibraryPanel } from '@/components/template-library';
 import { type Dispatch, type SetStateAction, useState } from 'react';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
@@ -28,6 +27,9 @@ type SessionGraphPanelProps = {
   setIsWorkflowLibraryOpen: Dispatch<SetStateAction<boolean>>;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
   setActiveClusterId: Dispatch<SetStateAction<string | undefined>>;
+  openLoopId: string | undefined;
+  setOpenLoopId: Dispatch<SetStateAction<string | undefined>>;
+  requestWorkflowClose: () => void;
 };
 
 const kernelActorClassNames: Record<string, string> = {
@@ -49,10 +51,12 @@ export function SessionGraphPanel({
   setIsWorkflowLibraryOpen,
   setActiveTab,
   setActiveClusterId,
+  openLoopId,
+  setOpenLoopId,
+  requestWorkflowClose,
 }: SessionGraphPanelProps) {
   const { runtimeState, setRuntimeState, setRuntimeError, runtimeApi, setSelectedSessionId, selectedSession, graphActivity, kernelEvents } = core;
   // L4 loop timeline panel: opened by clicking a ring badge on the canvas.
-  const [openLoopId, setOpenLoopId] = useState<string>();
   // L2 trigger-source directory: opened from the header or a source node.
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
@@ -87,7 +91,13 @@ export function SessionGraphPanel({
             variant={isWorkflowLibraryOpen ? 'secondary' : 'outline'}
             size="sm"
             disabled={!runtimeApi}
-            onClick={() => setIsWorkflowLibraryOpen((open) => !open)}
+            onClick={() => {
+              if (isWorkflowLibraryOpen) {
+                requestWorkflowClose();
+              } else {
+                setIsWorkflowLibraryOpen(true);
+              }
+            }}
           >
             <Workflow className="size-3.5" />
             <span className="truncate">New Workflow</span>
@@ -327,16 +337,6 @@ export function SessionGraphPanel({
                 }
               })();
             }}
-          />
-        ) : null}
-
-        {isWorkflowLibraryOpen ? (
-          <TemplateLibraryPanel
-            runtimeApi={runtimeApi}
-            runtimeState={runtimeState}
-            onClose={() => setIsWorkflowLibraryOpen(false)}
-            onStateChange={setRuntimeState}
-            onError={(message) => setRuntimeError(message)}
           />
         ) : null}
 

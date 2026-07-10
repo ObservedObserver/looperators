@@ -74,6 +74,7 @@ const readline = require('node:readline')
 function send(value) {
   process.stdout.write(JSON.stringify(value) + '\\n')
 }
+
 const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
   if (!line.trim()) return
@@ -103,6 +104,73 @@ rl.on('line', (line) => {
   }
   send({ id: message.id, result: {} })
 })
+`
+}
+
+function fakeCodexFailedTurnSource() {
+  return `#!/usr/bin/env node
+const readline = require('node:readline')
+function send(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'failed-thread' } } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    send({ id: message.id, result: { turn: { id: 'failed-turn' } } })
+    send({
+      method: 'turn/completed',
+      params: {
+        turn: {
+          id: 'failed-turn',
+          status: 'failed',
+          error: { message: 'selected model requires a newer Codex runtime' },
+        },
+      },
+    })
+  }
+})
+`
+}
+
+function fakeCodexKillErrorSource() {
+  return `#!/usr/bin/env node
+const readline = require('node:readline')
+function send(value) {
+  process.stdout.write(JSON.stringify(value) + '\\n')
+}
+process.on('SIGTERM', () => {
+  process.stdout.write('not-json-during-kill\\n')
+  setTimeout(() => process.exit(0), 25)
+})
+const rl = readline.createInterface({ input: process.stdin })
+rl.on('line', (line) => {
+  if (!line.trim()) return
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: {} })
+    return
+  }
+  if (message.method === 'thread/start') {
+    send({ id: message.id, result: { thread: { id: 'kill-thread' } } })
+    return
+  }
+  if (message.method === 'turn/start') {
+    send({ id: message.id, result: { turn: { id: 'kill-turn' } } })
+    send({ method: 'turn/started', params: { turn: { id: 'kill-turn' } } })
+  }
+})
+setInterval(() => {}, 1000)
 `
 }
 
@@ -881,6 +949,102 @@ test('compiled RuntimeSessionManager infers provider kind from provider instance
     )
     assert.ok(providerEvents.length > 0)
     assert.equal(providerEvents.every((event) => !('state' in event)), true)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager records one failure fact for a failed Codex turn', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-codex-failed-turn-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const storageFile = path.join(tempRoot, 'runtime-state.sqlite')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexFailedTurnSource())
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'failed-codex',
+      kind: 'codex',
+      label: 'Failed Codex',
+      binaryPath: fakeCodex,
+    })
+    const created = await runtime.createSession({
+      prompt: 'fail once',
+      providerKind: 'codex',
+      providerInstanceId: 'failed-codex',
+      runtimeSettings: { runtimeMode: 'full-access', model: 'future-model' },
+      cwd: project,
+    })
+    await waitFor(
+      'failed Codex session',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'failed'
+    )
+    await delay(100)
+
+    const session = runtime.getState().sessions[created.sessionId]
+    const failures = runtime
+      .getKernelEvents({ type: 'session.failed' })
+      .events.filter((event) => event.payload?.sessionId === created.sessionId)
+    assert.equal(session.status, 'failed')
+    assert.match(session.error, /requires a newer Codex runtime/)
+    assert.equal(failures.length, 1)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager keeps user kill authoritative over teardown errors', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-codex-kill-error-'))
+  const fakeCodex = path.join(tempRoot, 'codex')
+  const storageFile = path.join(tempRoot, 'runtime-state.sqlite')
+  const project = path.join(tempRoot, 'project')
+
+  fs.mkdirSync(project, { recursive: true })
+  fs.writeFileSync(fakeCodex, fakeCodexKillErrorSource())
+  fs.chmodSync(fakeCodex, 0o755)
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'kill-error-codex',
+      kind: 'codex',
+      label: 'Kill Error Codex',
+      binaryPath: fakeCodex,
+    })
+    const created = await runtime.createSession({
+      prompt: 'wait to be killed',
+      providerKind: 'codex',
+      providerInstanceId: 'kill-error-codex',
+      runtimeSettings: { runtimeMode: 'full-access', model: 'gpt-5.5' },
+      cwd: project,
+    })
+    await waitFor(
+      'running Codex session',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'running'
+    )
+    assert.equal(runtime.killSession(created.sessionId).ok, true)
+    await waitFor(
+      'killed Codex session',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'killed'
+    )
+    await delay(150)
+
+    const session = runtime.getState().sessions[created.sessionId]
+    const killedFacts = runtime
+      .getKernelEvents({ type: 'session.killed' })
+      .events.filter((event) => event.payload?.sessionId === created.sessionId)
+    const failedFacts = runtime
+      .getKernelEvents({ type: 'session.failed' })
+      .events.filter((event) => event.payload?.sessionId === created.sessionId)
+    assert.equal(session.status, 'killed')
+    assert.equal(killedFacts.length, 1)
+    assert.equal(failedFacts.length, 0)
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

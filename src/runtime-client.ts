@@ -41,6 +41,8 @@ import type {
   SessionId,
   SetClusterLoopPolicyInput,
   StartMasterLoopInput,
+  StartReviewWorkflowInput,
+  StartReviewWorkflowResult,
   StopMasterLoopInput,
   UpdateNodePositionsInput,
   UpsertProviderInstanceInput,
@@ -74,6 +76,7 @@ export type RuntimeApi = {
   getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
   getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
   createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
+  startReviewWorkflow: (input: StartReviewWorkflowInput) => Promise<StartReviewWorkflowResult>;
   registerExternalSource: (input: RegisterExternalSourceInput) => Promise<RegisterExternalSourceResult>;
   removeExternalSource: (input: { sourceId: string; reason?: string }) => Promise<{ ok: boolean }>;
   emitExternalEvent: (input: EmitExternalEventInput) => Promise<EmitExternalEventResult>;
@@ -406,6 +409,10 @@ class HttpRuntimeApi implements RuntimeApi {
 
   createGoalLoop(input: CreateGoalLoopInput) {
     return this.#post<CreateGoalLoopResult>('goal-loops', input);
+  }
+
+  startReviewWorkflow(input: StartReviewWorkflowInput) {
+    return this.#post<StartReviewWorkflowResult>('review-workflows', input);
   }
 
   registerExternalSource(input: RegisterExternalSourceInput) {

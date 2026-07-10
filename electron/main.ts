@@ -60,6 +60,9 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:create-goal-loop', (_event, input) =>
     runtime.createGoalLoop(input)
   )
+  ipcMain.handle('orrery:start-review-workflow', (_event, input) =>
+    runtime.startReviewWorkflow(input)
+  )
   ipcMain.handle('orrery:register-external-source', (_event, input) =>
     runtime.registerExternalSource(input)
   )
