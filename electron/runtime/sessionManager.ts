@@ -13,6 +13,12 @@ import {
 } from '../../shared/graph-state.js'
 import { projectSession } from '../../shared/session-projection.js'
 import {
+  compileBuiltinTemplate,
+  compileSavedTemplate,
+  parameterizeSubscriptions,
+  templateDescriptors,
+} from '../../shared/templates.js'
+import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
@@ -5344,10 +5350,14 @@ export class RuntimeSessionManager {
       // (the check edge's note IS the judge's activation prompt).
       const suffix = randomUUID().slice(0, 8)
       const stop = { whenReport: { verdict: 'done' }, maxFirings: maxLaps }
+      // Optional provenance tag (the L6 template library passes
+      // `template:goal-loop`); pairing/stop logic never reads it.
+      const preset = optionalTrimmedString(input.preset)
       const check = this.#cmdAuthorSubscription(
         {
           id: `goal-check-${suffix}`,
           label: 'goal check',
+          ...(preset ? { preset } : {}),
           sourceSessionId: worker.sessionId,
           on: { on: 'finished' },
           targetSessionId: judgeSessionId,
@@ -5362,6 +5372,7 @@ export class RuntimeSessionManager {
         {
           id: `goal-retry-${suffix}`,
           label: 'goal retry',
+          ...(preset ? { preset } : {}),
           sourceSessionId: judgeSessionId,
           on: { on: 'report', match: { type: 'verdict', verdict: 'fail' } },
           targetSessionId: worker.sessionId,
@@ -5382,6 +5393,278 @@ export class RuntimeSessionManager {
     } finally {
       this.#goalLoopInFlight.delete(worker.sessionId)
     }
+  }
+
+  // ---- L6 template library: pick a template, fill slots, land real edges ----
+  //
+  // Templates are compilers, not entities (proposal §L6): applying one
+  // expands into the same ordinary commands a hand-authored relation would
+  // use, so what lands on the canvas IS the compiled truth the user can
+  // learn from. Saved templates are runtime-plane config — the scheduler
+  // never reads them, so they live in the snapshot, never the kernel log.
+
+  listTemplates() {
+    return { templates: templateDescriptors(this.#state.templates) }
+  }
+
+  async applyTemplate(input: JsonRecord = {}) {
+    const templateId = optionalTrimmedString(input.templateId)
+    if (!templateId) {
+      throw new Error('applyTemplate requires a templateId')
+    }
+    const params = isObject(input.params) ? input.params : {}
+    const saved = this.#state.templates?.[templateId]
+    const plan = saved
+      ? compileSavedTemplate(saved, params)
+      : compileBuiltinTemplate(templateId, params)
+
+    // Validate every literal endpoint BEFORE creating anything: a stale id
+    // in one slot must not leave an orphan created session or half a ring.
+    const requireSession = (sessionId: string, role: string) => {
+      const session = this.#state.sessions[sessionId]
+      if (!session || session.status === 'killed') {
+        throw new Error(
+          `Template ${role} must be an existing session (got: ${sessionId})`
+        )
+      }
+    }
+    for (const step of plan.steps) {
+      if (step.kind === 'create-session') {
+        requireSession(step.inheritFromSessionId, 'session to inherit from')
+      } else if (step.kind === 'goal-loop') {
+        requireSession(step.input.workerSessionId, 'worker')
+      } else {
+        for (const [endpoint, role] of [
+          [step.input.source, 'source'],
+          [step.input.target, 'target'],
+        ] as const) {
+          if ('session' in endpoint) {
+            requireSession(endpoint.session, role)
+          } else if ('external' in endpoint) {
+            const source = this.#state.sources?.[endpoint.external]
+            if (!source || source.state !== 'active') {
+              throw new Error(
+                `Template ${role} must be a registered, active external source (got: ${endpoint.external})`
+              )
+            }
+          }
+        }
+      }
+    }
+
+    // Shared suffix keeps paired edges from one apply visibly siblings
+    // (the goal-check/goal-retry precedent). Duplicate prefixes within one
+    // apply (a saved template can hold two same-shaped edges) fall back to
+    // runtime-generated ids instead of overwriting each other.
+    const suffix = randomUUID().slice(0, 8)
+    const assignedIds = new Set<string>()
+    const templateEdgeId = (idPrefix?: string) => {
+      if (!idPrefix) {
+        return undefined
+      }
+      const id = `${idPrefix}-${suffix}`
+      if (assignedIds.has(id) || this.#state.subscriptions?.[id]) {
+        return undefined
+      }
+      assignedIds.add(id)
+      return id
+    }
+    const refs = new Map<string, string>()
+    const createdSessionIds = []
+    const subscriptionIds = []
+    let judgeSessionId
+
+    const resolveSession = (endpoint) => {
+      if ('session' in endpoint) return endpoint.session
+      if ('ref' in endpoint) {
+        const sessionId = refs.get(endpoint.ref)
+        if (!sessionId) {
+          throw new Error(
+            `Template plan step references "${endpoint.ref}" before creating it`
+          )
+        }
+        return sessionId
+      }
+      throw new Error('Template endpoint cannot be resolved to a session')
+    }
+
+    // Any mid-plan failure unwinds everything this apply created so far —
+    // not just the killed-participant case: a saved multi-step template can
+    // fail on its Nth step (for example the goal-loop duplicate guard) and
+    // must not strand earlier sessions or edges on the canvas.
+    const unwind = () => {
+      for (const createdId of createdSessionIds) {
+        try {
+          this.killSession(createdId)
+        } catch {
+          // Best-effort cleanup; the rethrow below is the real signal.
+        }
+      }
+      for (const authoredId of subscriptionIds) {
+        try {
+          this.#cmdStopSubscription(
+            {
+              subscriptionId: authoredId,
+              reason: 'Template apply aborted before completing its plan.',
+            },
+            { actor: { kind: 'runtime' } }
+          )
+        } catch {
+          // The kill sweep may have stopped it already.
+        }
+      }
+    }
+
+    try {
+      for (const step of plan.steps) {
+        if (step.kind === 'create-session') {
+          // The created participant inherits the anchor session's provider,
+          // workspace, and trust level — the goal-judge precedent: a reviewer
+          // in a different sandbox could not even read the work it reviews.
+          const from = this.#state.sessions[step.inheritFromSessionId]
+          const created = await this.#cmdCreateSession(
+            {
+              prompt: step.prompt,
+              cwd: from.cwd,
+              label: step.label,
+              providerKind: from.providerKind,
+              providerInstanceId: from.providerInstanceId,
+              ...(isObject(from.runtimeSettings)
+                ? { runtimeSettings: clone(from.runtimeSettings) }
+                : {}),
+              sourceSessionId: from.sessionId,
+              ...(step.linkLabel ? { linkLabel: step.linkLabel } : {}),
+            },
+            this.#humanCtx()
+          )
+          refs.set(step.ref, created.sessionId)
+          createdSessionIds.push(created.sessionId)
+        } else if (step.kind === 'goal-loop') {
+          // Whole-ring delegation: the L3 preset owns judge creation, the
+          // duplicate guard, and the paired stop; the preset tag keeps the
+          // template provenance on the compiled edges.
+          const result = await this.createGoalLoop({
+            ...(step.input as JsonRecord),
+            preset: `template:${templateId}`,
+          })
+          judgeSessionId = result.judgeSessionId
+          createdSessionIds.push(result.judgeSessionId)
+          subscriptionIds.push(
+            result.checkSubscription.id,
+            result.retrySubscription.id
+          )
+        } else {
+          const body = step.input
+          const source =
+            'timer' in body.source
+              ? { kind: 'timer' }
+              : 'external' in body.source
+                ? { kind: 'external', sourceId: body.source.external }
+                : { kind: 'session', sessionId: resolveSession(body.source) }
+          const targetSessionId = resolveSession(body.target)
+          // Endpoint liveness recheck: the pre-validation above ran before
+          // any awaited session creation, so a kill landing inside that gap
+          // would otherwise leave an orphan created participant plus edges
+          // anchored to a dead session that the kill sweep never saw (the
+          // goal-loop recheck precedent). Authoring itself is synchronous,
+          // so a recheck per author step closes every interleaving.
+          const participants = [
+            ...(source.kind === 'session' ? [source.sessionId] : []),
+            targetSessionId,
+          ]
+          for (const sessionId of participants) {
+            const session = this.#state.sessions[sessionId]
+            if (!session || session.status === 'killed') {
+              throw new Error(
+                'A participant session was killed while the template was being applied'
+              )
+            }
+          }
+          const edgeId = templateEdgeId(body.idPrefix)
+          const authored = this.#cmdAuthorSubscription(
+            {
+              ...(edgeId ? { id: edgeId } : {}),
+              ...(body.label ? { label: body.label } : {}),
+              preset: `template:${templateId}`,
+              source,
+              on: clone(body.on),
+              targetSessionId,
+              action: clone(body.action),
+              ...(body.gate ? { gate: body.gate } : {}),
+              ...(body.concurrency ? { concurrency: body.concurrency } : {}),
+              ...(body.stop ? { stop: clone(body.stop) } : {}),
+              ...(body.onStop ? { onStop: body.onStop } : {}),
+            },
+            this.#humanCtx()
+          )
+          subscriptionIds.push(authored.subscription.id)
+        }
+      }
+    } catch (error) {
+      unwind()
+      throw error
+    }
+
+    return {
+      templateId,
+      createdSessionIds,
+      subscriptionIds,
+      ...(judgeSessionId ? { judgeSessionId } : {}),
+      state: this.getState(),
+    }
+  }
+
+  saveTemplate(input: JsonRecord = {}) {
+    const name = optionalTrimmedString(input.name)
+    if (!name) {
+      throw new Error('saveTemplate requires a name')
+    }
+    const ids = Array.isArray(input.subscriptionIds)
+      ? input.subscriptionIds.map((id) => optionalTrimmedString(id)).filter(Boolean)
+      : []
+    const subscriptions = ids.map((id) => {
+      const subscription = this.#state.subscriptions?.[id]
+      if (!subscription) {
+        throw new Error(`Unknown subscription: ${id}`)
+      }
+      return subscription
+    })
+    const body = parameterizeSubscriptions(subscriptions, {
+      session: (sessionId) => this.#state.sessions[sessionId]?.label,
+      source: (sourceId) => {
+        const source = this.#state.sources?.[sourceId]
+        return source ? externalSourceSummary(source) : undefined
+      },
+    })
+    const template = {
+      id: `tpl-${randomUUID().slice(0, 8)}`,
+      name,
+      ...(optionalTrimmedString(input.tagline)
+        ? { tagline: input.tagline.trim() }
+        : {}),
+      createdAt: now(),
+      ...body,
+    }
+    this.#state.templates = this.#state.templates ?? {}
+    this.#state.templates[template.id] = template
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { template: clone(template), state: this.getState() }
+  }
+
+  removeTemplate(input: JsonRecord = {}) {
+    const templateId = optionalTrimmedString(input.templateId)
+    const template = templateId ? this.#state.templates?.[templateId] : undefined
+    if (!template) {
+      throw new Error(`Unknown template: ${templateId ?? ''}`)
+    }
+    // No tombstone: nothing on the graph references a template after it
+    // compiled — removed means gone (unlike sources, which stopped edges
+    // still point at).
+    delete this.#state.templates[templateId]
+    this.#touch()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    return { ok: true, state: this.getState() }
   }
 
   stopSubscription(input: JsonRecord = {}) {

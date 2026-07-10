@@ -69,6 +69,16 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:emit-external-event', (_event, input) =>
     runtime.emitExternalEvent(input)
   )
+  ipcMain.handle('orrery:list-templates', () => runtime.listTemplates())
+  ipcMain.handle('orrery:apply-template', (_event, input) =>
+    runtime.applyTemplate(input)
+  )
+  ipcMain.handle('orrery:save-template', (_event, input) =>
+    runtime.saveTemplate(input)
+  )
+  ipcMain.handle('orrery:remove-template', (_event, input) =>
+    runtime.removeTemplate(input)
+  )
   ipcMain.handle('orrery:get-project-context', (_event, input) =>
     runtime.getProjectContext(input)
   )

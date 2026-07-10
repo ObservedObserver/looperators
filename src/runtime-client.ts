@@ -25,8 +25,13 @@ import type {
   ProviderSetupStatusInput,
   ProjectContext,
   ProjectContextInput,
+  ApplyTemplateInput,
+  ApplyTemplateResult,
+  ListTemplatesResult,
   RegisterExternalSourceInput,
   RegisterExternalSourceResult,
+  SaveTemplateInput,
+  SaveTemplateResult,
   RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
   RuntimeEvent,
@@ -72,6 +77,10 @@ export type RuntimeApi = {
   registerExternalSource: (input: RegisterExternalSourceInput) => Promise<RegisterExternalSourceResult>;
   removeExternalSource: (input: { sourceId: string; reason?: string }) => Promise<{ ok: boolean }>;
   emitExternalEvent: (input: EmitExternalEventInput) => Promise<EmitExternalEventResult>;
+  listTemplates: () => Promise<ListTemplatesResult>;
+  applyTemplate: (input: ApplyTemplateInput) => Promise<ApplyTemplateResult>;
+  saveTemplate: (input: SaveTemplateInput) => Promise<SaveTemplateResult>;
+  removeTemplate: (input: { templateId: string }) => Promise<{ ok: boolean; state: GraphState }>;
   getProjectContext: (input: ProjectContextInput) => Promise<ProjectContext>;
   getProviderSetupStatus: (input: ProviderSetupStatusInput) => Promise<ProviderSetupStatus>;
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
@@ -409,6 +418,22 @@ class HttpRuntimeApi implements RuntimeApi {
 
   emitExternalEvent(input: EmitExternalEventInput) {
     return this.#post<EmitExternalEventResult>('external-events', input);
+  }
+
+  listTemplates() {
+    return this.#get<ListTemplatesResult>('templates');
+  }
+
+  applyTemplate(input: ApplyTemplateInput) {
+    return this.#post<ApplyTemplateResult>('templates/apply', input);
+  }
+
+  saveTemplate(input: SaveTemplateInput) {
+    return this.#post<SaveTemplateResult>('templates/save', input);
+  }
+
+  removeTemplate(input: { templateId: string }) {
+    return this.#post<{ ok: boolean; state: GraphState }>(`templates/${encodeURIComponent(input.templateId)}/remove`, input);
   }
 
   runTerminalCommand(input: RunTerminalCommandInput) {

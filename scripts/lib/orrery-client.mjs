@@ -192,6 +192,27 @@ export class OrreryClient {
     return this.#request('POST', '/api/runtime/external-events', input)
   }
 
+  // L6 template library: descriptors as data, apply/save/remove verbs.
+  listTemplates() {
+    return this.#request('GET', '/api/runtime/templates')
+  }
+
+  applyTemplate(input = {}) {
+    return this.#request('POST', '/api/runtime/templates/apply', input)
+  }
+
+  saveTemplate(input = {}) {
+    return this.#request('POST', '/api/runtime/templates/save', input)
+  }
+
+  removeTemplate(templateId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/templates/${encodeURIComponent(templateId)}/remove`,
+      input
+    )
+  }
+
   // Kernel event log (G0): append-only graph-level facts with actor + causeId.
   // Returns { events, latestSeq }; `since` is an exclusive seq cursor.
   kernelEvents({ since, limit, type } = {}) {

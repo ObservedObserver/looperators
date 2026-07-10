@@ -73,6 +73,8 @@ export const graphStateSchema = {
     loops: 'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
     sources:
       'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
+    templates:
+      'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config, snapshot-persisted, never kernel facts',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   loopPolicy: {
@@ -641,6 +643,71 @@ export type EmitExternalEventResult =
   | { ok: true; eventId?: string; type: string }
   | { ok: false; dropped: true; reason: string };
 
+// L6 relation template library. Built-in templates and user-saved ones are
+// served as data (descriptors with slot definitions) so the renderer stays
+// compile-free: it renders slot forms and calls applyTemplate; the runtime
+// owns the single compile face (shared/templates.ts).
+export type TemplateSlotKind = 'session' | 'text' | 'longtext' | 'number' | 'schedule' | 'external-source';
+
+export type TemplateSlot = {
+  key: string;
+  label: string;
+  kind: TemplateSlotKind;
+  required: boolean;
+  placeholder?: string;
+  defaultValue?: string | number;
+  help?: string;
+};
+
+export type TemplateDescriptor = {
+  id: string;
+  name: string;
+  tagline: string;
+  handsOff: string;
+  builtin: boolean;
+  slots: TemplateSlot[];
+};
+
+// A user-saved template: parameterized subscriptions (session endpoints
+// became session slots, external sources became source slots). Runtime-plane
+// config — snapshot-persisted, never a kernel fact.
+export type SavedTemplate = {
+  id: string;
+  name: string;
+  tagline?: string;
+  createdAt: string;
+  slots: TemplateSlot[];
+  subscriptions: Array<Record<string, any>>;
+};
+
+export type ListTemplatesResult = { templates: TemplateDescriptor[] };
+
+export type ApplyTemplateInput = {
+  templateId: string;
+  // Slot values: session ids, external source ids, text, numbers, or
+  // { everySeconds | dailyAt } for schedule slots.
+  params?: Record<string, any>;
+};
+
+export type ApplyTemplateResult = {
+  templateId: string;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
+  judgeSessionId?: SessionId;
+  state: GraphState;
+};
+
+export type SaveTemplateInput = {
+  name: string;
+  tagline?: string;
+  subscriptionIds: string[];
+};
+
+export type SaveTemplateResult = {
+  template: SavedTemplate;
+  state: GraphState;
+};
+
 export type Subscription = {
   id: string;
   source: SubscriptionSourceRef;
@@ -751,6 +818,7 @@ export type GraphState = {
   pendingActivations?: Record<string, PendingActivation>;
   loops?: LoopView[];
   sources?: Record<string, ExternalSource>;
+  templates?: Record<string, SavedTemplate>;
   diagnostics?: RuntimeStateDiagnostic[];
 };
 

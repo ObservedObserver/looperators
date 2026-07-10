@@ -19,6 +19,13 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:remove-external-source', input),
     emitExternalEvent: (input) =>
       ipcRenderer.invoke('orrery:emit-external-event', input),
+    listTemplates: () => ipcRenderer.invoke('orrery:list-templates'),
+    applyTemplate: (input) =>
+      ipcRenderer.invoke('orrery:apply-template', input),
+    saveTemplate: (input) =>
+      ipcRenderer.invoke('orrery:save-template', input),
+    removeTemplate: (input) =>
+      ipcRenderer.invoke('orrery:remove-template', input),
     getProjectContext: (input) =>
       ipcRenderer.invoke('orrery:get-project-context', input),
     getProviderSetupStatus: (input) =>

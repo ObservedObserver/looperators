@@ -460,6 +460,32 @@ function compileRoutes(
       },
     },
     {
+      method: 'GET',
+      pattern: /^\/api\/runtime\/templates$/,
+      handler: async () => runtime.listTemplates(),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/templates\/apply$/,
+      handler: async (request) =>
+        runtime.applyTemplate(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/templates\/save$/,
+      handler: async (request) =>
+        runtime.saveTemplate(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/templates\/([^/]+)\/remove$/,
+      handler: async (request, params) =>
+        runtime.removeTemplate({
+          ...(await readJsonBody(request)),
+          templateId: params.templateId,
+        }),
+    },
+    {
       method: 'POST',
       pattern: /^\/api\/runtime\/activations\/approve$/,
       handler: async (request) =>
@@ -572,6 +598,9 @@ function routeParams(pattern: RegExp, pathname: string) {
   }
   if (pathname.includes('/sources/') && match[1]) {
     return { sourceId: decodeParam(match[1]) }
+  }
+  if (pathname.includes('/templates/') && match[1]) {
+    return { templateId: decodeParam(match[1]) }
   }
   if (pathname.includes('/clusters/') && match[1]) {
     return { clusterId: decodeParam(match[1]) }

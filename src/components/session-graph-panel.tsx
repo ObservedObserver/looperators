@@ -1,5 +1,5 @@
 import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import { Activity, FileText, Moon, PanelRightClose, Sun, Webhook } from 'lucide-react';
+import { Activity, FileText, LibraryBig, Moon, PanelRightClose, Sun, Webhook } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -9,6 +9,7 @@ import { nodeTypes, edgeTypes } from '@/components/canvas';
 import { WorkingTreeDiffPanel } from '@/components/working-tree-diff-panel';
 import { LoopPanel } from '@/components/loop-panel';
 import { SourceDirectoryPanel } from '@/components/source-directory';
+import { TemplateLibraryPanel } from '@/components/template-library';
 import { type Dispatch, type SetStateAction, useState } from 'react';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
@@ -41,6 +42,8 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
   const [openLoopId, setOpenLoopId] = useState<string>();
   // L2 trigger-source directory: opened from the header or a source node.
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
+  // L6 relation template library: opened from the header.
+  const [isTemplatesOpen, setIsTemplatesOpen] = useState(false);
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
   const { setPendingLinkedSourceId } = actions;
   const {
@@ -67,6 +70,17 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
+            variant={isTemplatesOpen ? 'secondary' : 'outline'}
+            size="sm"
+            disabled={!runtimeApi}
+            onClick={() => setIsTemplatesOpen((open) => !open)}
+          >
+            <LibraryBig className="size-3.5" />
+            <span className="truncate">Templates</span>
+          </Button>
+
           <Button
             className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
             variant={isSourcesOpen ? 'secondary' : 'outline'}
@@ -269,6 +283,16 @@ export function SessionGraphPanel({ core, layout, actions, diff, canvas, setActi
                 }
               })();
             }}
+          />
+        ) : null}
+
+        {isTemplatesOpen ? (
+          <TemplateLibraryPanel
+            runtimeApi={runtimeApi}
+            runtimeState={runtimeState}
+            onClose={() => setIsTemplatesOpen(false)}
+            onStateChange={setRuntimeState}
+            onError={(message) => setRuntimeError(message)}
           />
         ) : null}
 

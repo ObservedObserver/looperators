@@ -92,6 +92,8 @@ export const graphStateSchema = {
       'LoopView[]?; L4 thin projection — cyclic SCCs of the intent graph, derived on read, never stored',
     sources:
       'Record<sourceId, ExternalSource>; L2 registered external event sources (removed ones stay as tombstones)',
+    templates:
+      'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config (the scheduler never reads them), persisted via snapshot, never kernel facts',
     diagnostics: 'RuntimeStateDiagnostic[]?',
   },
   externalSource: {
@@ -297,6 +299,34 @@ export const graphStateSchema = {
       output:
         '{ ok: true, eventId, type } | { ok: false, dropped: true, reason }; the L2 ingestion choke point — accepted emits append one `external.<topic>` fact and ride the ordinary scheduler',
     },
+    listTemplates: {
+      input: {},
+      output:
+        '{ templates: TemplateDescriptor[] }; L6 — built-in relation templates plus user-saved ones, as data (name, tagline, slots) so the UI stays compile-free',
+    },
+    applyTemplate: {
+      input: {
+        templateId: 'string; a built-in template id or a saved tpl-* id',
+        params:
+          'Record<slotKey, any>?; slot values — session ids, external source ids, text, numbers, { everySeconds | dailyAt } for schedule slots',
+      },
+      output:
+        '{ templateId, createdSessionIds, subscriptionIds, judgeSessionId?, state }; expands into ordinary commands (author_subscription / create_session / the goal-loop preset) — no new kernel verbs, what lands is regular subscriptions',
+    },
+    saveTemplate: {
+      input: {
+        name: 'string',
+        tagline: 'string?',
+        subscriptionIds:
+          'string[]; existing subscriptions to parameterize — distinct session endpoints become session slots, external sources become source slots',
+      },
+      output:
+        '{ template: SavedTemplate, state }; runtime-plane config (snapshot-persisted, never a kernel fact)',
+    },
+    removeTemplate: {
+      input: { templateId: 'string; a saved tpl-* id' },
+      output: '{ ok, state }; no tombstone — nothing references a template after it compiled',
+    },
     getWorkingTreeDiff: {
       input: {
         sessionId:
@@ -489,6 +519,8 @@ export function createEmptyGraphState() {
     subscriptions: {},
     pendingActivations: {},
     sources: {},
+    // L6 saved relation templates — runtime-plane config, snapshot-persisted.
+    templates: {},
     // Transport secrets for the HTTP ingestion path — runtime-plane only,
     // never appended to the kernel log.
     sourceTokens: {},
