@@ -22,7 +22,7 @@ const usage = `Usage: node scripts/orrery-cli.mjs [global flags] <command>
 Commands:
   sessions [--all]                      List session summaries (--all includes archived)
   session create --prompt <text>        Create a session
-    [--cwd <dir>] [--provider claude-code|codex|legacy-claude-cli]
+    [--cwd <dir>] [--provider claude-code|codex]
     [--model <model>] [--preset <name>] [--label <text>]
     [--link <session>] [--link-label <text>] [--wait] [--timeout <ms>]
   session show <id> [--view transcript|summary|raw] [--json]
@@ -206,7 +206,7 @@ async function commandSessions(client, values) {
   process.stdout.write(`${formatTable(rows)}\n`)
 }
 
-const providerKinds = ['claude-code', 'codex', 'legacy-claude-cli']
+const providerKinds = ['claude-code', 'codex']
 
 async function commandSessionCreate(client, values) {
   assertWritable(values, 'session create')
@@ -214,8 +214,7 @@ async function commandSessionCreate(client, values) {
     fail('session create requires --prompt', 2)
   }
   if (values.provider && !providerKinds.includes(values.provider)) {
-    // The server silently falls back to legacy-claude-cli for unknown kinds —
-    // exactly the wrong provider for an acceptance run, so error here.
+    // Fail before reaching the runtime so a typo cannot launch another provider.
     fail(`--provider must be one of: ${providerKinds.join(', ')}`, 2)
   }
   const sourceSessionId = values.link
@@ -355,8 +354,7 @@ function renderRuntimeEventLine(event) {
 // keeps printing until the segment closes, and the close is where the limit
 // finally stops the tail. Without this, SDK/Codex sessions (assistant output
 // arrives purely as content.delta) could stream unbounded text past the
-// limit. Exported for unit tests — the fake legacy provider used in e2e
-// tests cannot produce provider.runtime content.delta broadcasts.
+// limit. Exported for focused unit tests of the tailing contract.
 export function createTailEventPrinter({ sessionId, eventLimit, write, stop }) {
   let printed = 0
   let streamingText = false

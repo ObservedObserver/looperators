@@ -333,6 +333,32 @@ test('a causeId-less terminal fact closes the open hop of its own target, even a
   assert.equal(coderHop.outcome, undefined, 'the other target stays open')
 })
 
+test('a hop that finishes after the ring stops still receives its terminal outcome', () => {
+  seq = 0
+  const events = [
+    evt(
+      'activated',
+      { target: 'reviewer', sessionId: 'reviewer', subscriptionId: 'sub-a', slotKey: 'k-a' },
+      { id: 'act-final' }
+    ),
+    evt(
+      'subscription.stopped',
+      { subscriptionId: 'sub-a' },
+      { reason: 'maxFirings=2 reached.' }
+    ),
+    evt(
+      'subscription.stopped',
+      { subscriptionId: 'sub-b' },
+      { reason: 'maxFirings=2 reached.' }
+    ),
+    evt('session.finished', { sessionId: 'reviewer' }, { causeId: 'act-final' }),
+  ]
+  const state = ringState({ state: 'stopped' }, { state: 'stopped' })
+
+  const timeline = loopTimelineOf(state, events, ringLoop())
+  assert.equal(timeline.laps[0].hops[0].outcome?.type, 'finished')
+})
+
 test('loopTimelineOf collects refusals and stop facts', () => {
   seq = 0
   const events = [

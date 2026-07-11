@@ -9,24 +9,6 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 const runnerPath = path.resolve('scripts/acceptance-runner.mjs')
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-
 const passingScenario = `import assert from 'node:assert/strict'
 
 export const name = 'runner-passing'
@@ -80,9 +62,6 @@ test('acceptance runner persists artifacts and reports failures', async () => {
   const scenariosDir = path.join(tempRoot, 'scenarios')
   const outDir = path.join(tempRoot, 'out')
   fs.mkdirSync(scenariosDir, { recursive: true })
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
   fs.writeFileSync(
     path.join(scenariosDir, 'passing.scenario.mjs'),
     passingScenario
@@ -91,14 +70,16 @@ test('acceptance runner persists artifacts and reports failures', async () => {
     path.join(scenariosDir, 'failing.scenario.mjs'),
     failingScenario
   )
-  const env = { ORRERY_CLAUDE_BIN: fakeClaude }
+  const env = {
+    ORRERY_RUNTIME_CLI_PATH: path.resolve('tests/runtime/support/deterministic-runtime-cli.mjs'),
+  }
   const baseArgs = [
     '--dir',
     scenariosDir,
     '--out',
     outDir,
     '--provider',
-    'legacy-claude-cli',
+    'claude-code',
     '--timeout',
     '30000',
   ]

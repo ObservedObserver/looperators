@@ -5,39 +5,14 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { KernelStore } from '../../dist-electron/electron/runtime/kernelStore.js'
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
 import { startRuntimeHttpServer } from '../../dist-electron/electron/runtimeHttpServer.js'
+import {
+  deterministicProviderAdapters,
+  deterministicRuntimeSessionManager,
+} from './support/deterministic-provider.mjs'
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const prompt = readArg('-p') ?? ''
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-process.on('SIGTERM', () => process.exit(143))
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-if (prompt.includes('ORRERY_DELAY')) {
-  setInterval(() => {}, 1000)
-} else {
-  emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-}
-`
-
-function installFakeClaude(tempRoot) {
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-}
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -61,7 +36,6 @@ function eventsOfType(log, type) {
 
 test('kernel event log records mutations with actor, cause, and monotonic seq', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-kernel-log-'))
-  installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const managers = new Set()
   const manager = (input) => {
@@ -282,7 +256,6 @@ test('kernel event log records mutations with actor, cause, and monotonic seq', 
         // Best-effort cleanup only.
       }
     }
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
@@ -351,10 +324,10 @@ test('dispatchCommand validates command kind and actor', async () => {
 
 test('kernel-events endpoint serves the log over HTTP', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-kernel-endpoint-'))
-  installFakeClaude(tempRoot)
   const runtimeServer = await startRuntimeHttpServer({
     port: 0,
     storageFile: path.join(tempRoot, 'runtime-state.json'),
+    providerAdapters: deterministicProviderAdapters(),
   })
 
   try {
@@ -398,7 +371,6 @@ test('kernel-events endpoint serves the log over HTTP', async () => {
     assert.ok(typed.events.every((event) => event.type === 'session.finished'))
   } finally {
     await runtimeServer.close()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

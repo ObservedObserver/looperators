@@ -141,7 +141,10 @@ async function runScenario(scenario, config) {
   const startedAt = Date.now()
   let harness
   try {
-    harness = await OrreryHarness.start({ modelPreset: config.preset })
+    harness = await OrreryHarness.start({
+      modelPreset: config.preset,
+      cliPath: process.env.ORRERY_RUNTIME_CLI_PATH,
+    })
   } catch (error) {
     // A harness that fails to start must not discard the results of the
     // scenarios that already spent real-model minutes before it.
@@ -239,11 +242,10 @@ async function main() {
   const scenarioDir = values.dir ? path.resolve(values.dir) : defaultScenarioDir
   const outDir = values.out ? path.resolve(values.out) : defaultOutDir
   const providerKind = values.provider ?? 'claude-code'
-  const validProviders = ['claude-code', 'codex', 'legacy-claude-cli']
+  const validProviders = ['claude-code', 'codex']
   if (!validProviders.includes(providerKind)) {
-    // Preflight and session creation both silently fall back to the legacy
-    // provider (with no cheap-preset entry) for unknown kinds — a typo would
-    // burn default-model sessions without any error.
+    // Reject before any real-model work starts so a typo cannot launch the
+    // wrong provider or bypass the selected model preset.
     fail(`--provider must be one of: ${validProviders.join(', ')}`, 2)
   }
   const preset = values.preset ?? 'cheap'

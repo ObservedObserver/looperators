@@ -17,7 +17,7 @@ import {
   cleanupMcpHandoff,
   createMcpHandoff,
   membraneSystemPrompt,
-} from '../../dist-electron/electron/runtime/claudeCliAdapter.js'
+} from '../../dist-electron/electron/runtime/claudeRuntimeShared.js'
 
 test('Codex app-server input uses provider-native image attachment payloads', () => {
   const dataUrl = 'data:image/png;base64,aW1hZ2U='

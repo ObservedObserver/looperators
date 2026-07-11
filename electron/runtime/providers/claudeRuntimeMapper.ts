@@ -155,7 +155,7 @@ export function resultSublines(text) {
   return [{ value: clamp(lines[0], 60) }]
 }
 
-function rawEnvelope(event, source = 'legacy.claude-cli.stream-json') {
+function rawEnvelope(event, source = 'claude.sdk') {
   return {
     source,
     messageType:
@@ -217,16 +217,16 @@ function runtimeItemFromToolResult(base, raw, block) {
   }
 }
 
-export function legacyClaudeRuntimeEventsFromChunk({
+export function claudeRuntimeEventsFromMessage({
   sessionId,
   turnId,
   ts,
-  chunk,
+  message,
   sawTextDelta = false,
-  rawSource = 'legacy.claude-cli.stream-json',
+  rawSource = 'claude.sdk',
 }) {
-  const event = chunk?.event
-  if (!event || chunk.stream !== 'stdout') {
+  const event = message
+  if (!event) {
     return []
   }
 

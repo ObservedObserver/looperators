@@ -4,33 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import {
+  deterministicProviderAdapters,
+  deterministicRuntimeSessionManager,
+} from './support/deterministic-provider.mjs'
+
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 import { startRuntimeHttpServer } from '../../dist-electron/electron/runtimeHttpServer.js'
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-
-function installFakeClaude(tempRoot) {
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -49,10 +30,10 @@ async function waitForIdle(runtime, sessionId, timeoutMs = 5000) {
 
 test('link edges: HTTP endpoints, membrane skill, and removal rules', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-edges-test-'))
-  installFakeClaude(tempRoot)
   const runtimeServer = await startRuntimeHttpServer({
     port: 0,
     storageFile: path.join(tempRoot, 'runtime-state.json'),
+    providerAdapters: deterministicProviderAdapters(),
   })
   const base = `http://${runtimeServer.host}:${runtimeServer.port}`
   const runtime = runtimeServer.runtime
@@ -96,7 +77,7 @@ test('link edges: HTTP endpoints, membrane skill, and removal rules', async () =
     assert.equal(edge.call.source, reviewer.sessionId)
 
     const stateAfterLink = runtime.getState()
-    assert.equal(stateAfterLink.version, 7)
+    assert.equal(stateAfterLink.version, 8)
 
     const duplicate = await postJson('/api/runtime/edges', {
       source: reviewer.sessionId,
@@ -206,14 +187,12 @@ test('link edges: HTTP endpoints, membrane skill, and removal rules', async () =
     assert.equal(stillAlive.status, 200, 'server must survive malformed URLs')
   } finally {
     await runtimeServer.close()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
-test('link edges survive restart and v5 storage files migrate to v6', async () => {
+test('link edges survive current-schema JSON import and SQLite restart', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-edges-migrate-'))
-  installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const managers = new Set()
   const manager = (input) => {
@@ -243,19 +222,16 @@ test('link edges survive restart and v5 storage files migrate to v6', async () =
     })
     runtime.killAll()
 
-    // Simulate a pre-link (v5) legacy JSON storage file: the version field
-    // must not gate normalization, and persisted link edges must keep their
-    // kind. Post-G0 the runtime persists to SQLite, so a bare JSON file also
-    // exercises the legacy-import path.
+    // A current-schema bare JSON file exercises the JSON-to-SQLite import
+    // path without reintroducing compatibility for pre-clean-break schemas.
     const persisted = runtime.getState()
-    assert.equal(persisted.version, 7)
-    persisted.version = 5
-    const legacyStorageFile = path.join(tempRoot, 'legacy-runtime-state.json')
-    fs.writeFileSync(legacyStorageFile, JSON.stringify(persisted))
+    assert.equal(persisted.version, 8)
+    const jsonStorageFile = path.join(tempRoot, 'json-runtime-state.json')
+    fs.writeFileSync(jsonStorageFile, JSON.stringify(persisted))
 
-    const restored = manager({ storageFile: legacyStorageFile })
+    const restored = manager({ storageFile: jsonStorageFile })
     const state = restored.getState()
-    assert.equal(state.version, 7, 'older storage versions must migrate forward on load')
+    assert.equal(state.version, 8)
     assert.equal(Object.keys(state.sessions).length, 2, 'sessions must survive')
     const restoredEdge = state.edges.find(
       (candidate) => candidate.edgeId === edge.edgeId
@@ -281,7 +257,6 @@ test('link edges survive restart and v5 storage files migrate to v6', async () =
         // Best-effort cleanup only.
       }
     }
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

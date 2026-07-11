@@ -26,11 +26,6 @@ export const providerOptions: {
     agent: providerCapability('codex').agent,
     label: providerCapability('codex').label,
   },
-  {
-    id: 'legacy-claude-cli',
-    agent: providerCapability('legacy-claude-cli').agent,
-    label: providerCapability('legacy-claude-cli').label,
-  },
 ];
 
 export function providerOption(providerKind: ProviderKind) {
@@ -72,8 +67,6 @@ export function defaultProviderInstanceIdForKind(providerKind: ProviderKind) {
   switch (providerKind) {
     case 'codex':
       return 'default-codex';
-    case 'legacy-claude-cli':
-      return 'legacy-claude-cli';
     case 'claude-code':
     default:
       return 'default-claude-sdk';
@@ -180,19 +173,12 @@ export function providerSetupHints(providerKind: ProviderKind) {
       return [
         'Confirm Claude SDK auth is available to the runtime.',
         'Check that this app can start @anthropic-ai/claude-agent-sdk.',
-        'Use Legacy Claude CLI to isolate SDK setup from account setup.',
       ];
     case 'codex':
       return [
         'Confirm the Codex provider is enabled and authenticated.',
         'Check that the Codex app-server can access this workspace path.',
         'Restart the runtime after auth or provider changes.',
-      ];
-    case 'legacy-claude-cli':
-      return [
-        'Install the claude CLI and make sure the runtime can find it on PATH.',
-        'Run claude login in the same user environment.',
-        'Check shell startup files if Terminal works but Orrery cannot start it.',
       ];
   }
 }

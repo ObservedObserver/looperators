@@ -18,7 +18,7 @@ import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
 import type { ConnectAgentsInput } from '@shared/agent-connection';
 import type { GoalWorkflowStartInput, HandoffWorkflowStartInput } from '@shared/classic-workflow';
 
-export const graphStateVersion = 7;
+export const graphStateVersion = 8;
 
 // Intent-layer enums (kernel doc §7.3), mirrored from shared/graph-state.ts.
 export const subscriptionGates = ['auto', 'master', 'human'] as const;
@@ -49,11 +49,6 @@ export const defaultGraphProviderInstances: ProviderInstance[] = [
     providerInstanceId: 'default-codex',
     kind: 'codex',
     label: 'Codex',
-  },
-  {
-    providerInstanceId: 'legacy-claude-cli',
-    kind: 'legacy-claude-cli',
-    label: 'Claude CLI',
   },
 ];
 
@@ -352,7 +347,7 @@ export type CallId = string;
 
 export type SessionStatus = (typeof sessionStatuses)[number];
 
-export type AgentBackend = 'claude-cli' | 'claude-agent-sdk' | 'codex-app-server';
+export type AgentBackend = 'claude-agent-sdk' | 'codex-app-server';
 export type SessionRole = 'worker' | 'master';
 export type WorkMode = 'local' | 'worktree';
 

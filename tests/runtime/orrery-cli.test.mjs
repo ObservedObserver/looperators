@@ -10,24 +10,7 @@ import { OrreryHarness } from '../../scripts/lib/orrery-client.mjs'
 
 const execFileAsync = promisify(execFile)
 const cliPath = path.resolve('scripts/orrery-cli.mjs')
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
+const deterministicCliPath = path.resolve('tests/runtime/support/deterministic-runtime-cli.mjs')
 
 async function runCli(baseUrl, args, { expectFailure = false } = {}) {
   try {
@@ -49,11 +32,8 @@ async function runCli(baseUrl, args, { expectFailure = false } = {}) {
 
 test('debug CLI covers the session/graph/state surface', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-cli-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
   const harness = await OrreryHarness.start({
-    env: { ORRERY_CLAUDE_BIN: fakeClaude },
+    cliPath: deterministicCliPath,
   })
   const base = harness.baseUrl
 
@@ -79,7 +59,7 @@ test('debug CLI covers the session/graph/state surface', async () => {
     const sessionId = created.stdout.trim().split('\n')[0]
     assert.match(sessionId, /^[0-9a-f-]{36}$/)
     assert.match(created.stdout, /status: idle/)
-    assert.match(created.stdout, /fake response/)
+    assert.match(created.stdout, /handled: cli smoke prompt/)
 
     const list = await runCli(base, ['sessions'])
     assert.match(list.stdout, /CliSmoke/)
@@ -90,7 +70,7 @@ test('debug CLI covers the session/graph/state surface', async () => {
     assert.match(shown.stdout, /CliSmoke/)
     assert.match(shown.stdout, /model: cli-test-model/)
     assert.match(shown.stdout, /cli smoke prompt/)
-    assert.match(shown.stdout, /fake response/)
+    assert.match(shown.stdout, /handled: cli smoke prompt/)
 
     const raw = await runCli(base, ['session', 'show', sessionId, '--view', 'raw'])
     const rawParsed = JSON.parse(raw.stdout)
@@ -316,11 +296,8 @@ function waitForTailExit(tail, getOutput) {
 
 test('debug CLI tail follows live events after its ready signal', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-cli-tail-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
   const harness = await OrreryHarness.start({
-    env: { ORRERY_CLAUDE_BIN: fakeClaude },
+    cliPath: deterministicCliPath,
   })
 
   try {

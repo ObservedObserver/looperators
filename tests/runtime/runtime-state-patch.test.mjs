@@ -103,7 +103,7 @@ test('snapshot deltas replace until a real delta arrives and completion wins', (
   assert.equal(state.sessions.alpha.messages[0].status, 'complete');
 });
 
-test('legacy stream events carry normalized provider events without a state snapshot', () => {
+test('provider runtime events carry normalized provider events without a state snapshot', () => {
   const state = stateWithSessions();
   const event = {
     type: 'session.stream',

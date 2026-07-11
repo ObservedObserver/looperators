@@ -53,7 +53,7 @@ The default entry points are `New Chat` and `New Workflow`:
 - IPC bridge: `electron/main.ts` and `electron/preload.ts`
 - Electron build output: `dist-electron/electron/main.js`
 - Invariant: `nodeId === sessionId`
-- Providers: Claude Code SDK, Codex, and legacy Claude CLI
+- Providers: Claude Code SDK and Codex
 - Runtime persistence covers session restore, corrupt-state recovery, invalid
   cwd diagnostics, archive state, linked sessions, cluster/master state, and
   loop policy.
@@ -93,7 +93,7 @@ npm run test:kernel:codex-interaction
   `npm run test:kernel:master-loop`
 - Provider request/response UI plumbing for approvals and user input:
   `npm run test:kernel:codex-interaction`
-- Membrane validation and stop cleanup for the Claude CLI bridge:
+- Membrane validation and stop cleanup for the Claude SDK bridge:
   `npm run test:kernel:membrane`
 
 Headless real-scenario acceptance (real providers, cheap model preset,
@@ -113,11 +113,4 @@ npm run cli -- sessions
 npm run cli -- session show <id-prefix>
 npm run cli -- session tail <id-prefix>
 npm run cli -- graph
-```
-
-Legacy CLI spikes are still available when validating the old Claude CLI path:
-
-```sh
-npm run runtime:spike
-npm run runtime:spike:kill
 ```

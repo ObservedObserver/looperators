@@ -24,6 +24,7 @@ type RuntimeRoute = {
 
 type RuntimeHttpServerOptions = {
   runtime?: RuntimeSessionManager
+  providerAdapters?: Map<string, any>
   storageFile?: string
   port?: number
   corsOrigins?: string[]
@@ -744,6 +745,7 @@ export function createRuntimeHttpServer(
     new RuntimeSessionManager({
       storageFile,
       broadcastRuntimeEvent,
+      providerAdapters: options.providerAdapters,
     })
 
   const config = {

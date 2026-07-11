@@ -48,7 +48,7 @@ export async function run({ orrery, provider, workDir, log }) {
       workMode: 'local',
       ...provider,
       providerInstanceId:
-        provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli',
+        provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code',
       runtimeSettings: { runtimeMode: 'full-access' },
     },
     reviewer: {
@@ -60,7 +60,7 @@ export async function run({ orrery, provider, workDir, log }) {
       ].join('\n'),
       ...provider,
       providerInstanceId:
-        provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli',
+        provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code',
       runtimeSettings: { runtimeMode: 'full-access' },
     },
     blocking: { mode: 'p0-p1' },

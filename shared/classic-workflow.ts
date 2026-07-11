@@ -7,7 +7,7 @@ export type WorkflowNewAgentEndpoint = {
   cwd: string
   workMode: 'local' | 'worktree'
   branch?: string
-  providerKind: 'claude-code' | 'codex' | 'legacy-claude-cli'
+  providerKind: 'claude-code' | 'codex'
   providerInstanceId: string
   runtimeSettings: ReviewRuntimeSettings
 }

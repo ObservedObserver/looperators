@@ -10,7 +10,7 @@ import {
   cleanupMcpHandoff,
   createMcpHandoff,
   membraneSystemPrompt,
-} from '../claudeCliAdapter.js'
+} from '../claudeRuntimeShared.js'
 
 // Codex qualifies MCP tools as `<server>__<tool>`, so registering the bridge
 // server under this name yields model-facing tool names identical to the

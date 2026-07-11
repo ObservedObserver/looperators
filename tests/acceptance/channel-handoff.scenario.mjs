@@ -6,7 +6,7 @@ export const description =
 
 export async function run({ orrery, provider, workDir, log }) {
   const providerInstanceId =
-    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli'
+    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code'
   // Upstream session A produces a memorable turn (its summary becomes the
   // artifact bundle payload).
   const upstream = await orrery.createSession({

@@ -4,7 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { deterministicRuntimeSessionManager } from './support/deterministic-provider.mjs'
+
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 import { deriveLoopProductView } from '../../dist-electron/shared/loop-product.js'
 import {
   KernelStore,
@@ -13,32 +16,6 @@ import {
 
 // L4 loop view tests run schedules on second-scale intervals.
 process.env.ORRERY_TIMER_MIN_INTERVAL_SECONDS = '1'
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-process.on('SIGTERM', () => process.exit(143))
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-
-function installFakeClaude(tempRoot) {
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -58,7 +35,6 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
 
 function harness(prefix) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const managers = new Set()
   const manager = (input = { storageFile }) => {
@@ -74,7 +50,6 @@ function harness(prefix) {
         // Best-effort cleanup only.
       }
     }
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
   return { tempRoot, storageFile, manager, cleanup }

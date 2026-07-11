@@ -22,7 +22,6 @@ function trimmedString(value) {
 }
 
 const validProviderKinds = new Set([
-  'legacy-claude-cli',
   'claude-code',
   'codex',
 ])
@@ -47,23 +46,39 @@ function resolveModelPreset(modelPreset) {
   return modelPreset
 }
 
-// Mirrors the requested-kind resolution in sessionManager providerConfig
-// (same precedence, no trimming, same validation fallback) so model presets
-// attach to the provider the runtime will actually select.
+// Mirrors the requested-kind resolution in sessionManager providerConfig so
+// model presets attach to the provider the runtime will actually select.
 export function resolveRequestedProviderKind(
   input = {},
   providerInstances = [],
 ) {
   const requestedInstanceId = trimmedString(input.providerInstanceId)
+  const requestedInstance = requestedInstanceId
+    ? providerInstances.find(
+        (instance) => instance.providerInstanceId === requestedInstanceId,
+      )
+    : undefined
+  if (requestedInstanceId && !requestedInstance) {
+    throw new Error(`Unknown provider instance: ${requestedInstanceId}`)
+  }
   const requested =
     input.providerKind ??
-    (input.agent === 'codex' ? 'codex' : undefined) ??
-    (requestedInstanceId
-      ? providerInstances.find(
-          (instance) => instance.providerInstanceId === requestedInstanceId,
-        )?.kind
-      : undefined)
-  return validProviderKinds.has(requested) ? requested : 'legacy-claude-cli'
+    requestedInstance?.kind ??
+    (input.agent === 'codex'
+      ? 'codex'
+      : input.agent === 'claude-code'
+        ? 'claude-code'
+        : undefined) ??
+    'claude-code'
+  if (!validProviderKinds.has(requested)) {
+    throw new Error(`Unsupported provider kind: ${String(requested)}`)
+  }
+  if (requestedInstance && requestedInstance.kind !== requested) {
+    throw new Error(
+      `Provider instance ${requestedInstance.providerInstanceId} is ${requestedInstance.kind}, not ${requested}.`,
+    )
+  }
+  return requested
 }
 
 export class OrreryClient {
@@ -320,8 +335,6 @@ export class OrreryClient {
       return input
     }
     const needsInstanceLookup =
-      input.providerKind === undefined &&
-      input.agent !== 'codex' &&
       input.providerInstanceId !== undefined
     const providerInstances = needsInstanceLookup
       ? ((await this.state()).providerInstances ?? [])
@@ -773,7 +786,7 @@ export class OrreryHarness extends OrreryClient {
 
     // Headless runs are routinely driven from INSIDE an agent session (the
     // acceptance flow is agent-operated). The driving agent's environment
-    // poisons spawned providers two ways: the Claude CLI refuses to start
+    // poisons spawned providers two ways: the Claude Code executable refuses to start
     // when it sees its own session markers (CLAUDECODE), and the driver's
     // OAuth handoff variables (ANTHROPIC_BASE_URL + CLAUDE_CODE_*) shadow
     // the user's normal keychain login, yielding "Not logged in" turns.

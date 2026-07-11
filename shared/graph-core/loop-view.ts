@@ -508,6 +508,29 @@ export function loopTimelineOf(
     }
   }
 
+  // A guardrail can stop the subscriptions while the final activation it
+  // approved is still running. The lifecycle window above deliberately
+  // excludes later reports and unrelated facts, but an outcome with an exact
+  // activation cause still belongs to that final hop.
+  if (Number.isFinite(endSeq)) {
+    for (const event of allOrdered) {
+      if (
+        event.seq <= endSeq ||
+        (event.type !== 'session.finished' && event.type !== 'session.failed') ||
+        !event.causeId
+      ) {
+        continue
+      }
+      const hop = hopByActivatedId.get(event.causeId)
+      if (hop && !hop.outcome) {
+        hop.outcome = {
+          type: event.type === 'session.finished' ? 'finished' : 'failed',
+          ts: event.ts,
+        }
+      }
+    }
+  }
+
   // Lap windows: split hops at the designated subscription's activations.
   // Hops before the first designated anchor belong to lap 1 (the warm-up
   // half of the first revolution).

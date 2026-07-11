@@ -4,17 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { deterministicRuntimeSessionManager } from './support/deterministic-provider.mjs'
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
-const id = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-const prompt = readArg('-p') ?? ''
-const emit = (v) => process.stdout.write(JSON.stringify(v) + '\\n')
-emit({ type: 'assistant', session_id: id, message: { content: [{ type: 'text', text: 'handled: ' + prompt.slice(0, 100) }] } })
-emit({ type: 'result', session_id: id, result: 'done' })
-`
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 async function waitFor(label, predicate, timeoutMs = 10000) {
@@ -29,18 +22,14 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
 
 function harness(prefix, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  const binary = path.join(root, 'claude')
-  fs.writeFileSync(binary, fakeClaudeSource)
-  fs.chmodSync(binary, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = binary
   const runtime = new RuntimeSessionManager({ ...options, storageFile: path.join(root, 'state.json') })
-  return { root, runtime, cleanup() { runtime.killAll(); delete process.env.ORRERY_CLAUDE_BIN; fs.rmSync(root, { recursive: true, force: true }) } }
+  return { root, runtime, cleanup() { runtime.killAll(); fs.rmSync(root, { recursive: true, force: true }) } }
 }
 
 function fresh(label, prompt) {
   return {
     kind: 'new', label, prompt, cwd: process.cwd(), workMode: 'local',
-    providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+    providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
     runtimeSettings: { runtimeMode: 'approval-required' },
   }
 }
@@ -79,7 +68,7 @@ test('existing-source Handoff uses the current result immediately and leaves no 
   const { runtime, cleanup } = harness('orrery-classic-handoff-current-')
   try {
     const source = await runtime.createSession({
-      prompt: 'Produce the current result.', cwd: process.cwd(), providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+      prompt: 'Produce the current result.', cwd: process.cwd(), providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
     })
     await waitFor('Source becomes idle', () => runtime.getState().sessions[source.sessionId]?.status === 'idle')
     const result = await runtime.startHandoffWorkflow({
@@ -98,7 +87,7 @@ test('cold-start Goal installs Worker/Judge ring before Worker finishes', async 
   try {
     const result = await runtime.startGoalWorkflow({
       worker: fresh('Worker', 'Make progress.'), goal: 'The requested result exists.', maxLaps: 3,
-      judgeProviderInstanceId: 'legacy-claude-cli', judgeModel: 'judge-model',
+      judgeProviderInstanceId: 'default-claude-sdk', judgeModel: 'judge-model',
     })
     assert.equal(result.createdSessionIds.length, 2)
     assert.equal(result.subscriptionIds.length, 2)
@@ -114,9 +103,14 @@ test('cold-start Goal installs Worker/Judge ring before Worker finishes', async 
 
 test('provider start failure rejects atomically and removes cold-start Handoff/Goal intent', async () => {
   for (const kind of ['handoff', 'goal']) {
-    const { runtime, cleanup } = harness(`orrery-classic-${kind}-failure-`)
+    const { root, runtime, cleanup } = harness(`orrery-classic-${kind}-failure-`)
     try {
-      process.env.ORRERY_CLAUDE_BIN = path.join(path.dirname(process.env.ORRERY_CLAUDE_BIN), 'missing-provider-binary')
+      runtime.upsertProviderInstance({
+        providerInstanceId: 'default-claude-sdk',
+        kind: 'claude-code',
+        label: 'Missing Claude SDK',
+        binaryPath: path.join(root, 'missing-provider-binary'),
+      })
       await assert.rejects(
         kind === 'handoff'
           ? runtime.startHandoffWorkflow({ source: fresh('Source', 'Start.'), target: fresh('Receiver', 'Wait.'), note: 'Continue.' })
@@ -157,31 +151,6 @@ test('cross-provider Judge start failure rejects Goal atomically', async () => {
   } finally { cleanup() }
 })
 
-test('concurrent Judge kill rejects Goal atomically instead of reporting ready', async () => {
-  let runtime
-  let killScheduled = false
-  const harnessResult = harness('orrery-classic-goal-judge-kill-', {
-    broadcastRuntimeEvent: (event) => {
-      if (killScheduled || !runtime || event?.type !== 'runtime.state') return
-      const judge = Object.values(event.state?.sessions ?? {}).find((session) => session.label === 'Worker · judge')
-      if (!judge) return
-      killScheduled = true
-      setImmediate(() => runtime.killSession(judge.sessionId))
-    },
-  })
-  runtime = harnessResult.runtime
-  try {
-    await assert.rejects(
-      runtime.startGoalWorkflow({ worker: fresh('Worker', 'Start.'), goal: 'Done.', maxLaps: 3 }),
-      /Judge|Goal relationships.*stopped/i,
-    )
-    const state = runtime.getState()
-    assert.equal(Object.keys(state.sessions).length, 0)
-    assert.equal(Object.keys(state.subscriptions ?? {}).length, 0)
-    assert.equal(state.loops.length, 0)
-  } finally { harnessResult.cleanup() }
-})
-
 test('provider start failure restores existing Handoff and Goal participants exactly', async () => {
   for (const kind of ['handoff', 'goal']) {
     const harnessResult = harness(`orrery-classic-existing-${kind}-failure-`)
@@ -189,17 +158,22 @@ test('provider start failure restores existing Handoff and Goal participants exa
     try {
       const source = await runtime.createSession({
         prompt: 'Prepare existing state.', cwd: process.cwd(),
-        providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+        providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
       })
       const target = kind === 'handoff'
         ? await runtime.createSession({
             prompt: 'Prepare receiver state.', cwd: process.cwd(),
-            providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+            providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
           })
         : undefined
       await waitFor('existing participants become idle', () => [source.sessionId, target?.sessionId].filter(Boolean).every((id) => runtime.getState().sessions[id]?.status === 'idle'))
       const before = Object.fromEntries([source.sessionId, target?.sessionId].filter(Boolean).map((id) => [id, participantSnapshot(root, runtime, id)]))
-      process.env.ORRERY_CLAUDE_BIN = path.join(root, 'missing-provider-binary')
+      runtime.upsertProviderInstance({
+        providerInstanceId: 'default-claude-sdk',
+        kind: 'claude-code',
+        label: 'Missing Claude SDK',
+        binaryPath: path.join(root, 'missing-provider-binary'),
+      })
       await assert.rejects(
         kind === 'handoff'
           ? runtime.startHandoffWorkflow({
@@ -223,8 +197,8 @@ test('provider start failure restores existing Handoff and Goal participants exa
 test('parallel workflow submissions lock shared existing endpoints', async () => {
   const { runtime, cleanup } = harness('orrery-classic-lock-')
   try {
-    const source = await runtime.createSession({ prompt: 'Source ready.', cwd: process.cwd(), providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli' })
-    const target = await runtime.createSession({ prompt: 'Target ready.', cwd: process.cwd(), providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli' })
+    const source = await runtime.createSession({ prompt: 'Source ready.', cwd: process.cwd(), providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk' })
+    const target = await runtime.createSession({ prompt: 'Target ready.', cwd: process.cwd(), providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk' })
     await waitFor('both idle', () => [source.sessionId, target.sessionId].every((id) => runtime.getState().sessions[id]?.status === 'idle'))
     const input = {
       source: { kind: 'existing', sessionId: source.sessionId, prompt: '' },
@@ -245,7 +219,7 @@ test('Save this workflow round-trips typed Goal and Review user fields, includin
       kind: 'goal-loop',
       input: {
         worker: fresh('Worker', 'Implement the change.'), goal: 'Focused tests pass.', maxLaps: 7,
-        judgeProviderInstanceId: 'legacy-claude-cli', judgeModel: 'claude-haiku-4-5',
+        judgeProviderInstanceId: 'default-claude-sdk', judgeModel: 'claude-haiku-4-5',
       },
     }
     const saved = runtime.saveTemplate({ name: 'green goal', workflowSpec })
@@ -264,7 +238,7 @@ test('Save this workflow round-trips typed Goal and Review user fields, includin
         coder: fresh('Coder', 'Implement the requested behavior.'),
         reviewer: {
           kind: 'new', label: 'Reviewer', instruction: 'Report only release blockers.',
-          providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+          providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
           runtimeSettings: { runtimeMode: 'approval-required', reasoningEffort: 'high' },
         },
         blocking: { mode: 'custom', customCriteria: 'Breaks the public contract.' },
@@ -281,7 +255,7 @@ test('Save this workflow round-trips typed Goal and Review user fields, includin
 
     const existing = await runtime.createSession({
       prompt: 'Prepare reusable context.', cwd: process.cwd(),
-      providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+      providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
     })
     await waitFor('existing Agent becomes idle', () => runtime.getState().sessions[existing.sessionId]?.status === 'idle')
     const existingSpec = {

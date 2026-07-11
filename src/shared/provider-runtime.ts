@@ -1,6 +1,6 @@
 import type { AgentMessage, DiffRange, SessionId, SessionStatus, WorkingTreeDiffFile } from './graph-state';
 
-export type ProviderKind = 'claude-code' | 'codex' | 'legacy-claude-cli';
+export type ProviderKind = 'claude-code' | 'codex';
 
 export type ProviderAgentKind = 'claude-code' | 'codex';
 
@@ -85,13 +85,6 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     supportsReasoningEffort: true,
     runtimeModes: providerRuntimeModeOptions,
   },
-  'legacy-claude-cli': {
-    providerKind: 'legacy-claude-cli',
-    agent: 'claude-code',
-    label: 'Claude CLI (legacy)',
-    supportsReasoningEffort: false,
-    runtimeModes: [],
-  },
 };
 
 export function providerCapability(providerKind: ProviderKind) {
@@ -162,8 +155,7 @@ export type RawEnvelope = {
     | 'claude.sdk.permission'
     | 'claude.sdk.user-dialog'
     | 'codex.app-server.notification'
-    | 'codex.app-server.request'
-    | 'legacy.claude-cli.stream-json';
+    | 'codex.app-server.request';
   method?: string;
   messageType?: string;
   payload: unknown;

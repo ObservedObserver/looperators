@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
 import { RuntimeSessionManager } from '../dist-electron/electron/runtime/sessionManager.js'
@@ -57,6 +58,20 @@ try {
   )
   const targetSessionId = createEdge.target
   console.log(`[smoke] created target=${targetSessionId}`)
+
+  const routedState = runtime.getState()
+  for (const [label, sessionId] of [
+    ['source', sourceSessionId],
+    ['child', targetSessionId],
+  ]) {
+    const session = routedState.sessions[sessionId]
+    assert.equal(session?.providerKind, 'claude-code', `${label} must use Claude Code`)
+    assert.equal(
+      session?.backend,
+      'claude-agent-sdk',
+      `${label} must route through the Claude Agent SDK`,
+    )
+  }
 
   const firstReport = await waitFor('target verdict report', (state) =>
     state.reports.find(

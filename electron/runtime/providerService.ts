@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { LegacyClaudeCliAdapter } from './providers/legacyClaudeCliAdapter.js'
 import { ClaudeAgentSdkAdapter } from './providers/claudeAgentSdkAdapter.js'
 import { CodexAppServerAdapter } from './providers/codexAppServerAdapter.js'
 
@@ -23,11 +22,6 @@ const defaultProviderInstances = [
     providerInstanceId: 'default-codex',
     kind: 'codex',
     label: 'Codex',
-  },
-  {
-    providerInstanceId: 'legacy-claude-cli',
-    kind: 'legacy-claude-cli',
-    label: 'Claude CLI',
   },
 ]
 
@@ -65,13 +59,14 @@ export class ProviderService extends EventEmitter {
     logRoot?: string
   } = {}) {
     super()
-    this.#adapters =
-      adapters ??
-      new Map<string, ProviderAdapter>([
-        ['legacy-claude-cli', new LegacyClaudeCliAdapter()],
+    const defaultAdapters = new Map<string, ProviderAdapter>([
         ['claude-code', new ClaudeAgentSdkAdapter()],
         ['codex', new CodexAppServerAdapter()],
       ])
+    this.#adapters = new Map([
+      ...defaultAdapters,
+      ...(adapters ?? new Map<string, ProviderAdapter>()),
+    ])
     this.#logRoot =
       typeof logRoot === 'string' && logRoot.length > 0 ? logRoot : defaultLogRoot()
 
@@ -135,7 +130,10 @@ export class ProviderService extends EventEmitter {
   }
 
   startTurn(input: JsonRecord) {
-    const providerKind = input.providerKind ?? 'legacy-claude-cli'
+    const providerKind = input.providerKind
+    if (typeof providerKind !== 'string' || providerKind.length === 0) {
+      throw new Error('Provider kind is required to start a turn')
+    }
     const providerInstanceId =
       typeof input.providerInstanceId === 'string' && input.providerInstanceId
         ? input.providerInstanceId

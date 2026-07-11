@@ -3,36 +3,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { RuntimeSessionManager } from '../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../dist-electron/electron/runtime/sessionManager.js'
+import { deterministicRuntimeSessionManager } from '../tests/runtime/support/deterministic-provider.mjs'
+
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-canvas-smoke-'))
-const fakeClaude = path.join(tempRoot, 'claude')
 const storageFile = path.join(tempRoot, 'orrery-runtime-state.json')
 const managers = new Set()
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-
-function installFakeClaude() {
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-}
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -62,7 +40,6 @@ function clusterMasterNodes(state, clusterId) {
 }
 
 try {
-  installFakeClaude()
 
   const runtime = manager({ storageFile })
   const worker = await runtime.createSession({
@@ -235,6 +212,5 @@ try {
       // Best-effort cleanup only.
     }
   }
-  delete process.env.ORRERY_CLAUDE_BIN
   fs.rmSync(tempRoot, { recursive: true, force: true })
 }

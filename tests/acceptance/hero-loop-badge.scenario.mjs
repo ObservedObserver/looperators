@@ -86,9 +86,31 @@ export async function run({ orrery, provider, workDir, log }) {
     'the badge names the guardrail that stopped the ring'
   )
 
-  // Settle both agents before reading the timeline.
-  await orrery.waitForIdle(ping.sessionId)
-  await orrery.waitForIdle(pong.sessionId)
+  // The cap can be reached while its final approved hop is still running.
+  // Wait for the ring as a whole to settle instead of observing each session
+  // sequentially (one can be reactivated after the other briefly turns idle).
+  await orrery.waitFor(
+    'ring sessions and timeline settle',
+    async () => {
+      const state = await orrery.state()
+      const sessionsSettled = [ping.sessionId, pong.sessionId].every((sessionId) => {
+        const status = state.sessions[sessionId]?.status
+        return status !== 'running' && status !== 'pending'
+      })
+      const { timeline } = await orrery.getLoopTimeline(loopId)
+      const hops = timeline.laps.flatMap((lap) => lap.hops)
+      const outcomesSettled =
+        timeline.laps.length === stopped.lapCount &&
+        hops.length > 0 &&
+        hops.every((hop) => hop.outcome?.type)
+      return sessionsSettled && outcomesSettled
+        ? { done: true }
+        : {
+            detail: `sessionsSettled=${sessionsSettled} outcomes=${hops.filter((hop) => hop.outcome?.type).length}/${hops.length}`,
+          }
+    },
+    { timeoutMs: 120_000 }
+  )
 
   // The 一分钟读懂 claim: the loop timeline ALONE retells the run.
   const { timeline } = await orrery.getLoopTimeline(loopId)

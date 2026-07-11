@@ -5,39 +5,16 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { ContextChannelStore } from '../../dist-electron/electron/runtime/contextChannel.js'
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { deterministicRuntimeSessionManager } from './support/deterministic-provider.mjs'
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
-function installFakeClaude(tempRoot) {
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-  return fakeClaude
-}
-
-function useFakeClaude(runtime, binaryPath) {
+function setProviderBinary(runtime, binaryPath) {
   runtime.upsertProviderInstance({
-    kind: 'legacy-claude-cli',
-    providerInstanceId: 'legacy-claude-cli',
-    label: 'Fake Claude CLI',
+    kind: 'claude-code',
+    providerInstanceId: 'default-claude-sdk',
+    label: 'Test Claude SDK',
     binaryPath,
   })
 }
@@ -115,10 +92,9 @@ test('channel store: immutable seq-numbered deliveries with topic supersession',
 
 test('deliver + activate: data plane facts, deterministic preamble, read tracking', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-kernel-'))
-  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
-  useFakeClaude(runtime, fakeClaude)
+  setProviderBinary(runtime, '/usr/bin/true')
 
   try {
     const a = await runtime.createSession({
@@ -196,17 +172,15 @@ test('deliver + activate: data plane facts, deterministic preamble, read trackin
     )
   } finally {
     runtime.killAll()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('resume decomposes into deliver + activate; plain resumes stay verbatim', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-resume-'))
-  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
-  useFakeClaude(runtime, fakeClaude)
+  setProviderBinary(runtime, '/usr/bin/true')
 
   try {
     const target = await runtime.createSession({
@@ -268,17 +242,15 @@ test('resume decomposes into deliver + activate; plain resumes stay verbatim', a
     assert.ok(activatedEvent, 'the resume activation consumed the delivery')
   } finally {
     runtime.killAll()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('create_session pre-seeds the channel with handoff context (§8.1)', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-create-'))
-  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
-  useFakeClaude(runtime, fakeClaude)
+  setProviderBinary(runtime, '/usr/bin/true')
 
   try {
     const source = await runtime.createSession({
@@ -330,17 +302,15 @@ test('create_session pre-seeds the channel with handoff context (§8.1)', async 
     )
   } finally {
     runtime.killAll()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('a spawn failure does not swallow unread deliveries', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-spawnfail-'))
-  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
-  useFakeClaude(runtime, fakeClaude)
+  setProviderBinary(runtime, '/usr/bin/true')
 
   try {
     const target = await runtime.createSession({
@@ -357,7 +327,7 @@ test('a spawn failure does not swallow unread deliveries', async () => {
     })
 
     // Break the provider binary so the activation run cannot start.
-    useFakeClaude(runtime, path.join(tempRoot, 'missing-binary'))
+    setProviderBinary(runtime, path.join(tempRoot, 'missing-binary'))
     await runtime
       .activateSession({ sessionId: target.sessionId, note: 'doomed' })
       .catch(() => undefined)
@@ -371,7 +341,7 @@ test('a spawn failure does not swallow unread deliveries', async () => {
     assert.equal(runtime.getState().sessions[target.sessionId].status, 'failed')
 
     // Restore the binary; the next activation must re-list the delivery.
-    useFakeClaude(runtime, fakeClaude)
+    setProviderBinary(runtime, '/usr/bin/true')
     await runtime.activateSession({
       sessionId: target.sessionId,
       note: 'retry after failure',
@@ -387,17 +357,15 @@ test('a spawn failure does not swallow unread deliveries', async () => {
     )
   } finally {
     runtime.killAll()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('deliver without content forwards the artifact bundle', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-bundle-'))
-  const fakeClaude = installFakeClaude(tempRoot)
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const runtime = new RuntimeSessionManager({ storageFile })
-  useFakeClaude(runtime, fakeClaude)
+  setProviderBinary(runtime, '/usr/bin/true')
 
   try {
     const a = await runtime.createSession({
@@ -422,10 +390,9 @@ test('deliver without content forwards the artifact bundle', async () => {
       file.endsWith('turn-summary.md')
     )
     assert.ok(summaryFile, 'the artifact bundle includes the turn summary')
-    assert.match(fs.readFileSync(summaryFile, 'utf8'), /fake (response|result)/)
+    assert.match(fs.readFileSync(summaryFile, 'utf8'), /handled:/)
   } finally {
     runtime.killAll()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

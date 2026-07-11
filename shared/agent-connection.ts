@@ -10,7 +10,7 @@ export type AgentConnectionTarget =
       label: string
       instruction: string
       cwd?: string
-      providerKind: 'claude-code' | 'codex' | 'legacy-claude-cli'
+      providerKind: 'claude-code' | 'codex'
       providerInstanceId: string
       runtimeSettings: ReviewRuntimeSettings
       position?: { x: number; y: number }

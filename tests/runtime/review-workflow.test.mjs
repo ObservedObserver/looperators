@@ -4,18 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js';
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js';
 import { deriveLoopProductView } from '../../dist-electron/shared/loop-product.js';
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-const prompt = readArg('-p') ?? ''
-const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
-emit({ type: 'assistant', session_id: backendSessionId, message: { content: [{ type: 'text', text: 'handled: ' + prompt.slice(0, 80) }] } })
-emit({ type: 'result', session_id: backendSessionId, result: 'done' })
-`;
+import { deterministicProviderAdapters } from './support/deterministic-provider.mjs';
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,19 +22,20 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-function harness(prefix, runtimeOptions = {}, providerSource = fakeClaudeSource) {
+function harness(prefix, runtimeOptions = {}, failReviewer = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const fakeClaude = path.join(root, 'claude');
-  fs.writeFileSync(fakeClaude, providerSource);
-  fs.chmodSync(fakeClaude, 0o755);
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude;
-  const runtime = new RuntimeSessionManager({ storageFile: path.join(root, 'state.json'), ...runtimeOptions });
+  const runtime = new BaseRuntimeSessionManager({
+    storageFile: path.join(root, 'state.json'),
+    providerAdapters: deterministicProviderAdapters({
+      failWhen: (input) => failReviewer && input.prompt?.includes('Blocking rule:'),
+    }),
+    ...runtimeOptions,
+  });
   return {
     root,
     runtime,
     cleanup() {
       runtime.killAll();
-      delete process.env.ORRERY_CLAUDE_BIN;
       fs.rmSync(root, { recursive: true, force: true });
     },
   };
@@ -57,16 +49,16 @@ function input(cwd, overrides = {}) {
       prompt: 'Implement the change.',
       cwd,
       workMode: 'local',
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'legacy-claude-cli',
+      providerKind: 'claude-code',
+      providerInstanceId: 'default-claude-sdk',
       runtimeSettings: { runtimeMode: 'approval-required', model: 'coder-model' },
     },
     reviewer: {
       kind: 'new',
       label: 'Cold Reviewer',
       instruction: 'Review the real diff against SPEC.md.',
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'review-legacy',
+      providerKind: 'claude-code',
+      providerInstanceId: 'review-sdk',
       runtimeSettings: { runtimeMode: 'full-access', model: 'review-model' },
     },
     blocking: { mode: 'p0-p1' },
@@ -79,9 +71,9 @@ test('cold start installs the full ring before Coder runs and Reviewer has no re
   const { runtime, cleanup } = harness('orrery-review-workflow-');
   try {
     runtime.upsertProviderInstance({
-      providerInstanceId: 'review-legacy',
-      kind: 'legacy-claude-cli',
-      label: 'Review legacy',
+      providerInstanceId: 'review-sdk',
+      kind: 'claude-code',
+      label: 'Review SDK',
     });
     const started = await runtime.startReviewWorkflow(input(process.cwd()));
     assert.equal(started.createdSessionIds.length, 2);
@@ -90,7 +82,9 @@ test('cold start installs the full ring before Coder runs and Reviewer has no re
 
     const initial = runtime.getState();
     assert.equal(initial.sessions[started.coderSessionId].runtimeSettings.model, 'coder-model');
-    assert.equal(initial.sessions[started.reviewerSessionId].providerInstanceId, 'review-legacy');
+    assert.equal(initial.sessions[started.reviewerSessionId].providerInstanceId, 'review-sdk');
+    assert.equal(initial.sessions[started.reviewerSessionId].providerKind, 'claude-code');
+    assert.equal(initial.sessions[started.reviewerSessionId].backend, 'claude-agent-sdk');
     assert.equal(initial.sessions[started.reviewerSessionId].runtimeSettings.model, 'review-model');
     assert.match(
       initial.sessions[started.coderSessionId].messages.find((message) => message.role === 'user')?.content ?? '',
@@ -133,16 +127,16 @@ test('a start failure after the first participant exists unwinds the live graph'
   const { runtime, cleanup } = harness('orrery-review-workflow-unwind-');
   try {
     runtime.upsertProviderInstance({
-      providerInstanceId: 'review-legacy',
-      kind: 'legacy-claude-cli',
-      label: 'Review legacy',
+      providerInstanceId: 'review-sdk',
+      kind: 'claude-code',
+      label: 'Review SDK',
     });
     const before = runtime.getState();
     const invalidReviewerProvider = input(process.cwd());
     invalidReviewerProvider.reviewer.providerInstanceId = 'default-codex';
     await assert.rejects(
       runtime.startReviewWorkflow(invalidReviewerProvider),
-      /default-codex is codex, not legacy-claude-cli/,
+      /default-codex is codex, not claude-code/,
     );
     const after = runtime.getState();
     assert.deepEqual(Object.keys(after.sessions), Object.keys(before.sessions));
@@ -156,10 +150,10 @@ test('a start failure after the first participant exists unwinds the live graph'
 test('parallel Review starts lock shared existing Agents before creating a second ring', async () => {
   const { runtime, cleanup } = harness('orrery-review-workflow-lock-');
   try {
-    runtime.upsertProviderInstance({ providerInstanceId: 'review-legacy', kind: 'legacy-claude-cli', label: 'Review legacy' });
+    runtime.upsertProviderInstance({ providerInstanceId: 'review-sdk', kind: 'claude-code', label: 'Review SDK' });
     const existing = await runtime.createSession({
       prompt: 'Prepare the workspace.', cwd: process.cwd(),
-      providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+      providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
     });
     await waitFor('existing Coder becomes idle', () => runtime.getState().sessions[existing.sessionId]?.status === 'idle');
     const reviewInput = input(process.cwd(), {
@@ -178,26 +172,12 @@ test('parallel Review starts lock shared existing Agents before creating a secon
 });
 
 test('a participant failure identifies the failed Reviewer and workflow phase headlessly', async () => {
-  const failingReviewerSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-const prompt = readArg('-p') ?? ''
-const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
-if (prompt.includes('Blocking rule:')) {
-  process.stderr.write('review provider failed before verdict\\n')
-  process.exitCode = 2
-} else {
-  emit({ type: 'assistant', session_id: backendSessionId, message: { content: [{ type: 'text', text: 'coder done' }] } })
-  emit({ type: 'result', session_id: backendSessionId, result: 'done' })
-}
-`;
-  const { runtime, cleanup } = harness('orrery-review-workflow-failure-', {}, failingReviewerSource);
+  const { runtime, cleanup } = harness('orrery-review-workflow-failure-', {}, true);
   try {
     runtime.upsertProviderInstance({
-      providerInstanceId: 'review-legacy',
-      kind: 'legacy-claude-cli',
-      label: 'Review legacy',
+      providerInstanceId: 'review-sdk',
+      kind: 'claude-code',
+      label: 'Review SDK',
     });
     const started = await runtime.startReviewWorkflow(input(process.cwd()));
     await waitFor(

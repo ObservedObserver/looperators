@@ -63,14 +63,11 @@ import {
 } from './kernelStore.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
-import { buildPath, claudeCommand } from './claudeCliAdapter.js'
-import {
-  legacyClaudeRuntimeEventsFromChunk,
-  resultSublines,
-} from './providers/legacyClaudeRuntimeMapper.js'
+import { buildPath, claudeCommand } from './claudeRuntimeShared.js'
+import { resultSublines } from './providers/claudeRuntimeMapper.js'
 
 const defaultPrompt =
-  'You are running under Orrery P1 live session verification. Reply with one short sentence confirming stream-json is working, then stop.'
+  'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
 const defaultProviderRuntimeSettings = {
   runtimeMode: 'approval-required',
 }
@@ -160,12 +157,10 @@ const validSessionStatuses = new Set([
 ])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
 const validAgentBackends = new Set([
-  'claude-cli',
   'claude-agent-sdk',
   'codex-app-server',
 ])
 const validProviderKinds = new Set([
-  'legacy-claude-cli',
   'claude-code',
   'codex',
 ])
@@ -272,11 +267,6 @@ const defaultProviderInstances = [
     providerInstanceId: 'default-codex',
     kind: 'codex',
     label: 'Codex',
-  },
-  {
-    providerInstanceId: 'legacy-claude-cli',
-    kind: 'legacy-claude-cli',
-    label: 'Claude CLI',
   },
 ]
 
@@ -783,34 +773,6 @@ function normalizeChatAttachments(value) {
   })
 }
 
-function legacyAttachmentContext(attachments = []) {
-  if (!attachments.length) {
-    return undefined
-  }
-
-  return [
-    'Attached files:',
-    ...attachments.map((attachment, index) => {
-      const header = [
-        `Attachment ${index + 1}: ${attachment.name}`,
-        `Type: ${attachment.mediaType}`,
-        `Size: ${attachment.size} bytes`,
-        `Kind: ${attachment.kind}`,
-      ].join('\n')
-
-      if (attachment.kind === 'text' && typeof attachment.text === 'string') {
-        return `${header}\nText content${attachment.truncated ? ' (truncated)' : ''}:\n${attachment.text}`
-      }
-
-      if (attachment.kind === 'image') {
-        return `${header}\nImage data is available as a structured attachment in native providers; legacy CLI receives metadata only.`
-      }
-
-      return `${header}\nContent is not inlined; only metadata is available.`
-    }),
-  ].join('\n\n')
-}
-
 function gitOutput(cwd, args, options: JsonRecord = {}) {
   return execFileSync('git', args, {
     cwd,
@@ -1225,27 +1187,8 @@ function messageContent(message, context) {
   return message
 }
 
-function combinedContext(...values) {
-  const sections = values
-    .filter((value) => typeof value === 'string' && value.trim().length > 0)
-    .map((value) => value.trim())
-  return sections.length > 0 ? sections.join('\n\n') : undefined
-}
-
-function providerPromptContent({
-  providerKind,
-  message,
-  context,
-  attachments,
-}) {
-  if (providerKind === 'legacy-claude-cli') {
-    return messageContent(
-      message,
-      combinedContext(context, legacyAttachmentContext(attachments)),
-    )
-  }
-
-  return messageContent(message, context)
+function providerPromptContent(input) {
+  return messageContent(input.message, input.context)
 }
 
 function providerConfig(
@@ -1264,11 +1207,13 @@ function providerConfig(
 
   const requested =
     input.providerKind ??
-    (input.agent === 'codex' ? 'codex' : undefined) ??
-    requestedInstance?.kind
-  const requestedKind = validProviderKinds.has(requested)
-    ? requested
-    : 'legacy-claude-cli'
+    requestedInstance?.kind ??
+    (input.agent === 'codex' ? 'codex' : input.agent === 'claude-code' ? 'claude-code' : undefined) ??
+    'claude-code'
+  if (!validProviderKinds.has(requested)) {
+    throw new Error(`Unsupported provider kind: ${String(requested)}`)
+  }
+  const requestedKind = requested
   const providerInstance =
     requestedInstance ??
     providerInstances.find((instance) => instance.kind === requestedKind) ??
@@ -1300,13 +1245,7 @@ function providerConfig(
     }
   }
 
-  return {
-    agent: 'claude-code',
-    backend: 'claude-cli',
-    providerKind: 'legacy-claude-cli',
-    providerInstanceId: providerInstance.providerInstanceId,
-    labelPrefix: 'Claude',
-  }
+  throw new Error(`Unsupported provider kind: ${String(requestedKind)}`)
 }
 
 function defaultCommandForProvider(providerKind) {
@@ -1381,17 +1320,6 @@ function defaultProviderInstanceForKind(providerKind) {
   )
 }
 
-function normalizeSessionProviderInstanceId(providerKind, providerInstanceId) {
-  const id = optionalTrimmedString(providerInstanceId)
-  if (!id) {
-    return defaultProviderInstanceForKind(providerKind).providerInstanceId
-  }
-  if (validProviderKinds.has(id)) {
-    return defaultProviderInstanceForKind(id).providerInstanceId
-  }
-  return id
-}
-
 function normalizeLaunchArgs(value) {
   const values = Array.isArray(value)
     ? value
@@ -1437,6 +1365,9 @@ function normalizeProviderInstance(
     throw new Error('Provider instance id is required.')
   }
 
+  if (input.kind !== undefined && !validProviderKinds.has(input.kind)) {
+    throw new Error(`Unsupported provider instance kind: ${String(input.kind)}`)
+  }
   const kind = validProviderKinds.has(input.kind)
     ? input.kind
     : validProviderKinds.has(fallbackInstance?.kind)
@@ -1676,6 +1607,7 @@ export class RuntimeSessionManager {
     broadcast,
     emit,
     snapshotPersistDelayMs,
+    providerAdapters,
   }: JsonRecord = {}) {
     this.#storageFile =
       typeof storageFile === 'string' && storageFile.length > 0
@@ -1747,6 +1679,7 @@ export class RuntimeSessionManager {
     })
     this.#providerService = new ProviderService({
       providerInstances: this.#state.providerInstances,
+      adapters: providerAdapters instanceof Map ? providerAdapters : undefined,
     })
     this.#persistState()
     this.#sweepKilledParticipantSubscriptions()
@@ -4054,9 +3987,12 @@ export class RuntimeSessionManager {
 
   getProviderSetupStatus(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
-    const requestedProviderKind = validProviderKinds.has(request.providerKind)
-      ? request.providerKind
-      : 'legacy-claude-cli'
+    const requestedProviderKind = request.providerKind ?? 'claude-code'
+    if (!validProviderKinds.has(requestedProviderKind)) {
+      throw new Error(
+        `Unsupported provider kind: ${String(requestedProviderKind)}`,
+      )
+    }
     const requestedInstanceId = optionalTrimmedString(
       request.providerInstanceId,
     )
@@ -4301,12 +4237,10 @@ export class RuntimeSessionManager {
       sessionId,
       nodeId: sessionId,
       backend: provider.backend,
-      backendSessionId:
-        provider.providerKind === 'legacy-claude-cli' ? sessionId : undefined,
+      backendSessionId: undefined,
       providerKind: provider.providerKind,
       providerInstanceId: provider.providerInstanceId,
-      providerSessionId:
-        provider.providerKind === 'legacy-claude-cli' ? sessionId : undefined,
+      providerSessionId: undefined,
       agent: provider.agent,
       label,
       prompt: initialContent,
@@ -7987,13 +7921,21 @@ export class RuntimeSessionManager {
 
     return {
       agent: 'claude-code',
+      providerKind: 'claude-code',
+      providerInstanceId:
+        sourceSession?.providerKind === 'claude-code'
+          ? sourceSession.providerInstanceId
+          : defaultProviderInstanceForKind('claude-code').providerInstanceId,
       prompt,
       cwd: sourceSession?.cwd,
       context: input.context,
       contextTopic: input.contextTopic,
       cluster,
       label: input.label,
-      runtimeSettings: sourceSession?.runtimeSettings,
+      runtimeSettings:
+        sourceSession?.providerKind === 'claude-code'
+          ? sourceSession.runtimeSettings
+          : defaultProviderRuntimeSettings,
       sourceSessionId: source,
       linkLabel: label ? `create: ${label}` : 'create_session',
       masterReason: input.masterReason,
@@ -8109,7 +8051,6 @@ export class RuntimeSessionManager {
 
     this.#runs.set(sessionId, run)
 
-    run.on('stream', (chunk) => this.#appendStreamChunk(sessionId, chunk))
     run.on('native', (event) =>
       this.#appendNativeProviderEnvelope(sessionId, event),
     )
@@ -8220,73 +8161,6 @@ export class RuntimeSessionManager {
     })
   }
 
-  #appendStreamChunk(sessionId, chunk) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    this.#markRunProducedOutput(sessionId)
-    const backendSessionId =
-      chunk.event?.session_id ?? chunk.event?.event?.session_id
-    if (typeof backendSessionId === 'string') {
-      session.backendSessionId = backendSessionId
-      session.providerSessionId = backendSessionId
-    }
-
-    const streamChunk = {
-      id: randomUUID(),
-      sessionId,
-      ts: now(),
-      stream: chunk.stream,
-      raw: chunk.raw,
-      eventType: chunk.eventType,
-      text: chunk.text,
-    }
-
-    session.chunks.push(streamChunk)
-    truncateChunks(session.chunks)
-
-    this.#appendNativeProviderEvent(session, streamChunk, chunk)
-    const providerEvents = this.#appendLegacyProviderRuntimeEvents(
-      sessionId,
-      streamChunk,
-      chunk,
-    )
-    this.#appendAssistantMessage(sessionId, chunk)
-    session.updatedAt = streamChunk.ts
-    this.#touchDeferred()
-    this.#broadcast({
-      type: 'session.stream',
-      sessionId,
-      chunk: streamChunk,
-      providerEvents,
-    })
-  }
-
-  #appendNativeProviderEvent(session, streamChunk, chunk) {
-    if (!chunk.event) {
-      return
-    }
-
-    session.nativeEvents ??= []
-    const event = {
-      id: randomUUID(),
-      ts: streamChunk.ts,
-      sessionId: session.sessionId,
-      providerKind: session.providerKind ?? 'legacy-claude-cli',
-      turnId: this.#runContext.get(session.sessionId)?.runId,
-      raw: {
-        source: 'legacy.claude-cli.stream-json',
-        messageType: streamChunk.eventType,
-        payload: chunk.event,
-      },
-    }
-    session.nativeEvents.push(event)
-    this.#providerService.recordNativeEvent(event)
-    truncateEvents(session.nativeEvents)
-  }
-
   #appendNativeProviderEnvelope(sessionId, event) {
     const session = this.#state.sessions[sessionId]
     if (!session || !event?.raw) {
@@ -8395,22 +8269,6 @@ export class RuntimeSessionManager {
     }
     session.chunks.push(chunk)
     truncateChunks(session.chunks)
-  }
-
-  #appendLegacyProviderRuntimeEvents(sessionId, streamChunk, chunk) {
-    const context = this.#runContext.get(sessionId)
-    const events = legacyClaudeRuntimeEventsFromChunk({
-      sessionId,
-      turnId: context?.runId,
-      ts: streamChunk.ts,
-      chunk,
-      sawTextDelta: context?.sawTextDelta === true,
-    })
-
-    for (const event of events) {
-      this.#appendProviderRuntimeEvent(sessionId, event)
-    }
-    return events
   }
 
   #appendProviderRuntimeEvent(sessionId, event) {
@@ -8632,34 +8490,6 @@ export class RuntimeSessionManager {
     } else {
       session.runtimeActivities.push(next)
       truncateActivities(session.runtimeActivities)
-    }
-  }
-
-  #appendAssistantMessage(sessionId, chunk) {
-    const session = this.#state.sessions[sessionId]
-    const context = this.#runContext.get(sessionId)
-    if (!session || !context || chunk.stream !== 'stdout') {
-      return
-    }
-
-    if (
-      chunk.event?.type === 'stream_event' &&
-      chunk.event.event?.type === 'content_block_delta' &&
-      typeof chunk.text === 'string'
-    ) {
-      const message = this.#ensureAssistantMessage(session, context)
-      message.content += chunk.text
-      message.status = 'streaming'
-      context.sawTextDelta = true
-      return
-    }
-
-    if (chunk.event?.type === 'assistant' && typeof chunk.text === 'string') {
-      const message = this.#ensureAssistantMessage(session, context)
-      if (!context.sawTextDelta || message.content.trim().length === 0) {
-        message.content = chunk.text
-      }
-      message.status = 'streaming'
     }
   }
 
@@ -10335,6 +10165,11 @@ export class RuntimeSessionManager {
   #normalizeState(value, diagnostics: JsonRecord[] = []) {
     const fallback = createEmptyGraphState()
     const source = isObject(value) ? value : {}
+    if (source.version !== graphStateVersion) {
+      throw new Error(
+        `Unsupported Orrery graph state version: ${String(source.version)}. Expected ${graphStateVersion}. Clear the local Orrery runtime data before starting this build.`,
+      )
+    }
     const state: JsonRecord = {
       ...fallback,
       ...source,
@@ -10382,6 +10217,7 @@ export class RuntimeSessionManager {
         storageKey,
         sessionValue,
         diagnostics,
+        state.providerInstances,
       )
       state.sessions[session.sessionId] = session
     }
@@ -10494,7 +10330,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  #normalizeSession(storageKey, value, diagnostics) {
+  #normalizeSession(storageKey, value, diagnostics, providerInstances) {
     const sessionId = nonEmptyString(value.sessionId)
       ? value.sessionId
       : nonEmptyString(storageKey)
@@ -10503,16 +10339,45 @@ export class RuntimeSessionManager {
     const ts = now()
     const recoveredActiveSession = recoverableActiveStatuses.has(value.status)
     const status = this.#normalizeSessionStatus(sessionId, value, diagnostics)
+    if (value.backend !== undefined && !validAgentBackends.has(value.backend)) {
+      throw new Error(
+        `Unsupported backend for restored session ${sessionId}: ${String(value.backend)}`,
+      )
+    }
     const backend = validAgentBackends.has(value.backend)
       ? value.backend
-      : 'claude-cli'
+      : value.agent === 'codex'
+        ? 'codex-app-server'
+        : 'claude-agent-sdk'
+    if (
+      value.providerKind !== undefined &&
+      !validProviderKinds.has(value.providerKind)
+    ) {
+      throw new Error(
+        `Unsupported provider kind for restored session ${sessionId}: ${String(value.providerKind)}`,
+      )
+    }
     const providerKind = validProviderKinds.has(value.providerKind)
       ? value.providerKind
       : backend === 'codex-app-server'
         ? 'codex'
-        : backend === 'claude-agent-sdk'
-          ? 'claude-code'
-          : 'legacy-claude-cli'
+        : 'claude-code'
+    const providerInstanceId =
+      optionalTrimmedString(value.providerInstanceId) ??
+      defaultProviderInstanceForKind(providerKind).providerInstanceId
+    const providerInstance = providerInstances.find(
+      (instance) => instance.providerInstanceId === providerInstanceId,
+    )
+    if (!providerInstance) {
+      throw new Error(
+        `Unknown provider instance for restored session ${sessionId}: ${providerInstanceId}`,
+      )
+    }
+    if (providerInstance.kind !== providerKind) {
+      throw new Error(
+        `Provider instance ${providerInstanceId} is ${providerInstance.kind}, not ${providerKind}, for restored session ${sessionId}.`,
+      )
+    }
     let cwd = safeCwd(value.cwd)
     const cwdRepair = !isValidCwd(cwd)
       ? cwdRepairCandidate(cwd, value)
@@ -10574,17 +10439,14 @@ export class RuntimeSessionManager {
       backend,
       backendSessionId: nonEmptyString(value.backendSessionId)
         ? value.backendSessionId
-        : sessionId,
+        : undefined,
       providerKind,
-      providerInstanceId: normalizeSessionProviderInstanceId(
-        providerKind,
-        value.providerInstanceId,
-      ),
+      providerInstanceId,
       providerSessionId: nonEmptyString(value.providerSessionId)
         ? value.providerSessionId
         : nonEmptyString(value.backendSessionId)
           ? value.backendSessionId
-          : sessionId,
+          : undefined,
       providerResumeCursor: nonEmptyString(value.providerResumeCursor)
         ? value.providerResumeCursor
         : undefined,
@@ -10745,7 +10607,7 @@ export class RuntimeSessionManager {
     const raw = isObject(event.raw)
       ? event.raw
       : {
-          source: 'legacy.claude-cli.stream-json',
+          source: 'claude.sdk',
           payload: value,
         }
 
@@ -11002,11 +10864,11 @@ export class RuntimeSessionManager {
     return {
       sessionId,
       nodeId: sessionId,
-      backend: 'claude-cli',
-      backendSessionId: sessionId,
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'legacy-claude-cli',
-      providerSessionId: sessionId,
+      backend: 'claude-agent-sdk',
+      backendSessionId: undefined,
+      providerKind: 'claude-code',
+      providerInstanceId: 'default-claude-sdk',
+      providerSessionId: undefined,
       agent: nonEmptyString(node.agent) ? node.agent : 'claude-code',
       label: nonEmptyString(node.label)
         ? node.label

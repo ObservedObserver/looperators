@@ -5,12 +5,12 @@ import path from 'node:path'
 
 export const name = 'goal-fix-to-green'
 export const description =
-  'L3 acceptance (proposal §L3 验收): on a real repo, a "fix until npm test is green, at most 4 laps" goal loop — lap 1 the judge runs the suite and reports fail with the failing cases, the retry edge wakes the coder with the issues, lap 2 the judge reports done and the ring stops itself; the scenario then runs npm test deterministically to confirm green. The judge reports through the membrane, which is mounted for the claude providers (mcp-config handoff) and codex (per-thread config.mcp_servers) alike — runs under either --provider.'
+  'L3 acceptance (proposal §L3 验收): on a real repo, a "fix until npm test is green, at most 4 laps" goal loop — lap 1 the judge runs the suite and reports fail with the failing cases, the retry edge wakes the coder with the issues, lap 2 the judge reports done and the ring stops itself; the scenario then runs npm test deterministically to confirm green. The judge reports through the membrane, which is mounted for the Claude Agent SDK (MCP handoff) and Codex (per-thread config.mcp_servers) alike — runs under either --provider.'
 export const timeoutMs = 900_000
 
 export async function run({ orrery, provider, workDir, log }) {
   const providerInstanceId =
-    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli'
+    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code'
   // A real, dependency-free repo whose suite fails for one honest reason.
   fs.writeFileSync(
     path.join(workDir, 'package.json'),

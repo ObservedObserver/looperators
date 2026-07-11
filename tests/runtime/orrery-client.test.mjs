@@ -11,34 +11,15 @@ import {
 } from '../../scripts/lib/orrery-client.mjs'
 import { modelPresets } from '../../scripts/lib/model-presets.mjs'
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
+const deterministicCliPath = path.resolve('tests/runtime/support/deterministic-runtime-cli.mjs')
 
 test('headless harness drives an isolated runtime end to end', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-client-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
 
   const harness = await OrreryHarness.start({
-    env: { ORRERY_CLAUDE_BIN: fakeClaude },
+    cliPath: deterministicCliPath,
     modelPreset: {
-      'legacy-claude-cli': { model: 'cheap-model-for-tests' },
+      'claude-code': { model: 'cheap-model-for-tests' },
     },
   })
 
@@ -182,17 +163,10 @@ test('harness rejects unknown presets before spawning a runtime child', async ()
 
 test('wait primitives fail fast when a session dies', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-client-fail-test-'))
-  const failingClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(
-    failingClaude,
-    `#!/usr/bin/env node
-process.stderr.write('fake provider exploded\\n')
-process.exit(1)
-`
-  )
-  fs.chmodSync(failingClaude, 0o755)
+  const failingClaude = path.join(tempRoot, 'missing-claude')
 
   const harness = await OrreryHarness.start({
+    cliPath: deterministicCliPath,
     env: { ORRERY_CLAUDE_BIN: failingClaude },
   })
 
@@ -273,7 +247,7 @@ test('preset kind resolution mirrors the server providerConfig exactly', () => {
     { providerInstanceId: 'isolated-codex', kind: 'codex' },
     { providerInstanceId: 'default-claude-sdk', kind: 'claude-code' },
   ]
-  assert.equal(resolveRequestedProviderKind({}, instances), 'legacy-claude-cli')
+  assert.equal(resolveRequestedProviderKind({}, instances), 'claude-code')
   assert.equal(
     resolveRequestedProviderKind({ providerKind: 'claude-code' }, instances),
     'claude-code'
@@ -295,17 +269,22 @@ test('preset kind resolution mirrors the server providerConfig exactly', () => {
     'codex',
     'instance ids are trimmed before lookup, like the server'
   )
-  assert.equal(
-    resolveRequestedProviderKind({ providerKind: 'claude-code ' }, instances),
-    'legacy-claude-cli',
-    'untrimmed kinds must fall back exactly like the server (no client-side trim)'
+  assert.throws(
+    () =>
+      resolveRequestedProviderKind(
+        { providerKind: 'claude-code ' },
+        instances
+      ),
+    /Unsupported provider kind/,
+    'unknown explicit kinds must fail exactly like the server'
   )
-  assert.equal(
-    resolveRequestedProviderKind(
-      { providerKind: 'codex', providerInstanceId: 'default-claude-sdk' },
-      instances
-    ),
-    'codex',
-    'explicit providerKind wins over the instance kind'
+  assert.throws(
+    () =>
+      resolveRequestedProviderKind(
+        { providerKind: 'codex', providerInstanceId: 'default-claude-sdk' },
+        instances
+      ),
+    /not codex/,
+    'an explicit kind cannot override an incompatible provider instance'
   )
 })

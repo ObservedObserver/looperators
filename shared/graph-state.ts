@@ -1,4 +1,4 @@
-export const graphStateVersion = 7
+export const graphStateVersion = 8
 
 // Intent-layer enums (kernel doc §7.3). Kept as value arrays so the electron
 // build and the renderer share one vocabulary.
@@ -60,11 +60,6 @@ export const defaultGraphProviderInstances = [
     providerInstanceId: 'default-codex',
     kind: 'codex',
     label: 'Codex',
-  },
-  {
-    providerInstanceId: 'legacy-claude-cli',
-    kind: 'legacy-claude-cli',
-    label: 'Claude CLI',
   },
 ]
 
@@ -500,8 +495,8 @@ export const graphStateSchema = {
       masterReason: 'string?',
     },
     AgentSession: {
-      backend: '"claude-cli" | "claude-agent-sdk" | "codex-app-server"',
-      providerKind: '"legacy-claude-cli" | "claude-code" | "codex"',
+      backend: '"claude-agent-sdk" | "codex-app-server"',
+      providerKind: '"claude-code" | "codex"',
       providerInstanceId: 'string',
       providerSessionId: 'string?',
       runtimeSettings: 'ProviderRuntimeSettings?',

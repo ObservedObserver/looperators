@@ -395,11 +395,12 @@ try {
         (request) => request.status === 'open'
       )
   )
-  assert.match(complexInputRequest.prompt, /single visible text answer/)
+  assert.match(complexInputRequest.prompt, /Which branch should Codex use/)
+  assert.match(complexInputRequest.prompt, /Provide a visible token placeholder/)
   assert.match(complexInputRequest.prompt, /Do not enter secrets/)
   assert.equal(
     complexInputRequest.placeholder,
-    'Single answer applied to all Codex questions'
+    'Answer for Codex'
   )
   const complexInputResult = runtime.answerUserInput({
     sessionId: complexInputSessionId,

@@ -5,67 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import {
+  DeterministicProviderAdapter,
+  deterministicRuntimeSessionManager,
+} from './support/deterministic-provider.mjs'
 
-function fakeClaudeSource() {
-  return `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-}
-
-function fakeClaudeFileEditorSource() {
-  return `#!/usr/bin/env node
-const fs = require('node:fs')
-const path = require('node:path')
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-const file = path.join(process.cwd(), 'p1-turn-diff.txt')
-fs.appendFileSync(file, 'changed by fake agent\\n')
-emit({
-  type: 'assistant',
-  session_id: 'fake-editor-session',
-  message: { content: [{ type: 'text', text: 'edited p1-turn-diff.txt' }] },
-})
-emit({ type: 'result', session_id: 'fake-editor-session', result: 'done' })
-`
-}
-
-function fakeClaudePromptRecorderSource(outputFile) {
-  return `#!/usr/bin/env node
-const fs = require('node:fs')
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const prompt = readArg('-p') ?? ''
-fs.writeFileSync(${JSON.stringify(outputFile)}, prompt)
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: 'fake-attachment-session',
-  message: { content: [{ type: 'text', text: 'recorded attachment prompt' }] },
-})
-emit({ type: 'result', session_id: 'fake-attachment-session', result: 'done' })
-  `
-}
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
 function fakeCodexAppServerSource(markerFile) {
   return `#!/usr/bin/env node
@@ -339,7 +285,7 @@ async function waitFor(label, predicate, timeoutMs = 5000) {
 function persistedStateWithSession(sessionId, cwd) {
   const ts = '2026-06-30T00:00:00.000Z'
   return {
-    version: 5,
+    version: 8,
     updatedAt: ts,
     providerInstances: [],
     nodes: [
@@ -386,15 +332,9 @@ function persistedStateWithSession(sessionId, cwd) {
 
 test('compiled RuntimeSessionManager creates, resumes, persists, and validates reports', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-ts-runtime-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
-  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
   const managers = new Set()
   const emittedEvents = []
-
-  fs.writeFileSync(fakeClaude, fakeClaudeSource())
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
 
   const manager = (input) => {
     const runtime = new RuntimeSessionManager(input)
@@ -480,15 +420,11 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
         (event) => event.type === 'session.resumed' && event.sessionId === sessionId
       )
     )
-    const streamEvents = emittedEvents.filter(
-      (event) => event.type === 'session.stream'
+    const providerEvents = emittedEvents.filter(
+      (event) => event.type === 'provider.runtime'
     )
-    assert.ok(streamEvents.length > 0)
-    assert.equal(streamEvents.every((event) => !('state' in event)), true)
-    assert.equal(
-      streamEvents.every((event) => Array.isArray(event.providerEvents)),
-      true
-    )
+    assert.ok(providerEvents.length > 0)
+    assert.equal(providerEvents.every((event) => !('state' in event)), true)
 
     const restored = manager({ storageFile })
     assert.equal(restored.getState().sessions[sessionId].sessionId, sessionId)
@@ -496,30 +432,21 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
     for (const runtime of managers) {
       runtime.killAll()
     }
-    if (previousClaudeBin === undefined) {
-      delete process.env.ORRERY_CLAUDE_BIN
-    } else {
-      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
-    }
+    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('compiled RuntimeSessionManager lists workspace files for a session', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-workspace-files-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
   const projectRoot = path.join(tempRoot, 'project')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
-  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
 
   fs.mkdirSync(path.join(projectRoot, 'src'), { recursive: true })
   fs.mkdirSync(path.join(projectRoot, 'node_modules', 'pkg'), { recursive: true })
   fs.writeFileSync(path.join(projectRoot, 'README.md'), '# Test project\n')
   fs.writeFileSync(path.join(projectRoot, 'src', 'app.ts'), 'export const ok = true\n')
   fs.writeFileSync(path.join(projectRoot, 'node_modules', 'pkg', 'ignored.js'), 'module.exports = true\n')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource())
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
 
   const runtime = new RuntimeSessionManager({ storageFile })
 
@@ -569,11 +496,7 @@ test('compiled RuntimeSessionManager lists workspace files for a session', async
     )
   } finally {
     runtime.killAll()
-    if (previousClaudeBin === undefined) {
-      delete process.env.ORRERY_CLAUDE_BIN
-    } else {
-      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
-    }
+    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
@@ -662,7 +585,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
 
   try {
     const initialState = manager.getState()
-    assert.equal(initialState.providerInstances.length, 3)
+    assert.equal(initialState.providerInstances.length, 2)
     assert.ok(
       initialState.providerInstances.some(
         (instance) => instance.providerInstanceId === 'default-codex'
@@ -734,6 +657,14 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
     )
     assert.throws(
       () =>
+        restored.getProviderSetupStatus({
+          providerKind: 'unknown-provider',
+          cwd: tempRoot,
+        }),
+      /Unsupported provider kind/
+    )
+    assert.throws(
+      () =>
         restored.upsertProviderInstance({
           providerInstanceId: 'bad-kind',
           kind: 'not-a-provider',
@@ -747,7 +678,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
   }
 })
 
-test('compiled RuntimeSessionManager migrates kind-style provider instance ids', () => {
+test('compiled RuntimeSessionManager rejects pre-clean-break graph state', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-migration-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   fs.writeFileSync(
@@ -757,43 +688,9 @@ test('compiled RuntimeSessionManager migrates kind-style provider instance ids',
         version: 5,
         updatedAt: '2026-06-29T00:00:00.000Z',
         providerInstances: [],
-        nodes: [
-          {
-            nodeId: 'sess-old-codex',
-            sessionId: 'sess-old-codex',
-            label: 'Old Codex',
-            role: 'worker',
-            agent: 'codex',
-            status: 'idle',
-            position: { x: 0, y: 0 },
-          },
-        ],
+        nodes: [],
         edges: [],
-        sessions: {
-          'sess-old-codex': {
-            sessionId: 'sess-old-codex',
-            nodeId: 'sess-old-codex',
-            backend: 'codex-app-server',
-            providerKind: 'codex',
-            providerInstanceId: 'codex',
-            agent: 'codex',
-            label: 'Old Codex',
-            prompt: 'old',
-            cwd: tempRoot,
-            role: 'worker',
-            status: 'idle',
-            createdAt: '2026-06-29T00:00:00.000Z',
-            updatedAt: '2026-06-29T00:00:00.000Z',
-            chunks: [],
-            messages: [],
-            nativeEvents: [],
-            runtimeEvents: [],
-            runtimeActivities: [],
-            runtimeRequests: [],
-            runtimeUserInputRequests: [],
-            runtimePlans: [],
-          },
-        },
+        sessions: {},
         clusters: {},
         reports: [],
       },
@@ -802,87 +699,63 @@ test('compiled RuntimeSessionManager migrates kind-style provider instance ids',
     )
   )
 
-  const runtime = new RuntimeSessionManager({ storageFile })
-
   try {
-    assert.equal(
-      runtime.getState().sessions['sess-old-codex'].providerInstanceId,
-      'default-codex'
+    assert.throws(
+      () => new RuntimeSessionManager({ storageFile }),
+      /Unsupported Orrery graph state version: 5.*Expected 8/
     )
   } finally {
-    runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
-test('compiled RuntimeSessionManager launches legacy provider through saved provider instance binary', async () => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-launch-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
-  const markerFile = path.join(tempRoot, 'launched.json')
+test('restored SDK sessions without a provider id resume without a fabricated local id', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-resume-id-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
-  const project = path.join(tempRoot, 'project')
-
-  fs.mkdirSync(project, { recursive: true })
+  const sessionId = 'restored-sdk-session'
+  const adapter = new DeterministicProviderAdapter()
   fs.writeFileSync(
-    fakeClaude,
-    `#!/usr/bin/env node
-const fs = require('node:fs')
-fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify({
-  argv: process.argv.slice(2),
-  home: process.env.HOME,
-  custom: process.env.ORRERY_PROVIDER_TEST
-}))
-process.stdout.write(JSON.stringify({
-  type: 'assistant',
-  session_id: 'provider-profile-session',
-  message: { content: [{ type: 'text', text: 'provider profile launched' }] }
-}) + '\\n')
-process.stdout.write(JSON.stringify({
-  type: 'result',
-  session_id: 'provider-profile-session',
-  result: 'done'
-}) + '\\n')
-`
+    storageFile,
+    JSON.stringify({
+      version: 8,
+      updatedAt: '2026-07-11T00:00:00.000Z',
+      providerInstances: [],
+      nodes: [],
+      edges: [],
+      sessions: {
+        [sessionId]: {
+          sessionId,
+          backend: 'claude-agent-sdk',
+          providerKind: 'claude-code',
+          providerInstanceId: 'default-claude-sdk',
+          agent: 'claude-code',
+          label: 'Restored SDK',
+          prompt: 'restored',
+          cwd: process.cwd(),
+          status: 'idle',
+          createdAt: '2026-07-11T00:00:00.000Z',
+          updatedAt: '2026-07-11T00:00:00.000Z',
+        },
+      },
+      clusters: {},
+      reports: [],
+    })
   )
-  fs.chmodSync(fakeClaude, 0o755)
-
-  const runtime = new RuntimeSessionManager({ storageFile })
+  const runtime = new BaseRuntimeSessionManager({
+    storageFile,
+    providerAdapters: new Map([['claude-code', adapter]]),
+  })
 
   try {
-    runtime.upsertProviderInstance({
-      providerInstanceId: 'legacy-alt',
-      kind: 'legacy-claude-cli',
-      label: 'Legacy Profile',
-      binaryPath: fakeClaude,
-      homePath: tempRoot,
-      launchArgs: ['--profile-flag'],
-      env: { ORRERY_PROVIDER_TEST: 'yes' },
-    })
-    const created = await runtime.createSession({
-      prompt: 'launch through provider profile',
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'legacy-alt',
-      runtimeSettings: {
-        runtimeMode: 'approval-required',
-        model: 'claude-test-model',
-      },
-      cwd: project,
-    })
+    assert.equal(runtime.getState().sessions[sessionId].providerSessionId, undefined)
+    assert.equal(runtime.getState().sessions[sessionId].backendSessionId, undefined)
 
+    await runtime.resumeSession({ sessionId, message: 'resume without provider id' })
     await waitFor(
-      'provider profile session idle',
-      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+      'restored session idle',
+      () => runtime.getState().sessions[sessionId]?.status === 'idle'
     )
-
-    const marker = JSON.parse(fs.readFileSync(markerFile, 'utf8'))
-    const session = runtime.getState().sessions[created.sessionId]
-    assert.equal(session.providerInstanceId, 'legacy-alt')
-    assert.equal(session.runtimeSettings.model, 'claude-test-model')
-    assert.equal(marker.home, tempRoot)
-    assert.equal(marker.custom, 'yes')
-    assert.equal(marker.argv.includes('--profile-flag'), true)
-    assert.equal(marker.argv.includes('--model'), true)
-    assert.equal(marker.argv[marker.argv.indexOf('--model') + 1], 'claude-test-model')
+    assert.equal(adapter.startedTurns[0].backendSessionId, undefined)
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
@@ -1178,27 +1051,24 @@ test('compiled RuntimeSessionManager persists structured user input answers', as
 
 test('compiled RuntimeSessionManager passes provider config into master sessions', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-master-config-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const project = path.join(tempRoot, 'project')
 
   fs.mkdirSync(project, { recursive: true })
-  fs.writeFileSync(fakeClaude, fakeClaudeSource())
-  fs.chmodSync(fakeClaude, 0o755)
 
   const runtime = new RuntimeSessionManager({ storageFile })
 
   try {
     runtime.upsertProviderInstance({
-      providerInstanceId: 'legacy-master',
-      kind: 'legacy-claude-cli',
-      label: 'Legacy Master',
-      binaryPath: fakeClaude,
+      providerInstanceId: 'sdk-master',
+      kind: 'claude-code',
+      label: 'SDK Master',
+      binaryPath: '/usr/bin/true',
     })
     const worker = await runtime.createSession({
       prompt: 'worker',
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'legacy-master',
+      providerKind: 'claude-code',
+      providerInstanceId: 'sdk-master',
       cwd: project,
     })
     await waitFor(
@@ -1213,8 +1083,8 @@ test('compiled RuntimeSessionManager passes provider config into master sessions
     const master = await runtime.createMasterForCluster({
       clusterId: cluster.clusterId,
       prompt: 'master',
-      providerKind: 'legacy-claude-cli',
-      providerInstanceId: 'legacy-master',
+      providerKind: 'claude-code',
+      providerInstanceId: 'sdk-master',
       runtimeSettings: {
         runtimeMode: 'full-access',
         model: 'claude-master-model',
@@ -1228,7 +1098,7 @@ test('compiled RuntimeSessionManager passes provider config into master sessions
     )
 
     const masterSession = runtime.getState().sessions[master.sessionId]
-    assert.equal(masterSession.providerInstanceId, 'legacy-master')
+    assert.equal(masterSession.providerInstanceId, 'sdk-master')
     assert.equal(masterSession.runtimeSettings.runtimeMode, 'full-access')
     assert.equal(masterSession.runtimeSettings.model, 'claude-master-model')
     assert.equal(masterSession.runtimeSettings.reasoningEffort, 'high')
@@ -1294,10 +1164,8 @@ test('compiled RuntimeSessionManager infers provider kind from master provider i
 
 test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-turn-diff-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const project = path.join(tempRoot, 'project')
-  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
   const managers = new Set()
 
   fs.mkdirSync(project, { recursive: true })
@@ -1305,9 +1173,6 @@ test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async 
   fs.writeFileSync(path.join(project, 'README.md'), '# Turn diff test\n')
   git(project, ['add', 'README.md'])
   git(project, ['commit', '-m', 'initial'])
-  fs.writeFileSync(fakeClaude, fakeClaudeFileEditorSource())
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
 
   const manager = (input) => {
     const runtime = new RuntimeSessionManager(input)
@@ -1344,7 +1209,7 @@ test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async 
     })
     assert.equal(turnDiff.range.kind, 'checkpoint')
     assert.equal(turnDiff.totals.files, 1)
-    assert.match(turnDiff.patch, /changed by fake agent/)
+    assert.match(turnDiff.patch, /changed by deterministic provider/)
 
     const checkpointRoot = `refs/orrery/checkpoints/${sessionId}`
     const orphanRef = `${checkpointRoot}/turns/999/orphan-before`
@@ -1417,31 +1282,20 @@ test('compiled RuntimeSessionManager captures per-turn checkpoint diffs', async 
       turnId: cappedDiffEvent.turnId,
     })
     assert.equal(cappedTurnDiff.range.kind, 'checkpoint')
-    assert.match(cappedTurnDiff.patch, /changed by fake agent/)
+    assert.match(cappedTurnDiff.patch, /changed by deterministic provider/)
   } finally {
     for (const runtime of managers) {
       runtime.killAll()
     }
-    if (previousClaudeBin === undefined) {
-      delete process.env.ORRERY_CLAUDE_BIN
-    } else {
-      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
-    }
+    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('compiled RuntimeSessionManager persists structured attachments without inlining image data into chat text', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-attachment-test-'))
-  const fakeClaude = path.join(tempRoot, 'claude')
-  const promptFile = path.join(tempRoot, 'provider-prompt.txt')
   const storageFile = path.join(tempRoot, 'runtime-state.json')
-  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
   const managers = new Set()
-
-  fs.writeFileSync(fakeClaude, fakeClaudePromptRecorderSource(promptFile))
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
 
   const manager = (input) => {
     const runtime = new RuntimeSessionManager(input)
@@ -1499,12 +1353,6 @@ test('compiled RuntimeSessionManager persists structured attachments without inl
     assert.equal(userMessage.attachments[2].kind, 'binary')
     assert.equal(userMessage.content.includes('data:image/png'), false)
 
-    const providerPrompt = fs.readFileSync(promptFile, 'utf8')
-    assert.match(providerPrompt, /notes.md/)
-    assert.match(providerPrompt, /# Notes/)
-    assert.match(providerPrompt, /screenshot.png/)
-    assert.equal(providerPrompt.includes(imageDataUrl), false)
-
     const restored = manager({ storageFile })
     assert.equal(
       restored.getState().sessions[sessionId].messages[0].attachments[1].name,
@@ -1514,11 +1362,7 @@ test('compiled RuntimeSessionManager persists structured attachments without inl
     for (const runtime of managers) {
       runtime.killAll()
     }
-    if (previousClaudeBin === undefined) {
-      delete process.env.ORRERY_CLAUDE_BIN
-    } else {
-      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
-    }
+    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
@@ -1526,13 +1370,12 @@ test('compiled RuntimeSessionManager persists structured attachments without inl
 test('compiled RuntimeSessionManager reports provider setup diagnostics', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-setup-test-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
-  const previousClaudeBin = process.env.ORRERY_CLAUDE_BIN
   process.env.ORRERY_CLAUDE_BIN = path.join(tempRoot, 'missing-claude')
 
   try {
     const runtime = new RuntimeSessionManager({ storageFile })
     const status = runtime.getProviderSetupStatus({
-      providerKind: 'legacy-claude-cli',
+      providerKind: 'claude-code',
       cwd: path.join(tempRoot, 'missing-project'),
     })
     const binary = status.checks.find((check) => check.id === 'binary')
@@ -1543,11 +1386,7 @@ test('compiled RuntimeSessionManager reports provider setup diagnostics', () => 
     assert.equal(cwd.status, 'error')
     assert.equal(auth.status, 'unknown')
   } finally {
-    if (previousClaudeBin === undefined) {
-      delete process.env.ORRERY_CLAUDE_BIN
-    } else {
-      process.env.ORRERY_CLAUDE_BIN = previousClaudeBin
-    }
+    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
@@ -1573,7 +1412,7 @@ test('compiled RuntimeSessionManager repairs restored sessions with missing work
     storageFile,
     `${JSON.stringify(
       {
-        version: 5,
+        version: 8,
         updatedAt: ts,
         nodes: [],
         edges: [],
@@ -1661,7 +1500,7 @@ test('compiled RuntimeSessionManager marks open provider interactions stale afte
     storageFile,
     `${JSON.stringify(
       {
-        version: 5,
+        version: 8,
         updatedAt: ts,
         nodes: [],
         edges: [],

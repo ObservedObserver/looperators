@@ -1,16 +1,16 @@
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import {
   buildPath,
   claudeCommand,
   cleanupMcpHandoff,
   createMcpHandoff,
+  expandHomePath,
   membraneSystemPrompt,
   membraneToolNames,
-} from '../claudeCliAdapter.js'
-import { legacyClaudeRuntimeEventsFromChunk } from './legacyClaudeRuntimeMapper.js'
+} from '../claudeRuntimeShared.js'
+import { claudeRuntimeEventsFromMessage } from './claudeRuntimeMapper.js'
 
 /**
  * @typedef {'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'} ClaudePermissionMode
@@ -26,21 +26,6 @@ function sdkMessageType(message) {
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function expandHomePath(value) {
-  if (!nonEmptyString(value)) {
-    return undefined
-  }
-
-  const trimmed = value.trim()
-  if (trimmed === '~') {
-    return os.homedir()
-  }
-  if (trimmed.startsWith('~/')) {
-    return `${os.homedir()}/${trimmed.slice(2)}`
-  }
-  return trimmed
 }
 
 function providerExtraArgs(providerInstance) {
@@ -198,8 +183,7 @@ export function automaticClaudePermissionResult(
   }
   // Membrane tools are the sanctioned control surface: the bridge token
   // already authenticates the session, and headless runs cannot answer
-  // permission prompts. This mirrors the legacy CLI adapter's
-  // --allowedTools exemption — without it, the first gate=master approval
+  // permission prompts. Without this exemption, the first gate=master approval
   // (approve_activation via the SDK provider) wedges on an unanswerable
   // canUseTool request.
   if (membraneToolNames.includes(String(toolName))) {
@@ -215,7 +199,7 @@ export function automaticClaudePermissionResult(
   return undefined
 }
 
-function sdkMessageToLegacyEvent(message) {
+function sdkMessageForRuntimeMapper(message) {
   if (message?.type === 'stream_event') {
     return {
       type: 'stream_event',
@@ -1122,15 +1106,11 @@ class ClaudeAgentSdkSessionController {
     })
     this.#emitSemanticToolEvents({ message, input, run, ts })
 
-    const legacyEvent = sdkMessageToLegacyEvent(message)
-    const events = legacyClaudeRuntimeEventsFromChunk({
+    const events = claudeRuntimeEventsFromMessage({
       sessionId: input.sessionId,
       turnId: input.turnId,
       ts,
-      chunk: {
-        stream: 'stdout',
-        event: legacyEvent,
-      },
+      message: sdkMessageForRuntimeMapper(message),
       rawSource: 'claude.sdk',
     })
 

@@ -16,7 +16,7 @@ function git(cwd, ...args) {
 }
 
 function providerInstanceId(providerKind) {
-  return providerKind === 'codex' ? 'default-codex' : providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli';
+  return providerKind === 'codex' ? 'default-codex' : providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code';
 }
 
 function target(provider, workDir, label, instruction) {

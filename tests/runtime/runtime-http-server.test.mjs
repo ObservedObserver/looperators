@@ -32,9 +32,9 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const stateResponse = await fetch(`${base}/api/runtime/state`)
     assert.equal(stateResponse.status, 200)
     const state = await stateResponse.json()
-    assert.equal(state.version, 7)
+    assert.equal(state.version, 8)
     assert.deepEqual(state.nodes, [])
-    assert.equal(state.providerInstances.length, 3)
+    assert.equal(state.providerInstances.length, 2)
 
     const providerResponse = await fetch(`${base}/api/runtime/provider-instances`, {
       method: 'POST',

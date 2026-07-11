@@ -4,21 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
+import { deterministicRuntimeSessionManager } from './support/deterministic-provider.mjs'
 
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined }
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-const prompt = readArg('-p') ?? ''
-const emit = (value) => process.stdout.write(JSON.stringify(value) + '\\n')
-const run = () => {
-  emit({ type: 'assistant', session_id: backendSessionId, message: { content: [{ type: 'text', text: 'handled: ' + prompt.slice(0, 180) }] } })
-  emit({ type: 'result', session_id: backendSessionId, result: 'done' })
-}
-if (prompt.includes('ORRERY_DELAY')) setTimeout(run, 500)
-else run()
-`
+const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -36,16 +25,11 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
 
 function harness(prefix) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
-  const fakeClaude = path.join(root, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
   const runtime = new RuntimeSessionManager({ storageFile: path.join(root, 'state.json') })
   return {
     runtime,
     cleanup() {
       runtime.killAll()
-      delete process.env.ORRERY_CLAUDE_BIN
       fs.rmSync(root, { recursive: true, force: true })
     },
   }
@@ -57,8 +41,8 @@ async function createIdleSource(runtime, prompt = 'Produce a source result.') {
     prompt,
     cwd: process.cwd(),
     workMode: 'local',
-    providerKind: 'legacy-claude-cli',
-    providerInstanceId: 'legacy-claude-cli',
+    providerKind: 'claude-code',
+    providerInstanceId: 'default-claude-sdk',
     runtimeSettings: { runtimeMode: 'approval-required' },
   })
   await waitFor('source Agent idle', () => runtime.getState().sessions[created.sessionId]?.status === 'idle')
@@ -71,8 +55,8 @@ function newTarget(position = { x: 640, y: 220 }) {
     label: 'Receiving Agent',
     instruction: 'Inspect the delivered result.',
     cwd: process.cwd(),
-    providerKind: 'legacy-claude-cli',
-    providerInstanceId: 'legacy-claude-cli',
+    providerKind: 'claude-code',
+    providerInstanceId: 'default-claude-sdk',
     runtimeSettings: { runtimeMode: 'approval-required' },
     position,
   }

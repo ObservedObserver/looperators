@@ -5,31 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { startRuntimeHttpServer } from '../../dist-electron/electron/runtimeHttpServer.js'
-
-const fakeClaudeSource = `#!/usr/bin/env node
-const args = process.argv.slice(2)
-const readArg = (name) => {
-  const index = args.indexOf(name)
-  return index >= 0 ? args[index + 1] : undefined
-}
-const backendSessionId = readArg('--resume') ?? readArg('--session-id') ?? 'fake-session'
-function emit(value) {
-  process.stdout.write(JSON.stringify(value) + '\\n')
-}
-emit({
-  type: 'assistant',
-  session_id: backendSessionId,
-  message: { content: [{ type: 'text', text: 'fake response for ' + backendSessionId }] },
-})
-emit({ type: 'result', session_id: backendSessionId, result: 'fake result for ' + backendSessionId })
-`
-
-function installFakeClaude(tempRoot) {
-  const fakeClaude = path.join(tempRoot, 'claude')
-  fs.writeFileSync(fakeClaude, fakeClaudeSource)
-  fs.chmodSync(fakeClaude, 0o755)
-  process.env.ORRERY_CLAUDE_BIN = fakeClaude
-}
+import { deterministicProviderAdapters } from './support/deterministic-provider.mjs'
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -48,10 +24,10 @@ async function waitFor(label, predicate, timeoutMs = 5000) {
 
 test('headless read endpoints expose sessions, graph, and event cursors', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-headless-endpoints-'))
-  installFakeClaude(tempRoot)
   const runtimeServer = await startRuntimeHttpServer({
     port: 0,
     storageFile: path.join(tempRoot, 'runtime-state.json'),
+    providerAdapters: deterministicProviderAdapters(),
   })
 
   try {
@@ -150,7 +126,6 @@ test('headless read endpoints expose sessions, graph, and event cursors', async 
     assert.equal(resetFetch.events.length, events.events.length)
   } finally {
     await runtimeServer.close()
-    delete process.env.ORRERY_CLAUDE_BIN
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
