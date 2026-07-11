@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  classicWorkflowPreflightKey,
   resolveGoalJudgeRuntime,
   validateGoalWorkflowStart,
   validateHandoffWorkflowStart,
@@ -65,4 +66,22 @@ test('cross-provider Goal Judge derives its kind and drops an incompatible Worke
     },
   )
   assert.equal(worker.runtimeSettings.model, 'claude-sonnet-4-6')
+})
+
+test('classic workflow preflight key ignores unrelated runtime snapshot identity', () => {
+  const selected = [{
+    role: 'Worker', cwd: '/repo', workMode: 'local', checkProject: true,
+    providerKind: 'claude-code', providerInstanceId: 'claude-code:default',
+    providerProfileFingerprint: '["claude-code:default","claude-code","/bin/claude"]',
+  }]
+  const before = classicWorkflowPreflightKey(selected)
+  const afterUnrelatedStreamUpdate = classicWorkflowPreflightKey(structuredClone(selected))
+  const afterSelectedWorkspaceChange = classicWorkflowPreflightKey([{ ...selected[0], cwd: '/other-repo' }])
+  const afterSelectedProfileRepair = classicWorkflowPreflightKey([{
+    ...selected[0],
+    providerProfileFingerprint: '["claude-code:default","claude-code","/fixed/claude"]',
+  }])
+  assert.equal(afterUnrelatedStreamUpdate, before)
+  assert.notEqual(afterSelectedWorkspaceChange, before)
+  assert.notEqual(afterSelectedProfileRepair, before)
 })

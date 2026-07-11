@@ -27,13 +27,13 @@ async function waitFor(label, predicate, timeoutMs = 10000) {
   throw new Error(`Timed out waiting for ${label}`)
 }
 
-function harness(prefix) {
+function harness(prefix, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   const binary = path.join(root, 'claude')
   fs.writeFileSync(binary, fakeClaudeSource)
   fs.chmodSync(binary, 0o755)
   process.env.ORRERY_CLAUDE_BIN = binary
-  const runtime = new RuntimeSessionManager({ storageFile: path.join(root, 'state.json') })
+  const runtime = new RuntimeSessionManager({ ...options, storageFile: path.join(root, 'state.json') })
   return { root, runtime, cleanup() { runtime.killAll(); delete process.env.ORRERY_CLAUDE_BIN; fs.rmSync(root, { recursive: true, force: true }) } }
 }
 
@@ -127,6 +127,59 @@ test('provider start failure rejects atomically and removes cold-start Handoff/G
       assert.equal(Object.keys(state.subscriptions ?? {}).length, 0, `${kind} removes authored intent`)
     } finally { cleanup() }
   }
+})
+
+test('cross-provider Judge start failure rejects Goal atomically', async () => {
+  const { root, runtime, cleanup } = harness('orrery-classic-goal-judge-failure-')
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      label: 'Broken Codex Judge',
+      binaryPath: path.join(root, 'missing-codex-binary'),
+    })
+
+    await assert.rejects(
+      runtime.startGoalWorkflow({
+        worker: fresh('Worker', 'Start.'),
+        goal: 'Done.',
+        maxLaps: 3,
+        judgeProviderInstanceId: 'default-codex',
+        judgeModel: 'gpt-5.1-codex-mini',
+      }),
+      /Judge|ENOENT|missing-codex-binary/i,
+    )
+
+    const state = runtime.getState()
+    assert.equal(Object.keys(state.sessions).length, 0, 'removes Worker and failed Judge')
+    assert.equal(Object.keys(state.subscriptions ?? {}).length, 0, 'removes both Goal relationships')
+    assert.equal(state.loops.length, 0, 'removes the failed Goal loop projection')
+  } finally { cleanup() }
+})
+
+test('concurrent Judge kill rejects Goal atomically instead of reporting ready', async () => {
+  let runtime
+  let killScheduled = false
+  const harnessResult = harness('orrery-classic-goal-judge-kill-', {
+    broadcastRuntimeEvent: (event) => {
+      if (killScheduled || !runtime || event?.type !== 'runtime.state') return
+      const judge = Object.values(event.state?.sessions ?? {}).find((session) => session.label === 'Worker · judge')
+      if (!judge) return
+      killScheduled = true
+      setImmediate(() => runtime.killSession(judge.sessionId))
+    },
+  })
+  runtime = harnessResult.runtime
+  try {
+    await assert.rejects(
+      runtime.startGoalWorkflow({ worker: fresh('Worker', 'Start.'), goal: 'Done.', maxLaps: 3 }),
+      /Judge|Goal relationships.*stopped/i,
+    )
+    const state = runtime.getState()
+    assert.equal(Object.keys(state.sessions).length, 0)
+    assert.equal(Object.keys(state.subscriptions ?? {}).length, 0)
+    assert.equal(state.loops.length, 0)
+  } finally { harnessResult.cleanup() }
 })
 
 test('provider start failure restores existing Handoff and Goal participants exactly', async () => {

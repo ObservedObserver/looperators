@@ -6407,10 +6407,20 @@ export class RuntimeSessionManager {
         await this.#cmdResumeSession({ sessionId: workerSessionId, message: input.worker.prompt }, ctx)
       }
       await this.#settleProviderStart()
-      if (this.#state.sessions[workerSessionId]?.status === 'failed') {
-        throw new Error(this.#state.sessions[workerSessionId].error ?? 'The Worker provider could not start.')
+      const workerSession = this.#state.sessions[workerSessionId]
+      if (!workerSession || workerSession.status === 'failed' || workerSession.status === 'killed') {
+        throw new Error(workerSession?.error ?? `The Worker provider could not start (${workerSession?.status ?? 'missing'}).`)
+      }
+      const judgeSession = this.#state.sessions[goalResult.judgeSessionId]
+      if (!judgeSession || judgeSession.status === 'failed' || judgeSession.status === 'killed') {
+        throw new Error(
+          `The Judge provider could not start: ${judgeSession?.error ?? judgeSession?.status ?? 'missing session'}`,
+        )
       }
       const subscriptionIds = [goalResult.checkSubscription.id, goalResult.retrySubscription.id]
+      if (subscriptionIds.some((id) => this.#state.subscriptions[id]?.state !== 'active')) {
+        throw new Error('The Goal relationships stopped while the Worker and Judge were starting.')
+      }
       return {
         workerSessionId,
         judgeSessionId: goalResult.judgeSessionId,
@@ -6962,6 +6972,12 @@ export class RuntimeSessionManager {
   #discardWorkflowSession(sessionId: string) {
     const run = this.#runs.get(sessionId)
     if (run) {
+      // Compensation removes the live Session immediately, before an
+      // asynchronous provider close/error can arrive. Detach the run from
+      // killAll and make its eventual callbacks no-ops against that removed
+      // Session.
+      this.#workflowCompensatedRuns.add(sessionId)
+      this.#runs.delete(sessionId)
       try {
         run.kill()
       } catch {

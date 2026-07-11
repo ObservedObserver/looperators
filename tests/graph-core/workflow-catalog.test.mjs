@@ -68,3 +68,15 @@ test('legacy shortcuts do not compete with the three golden workflow composers',
   assert.match(advanced, /Governed loop policy/);
   assert.doesNotMatch(advanced, />Review until clean</);
 });
+
+test('Handoff and Goal share the provider/workspace preflight gate', () => {
+  const classicComposer = fs.readFileSync(new URL('../../src/components/classic-workflow-composer.tsx', import.meta.url), 'utf8');
+  assert.match(classicComposer, /runtimeApi\s*\.getProviderSetupStatus/);
+  assert.match(classicComposer, /runtimeApi\s*\.getProjectContext/);
+  assert.match(classicComposer, /\[preflightKey, runtimeApi\]/);
+  assert.doesNotMatch(classicComposer, /\[preflightKey, preflightTargets, runtimeApi\]/);
+  assert.match(classicComposer, /role: 'Judge'/);
+  assert.match(classicComposer, /setupMessages\.length > 0 \|\| preflightPending \|\| isStarting/);
+  assert.match(classicComposer, /Open Provider settings or choose a valid workspace, then retry/);
+  assert.match(classicComposer, /Resolve the reported provider, workspace, or Agent state, then retry Run workflow/);
+});

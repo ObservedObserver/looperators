@@ -36,6 +36,23 @@ export type GoalWorkflowStartInput = {
 
 export type ClassicWorkflowValidationIssue = { field: string; message: string }
 
+export type ClassicWorkflowPreflightTarget = {
+  role: string
+  cwd?: string
+  workMode?: 'local' | 'worktree'
+  checkProject: boolean
+  providerKind: WorkflowNewAgentEndpoint['providerKind']
+  providerInstanceId: string
+  providerProfileFingerprint: string
+}
+
+// The serialized value is both the request payload and the React effect key.
+// Equal selected inputs therefore stay equal even when unrelated runtime
+// snapshots replace their surrounding object/array identities.
+export function classicWorkflowPreflightKey(targets: ClassicWorkflowPreflightTarget[]) {
+  return JSON.stringify(targets)
+}
+
 export function resolveGoalJudgeRuntime(
   worker: { providerKind: WorkflowNewAgentEndpoint['providerKind']; providerInstanceId: string; runtimeSettings?: ReviewRuntimeSettings },
   providerInstances: Array<{ providerInstanceId: string; kind: WorkflowNewAgentEndpoint['providerKind'] }>,
