@@ -211,7 +211,7 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <TermChip tone="lime">Review until clean</TermChip>
+          <TermChip tone="lime">Governed loop policy</TermChip>
           <TermChip>Freeze on stop</TermChip>
           <TermChip>Max {currentLoopPolicy().maxIterations}</TermChip>
         </div>
@@ -309,7 +309,7 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
         <div className="grid grid-cols-2 gap-2">
           <Button className={termActionBtnCls} disabled={!isRuntimeAvailable || isStartingLoop || !canStartLoop} onClick={startMasterLoop}>
             <CirclePlay className="size-4 shrink-0" />
-            <span className="truncate">{isStartingLoop ? 'Starting...' : 'Run loop'}</span>
+            <span className="truncate">{isStartingLoop ? 'Starting...' : 'Run governed loop'}</span>
           </Button>
           <Button className={termActionBtnCls} variant="outline" disabled={!isRuntimeAvailable || isStoppingLoop || !canStopLoop} onClick={stopMasterLoop}>
             <Square className="size-4 shrink-0" />

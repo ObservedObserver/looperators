@@ -67,6 +67,12 @@ app.whenReady().then(() => {
   ipcMain.handle('orrery:start-draft-workflow', (_event, input) =>
     runtime.startDraftWorkflow(input),
   )
+  ipcMain.handle('orrery:start-handoff-workflow', (_event, input) =>
+    runtime.startHandoffWorkflow(input),
+  )
+  ipcMain.handle('orrery:start-goal-workflow', (_event, input) =>
+    runtime.startGoalWorkflow(input),
+  )
   ipcMain.handle('orrery:connect-agents', (_event, input) =>
     runtime.connectAgents(input),
   )

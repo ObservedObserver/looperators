@@ -6,6 +6,7 @@ import type { GraphState, TemplateDescriptor, TemplateSlot } from '@/shared/grap
 import type { RuntimeApi } from '@/runtime-client';
 import { partitionWorkflowIds, primaryWorkflowCatalog, type WorkflowEntry } from '@shared/workflow-catalog';
 import { ReviewWorkflowComposer } from '@/components/review-workflow-composer';
+import { ClassicWorkflowComposer } from '@/components/classic-workflow-composer';
 
 // Product-facing New Workflow entry. Templates remain the compile mechanism,
 // but the first-run UI is organized around outcomes rather than operators.
@@ -27,7 +28,7 @@ export function TemplateLibraryPanel({
   onError: (message: string) => void;
   autoFocusClose?: boolean;
   defaultCwd: string;
-  onWorkflowStarted: (result: { coderSessionId: string; loopId?: string }) => void;
+  onWorkflowStarted: (result: { coderSessionId: string; loopId?: string; notice?: string }) => void;
   requestCloseRef?: MutableRefObject<(() => void) | undefined>;
 }) {
   const [templates, setTemplates] = useState<TemplateDescriptor[]>([]);
@@ -36,21 +37,35 @@ export function TemplateLibraryPanel({
   const [scheduleModes, setScheduleModes] = useState<Record<string, 'everySeconds' | 'dailyAt'>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string>();
-  // Save-as-template: a subscription multi-select plus a name.
+  // Saved workflow: users choose one visible workflow unit; the runtime still
+  // parameterizes its ordinary Relationships as the reusable implementation.
   const [saveName, setSaveName] = useState('');
-  const [saveSelection, setSaveSelection] = useState<Record<string, boolean>>({});
-  const [reviewDraftDirty, setReviewDraftDirty] = useState(false);
+  const [saveWorkflowId, setSaveWorkflowId] = useState('');
+  const [composerDirty, setComposerDirty] = useState(false);
   const [discardAction, setDiscardAction] = useState<{ type: 'close' } | { type: 'select'; nextId?: string }>();
 
   const sessions = Object.values(runtimeState.sessions).filter((session) => session.status !== 'killed');
   const sources = Object.values(runtimeState.sources ?? {}).filter((source) => source.state === 'active');
   const subscriptions = Object.values(runtimeState.subscriptions ?? {});
+  const loopSubscriptionIds = new Set((runtimeState.loops ?? []).flatMap((loop) => loop.subscriptionIds));
+  const saveOptions = [
+    ...(runtimeState.loops ?? []).map((loop) => ({
+      id: `loop:${loop.loopId}`,
+      label: `${loop.kind === 'review' ? 'Review' : loop.kind === 'goal' ? 'Goal' : 'Loop'} workflow · ${loop.status}`,
+      subscriptionIds: loop.subscriptionIds,
+    })),
+    ...subscriptions
+      .filter((subscription) => !loopSubscriptionIds.has(subscription.id))
+      .map((subscription) => ({ id: `relationship:${subscription.id}`, label: subscription.label ?? 'Saved Relationship', subscriptionIds: [subscription.id] })),
+  ];
   const selected = templates.find((template) => template.id === selectedId);
   const catalogById = new Map<string, WorkflowEntry>(primaryWorkflowCatalog.map((entry) => [entry.id, entry]));
   const partitioned = partitionWorkflowIds(templates.map((template) => template.id));
   const templateById = new Map(templates.map((template) => [template.id, template]));
   const primaryTemplates = partitioned.primary.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
   const moreTemplates = partitioned.more.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
+  const selectedUsesComposer =
+    selectedId === 'review-until-clean' || selectedId === 'handoff' || selectedId === 'goal-loop' || Boolean(selected?.workflowSpec);
 
   const loadTemplates = async () => {
     if (!runtimeApi) {
@@ -78,7 +93,7 @@ export function TemplateLibraryPanel({
 
   const pick = (templateId: string) => {
     const nextId = selectedId === templateId ? undefined : templateId;
-    if (selectedId === 'review-until-clean' && reviewDraftDirty) {
+    if (selectedUsesComposer && composerDirty) {
       setDiscardAction({ type: 'select', nextId });
       return;
     }
@@ -86,12 +101,12 @@ export function TemplateLibraryPanel({
   };
 
   const requestClose = useCallback(() => {
-    if (selectedId === 'review-until-clean' && reviewDraftDirty) {
+    if (selectedUsesComposer && composerDirty) {
       setDiscardAction({ type: 'close' });
       return;
     }
     onClose();
-  }, [onClose, reviewDraftDirty, selectedId]);
+  }, [composerDirty, onClose, selectedUsesComposer]);
 
   useEffect(() => {
     if (!requestCloseRef) return;
@@ -169,14 +184,14 @@ export function TemplateLibraryPanel({
     if (!runtimeApi || isSubmitting) {
       return;
     }
-    const subscriptionIds = Object.keys(saveSelection).filter((id) => saveSelection[id]);
+    const subscriptionIds = saveOptions.find((option) => option.id === saveWorkflowId)?.subscriptionIds ?? [];
     setIsSubmitting(true);
     try {
       const result = await runtimeApi.saveTemplate({ name: saveName.trim(), subscriptionIds });
       onStateChange(result.state);
       setSaveName('');
-      setSaveSelection({});
-      setFeedback(`saved as template: ${result.template.name}`);
+      setSaveWorkflowId('');
+      setFeedback(`Saved workflow: ${result.template.name}`);
       await loadTemplates();
     } catch (error: unknown) {
       onError(error instanceof Error ? error.message : String(error));
@@ -286,22 +301,55 @@ export function TemplateLibraryPanel({
             <div className="mt-1.5 text-[10.5px] leading-4 text-muted-foreground">
               <p>{template.tagline}</p>
               <p className="text-term-faint">Result: {template.handsOff}</p>
+              {template.savedFields?.instructions[0] ? <p className="line-clamp-2 text-term-faint">Instruction: {template.savedFields.instructions[0]}</p> : null}
             </div>
           )}
         </button>
 
-        {isSelected && template.id === 'review-until-clean' ? (
+        {isSelected && (template.id === 'review-until-clean' || template.workflowSpec?.kind === 'review-until-clean') ? (
           <ReviewWorkflowComposer
+            key={template.id}
+            runtimeApi={runtimeApi}
+            runtimeState={runtimeState}
+            defaultCwd={defaultCwd}
+            initialSpec={template.workflowSpec}
+            onStateChange={onStateChange}
+            onError={onError}
+            onDirtyChange={setComposerDirty}
+            onStarted={(result) => {
+              setComposerDirty(false);
+              onWorkflowStarted(result);
+              onClose();
+            }}
+            onSaved={async () => {
+              setFeedback('Workflow saved. Reopen it from this catalog with all user fields restored.');
+              await loadTemplates();
+            }}
+          />
+        ) : isSelected &&
+          (template.id === 'handoff' || template.id === 'goal-loop' || template.workflowSpec?.kind === 'handoff' || template.workflowSpec?.kind === 'goal-loop') ? (
+          <ClassicWorkflowComposer
+            key={template.id}
+            kind={
+              template.workflowSpec?.kind === 'handoff' || template.workflowSpec?.kind === 'goal-loop'
+                ? template.workflowSpec.kind
+                : (template.id as 'handoff' | 'goal-loop')
+            }
+            initialSpec={template.workflowSpec}
             runtimeApi={runtimeApi}
             runtimeState={runtimeState}
             defaultCwd={defaultCwd}
             onStateChange={onStateChange}
             onError={onError}
-            onDirtyChange={setReviewDraftDirty}
+            onDirtyChange={setComposerDirty}
             onStarted={(result) => {
-              setReviewDraftDirty(false);
-              onWorkflowStarted(result);
+              setComposerDirty(false);
+              onWorkflowStarted({ coderSessionId: result.primarySessionId, loopId: result.loopId, notice: result.notice });
               onClose();
+            }}
+            onSaved={async () => {
+              setFeedback('Workflow saved. Reopen it from this catalog with all user fields restored.');
+              await loadTemplates();
             }}
           />
         ) : isSelected ? (
@@ -316,6 +364,11 @@ export function TemplateLibraryPanel({
                 {slot.help ? <span className="block text-[10px] leading-3.5 text-term-faint">{slot.help}</span> : null}
               </label>
             ))}
+            <section className="rounded-xl border border-sky-500/25 bg-sky-500/5 p-2.5 text-[10.5px] leading-4">
+              <p className="font-semibold uppercase tracking-[0.1em]">Preview</p>
+              <p className="mt-1 text-muted-foreground">{template.handsOff}</p>
+              <p className="mt-1 text-term-faint">Nothing changes on the graph until you press Run workflow.</p>
+            </section>
             <Button
               className="h-8 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
               size="sm"
@@ -323,7 +376,7 @@ export function TemplateLibraryPanel({
               onClick={() => void apply()}
             >
               <Play className="size-3" />
-              Create workflow
+              Run workflow
             </Button>
           </div>
         ) : null}
@@ -349,7 +402,7 @@ export function TemplateLibraryPanel({
     <aside
       className={cn(
         'flex max-w-full shrink-0 flex-col border-l border-border bg-background font-mono',
-        selectedId === 'review-until-clean' ? 'w-[440px]' : 'w-[360px]',
+        selectedUsesComposer ? 'w-[440px]' : 'w-[360px]',
       )}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
@@ -370,7 +423,7 @@ export function TemplateLibraryPanel({
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
         {discardAction ? (
           <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3 text-[10.5px] leading-4">
-            <p className="font-medium text-foreground">Discard this Review workflow draft?</p>
+            <p className="font-medium text-foreground">Discard this workflow draft?</p>
             <p className="mt-1 text-muted-foreground">Nothing has run or been added to the graph yet.</p>
             <div className="mt-2 flex gap-2">
               <Button size="sm" variant="outline" className="h-7 flex-1 text-[10px]" onClick={() => setDiscardAction(undefined)}>
@@ -380,7 +433,7 @@ export function TemplateLibraryPanel({
                 size="sm"
                 className="h-7 flex-1 text-[10px]"
                 onClick={() => {
-                  setReviewDraftDirty(false);
+                  setComposerDirty(false);
                   const action = discardAction;
                   setDiscardAction(undefined);
                   if (action.type === 'close') {
@@ -410,42 +463,28 @@ export function TemplateLibraryPanel({
           <summary className="cursor-pointer text-[10.5px] uppercase tracking-[0.1em] text-muted-foreground">More workflows · Advanced</summary>
           <ul className="mt-2 space-y-2">{moreTemplates.map((template) => templateCard(template))}</ul>
 
-          {subscriptions.length > 0 ? (
+          {saveOptions.length > 0 ? (
             <div className="mt-3 border-t border-border pt-3">
               <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
                 <Save className="size-3.5" />
-                Save relationships as template
+                Save this workflow
               </div>
               <p className="mt-1 text-[10px] leading-3.5 text-term-faint">
-                Advanced: select existing automated relationships and turn their Agent endpoints into reusable blanks.
+                Advanced: save this running workflow's Relationships so you can reopen it with new Agents later.
               </p>
-              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
-                {subscriptions.map((subscription) => (
-                  <li key={subscription.id}>
-                    <label className="flex items-center gap-2 text-[10.5px]">
-                      <input
-                        type="checkbox"
-                        className="accent-lime-600"
-                        checked={saveSelection[subscription.id] ?? false}
-                        onChange={(event) => setSaveSelection((selection) => ({ ...selection, [subscription.id]: event.target.checked }))}
-                      />
-                      <span className="truncate">
-                        {subscription.label ?? subscription.id}
-                        {subscription.state === 'stopped' ? ' · stopped' : ''}
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+              <select className={cn(slotInputCls, 'mt-2')} aria-label="Workflow to save" value={saveWorkflowId} onChange={(event) => setSaveWorkflowId(event.target.value)}>
+                <option value="">Choose the workflow on the graph…</option>
+                {saveOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+              </select>
               <input className={cn(slotInputCls, 'mt-2')} placeholder="template name" value={saveName} onChange={(event) => setSaveName(event.target.value)} />
               <Button
                 className="mt-2 h-7 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
                 size="sm"
                 variant="outline"
-                disabled={!runtimeApi || isSubmitting || saveName.trim().length === 0 || !Object.values(saveSelection).some(Boolean)}
+                disabled={!runtimeApi || isSubmitting || saveName.trim().length === 0 || !saveWorkflowId}
                 onClick={() => void saveTemplate()}
               >
-                Save template
+                Save workflow
               </Button>
             </div>
           ) : null}

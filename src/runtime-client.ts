@@ -45,6 +45,10 @@ import type {
   StartReviewWorkflowResult,
   StartDraftWorkflowInput,
   StartDraftWorkflowResult,
+  StartHandoffWorkflowInput,
+  StartHandoffWorkflowResult,
+  StartGoalWorkflowInput,
+  StartGoalWorkflowResult,
   ConnectAgentsInput,
   ConnectAgentsResult,
   StopMasterLoopInput,
@@ -83,6 +87,8 @@ export type RuntimeApi = {
   createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
   startReviewWorkflow: (input: StartReviewWorkflowInput) => Promise<StartReviewWorkflowResult>;
   startDraftWorkflow: (input: StartDraftWorkflowInput) => Promise<StartDraftWorkflowResult>;
+  startHandoffWorkflow: (input: StartHandoffWorkflowInput) => Promise<StartHandoffWorkflowResult>;
+  startGoalWorkflow: (input: StartGoalWorkflowInput) => Promise<StartGoalWorkflowResult>;
   connectAgents: (input: ConnectAgentsInput) => Promise<ConnectAgentsResult>;
   registerExternalSource: (input: RegisterExternalSourceInput) => Promise<RegisterExternalSourceResult>;
   removeExternalSource: (input: { sourceId: string; reason?: string }) => Promise<{ ok: boolean }>;
@@ -430,6 +436,14 @@ class HttpRuntimeApi implements RuntimeApi {
 
   startDraftWorkflow(input: StartDraftWorkflowInput) {
     return this.#post<StartDraftWorkflowResult>('draft-workflows', input);
+  }
+
+  startHandoffWorkflow(input: StartHandoffWorkflowInput) {
+    return this.#post<StartHandoffWorkflowResult>('handoff-workflows', input);
+  }
+
+  startGoalWorkflow(input: StartGoalWorkflowInput) {
+    return this.#post<StartGoalWorkflowResult>('goal-workflows/start', input);
   }
 
   connectAgents(input: ConnectAgentsInput) {

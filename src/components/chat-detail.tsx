@@ -5,7 +5,6 @@ import { cn } from '@/lib/utils';
 import { statusLabels, statusDotClassNames, sessionProviderLabel, sessionChatId, sessionDisplayLabel } from '@/lib/session-display';
 import { providerOption, runtimeConfigSummary } from '@/lib/provider-catalog';
 import { OpenWorkspaceSplitButton, NewChatSetupBar } from '@/components/new-chat-setup';
-import { GoalLoopButton } from '@/components/goal-loop-button';
 import { compactPath, compactId } from '@/lib/format';
 import { RecoveryNotice } from '@/components/recovery';
 import { SessionTerminalPanel } from '@/components/session-terminal-panel';
@@ -72,9 +71,6 @@ export function ChatDetail({
     runtimeStatusText,
     runtimeUnavailableText,
     runtimeError,
-    runtimeState,
-    setRuntimeState,
-    setRuntimeError,
     selectedSession,
     selectedSessionProjection,
     openRuntimeRequests,
@@ -289,15 +285,6 @@ export function ChatDetail({
                   </TooltipTrigger>
                   <TooltipContent>Create one Agent from this Chat. Use New Workflow for ongoing automation.</TooltipContent>
                 </Tooltip>
-              ) : null}
-              {selectedSession ? (
-                <GoalLoopButton
-                  sessionId={selectedSession.sessionId}
-                  subscriptions={runtimeState.subscriptions}
-                  runtimeApi={runtimeApi}
-                  onStateChange={setRuntimeState}
-                  onError={setRuntimeError}
-                />
               ) : null}
               <Tooltip>
                 <TooltipTrigger asChild>

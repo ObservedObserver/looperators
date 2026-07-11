@@ -235,6 +235,21 @@ export class OrreryClient {
     })
   }
 
+  async startHandoffWorkflow(input = {}) {
+    return this.#request('POST', '/api/runtime/handoff-workflows', {
+      ...input,
+      source: input.source?.kind === 'new' ? await this.#withModelPreset(input.source) : input.source,
+      target: input.target?.kind === 'new' ? await this.#withModelPreset(input.target) : input.target,
+    })
+  }
+
+  async startGoalWorkflow(input = {}) {
+    return this.#request('POST', '/api/runtime/goal-workflows/start', {
+      ...input,
+      worker: input.worker?.kind === 'new' ? await this.#withModelPreset(input.worker) : input.worker,
+    })
+  }
+
   async connectAgents(input = {}) {
     return this.#request('POST', '/api/runtime/agent-connections', {
       ...input,

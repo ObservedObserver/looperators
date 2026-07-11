@@ -34,6 +34,11 @@ import {
   validateAgentConnection,
 } from '../../shared/agent-connection.js'
 import {
+  resolveGoalJudgeRuntime,
+  validateGoalWorkflowStart,
+  validateHandoffWorkflowStart,
+} from '../../shared/classic-workflow.js'
+import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
@@ -5792,6 +5797,33 @@ export class RuntimeSessionManager {
   // state, and judge creation awaits — two overlapping calls could both
   // pass the scan and leave two rings on one worker (TOCTOU).
   #goalLoopInFlight = new Set<string>()
+  #classicWorkflowInFlight = new Set<string>()
+  #workflowCompensatedRuns = new Set<string>()
+
+  #captureWorkflowSession(sessionId: string) {
+    return {
+      session: clone(this.#state.sessions[sessionId]),
+      nodeStatus: this.#state.nodes.find((node) => node.sessionId === sessionId)?.status,
+      channel: this.#channelStore.checkpoint(sessionId),
+    }
+  }
+
+  #restoreWorkflowSession(sessionId: string, checkpoint) {
+    const run = this.#runs.get(sessionId)
+    if (run) {
+      this.#workflowCompensatedRuns.add(sessionId)
+      try {
+        run.kill()
+      } catch {
+        // The failed provider may already be closing.
+      }
+    }
+    this.#runContext.delete(sessionId)
+    this.#state.sessions[sessionId] = checkpoint.session
+    const node = this.#state.nodes.find((candidate) => candidate.sessionId === sessionId)
+    if (node && checkpoint.nodeStatus) node.status = checkpoint.nodeStatus
+    this.#channelStore.restore(sessionId, checkpoint.channel)
+  }
 
   // A COMPILED goal ring, not just an id-prefix match: author_subscription
   // accepts user-chosen ids, so the duplicate guard and the stop pairing
@@ -6150,6 +6182,7 @@ export class RuntimeSessionManager {
             ctx,
           )
         }
+        await this.#settleProviderStart()
         if (this.#state.sessions[sessionId]?.status === 'failed') {
           throw new Error(
             this.#state.sessions[sessionId].error ??
@@ -6188,6 +6221,218 @@ export class RuntimeSessionManager {
         state: this.getState(),
       })
       throw error
+    }
+  }
+
+  async startHandoffWorkflow(input: JsonRecord = {}) {
+    const sessions = Object.fromEntries(
+      (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
+        session.sessionId,
+        {
+          sessionId: session.sessionId,
+          cwd: session.cwd,
+          status: session.status,
+          frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
+        },
+      ]),
+    )
+    const validation = validateHandoffWorkflowStart(input as any, {
+      sessions,
+      providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
+    })
+    if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+
+    const ctx = this.#humanCtx()
+    const createdSessionIds: string[] = []
+    const subscriptionIds: string[] = []
+    const deliveredTo: string[] = []
+    const preparedRuns = new Map()
+    const lockedSessionIds = [input.source, input.target]
+      .filter((endpoint) => endpoint?.kind === 'existing')
+      .map((endpoint) => endpoint.sessionId)
+    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
+      throw new Error('One of these Agents is already being changed by another workflow; wait for it to finish.')
+    }
+    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
+    const existingCheckpoints = new Map(
+      lockedSessionIds.map((sessionId) => [sessionId, this.#captureWorkflowSession(sessionId)]),
+    )
+    const endpointSession = async (endpoint, role) => {
+      if (endpoint.kind === 'existing') {
+        this.#assertActivatable(endpoint.sessionId, ctx)
+        return endpoint.sessionId
+      }
+      const created = await this.#cmdCreateSession(
+        {
+          prompt: endpoint.prompt,
+          cwd: endpoint.cwd,
+          workMode: endpoint.workMode,
+          branch: endpoint.branch,
+          label: endpoint.label || role,
+          providerKind: endpoint.providerKind,
+          providerInstanceId: endpoint.providerInstanceId,
+          runtimeSettings: endpoint.runtimeSettings,
+        },
+        ctx,
+        { deferStart: true },
+      )
+      createdSessionIds.push(created.sessionId)
+      preparedRuns.set(created.sessionId, created.preparedRun)
+      return created.sessionId
+    }
+
+    try {
+      const sourceSessionId = await endpointSession(input.source, 'Source')
+      const targetSessionId = await endpointSession(input.target, 'Receiver')
+      const note = optionalTrimmedString(input.note)
+      if (input.source.kind === 'new') {
+        const subscriptionId = `handoff-once-${randomUUID().slice(0, 8)}`
+        subscriptionIds.push(subscriptionId)
+        this.#cmdAuthorSubscription(
+          {
+            id: subscriptionId,
+            label: 'handoff once',
+            sourceSessionId,
+            on: { on: 'finished' },
+            targetSessionId,
+            action: { kind: 'deliver+activate', topic: 'handoff', note },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            stop: { maxFirings: 1 },
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        delete this.#state.sessions[sourceSessionId].prepared
+        await this.#startRun(sourceSessionId, {
+          ...preparedRuns.get(sourceSessionId),
+          runKind: 'create',
+        })
+        await this.#settleProviderStart()
+        if (this.#state.sessions[sourceSessionId]?.status === 'failed') {
+          throw new Error(this.#state.sessions[sourceSessionId].error ?? 'The Source provider could not start.')
+        }
+      } else {
+        this.#assertActivatable(targetSessionId, ctx)
+        this.#cmdDeliver({ sessionId: targetSessionId, source: sourceSessionId, topic: 'handoff' }, ctx)
+        await this.#cmdActivate({ sessionId: targetSessionId, note, edgeSourceSessionId: sourceSessionId }, ctx)
+        await this.#settleProviderStart()
+        if (this.#state.sessions[targetSessionId]?.status === 'failed') {
+          throw new Error(this.#state.sessions[targetSessionId].error ?? 'The Receiver provider could not start.')
+        }
+        deliveredTo.push(targetSessionId)
+      }
+      return { sourceSessionId, targetSessionId, createdSessionIds, subscriptionIds, deliveredTo, state: this.getState() }
+    } catch (error) {
+      for (const id of subscriptionIds) this.#discardWorkflowSubscription(id)
+      for (const id of [...createdSessionIds].reverse()) this.#discardWorkflowSession(id)
+      for (const [sessionId, checkpoint] of existingCheckpoints) {
+        this.#restoreWorkflowSession(sessionId, checkpoint)
+      }
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      throw error
+    } finally {
+      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
+    }
+  }
+
+  async startGoalWorkflow(input: JsonRecord = {}) {
+    const sessions = Object.fromEntries(
+      (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
+        session.sessionId,
+        {
+          sessionId: session.sessionId,
+          cwd: session.cwd,
+          status: session.status,
+          frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
+        },
+      ]),
+    )
+    const validation = validateGoalWorkflowStart(input as any, {
+      sessions,
+      providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
+    })
+    if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+
+    const ctx = this.#humanCtx()
+    const createdSessionIds: string[] = []
+    let workerSessionId
+    let preparedRun
+    let goalResult
+    const lockedSessionIds = input.worker?.kind === 'existing' ? [input.worker.sessionId] : []
+    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
+      throw new Error('This Worker is already being changed by another workflow; wait for it to finish.')
+    }
+    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
+    const existingCheckpoint = input.worker.kind === 'existing'
+      ? this.#captureWorkflowSession(input.worker.sessionId)
+      : undefined
+    try {
+      if (input.worker.kind === 'new') {
+        const created = await this.#cmdCreateSession(
+          {
+            prompt: input.worker.prompt,
+            cwd: input.worker.cwd,
+            workMode: input.worker.workMode,
+            branch: input.worker.branch,
+            label: input.worker.label || 'Worker',
+            providerKind: input.worker.providerKind,
+            providerInstanceId: input.worker.providerInstanceId,
+            runtimeSettings: input.worker.runtimeSettings,
+          },
+          ctx,
+          { deferStart: true },
+        )
+        workerSessionId = created.sessionId
+        preparedRun = created.preparedRun
+        createdSessionIds.push(workerSessionId)
+      } else {
+        workerSessionId = input.worker.sessionId
+        this.#assertActivatable(workerSessionId, ctx)
+      }
+      goalResult = await this.createGoalLoop({
+        workerSessionId,
+        goal: input.goal,
+        maxLaps: input.maxLaps,
+        judgeProviderInstanceId: input.judgeProviderInstanceId,
+        judgeModel: input.judgeModel,
+        preset: 'workflow:goal',
+      })
+      createdSessionIds.push(goalResult.judgeSessionId)
+      if (input.worker.kind === 'new') {
+        delete this.#state.sessions[workerSessionId].prepared
+        await this.#startRun(workerSessionId, { ...preparedRun, runKind: 'create' })
+      } else {
+        await this.#cmdResumeSession({ sessionId: workerSessionId, message: input.worker.prompt }, ctx)
+      }
+      await this.#settleProviderStart()
+      if (this.#state.sessions[workerSessionId]?.status === 'failed') {
+        throw new Error(this.#state.sessions[workerSessionId].error ?? 'The Worker provider could not start.')
+      }
+      const subscriptionIds = [goalResult.checkSubscription.id, goalResult.retrySubscription.id]
+      return {
+        workerSessionId,
+        judgeSessionId: goalResult.judgeSessionId,
+        createdSessionIds,
+        subscriptionIds,
+        loop: loopsOf(this.#kernelView()).find((loop) => loop.subscriptionIds.includes(goalResult.checkSubscription.id)),
+        state: this.getState(),
+      }
+    } catch (error) {
+      if (goalResult) {
+        this.#discardWorkflowSubscription(goalResult.checkSubscription.id)
+        this.#discardWorkflowSubscription(goalResult.retrySubscription.id)
+      }
+      for (const id of [...createdSessionIds].reverse()) this.#discardWorkflowSession(id)
+      if (input.worker.kind === 'existing' && existingCheckpoint) {
+        this.#restoreWorkflowSession(input.worker.sessionId, existingCheckpoint)
+      }
+      this.#touch()
+      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      throw error
+    } finally {
+      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
     }
   }
 
@@ -6499,6 +6744,13 @@ export class RuntimeSessionManager {
     let reviewerSessionId: string
     let preparedCoderRun
     let existingCoderCheckpoint
+    const lockedSessionIds = [coderInput, reviewerInput]
+      .filter((endpoint) => endpoint.kind === 'existing')
+      .map((endpoint) => endpoint.sessionId)
+    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
+      throw new Error('One of these Agents is already being changed by another workflow; wait for it to finish.')
+    }
+    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
 
     try {
       if (coderInput.kind === 'new') {
@@ -6522,12 +6774,7 @@ export class RuntimeSessionManager {
       } else {
         coderSessionId = optionalTrimmedString(coderInput.sessionId)
         this.#assertActivatable(coderSessionId, ctx)
-        existingCoderCheckpoint = {
-          session: clone(this.#state.sessions[coderSessionId]),
-          nodeStatus: this.#state.nodes.find(
-            (node) => node.sessionId === coderSessionId,
-          )?.status,
-        }
+        existingCoderCheckpoint = this.#captureWorkflowSession(coderSessionId)
       }
 
       const coder = this.#state.sessions[coderSessionId]
@@ -6641,6 +6888,7 @@ export class RuntimeSessionManager {
           ctx,
         )
       }
+      await this.#settleProviderStart()
       if (this.#state.sessions[coderSessionId]?.status === 'failed') {
         throw new Error(
           this.#state.sessions[coderSessionId].error ??
@@ -6675,15 +6923,9 @@ export class RuntimeSessionManager {
         coderInput.kind === 'existing' &&
         coderSessionId &&
         existingCoderCheckpoint &&
-        !this.#runs.has(coderSessionId)
+        existingCoderCheckpoint
       ) {
-        this.#state.sessions[coderSessionId] = existingCoderCheckpoint.session
-        const node = this.#state.nodes.find(
-          (candidate) => candidate.sessionId === coderSessionId,
-        )
-        if (node && existingCoderCheckpoint.nodeStatus) {
-          node.status = existingCoderCheckpoint.nodeStatus
-        }
+        this.#restoreWorkflowSession(coderSessionId, existingCoderCheckpoint)
       }
       this.#touch()
       this.#broadcast({
@@ -6691,6 +6933,8 @@ export class RuntimeSessionManager {
         state: this.getState(),
       })
       throw error
+    } finally {
+      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
     }
   }
 
@@ -6704,6 +6948,15 @@ export class RuntimeSessionManager {
       }
     }
     delete this.#state.subscriptions?.[subscriptionId]
+  }
+
+  async #settleProviderStart() {
+    // Provider process failures (for example ENOENT or an immediate CLI
+    // bootstrap error) are delivered asynchronously after startTurn returns.
+    // Atomic workflow APIs cross two event-loop checks before reporting
+    // success so those startup failures enter the same compensation path.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await new Promise<void>((resolve) => setImmediate(resolve))
   }
 
   #discardWorkflowSession(sessionId: string) {
@@ -6821,22 +7074,28 @@ export class RuntimeSessionManager {
 
     try {
       const workerLabel = worker.label ?? worker.sessionId
+      // Cross-provider Judges keep the Worker's trust/reasoning policy, but
+      // provider-specific model ids are cleared by the shared resolver.
+      const judgeRuntime = resolveGoalJudgeRuntime(
+        worker,
+        this.#state.providerInstances,
+        optionalTrimmedString(input.judgeProviderInstanceId),
+        optionalTrimmedString(input.judgeModel),
+      )
       const created = await this.#cmdCreateSession(
         {
           prompt: this.#goalJudgeBootstrapPrompt(workerLabel),
           cwd: worker.cwd,
           label: `${workerLabel} · judge`,
-          providerKind: worker.providerKind,
-          providerInstanceId:
-            optionalTrimmedString(input.judgeProviderInstanceId) ??
-            worker.providerInstanceId,
+          providerKind: judgeRuntime.providerKind,
+          providerInstanceId: judgeRuntime.providerInstanceId,
           // The judge inherits the worker's runtime settings: its checks run
           // in the same workspace under the same declared trust level (a
           // read-only judge could not even run the test suite the goal
           // demands), and the same model unless a provider override says so.
-          ...(isObject(worker.runtimeSettings)
+          ...(judgeRuntime.runtimeSettings
             ? {
-                runtimeSettings: clone(worker.runtimeSettings),
+                runtimeSettings: judgeRuntime.runtimeSettings,
               }
             : {}),
           sourceSessionId: worker.sessionId,
@@ -7234,6 +7493,40 @@ export class RuntimeSessionManager {
     if (!name) {
       throw new Error('saveTemplate requires a name')
     }
+    const workflowSpec = isObject(input.workflowSpec) ? input.workflowSpec : undefined
+    if (workflowSpec) {
+      const workflowValidationContext = {
+        sessions: Object.fromEntries(
+          (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
+            session.sessionId,
+            {
+              sessionId: session.sessionId,
+              cwd: session.cwd,
+              status: session.status,
+              frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
+            },
+          ]),
+        ),
+        providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
+      }
+      const validation =
+        workflowSpec.version !== 1
+          ? { ok: false, issues: [{ message: 'Saved workflow version is unsupported.' }] }
+          : workflowSpec.kind === 'handoff'
+            ? validateHandoffWorkflowStart(workflowSpec.input, {
+                ...workflowValidationContext,
+              })
+            : workflowSpec.kind === 'goal-loop'
+              ? validateGoalWorkflowStart(workflowSpec.input, {
+                  ...workflowValidationContext,
+                })
+              : workflowSpec.kind === 'review-until-clean'
+                ? validateReviewWorkflowStart(workflowSpec.input, {
+                    ...workflowValidationContext,
+                  })
+              : { ok: false, issues: [{ message: 'Saved workflow kind is unsupported.' }] }
+      if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+    }
     const ids = Array.isArray(input.subscriptionIds)
       ? input.subscriptionIds
           .map((id) => optionalTrimmedString(id))
@@ -7246,13 +7539,53 @@ export class RuntimeSessionManager {
       }
       return subscription
     })
-    const body = parameterizeSubscriptions(subscriptions, {
+    const body = workflowSpec ? { slots: [], subscriptions: [] } : parameterizeSubscriptions(subscriptions, {
       session: (sessionId) => this.#state.sessions[sessionId]?.label,
       source: (sourceId) => {
         const source = this.#state.sources?.[sourceId]
         return source ? externalSourceSummary(source) : undefined
       },
     })
+    const savedLoop = loopsOf(this.#kernelView()).find(
+      (loop) =>
+        loop.subscriptionIds.length === ids.length &&
+        loop.subscriptionIds.every((id) => ids.includes(id)),
+    )
+    const savedFields = workflowSpec
+      ? {
+          kind: workflowSpec.kind === 'goal-loop' ? 'goal' : workflowSpec.kind === 'review-until-clean' ? 'review' : 'relationship',
+          relationshipCount: workflowSpec.kind === 'handoff' ? 1 : 2,
+          ...(workflowSpec.kind !== 'handoff' ? { maxLaps: workflowSpec.input.maxLaps } : {}),
+          instructions: [
+            workflowSpec.kind === 'goal-loop'
+              ? workflowSpec.input.goal
+              : workflowSpec.kind === 'review-until-clean'
+                ? [
+                    workflowSpec.input.reviewer.instruction,
+                    ...(workflowSpec.input.blocking.mode === 'custom'
+                      ? [workflowSpec.input.blocking.customCriteria]
+                      : []),
+                  ]
+                : workflowSpec.input.note,
+          ].flat().filter(Boolean),
+        }
+      : {
+      kind:
+        savedLoop?.kind === 'review'
+          ? 'review'
+          : savedLoop?.kind === 'goal'
+            ? 'goal'
+            : 'relationship',
+      relationshipCount: subscriptions.length,
+      ...(savedLoop?.lapCap ? { maxLaps: savedLoop.lapCap } : {}),
+      instructions: [
+        ...new Set(
+          subscriptions
+            .map((subscription) => optionalTrimmedString(subscription.action?.note))
+            .filter(Boolean),
+        ),
+      ],
+        }
     const template = {
       id: `tpl-${randomUUID().slice(0, 8)}`,
       name,
@@ -7260,6 +7593,8 @@ export class RuntimeSessionManager {
         ? { tagline: input.tagline.trim() }
         : {}),
       createdAt: now(),
+      savedFields,
+      ...(workflowSpec ? { workflowSpec: clone(workflowSpec) } : {}),
       ...body,
     }
     this.#state.templates = this.#state.templates ?? {}
@@ -7771,6 +8106,7 @@ export class RuntimeSessionManager {
     run.on('stderr', (data) => this.#appendProviderStderr(sessionId, data))
     run.on('result', (event) => this.#recordResult(sessionId, event))
     run.on('error', (error) => {
+      if (this.#workflowCompensatedRuns.has(sessionId)) return
       const current = this.#state.sessions[sessionId]
       const context = this.#runContext.get(sessionId)
       if (current?.status === 'killed' || context?.killRequested === true) {
@@ -7781,6 +8117,8 @@ export class RuntimeSessionManager {
     run.on('close', ({ code, signal, killed }) => {
       this.#runs.delete(sessionId)
       this.#bridge.revokeRunToken(membraneToken)
+
+      if (this.#workflowCompensatedRuns.delete(sessionId)) return
 
       const current = this.#state.sessions[sessionId]
       if (!current) {

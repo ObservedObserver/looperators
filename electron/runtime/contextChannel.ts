@@ -124,6 +124,37 @@ export class ContextChannelStore {
     }
   }
 
+  checkpoint(sessionId: string): ChannelDeliveryEntry[] {
+    return structuredClone(this.manifest(sessionId))
+  }
+
+  restore(sessionId: string, checkpoint: ChannelDeliveryEntry[]) {
+    const keepSeqs = new Set(checkpoint.map((entry) => entry.seq))
+    const channelDir = this.channelDir(sessionId)
+    for (const entry of this.manifest(sessionId)) {
+      if (keepSeqs.has(entry.seq)) continue
+      const prefix = `${String(entry.seq).padStart(4, '0')}-`
+      try {
+        for (const name of fs.readdirSync(channelDir)) {
+          if (name.startsWith(prefix)) {
+            fs.rmSync(path.join(channelDir, name), { recursive: true, force: true })
+          }
+        }
+      } catch {
+        // A missing channel directory already represents the empty rollback.
+      }
+    }
+    if (checkpoint.length > 0) {
+      this.#writeManifest(sessionId, structuredClone(checkpoint))
+    } else {
+      try {
+        fs.rmSync(this.#manifestFile(sessionId), { force: true })
+      } catch {
+        // The empty checkpoint is already restored.
+      }
+    }
+  }
+
   #writeManifest(sessionId: string, entries: ChannelDeliveryEntry[]) {
     const file = this.#manifestFile(sessionId)
     fs.mkdirSync(path.dirname(file), { recursive: true })

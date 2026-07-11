@@ -5,6 +5,8 @@ export const description =
   'G2 acceptance: a channel-mediated handoff between two real sessions follows the §8.1 sequence — create B, deliver the upstream artifact bundle (topic handoff), activate B with a short note; B reads the delivered file and acts on it.'
 
 export async function run({ orrery, provider, workDir, log }) {
+  const providerInstanceId =
+    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli'
   // Upstream session A produces a memorable turn (its summary becomes the
   // artifact bundle payload).
   const upstream = await orrery.createSession({
@@ -17,39 +19,30 @@ export async function run({ orrery, provider, workDir, log }) {
   log(`upstream session ${upstream.sessionId}`)
   await orrery.waitForIdle(upstream.sessionId)
 
-  // §8.1 step 1: create B (a plain, context-free bootstrap).
-  const downstream = await orrery.createSession({
-    ...provider,
-    label: 'Handoff Downstream',
-    cwd: workDir,
-    prompt: 'Reply with exactly: ready. Then stop and wait for instructions.',
-  })
-  log(`downstream session ${downstream.sessionId}`)
-  await orrery.waitForIdle(downstream.sessionId)
-
   const baseline = await orrery.kernelEvents()
 
-  // §8.1 step 2: deliver A's artifact bundle into B's channel (data plane,
-  // no activation — B must stay idle).
-  const delivered = await orrery.deliverToSession(downstream.sessionId, {
-    topic: 'handoff',
-    source: upstream.sessionId,
-  })
-  assert.ok(delivered.delivery.files.length >= 1, 'the bundle has files')
-  const afterDeliver = await orrery.session(downstream.sessionId)
-  assert.equal(
-    afterDeliver.session.status,
-    'idle',
-    'a pure delivery must not activate the target'
-  )
-
-  // §8.1 step 3: activate B with a short note; the runtime assembles the
-  // delivery listing deterministically.
-  await orrery.activateSession(downstream.sessionId, {
+  // P4 product command: create B, deliver A's current artifact bundle, and
+  // activate B once. It leaves no standing subscription.
+  const handoff = await orrery.startHandoffWorkflow({
+    source: { kind: 'existing', sessionId: upstream.sessionId, prompt: '' },
+    target: {
+      kind: 'new',
+      ...provider,
+      providerInstanceId,
+      label: 'Handoff Downstream',
+      prompt: 'Read the delivered handoff and follow the activation note.',
+      cwd: workDir,
+      workMode: 'local',
+      runtimeSettings: { runtimeMode: 'full-access' },
+    },
     note:
       'You received an upstream handoff. Read the delivered files listed below, ' +
       'find the agreed codeword in them, then reply with only that codeword and nothing else.',
   })
+  const downstream = { sessionId: handoff.targetSessionId }
+  assert.deepEqual(handoff.subscriptionIds, [], 'current-result Handoff leaves no standing relationship')
+  assert.deepEqual(handoff.deliveredTo, [downstream.sessionId])
+  log(`downstream session ${downstream.sessionId}`)
   await orrery.waitForIdle(downstream.sessionId)
 
   const transcript = await orrery.transcript(downstream.sessionId)

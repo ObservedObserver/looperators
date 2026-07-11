@@ -12,6 +12,8 @@
 // templates); tests can assert compiled plans without a runtime.
 
 import { normalizeDailyAt } from './graph-core/schedule.js';
+import type { GoalWorkflowStartInput, HandoffWorkflowStartInput } from './classic-workflow.js';
+import type { ReviewWorkflowStartInput } from './review-workflow.js';
 
 export type TemplateSlotKind = 'session' | 'text' | 'longtext' | 'number' | 'schedule' | 'external-source';
 
@@ -34,7 +36,21 @@ export type TemplateDescriptor = {
   handsOff: string;
   builtin: boolean;
   slots: TemplateSlot[];
+  savedFields?: SavedWorkflowFields;
+  workflowSpec?: SavedWorkflowSpec;
 };
+
+export type SavedWorkflowFields = {
+  kind: 'review' | 'goal' | 'relationship';
+  relationshipCount: number;
+  maxLaps?: number;
+  instructions: string[];
+};
+
+export type SavedWorkflowSpec =
+  | { version: 1; kind: 'handoff'; input: HandoffWorkflowStartInput }
+  | { version: 1; kind: 'goal-loop'; input: GoalWorkflowStartInput }
+  | { version: 1; kind: 'review-until-clean'; input: ReviewWorkflowStartInput };
 
 // Endpoints inside a compiled plan. `{ ref }` points at a create-session
 // step in the same plan (resolved by the executor after the session
@@ -88,6 +104,8 @@ export type SavedTemplate = {
   createdAt: string;
   slots: TemplateSlot[];
   subscriptions: PlanSubscriptionInput[];
+  savedFields?: SavedWorkflowFields;
+  workflowSpec?: SavedWorkflowSpec;
 };
 
 export type ScheduleParam = { everySeconds?: number; dailyAt?: string };
@@ -665,9 +683,13 @@ export function templateDescriptors(saved: Record<string, SavedTemplate> | undef
       id: template.id,
       name: template.name,
       tagline: template.tagline ?? 'Saved from the canvas',
-      handsOff: `${template.subscriptions.length} subscription(s)`,
+      handsOff: template.savedFields
+        ? `${template.savedFields.kind === 'review' ? 'Review' : template.savedFields.kind === 'goal' ? 'Goal' : 'Saved'} workflow${template.savedFields.maxLaps ? ` · max ${template.savedFields.maxLaps} laps` : ''}`
+        : `${template.subscriptions.length} Relationship(s)`,
       builtin: false,
       slots: template.slots,
+      savedFields: template.savedFields,
+      workflowSpec: template.workflowSpec,
     }));
   return [...builtinTemplates, ...custom];
 }

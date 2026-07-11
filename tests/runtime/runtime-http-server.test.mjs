@@ -174,6 +174,19 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const invalidConnection = await invalidConnectionResponse.json()
     assert.match(invalidConnection.error, /Choose a source Agent/)
 
+    for (const [route, message] of [
+      ['handoff-workflows', /Choose or create the source Agent/],
+      ['goal-workflows/start', /Choose or create the worker Agent/],
+    ]) {
+      const response = await fetch(`${base}/api/runtime/${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'http://127.0.0.1:48273' },
+        body: JSON.stringify({}),
+      })
+      assert.equal(response.status, 500)
+      assert.match((await response.json()).error, message)
+    }
+
     const missingSubscriptionStopResponse = await fetch(
       `${base}/api/runtime/subscriptions/missing-subscription/stop`,
       {

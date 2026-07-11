@@ -510,6 +510,18 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/handoff-workflows$/,
+      handler: async (request) =>
+        runtime.startHandoffWorkflow(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/goal-workflows\/start$/,
+      handler: async (request) =>
+        runtime.startGoalWorkflow(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/agent-connections$/,
       handler: async (request) =>
         runtime.connectAgents(await readJsonBody(request)),

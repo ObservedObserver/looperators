@@ -393,11 +393,11 @@ function App() {
               onError={setRuntimeError}
               autoFocusClose
               defaultCwd={newCwd}
-              onWorkflowStarted={({ coderSessionId, loopId }) => {
+              onWorkflowStarted={({ coderSessionId, loopId, notice }) => {
                 setSelectedSessionId(coderSessionId);
                 setActiveTab('chat');
                 setOpenLoopId(loopId);
-                setWorkflowNotice('Coder started · Reviewer waiting');
+                setWorkflowNotice(notice ?? 'Coder started · Reviewer waiting');
               }}
               requestCloseRef={workflowCloseRequestRef}
             />

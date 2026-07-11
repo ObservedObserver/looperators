@@ -153,6 +153,30 @@ test('a start failure after the first participant exists unwinds the live graph'
   }
 });
 
+test('parallel Review starts lock shared existing Agents before creating a second ring', async () => {
+  const { runtime, cleanup } = harness('orrery-review-workflow-lock-');
+  try {
+    runtime.upsertProviderInstance({ providerInstanceId: 'review-legacy', kind: 'legacy-claude-cli', label: 'Review legacy' });
+    const existing = await runtime.createSession({
+      prompt: 'Prepare the workspace.', cwd: process.cwd(),
+      providerKind: 'legacy-claude-cli', providerInstanceId: 'legacy-claude-cli',
+    });
+    await waitFor('existing Coder becomes idle', () => runtime.getState().sessions[existing.sessionId]?.status === 'idle');
+    const reviewInput = input(process.cwd(), {
+      coder: { kind: 'existing', sessionId: existing.sessionId, prompt: 'Implement the change.' },
+    });
+    const results = await Promise.allSettled([
+      runtime.startReviewWorkflow(reviewInput),
+      runtime.startReviewWorkflow(reviewInput),
+    ]);
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+    assert.match(results.find((result) => result.status === 'rejected').reason.message, /already being changed/);
+    assert.equal(runtime.getState().loops.filter((loop) => loop.kind === 'review').length, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test('a participant failure identifies the failed Reviewer and workflow phase headlessly', async () => {
   const failingReviewerSource = `#!/usr/bin/env node
 const args = process.argv.slice(2)

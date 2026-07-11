@@ -16,6 +16,7 @@ import type {
 import type { ReviewWorkflowStartInput } from '@shared/review-workflow';
 import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
 import type { ConnectAgentsInput } from '@shared/agent-connection';
+import type { GoalWorkflowStartInput, HandoffWorkflowStartInput } from '@shared/classic-workflow';
 
 export const graphStateVersion = 7;
 
@@ -187,6 +188,7 @@ export const graphStateSchema = {
         gate: 'auto|master|human?; default auto — deterministic judging needs no master',
         onStop: 'freeze-edge|freeze-target|freeze-cluster?; default freeze-edge',
         judgeProviderInstanceId: "string?; default: the worker's provider (cheap-judge override point)",
+        judgeModel: "string?; compatible model for an overridden Judge provider",
       },
       output:
         '{ judgeSessionId, checkSubscription, retrySubscription, state }; L3 preset — compiles into create_session + author_subscription ×2 (worker on finished → judge; judge on report(fail) → worker; both stop at whenReport done + maxFirings), no new kernel verb',
@@ -673,7 +675,21 @@ export type TemplateDescriptor = {
   handsOff: string;
   builtin: boolean;
   slots: TemplateSlot[];
+  savedFields?: SavedWorkflowFields;
+  workflowSpec?: SavedWorkflowSpec;
 };
+
+export type SavedWorkflowFields = {
+  kind: 'review' | 'goal' | 'relationship';
+  relationshipCount: number;
+  maxLaps?: number;
+  instructions: string[];
+};
+
+export type SavedWorkflowSpec =
+  | { version: 1; kind: 'handoff'; input: HandoffWorkflowStartInput }
+  | { version: 1; kind: 'goal-loop'; input: GoalWorkflowStartInput }
+  | { version: 1; kind: 'review-until-clean'; input: ReviewWorkflowStartInput };
 
 // A user-saved template: parameterized subscriptions (session endpoints
 // became session slots, external sources became source slots). Runtime-plane
@@ -685,6 +701,8 @@ export type SavedTemplate = {
   createdAt: string;
   slots: TemplateSlot[];
   subscriptions: Array<Record<string, any>>;
+  savedFields?: SavedWorkflowFields;
+  workflowSpec?: SavedWorkflowSpec;
 };
 
 export type ListTemplatesResult = { templates: TemplateDescriptor[] };
@@ -741,7 +759,8 @@ export type ConnectAgentsResult = {
 export type SaveTemplateInput = {
   name: string;
   tagline?: string;
-  subscriptionIds: string[];
+  subscriptionIds?: string[];
+  workflowSpec?: SavedWorkflowSpec;
 };
 
 export type SaveTemplateResult = {
@@ -845,12 +864,33 @@ export type CreateGoalLoopInput = {
   gate?: SubscriptionGate;
   onStop?: SubscriptionOnStop;
   judgeProviderInstanceId?: string;
+  judgeModel?: string;
 };
 
 export type CreateGoalLoopResult = {
   judgeSessionId: SessionId;
   checkSubscription: Subscription;
   retrySubscription: Subscription;
+  state: GraphState;
+};
+
+export type StartHandoffWorkflowInput = HandoffWorkflowStartInput;
+export type StartHandoffWorkflowResult = {
+  sourceSessionId: SessionId;
+  targetSessionId: SessionId;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
+  deliveredTo: SessionId[];
+  state: GraphState;
+};
+
+export type StartGoalWorkflowInput = GoalWorkflowStartInput;
+export type StartGoalWorkflowResult = {
+  workerSessionId: SessionId;
+  judgeSessionId: SessionId;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
+  loop?: LoopView;
   state: GraphState;
 };
 

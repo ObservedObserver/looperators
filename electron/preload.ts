@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:start-review-workflow', input),
     startDraftWorkflow: (input) =>
       ipcRenderer.invoke('orrery:start-draft-workflow', input),
+    startHandoffWorkflow: (input) =>
+      ipcRenderer.invoke('orrery:start-handoff-workflow', input),
+    startGoalWorkflow: (input) =>
+      ipcRenderer.invoke('orrery:start-goal-workflow', input),
     connectAgents: (input) =>
       ipcRenderer.invoke('orrery:connect-agents', input),
     stopSubscription: (input) =>

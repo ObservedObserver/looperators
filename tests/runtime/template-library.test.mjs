@@ -535,6 +535,10 @@ test('save → list → apply: a canvas ring becomes a template and rebinds to n
       subscriptionIds: ring.subscriptionIds,
     })
     assert.match(saved.template.id, /^tpl-[0-9a-f]{8}$/)
+    assert.equal(saved.template.savedFields.kind, 'review')
+    assert.equal(saved.template.savedFields.maxLaps, 2)
+    assert.equal(saved.template.savedFields.relationshipCount, 2)
+    assert.equal(saved.template.savedFields.instructions.some((instruction) => /Review the latest work/.test(instruction)), true)
     assert.deepEqual(
       saved.template.slots.map((slot) => [slot.key, slot.label, slot.kind]),
       [
@@ -548,6 +552,8 @@ test('save → list → apply: a canvas ring becomes a template and rebinds to n
     assert.ok(descriptor, 'the saved template is listed')
     assert.equal(descriptor.builtin, false)
     assert.equal(descriptor.tagline, 'the team ring')
+    assert.deepEqual(descriptor.savedFields, saved.template.savedFields)
+    assert.match(descriptor.handsOff, /Review workflow · max 2 laps/)
 
     const newCoder = await createIdleSession(runtime, 'Coder B')
     const newReviewer = await createIdleSession(runtime, 'Reviewer B')

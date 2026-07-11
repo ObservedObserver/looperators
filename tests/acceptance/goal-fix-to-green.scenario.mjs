@@ -9,6 +9,8 @@ export const description =
 export const timeoutMs = 900_000
 
 export async function run({ orrery, provider, workDir, log }) {
+  const providerInstanceId =
+    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'legacy-claude-cli'
   // A real, dependency-free repo whose suite fails for one honest reason.
   fs.writeFileSync(
     path.join(workDir, 'package.json'),
@@ -36,31 +38,30 @@ export async function run({ orrery, provider, workDir, log }) {
     ].join('\n')
   )
 
-  const worker = await orrery.createSession({
-    ...provider,
-    label: 'Goal Coder',
-    cwd: workDir,
-    // The coder edits source files and the judge runs the suite (a real
-    // `npm test` over Bash): both need full autonomy in this ISOLATED temp
-    // workspace — the judge inherits these settings.
-    runtimeSettings: { runtimeMode: 'full-access' },
-    prompt: 'Reply with exactly: coder ready.',
-  })
-  await orrery.waitForIdle(worker.sessionId)
-
-  // One sentence hands off the stop condition; the runtime compiles the
-  // judge and both edges.
-  const compiled = await orrery.createGoalLoop({
-    workerSessionId: worker.sessionId,
+  // P4 cold start: one product command creates Worker + Judge, installs both
+  // relationships, and only then starts the Worker.
+  const compiled = await orrery.startGoalWorkflow({
+    worker: {
+      kind: 'new',
+      ...provider,
+      providerInstanceId,
+      label: 'Goal Coder',
+      prompt: 'Reply with exactly: starting work now. Do not change any files yet. Then stop.',
+      cwd: workDir,
+      workMode: 'local',
+      runtimeSettings: { runtimeMode: 'full-access' },
+    },
     goal: 'Running `npm test` in this repository exits with code 0 (the whole test suite passes).',
     maxLaps: 4,
   })
-  const check = compiled.checkSubscription
-  const retry = compiled.retrySubscription
+  const worker = { sessionId: compiled.workerSessionId }
+  const compiledState = await orrery.state()
+  const [checkId, retryId] = compiled.subscriptionIds
+  const check = compiledState.subscriptions[checkId]
+  const retry = compiledState.subscriptions[retryId]
   assert.equal(check.stop.whenReport.verdict, 'done')
   assert.equal(check.stop.maxFirings, 4)
   log(`goal loop compiled: judge ${compiled.judgeSessionId}, edges ${check.id} / ${retry.id}`)
-  await orrery.waitForIdle(compiled.judgeSessionId)
 
   // The compiled pair projects as a ring with the lap cap on its badge.
   const loops = (await orrery.state()).loops ?? []
@@ -69,12 +70,6 @@ export async function run({ orrery, provider, workDir, log }) {
   )
   assert.ok(goalLoop, 'the goal pair projects as a loop')
   assert.equal(goalLoop.lapCap, 4)
-
-  // Kick lap 1 with a WORK-FREE turn: the judge must catch the red suite
-  // itself — the fail verdict is earned, not scripted.
-  await orrery.resumeSession(worker.sessionId, {
-    message: 'Reply with exactly: starting work now. Do not change any files yet. Then stop.',
-  })
 
   const failReport = await orrery.waitForReport(
     { verdict: 'fail' },

@@ -267,9 +267,22 @@ export const graphStateSchema = {
         gate: 'auto|master|human?; default auto — deterministic judging needs no master',
         onStop: 'freeze-edge|freeze-target|freeze-cluster?; default freeze-edge',
         judgeProviderInstanceId: "string?; default: the worker's provider (cheap-judge override point)",
+        judgeModel: "string?; compatible model for an overridden Judge provider",
       },
       output:
         '{ judgeSessionId, checkSubscription, retrySubscription, state }; L3 preset — compiles into create_session + author_subscription ×2 (worker on finished → judge; judge on report(fail) → worker; both stop at whenReport done + maxFirings), no new kernel verb',
+    },
+    startHandoffWorkflow: {
+      input:
+        '{ source: new|existing Agent endpoint, target: new|existing Agent endpoint, note }; atomic product workflow',
+      output:
+        '{ sourceSessionId, targetSessionId, createdSessionIds, subscriptionIds, deliveredTo, state }; one-shot, with no standing relationship after delivery',
+    },
+    startGoalWorkflow: {
+      input:
+        '{ worker: new|existing Agent endpoint, goal, maxLaps, judgeProviderInstanceId?, judgeModel? }; atomic product workflow',
+      output:
+        '{ workerSessionId, judgeSessionId, createdSessionIds, subscriptionIds, loop, state }; installs the Goal ring before starting Worker',
     },
     startReviewWorkflow: {
       input:

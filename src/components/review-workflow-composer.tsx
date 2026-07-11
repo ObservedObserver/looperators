@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, CheckCircle2, FolderOpen, GitPullRequestArrow, Loader2, Play } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, CheckCircle2, FolderOpen, GitPullRequestArrow, Loader2, Play, Save } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import type { AgentSession, GraphState, ProjectContext, StartReviewWorkflowInput } from '@/shared/graph-state';
+import type { AgentSession, GraphState, ProjectContext, SavedWorkflowSpec, StartReviewWorkflowInput } from '@/shared/graph-state';
 import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { cn } from '@/lib/utils';
@@ -15,6 +15,7 @@ type EndpointMode = 'new' | 'existing';
 type AgentDraft = {
   mode: EndpointMode;
   sessionId: string;
+  label: string;
   providerKind: ProviderKind;
   providerInstanceId: string;
   model: string;
@@ -44,6 +45,24 @@ function sessionSummary(session: AgentSession) {
   return `${session.label} · ${session.providerKind} · ${session.status}`;
 }
 
+function draftFromEndpoint(
+  endpoint: StartReviewWorkflowInput['coder'] | StartReviewWorkflowInput['reviewer'] | undefined,
+  fallback: AgentDraft,
+): AgentDraft {
+  if (!endpoint) return fallback;
+  if (endpoint.kind === 'existing') return { ...fallback, mode: 'existing', sessionId: endpoint.sessionId };
+  return {
+    mode: 'new',
+    sessionId: '',
+    label: endpoint.label ?? fallback.label,
+    providerKind: endpoint.providerKind,
+    providerInstanceId: endpoint.providerInstanceId,
+    model: endpoint.runtimeSettings.model ?? '',
+    reasoningEffort: endpoint.runtimeSettings.reasoningEffort ?? fallback.reasoningEffort,
+    runtimeMode: endpoint.runtimeSettings.runtimeMode,
+  };
+}
+
 export function ReviewWorkflowComposer({
   runtimeApi,
   runtimeState,
@@ -52,6 +71,8 @@ export function ReviewWorkflowComposer({
   onError,
   onDirtyChange,
   onStarted,
+  initialSpec,
+  onSaved,
 }: {
   runtimeApi: RuntimeApi | undefined;
   runtimeState: GraphState;
@@ -60,38 +81,38 @@ export function ReviewWorkflowComposer({
   onError: (message: string) => void;
   onDirtyChange: (dirty: boolean) => void;
   onStarted: (result: { coderSessionId: string; loopId?: string }) => void;
+  initialSpec?: SavedWorkflowSpec;
+  onSaved: () => Promise<void> | void;
 }) {
   const instances = runtimeState.providerInstances;
+  const savedInput = initialSpec?.kind === 'review-until-clean' ? initialSpec.input : undefined;
   const initialCoderKind: ProviderKind = 'claude-code';
   const initialReviewerKind: ProviderKind = 'codex';
-  const [coder, setCoder] = useState<AgentDraft>(() => ({
-    mode: 'new',
-    sessionId: '',
-    providerKind: initialCoderKind,
-    providerInstanceId: providerInstanceForKind(instances, initialCoderKind).providerInstanceId,
-    model: '',
-    reasoningEffort: 'medium',
-    runtimeMode: 'auto-accept-edits',
-  }));
-  const [reviewer, setReviewer] = useState<AgentDraft>(() => ({
-    mode: 'new',
-    sessionId: '',
-    providerKind: initialReviewerKind,
-    providerInstanceId: providerInstanceForKind(instances, initialReviewerKind).providerInstanceId,
-    model: workflowModelDefault(initialReviewerKind),
-    reasoningEffort: 'high',
-    runtimeMode: 'approval-required',
-  }));
-  const [cwd, setCwd] = useState(defaultCwd);
-  const [workMode, setWorkMode] = useState<'local' | 'worktree'>('local');
-  const [branch, setBranch] = useState('');
-  const [coderPrompt, setCoderPrompt] = useState('');
-  const [reviewInstruction, setReviewInstruction] = useState(
-    'Review the implementation against the requested behavior. Verify the actual workspace diff and run focused checks when useful.',
+  const [coder, setCoder] = useState<AgentDraft>(() =>
+    draftFromEndpoint(savedInput?.coder, {
+      mode: 'new', sessionId: '', label: 'Coder', providerKind: initialCoderKind,
+      providerInstanceId: providerInstanceForKind(instances, initialCoderKind).providerInstanceId,
+      model: '', reasoningEffort: 'medium', runtimeMode: 'auto-accept-edits',
+    }),
   );
-  const [blockingMode, setBlockingMode] = useState<ReviewBlockingMode>('p0-p1');
-  const [customCriteria, setCustomCriteria] = useState('');
-  const [maxLaps, setMaxLaps] = useState('6');
+  const [reviewer, setReviewer] = useState<AgentDraft>(() =>
+    draftFromEndpoint(savedInput?.reviewer, {
+      mode: 'new', sessionId: '', label: 'Reviewer', providerKind: initialReviewerKind,
+      providerInstanceId: providerInstanceForKind(instances, initialReviewerKind).providerInstanceId,
+      model: workflowModelDefault(initialReviewerKind), reasoningEffort: 'high', runtimeMode: 'approval-required',
+    }),
+  );
+  const [cwd, setCwd] = useState(savedInput?.coder.kind === 'new' ? savedInput.coder.cwd : defaultCwd);
+  const [workMode, setWorkMode] = useState<'local' | 'worktree'>(savedInput?.coder.kind === 'new' ? savedInput.coder.workMode : 'local');
+  const [branch, setBranch] = useState(savedInput?.coder.kind === 'new' ? (savedInput.coder.branch ?? '') : '');
+  const [coderPrompt, setCoderPrompt] = useState(savedInput?.coder.prompt ?? '');
+  const [reviewInstruction, setReviewInstruction] = useState(
+    savedInput?.reviewer.instruction ??
+      'Review the implementation against the requested behavior. Verify the actual workspace diff and run focused checks when useful.',
+  );
+  const [blockingMode, setBlockingMode] = useState<ReviewBlockingMode>(savedInput?.blocking.mode ?? 'p0-p1');
+  const [customCriteria, setCustomCriteria] = useState(savedInput?.blocking.customCriteria ?? '');
+  const [maxLaps, setMaxLaps] = useState(String(savedInput?.maxLaps ?? 6));
   const [projectContext, setProjectContext] = useState<ProjectContext>();
   const [checkedProjectCwd, setCheckedProjectCwd] = useState<string>();
   const [isCheckingProject, setIsCheckingProject] = useState(false);
@@ -100,6 +121,9 @@ export function ReviewWorkflowComposer({
   const [setupNotices, setSetupNotices] = useState<string[]>([]);
   const [isCheckingProviders, setIsCheckingProviders] = useState(false);
   const [checkedProviderKey, setCheckedProviderKey] = useState<string>();
+  const [saveName, setSaveName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const initialPayloadRef = useRef<string | undefined>(undefined);
 
   const sessions = useMemo(() => Object.values(runtimeState.sessions).filter((session) => session.status !== 'killed'), [runtimeState.sessions]);
   const sessionContext = useMemo(
@@ -124,7 +148,7 @@ export function ReviewWorkflowComposer({
         coder.mode === 'new'
           ? {
               kind: 'new',
-              label: 'Coder',
+              label: coder.label,
               prompt: coderPrompt,
               cwd,
               workMode,
@@ -138,7 +162,7 @@ export function ReviewWorkflowComposer({
         reviewer.mode === 'new'
           ? {
               kind: 'new',
-              label: 'Reviewer',
+              label: reviewer.label,
               instruction: reviewInstruction,
               providerKind: reviewer.providerKind,
               providerInstanceId: reviewer.providerInstanceId,
@@ -181,9 +205,11 @@ export function ReviewWorkflowComposer({
     isCheckingProviders;
 
   useEffect(() => {
-    onDirtyChange(true);
-    return () => onDirtyChange(false);
-  }, [onDirtyChange]);
+    const serialized = JSON.stringify(payload);
+    if (initialPayloadRef.current === undefined) initialPayloadRef.current = serialized;
+    onDirtyChange(serialized !== initialPayloadRef.current);
+  }, [onDirtyChange, payload]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   useEffect(() => {
     if (!runtimeApi || coder.mode !== 'new' || !cwd.trim()) {
@@ -293,6 +319,26 @@ export function ReviewWorkflowComposer({
     }
   };
 
+  const save = async () => {
+    if (!runtimeApi || !validation.ok || !saveName.trim() || isSaving) return;
+    setIsSaving(true);
+    try {
+      const result = await runtimeApi.saveTemplate({
+        name: saveName.trim(),
+        workflowSpec: { version: 1, kind: 'review-until-clean', input: payload },
+      });
+      onStateChange(result.state);
+      initialPayloadRef.current = JSON.stringify(payload);
+      onDirtyChange(false);
+      setSaveName('');
+      await onSaved();
+    } catch (error: unknown) {
+      onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const agentFields = (which: 'coder' | 'reviewer', agent: AgentDraft, setAgent: typeof setCoder) => (
     <div className="space-y-2">
       <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/60 p-1">
@@ -317,12 +363,15 @@ export function ReviewWorkflowComposer({
           ))}
         </select>
       ) : (
-        <AgentRuntimeFields
-          value={agent}
-          instances={instances}
-          idPrefix={`review-workflow-${which}`}
-          onChange={(value) => setAgent((current) => ({ ...current, ...value }))}
-        />
+        <>
+          <input className={fieldClass} aria-label={`${which === 'coder' ? 'Coder' : 'Reviewer'} name`} value={agent.label} onChange={(event) => setAgent((current) => ({ ...current, label: event.target.value }))} />
+          <AgentRuntimeFields
+            value={agent}
+            instances={instances}
+            idPrefix={`review-workflow-${which}`}
+            onChange={(value) => setAgent((current) => ({ ...current, ...value }))}
+          />
+        </>
       )}
       {agent.mode === 'existing' && agent.sessionId ? (
         <p className="rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-[10px] leading-4 text-muted-foreground">
@@ -469,6 +518,20 @@ export function ReviewWorkflowComposer({
           Ready. Run creates the full ring before starting the Coder.
         </p>
       ) : null}
+      <div className="rounded-xl border border-border bg-card p-2.5">
+        <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-[0.1em] text-muted-foreground">
+          <Save className="size-3.5" />
+          Save this workflow
+        </div>
+        <p className="mt-1 text-[10px] leading-4 text-term-faint">Reopen every Agent choice, prompt, review rule, and guardrail as an editable draft.</p>
+        <div className="mt-2 flex gap-1.5">
+          <input className={fieldClass} value={saveName} placeholder="workflow name" onChange={(event) => setSaveName(event.target.value)} />
+          <Button variant="outline" size="sm" className="h-8 shrink-0 text-[10px]" disabled={!runtimeApi || !validation.ok || !saveName.trim() || isSaving} onClick={() => void save()}>
+            {isSaving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
+            Save
+          </Button>
+        </div>
+      </div>
       <Button
         className="h-9 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
         disabled={!runtimeApi || !validation.ok || setupMessages.length > 0 || preflightPending || isStarting}

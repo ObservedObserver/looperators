@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import { partitionWorkflowIds, primaryWorkflowCatalog, primaryWorkflowIds, workflowEmptyState } from '../../dist-electron/shared/workflow-catalog.js';
@@ -44,4 +45,26 @@ test('empty graph decisions always offer Chat before Workflow', () => {
   });
   assert.equal(workflowEmptyState(1).show, false);
   assert.equal(workflowEmptyState(8).show, false);
+});
+
+test('legacy shortcuts do not compete with the three golden workflow composers', () => {
+  const chat = fs.readFileSync(new URL('../../src/components/chat-detail.tsx', import.meta.url), 'utf8');
+  const catalog = fs.readFileSync(new URL('../../src/components/template-library.tsx', import.meta.url), 'utf8');
+  const advanced = fs.readFileSync(new URL('../../src/components/orchestrate-panel.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(chat, /GoalLoopButton/);
+  assert.match(catalog, /ClassicWorkflowComposer/);
+  assert.match(catalog, /Save this workflow/);
+  const classicComposer = fs.readFileSync(new URL('../../src/components/classic-workflow-composer.tsx', import.meta.url), 'utf8');
+  const reviewComposer = fs.readFileSync(new URL('../../src/components/review-workflow-composer.tsx', import.meta.url), 'utf8');
+  assert.match(classicComposer, /initialInput as GoalWorkflowStartInput[^\n]+\?\.judgeProviderInstanceId/);
+  assert.match(classicComposer, /judgeProviderInstanceId \? \{ judgeProviderInstanceId \}/);
+  assert.match(classicComposer, /judgeModel\.trim\(\) \? \{ judgeModel:/);
+  assert.match(classicComposer, /modelOptionsForKind\(providerKind\)\[0\]/);
+  assert.match(reviewComposer, /label: endpoint\.label \?\? fallback\.label/);
+  assert.match(reviewComposer, /label: coder\.label/);
+  assert.match(reviewComposer, /label: reviewer\.label/);
+  assert.match(classicComposer, /initialPayloadRef\.current = JSON\.stringify\(payload\);\s+onDirtyChange\(false\)/);
+  assert.match(reviewComposer, /initialPayloadRef\.current = JSON\.stringify\(payload\);\s+onDirtyChange\(false\)/);
+  assert.match(advanced, /Governed loop policy/);
+  assert.doesNotMatch(advanced, />Review until clean</);
 });

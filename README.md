@@ -15,22 +15,34 @@ Run the app:
 npm run dev
 ```
 
-The default entry point is the Chat tab:
+The default entry points are `New Chat` and `New Workflow`:
 
 - `New Chat` opens an empty composer. Choose a provider, confirm the project
   cwd, send the first message, and Orrery creates a runtime session plus an
   independent graph node.
-- `Linked Chat` starts from an existing chat and creates a new node connected to
-  the source session.
+- `New Workflow` opens the three primary outcomes: Review until clean, Handoff,
+  and Run until goal. Each uses the same Agent configuration, Preview, and
+  `Run workflow` language; nothing starts while the workflow is being configured.
+- `Create Agent from this Chat` is a one-Agent shortcut that records provenance.
+  It does not create ongoing automation.
 - The chat header shows provider, cwd, status, updated time, and id. Plans,
   runtime activity, requests, user-input prompts, recovery notices, and optional
   raw provider diagnostics are shown in the conversation surface.
 - The Chats tab provides history search, hidden/archived sessions, restore, and
   recovery context.
-- The Workflows tab lets users select worker chats, save a managed cluster,
-  create or reuse a master chat, run a master loop, and freeze a worker or an
-  entire cluster. Master decisions, reports, freezes, and session creation
-  appear as graph edges.
+- `Advanced` contains Master/Cluster governed loops and uncommon trigger-based
+  workflows. It is not required for Review, Handoff, or Goal workflows.
+
+### Golden journeys
+
+- Review: configure Coder + Reviewer + blocking rule + lap cap, inspect the
+  two-way Preview, then Run.
+- Handoff: configure new or existing Source and Receiver. An existing Source
+  transfers its current result immediately; a new Source runs first and hands
+  off exactly once when it finishes.
+- Goal: configure a new or existing Worker, define done in one sentence, and
+  choose a lap cap. The Judge visibly inherits the Worker configuration. Orrery installs both
+  Goal relationships before starting the Worker.
 
 ## Runtime Model
 
