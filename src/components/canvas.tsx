@@ -16,6 +16,7 @@ import {
 } from '@/lib/graph-view';
 import { statusLabels, sessionMarker, statePillBase, nodeStatePillCls } from '@/lib/session-display';
 import { formatClock } from '@/lib/format';
+import { DraftAgentNode, DraftRelationshipEdge } from '@/components/draft-canvas';
 
 export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master';
@@ -29,7 +30,7 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
         selected && '!border-lime-hi/60 ring-2 ring-lime-hi/50',
       )}
     >
-      <Handle type="target" position={Position.Left} className="!size-2.5 !border-0 !bg-lime-hi" />
+      <Handle type="target" position={Position.Left} className="!size-3 !border-2 !border-card !bg-lime-hi" aria-label={`Connect into ${data.label}`} />
       <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-3">
         <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', marker.cls)}>{marker.char}</span>
         <div className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground" title={data.label}>
@@ -102,7 +103,7 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
           </span>
         ) : null}
       </div>
-      <Handle type="source" position={Position.Right} className="!size-2.5 !border-0 !bg-lime-hi" />
+      <Handle type="source" position={Position.Right} className="!size-3 !border-2 !border-card !bg-lime-hi" aria-label={`Connect from ${data.label}`} />
     </div>
   );
 });
@@ -246,6 +247,7 @@ export const LoopBadgeNode = memo(function LoopBadgeNode({ data }: NodeProps<Nod
 
 export const nodeTypes = {
   agent: AgentNode,
+  'draft-agent': DraftAgentNode,
   cluster: ClusterBoundaryNode,
   clock: ClockNode,
   loop: LoopBadgeNode,
@@ -303,7 +305,8 @@ export function ReadabilityEdge({
         }}
       />
       <EdgeLabelRenderer>
-        <div
+        <button
+          type="button"
           className={cn(
             'nodrag nopan pointer-events-auto absolute rounded-md border px-2 py-1 font-mono text-[10px] leading-4 shadow-sm backdrop-blur-sm',
             edgeKindClassNames[edgeData.kind],
@@ -311,10 +314,22 @@ export function ReadabilityEdge({
           )}
           style={{
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            zIndex: 40,
           }}
           title={[edgeData.summary, reason].filter(Boolean).join('\n')}
+          aria-label={`Inspect Relationship: ${edgeData.label}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            edgeData.inspect?.();
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            event.stopPropagation();
+            edgeData.inspect?.();
+          }}
         >
-          <div className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
+          <span className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
             {edgeData.kind === 'subscription' ? null : <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>}
             <span>{edgeDisplayLabel(edgeData)}</span>
             {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
@@ -330,15 +345,15 @@ export function ReadabilityEdge({
             ) : null}
             {edgeData.subscriptionState === 'stopped' ? <span>· stopped</span> : null}
             {edgeData.pendingStatus ? <span className="text-term-amber">· {edgeData.pendingStatus}</span> : null}
-          </div>
+          </span>
           {edgeData.kind === 'subscription' && (edgeData.untilSummary || edgeData.summary) ? (
-            <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">
+            <span className="mt-0.5 block max-w-[220px] truncate normal-case tracking-normal opacity-80">
               {[edgeData.summary, edgeData.untilSummary].filter(Boolean).join(' · ')}
-            </div>
+            </span>
           ) : visibleDetail ? (
-            <div className="mt-0.5 max-w-[220px] truncate normal-case tracking-normal opacity-80">{visibleDetail}</div>
+            <span className="mt-0.5 block max-w-[220px] truncate normal-case tracking-normal opacity-80">{visibleDetail}</span>
           ) : null}
-        </div>
+        </button>
       </EdgeLabelRenderer>
     </>
   );
@@ -346,4 +361,5 @@ export function ReadabilityEdge({
 
 export const edgeTypes = {
   readability: ReadabilityEdge,
+  draft: DraftRelationshipEdge,
 };

@@ -21,7 +21,11 @@ function trimmedString(value) {
     : undefined
 }
 
-const validProviderKinds = new Set(['legacy-claude-cli', 'claude-code', 'codex'])
+const validProviderKinds = new Set([
+  'legacy-claude-cli',
+  'claude-code',
+  'codex',
+])
 
 // Accepts either a named preset ('cheap') or an already-resolved
 // { providerKind: runtimeSettings } object. Unknown names fail loudly:
@@ -35,7 +39,7 @@ function resolveModelPreset(modelPreset) {
     const preset = modelPresets[modelPreset]
     if (!preset) {
       throw new Error(
-        `Unknown model preset: ${modelPreset}. Known presets: ${Object.keys(modelPresets).join(', ')}`
+        `Unknown model preset: ${modelPreset}. Known presets: ${Object.keys(modelPresets).join(', ')}`,
       )
     }
     return preset
@@ -46,14 +50,17 @@ function resolveModelPreset(modelPreset) {
 // Mirrors the requested-kind resolution in sessionManager providerConfig
 // (same precedence, no trimming, same validation fallback) so model presets
 // attach to the provider the runtime will actually select.
-export function resolveRequestedProviderKind(input = {}, providerInstances = []) {
+export function resolveRequestedProviderKind(
+  input = {},
+  providerInstances = [],
+) {
   const requestedInstanceId = trimmedString(input.providerInstanceId)
   const requested =
     input.providerKind ??
     (input.agent === 'codex' ? 'codex' : undefined) ??
     (requestedInstanceId
       ? providerInstances.find(
-          (instance) => instance.providerInstanceId === requestedInstanceId
+          (instance) => instance.providerInstanceId === requestedInstanceId,
         )?.kind
       : undefined)
   return validProviderKinds.has(requested) ? requested : 'legacy-claude-cli'
@@ -64,7 +71,10 @@ export class OrreryClient {
   #modelPreset
 
   constructor({ baseUrl, modelPreset } = {}) {
-    this.#baseUrl = (trimmedString(baseUrl) ?? defaultRuntimeBaseUrl).replace(/\/$/, '')
+    this.#baseUrl = (trimmedString(baseUrl) ?? defaultRuntimeBaseUrl).replace(
+      /\/$/,
+      '',
+    )
     this.#modelPreset = resolveModelPreset(modelPreset)
   }
 
@@ -99,7 +109,9 @@ export class OrreryClient {
     }
     if (!response.ok) {
       const detail = parsed?.error ?? text.trim() ?? ''
-      throw new Error(`${method} ${requestPath} failed (${response.status}): ${detail}`)
+      throw new Error(
+        `${method} ${requestPath} failed (${response.status}): ${detail}`,
+      )
     }
     return parsed
   }
@@ -124,7 +136,7 @@ export class OrreryClient {
   session(sessionId, view = 'summary') {
     return this.#request(
       'GET',
-      `/api/runtime/sessions/${encodeURIComponent(sessionId)}?view=${encodeURIComponent(view)}`
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}?view=${encodeURIComponent(view)}`,
     )
   }
 
@@ -137,7 +149,7 @@ export class OrreryClient {
     const query = since ? `?since=${encodeURIComponent(since)}` : ''
     return this.#request(
       'GET',
-      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/events${query}`
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/events${query}`,
     )
   }
 
@@ -150,7 +162,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/subscriptions/${encodeURIComponent(subscriptionId)}/stop`,
-      input
+      input,
     )
   }
 
@@ -166,7 +178,7 @@ export class OrreryClient {
   getLoopTimeline(loopId) {
     return this.#request(
       'GET',
-      `/api/runtime/loops/${encodeURIComponent(loopId)}/timeline`
+      `/api/runtime/loops/${encodeURIComponent(loopId)}/timeline`,
     )
   }
 
@@ -174,7 +186,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/loops/${encodeURIComponent(loopId)}/stop`,
-      input
+      input,
     )
   }
 
@@ -202,6 +214,37 @@ export class OrreryClient {
     })
   }
 
+  async startDraftWorkflow(input = {}) {
+    const nodes = Object.fromEntries(
+      await Promise.all(
+        Object.entries(input.graph?.nodes ?? {}).map(async ([id, node]) => [
+          id,
+          {
+            ...node,
+            endpoint:
+              node.endpoint?.kind === 'new'
+                ? await this.#withModelPreset(node.endpoint)
+                : node.endpoint,
+          },
+        ]),
+      ),
+    )
+    return this.#request('POST', '/api/runtime/draft-workflows', {
+      ...input,
+      graph: { ...input.graph, nodes },
+    })
+  }
+
+  async connectAgents(input = {}) {
+    return this.#request('POST', '/api/runtime/agent-connections', {
+      ...input,
+      target:
+        input.target?.kind === 'new'
+          ? await this.#withModelPreset(input.target)
+          : input.target,
+    })
+  }
+
   // L2 external sources: registry + the ingestion choke point.
   registerExternalSource(input = {}) {
     return this.#request('POST', '/api/runtime/sources', input)
@@ -211,7 +254,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/sources/${encodeURIComponent(sourceId)}/remove`,
-      input
+      input,
     )
   }
 
@@ -236,7 +279,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/templates/${encodeURIComponent(templateId)}/remove`,
-      input
+      input,
     )
   }
 
@@ -266,25 +309,32 @@ export class OrreryClient {
       input.agent !== 'codex' &&
       input.providerInstanceId !== undefined
     const providerInstances = needsInstanceLookup
-      ? (await this.state()).providerInstances ?? []
+      ? ((await this.state()).providerInstances ?? [])
       : []
     const preset =
       this.#modelPreset[resolveRequestedProviderKind(input, providerInstances)]
     if (!preset) {
       return input
     }
-    return { ...input, runtimeSettings: { ...preset, ...input.runtimeSettings } }
+    return {
+      ...input,
+      runtimeSettings: { ...preset, ...input.runtimeSettings },
+    }
   }
 
   async createSession(input = {}) {
-    return this.#request('POST', '/api/runtime/sessions', await this.#withModelPreset(input))
+    return this.#request(
+      'POST',
+      '/api/runtime/sessions',
+      await this.#withModelPreset(input),
+    )
   }
 
   resumeSession(sessionId, input = {}) {
     return this.#request(
       'POST',
       `/api/runtime/sessions/${encodeURIComponent(sessionId)}/resume`,
-      input
+      input,
     )
   }
 
@@ -293,7 +343,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/sessions/${encodeURIComponent(sessionId)}/deliver`,
-      input
+      input,
     )
   }
 
@@ -302,14 +352,14 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/sessions/${encodeURIComponent(sessionId)}/activate`,
-      input
+      input,
     )
   }
 
   killSession(sessionId) {
     return this.#request(
       'POST',
-      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/kill`
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/kill`,
     )
   }
 
@@ -317,7 +367,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/sessions/${encodeURIComponent(sessionId)}/archive`,
-      { archived }
+      { archived },
     )
   }
 
@@ -325,7 +375,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/requests/${encodeURIComponent(requestId)}/respond`,
-      input
+      input,
     )
   }
 
@@ -333,7 +383,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/user-input/${encodeURIComponent(requestId)}/answer`,
-      input
+      input,
     )
   }
 
@@ -349,7 +399,7 @@ export class OrreryClient {
   removeEdge(edgeId) {
     return this.#request(
       'POST',
-      `/api/runtime/edges/${encodeURIComponent(edgeId)}/remove`
+      `/api/runtime/edges/${encodeURIComponent(edgeId)}/remove`,
     )
   }
 
@@ -371,7 +421,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/master`,
-      await this.#withModelPreset(input)
+      await this.#withModelPreset(input),
     )
   }
 
@@ -379,7 +429,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/assign-master`,
-      { sessionId }
+      { sessionId },
     )
   }
 
@@ -387,7 +437,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/loop-policy`,
-      { loopPolicy }
+      { loopPolicy },
     )
   }
 
@@ -395,7 +445,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/start-loop`,
-      input
+      input,
     )
   }
 
@@ -403,7 +453,7 @@ export class OrreryClient {
     return this.#request(
       'POST',
       `/api/runtime/clusters/${encodeURIComponent(clusterId)}/stop-loop`,
-      input
+      input,
     )
   }
 
@@ -425,7 +475,9 @@ export class OrreryClient {
       await delay(intervalMs)
     }
     const detail = lastDetail ? ` (last: ${lastDetail})` : ''
-    throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}${detail}`)
+    throw new Error(
+      `Timed out after ${timeoutMs}ms waiting for ${label}${detail}`,
+    )
   }
 
   waitForStatus(sessionId, statuses, options = {}) {
@@ -439,7 +491,7 @@ export class OrreryClient {
         }
         if (session.status === 'failed' && !wanted.has('failed')) {
           throw new Error(
-            `Session ${sessionId} failed: ${session.error ?? 'unknown error'}`
+            `Session ${sessionId} failed: ${session.error ?? 'unknown error'}`,
           )
         }
         if (session.status === 'killed' && !wanted.has('killed')) {
@@ -447,7 +499,7 @@ export class OrreryClient {
         }
         return { detail: `status=${session.status}` }
       },
-      options
+      options,
     )
   }
 
@@ -467,7 +519,8 @@ export class OrreryClient {
     const deadSessionIds = (state) =>
       Object.values(state.sessions ?? {})
         .filter(
-          (session) => session.status === 'failed' || session.status === 'killed'
+          (session) =>
+            session.status === 'failed' || session.status === 'killed',
         )
         .map((session) => session.sessionId)
     const deadAtStart = new Set(deadSessionIds(await this.state()))
@@ -482,34 +535,35 @@ export class OrreryClient {
           const casualties = Object.values(state.sessions ?? {}).filter(
             (session) =>
               (session.status === 'failed' || session.status === 'killed') &&
-              !deadAtStart.has(session.sessionId)
+              !deadAtStart.has(session.sessionId),
           )
           if (casualties.length > 0) {
             const detail = casualties
               .map(
                 (session) =>
                   `${session.sessionId} ${session.status}` +
-                  (session.error ? `: ${session.error}` : '')
+                  (session.error ? `: ${session.error}` : ''),
               )
               .join('; ')
             throw new Error(
-              `Session died while waiting for report ${describeMatch} — ${detail}`
+              `Session died while waiting for report ${describeMatch} — ${detail}`,
             )
           }
         }
         const report = (state.reports ?? []).find(
           (candidate) =>
-            (match.type === undefined || candidate.payload?.type === match.type) &&
+            (match.type === undefined ||
+              candidate.payload?.type === match.type) &&
             (match.verdict === undefined ||
               candidate.payload?.verdict === match.verdict) &&
-            (match.from === undefined || candidate.from === match.from)
+            (match.from === undefined || candidate.from === match.from),
         )
         if (report) {
           return { done: true, value: report }
         }
         return { detail: `${state.reports?.length ?? 0} reports` }
       },
-      options
+      options,
     )
   }
 
@@ -597,8 +651,12 @@ export class OrreryClient {
         settle(value)
       }
       const timer = setTimeout(
-        () => finish(reject, new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`)),
-        timeoutMs
+        () =>
+          finish(
+            reject,
+            new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`),
+          ),
+        timeoutMs,
       )
       let triggerPromise = Promise.resolve()
       subscription = this.subscribeEvents((event) => {
@@ -616,7 +674,7 @@ export class OrreryClient {
           // response) once waitForEvent returns.
           triggerPromise.then(
             () => finish(resolve, event),
-            () => {}
+            () => {},
           )
           return
         }
@@ -627,11 +685,9 @@ export class OrreryClient {
           finish(
             reject,
             new Error(
-              `Session ${event.sessionId} ${
-                event.type === 'session.failed' ? 'failed' : 'was killed'
-              } while waiting for ${label}` +
-                (event.error ? `: ${event.error}` : '')
-            )
+              `Session ${event.sessionId} ${event.type === 'session.failed' ? 'failed' : 'was killed'} while waiting for ${label}` +
+                (event.error ? `: ${event.error}` : ''),
+            ),
           )
         }
       })
@@ -639,18 +695,18 @@ export class OrreryClient {
         () =>
           finish(
             reject,
-            new Error(`Event stream closed while waiting for ${label}`)
+            new Error(`Event stream closed while waiting for ${label}`),
           ),
         (error) => {
           if (error?.name === 'AbortError') {
             return
           }
           finish(reject, error)
-        }
+        },
       )
       if (trigger) {
         triggerPromise = subscription.ready.then(() =>
-          settled ? undefined : trigger()
+          settled ? undefined : trigger(),
         )
         triggerPromise.catch((error) => finish(reject, error))
       }
@@ -677,14 +733,19 @@ export class OrreryHarness extends OrreryClient {
     const repoRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       '..',
-      '..'
+      '..',
     )
     const cliPath =
       options.cliPath ??
-      path.join(repoRoot, 'dist-electron', 'electron', 'runtimeHttpServerCli.js')
+      path.join(
+        repoRoot,
+        'dist-electron',
+        'electron',
+        'runtimeHttpServerCli.js',
+      )
     if (!fs.existsSync(cliPath)) {
       throw new Error(
-        `Runtime CLI not found at ${cliPath}. Run \`npm run build:electron\` first.`
+        `Runtime CLI not found at ${cliPath}. Run \`npm run build:electron\` first.`,
       )
     }
 
@@ -707,7 +768,11 @@ export class OrreryHarness extends OrreryClient {
     // via options.env must win over the scrub.
     const env = { ...process.env }
     for (const key of Object.keys(env)) {
-      if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_') || key.startsWith('CLAUDE_AGENT_SDK')) {
+      if (
+        key === 'CLAUDECODE' ||
+        key.startsWith('CLAUDE_CODE_') ||
+        key.startsWith('CLAUDE_AGENT_SDK')
+      ) {
         delete env[key]
       }
     }
@@ -749,16 +814,20 @@ export class OrreryHarness extends OrreryClient {
         () =>
           fail(
             new Error(
-              `Runtime server not ready after ${readyTimeoutMs}ms. stderr: ${stderr}`
-            )
+              `Runtime server not ready after ${readyTimeoutMs}ms. stderr: ${stderr}`,
+            ),
           ),
-        readyTimeoutMs
+        readyTimeoutMs,
       )
       child.once('error', (error) =>
-        fail(new Error(`Runtime server failed to spawn: ${error.message}`))
+        fail(new Error(`Runtime server failed to spawn: ${error.message}`)),
       )
       child.once('exit', (code) =>
-        fail(new Error(`Runtime server exited with code ${code}. stderr: ${stderr}`))
+        fail(
+          new Error(
+            `Runtime server exited with code ${code}. stderr: ${stderr}`,
+          ),
+        ),
       )
       const onStdout = (chunk) => {
         stdout = (stdout + String(chunk)).slice(-maxDiagnosticBytes)

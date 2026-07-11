@@ -13,7 +13,7 @@ type JsonRecord = Record<string, any>
 type RouteParams = Record<string, string>
 type RuntimeRouteHandler = (
   request: http.IncomingMessage,
-  params: RouteParams
+  params: RouteParams,
 ) => unknown | Promise<unknown>
 
 type RuntimeRoute = {
@@ -34,7 +34,10 @@ type RuntimeHttpServer = {
   runtime: RuntimeSessionManager
   host: typeof loopbackHost
   port: number
-  listen: () => Promise<{ host: typeof loopbackHost; port: number }>
+  listen: () => Promise<{
+    host: typeof loopbackHost
+    port: number
+  }>
   close: () => Promise<void>
 }
 
@@ -75,11 +78,7 @@ function corsOriginsFromEnv() {
         .filter(Boolean)
     : []
 
-  return [
-    'http://127.0.0.1:48273',
-    'http://localhost:48273',
-    ...origins,
-  ]
+  return ['http://127.0.0.1:48273', 'http://localhost:48273', ...origins]
 }
 
 function isObject(value: unknown): value is JsonRecord {
@@ -93,7 +92,7 @@ function requestOrigin(request: http.IncomingMessage) {
 
 function isAllowedOrigin(
   request: http.IncomingMessage,
-  allowedOrigins: Set<string>
+  allowedOrigins: Set<string>,
 ) {
   const origin = requestOrigin(request)
   return !origin || allowedOrigins.has(origin)
@@ -102,7 +101,7 @@ function isAllowedOrigin(
 function applyCors(
   request: http.IncomingMessage,
   response: http.ServerResponse,
-  allowedOrigins: Set<string>
+  allowedOrigins: Set<string>,
 ) {
   const origin = requestOrigin(request)
   if (origin && allowedOrigins.has(origin)) {
@@ -112,7 +111,7 @@ function applyCors(
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
   response.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Last-Event-ID,X-Orrery-Source-Token'
+    'Content-Type,Last-Event-ID,X-Orrery-Source-Token',
   )
   response.setHeader('Access-Control-Max-Age', '600')
 }
@@ -120,16 +119,18 @@ function applyCors(
 function sendJson(
   response: http.ServerResponse,
   statusCode: number,
-  value: unknown
+  value: unknown,
 ) {
-  response.writeHead(statusCode, { 'Content-Type': 'application/json' })
+  response.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+  })
   response.end(`${JSON.stringify(value)}\n`)
 }
 
 function sendError(
   response: http.ServerResponse,
   statusCode: number,
-  error: unknown
+  error: unknown,
 ) {
   const message = error instanceof Error ? error.message : String(error)
   sendJson(response, statusCode, { error: message })
@@ -148,7 +149,10 @@ function notFoundOnUnknownSession<T>(read: () => T): T {
   try {
     return read()
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Unknown session:')) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith('Unknown session:')
+    ) {
       throw new RuntimeHttpError(404, error.message)
     }
     throw error
@@ -193,7 +197,7 @@ function decodeParam(value: string | undefined) {
 
 function compileRoutes(
   runtime: RuntimeSessionManager,
-  config: JsonRecord
+  config: JsonRecord,
 ): RuntimeRoute[] {
   return [
     {
@@ -221,7 +225,9 @@ function compileRoutes(
       pattern: /^\/api\/runtime\/loops\/([^/]+)\/timeline$/,
       handler: (_request, params) =>
         notFoundOnUnknownLoop(() =>
-          runtime.getLoopTimeline({ loopId: params.loopId })
+          runtime.getLoopTimeline({
+            loopId: params.loopId,
+          }),
         ),
     },
     {
@@ -230,7 +236,10 @@ function compileRoutes(
       handler: async (request, params) => {
         const body = await readJsonBody(request)
         return notFoundOnUnknownLoop(() =>
-          runtime.stopLoop({ ...body, loopId: params.loopId })
+          runtime.stopLoop({
+            ...body,
+            loopId: params.loopId,
+          }),
         )
       },
     },
@@ -255,7 +264,7 @@ function compileRoutes(
           runtime.getSessionView({
             sessionId: params.sessionId,
             view: queryParams(request).get('view') ?? undefined,
-          })
+          }),
         ),
     },
     {
@@ -266,13 +275,14 @@ function compileRoutes(
           runtime.getSessionEvents({
             sessionId: params.sessionId,
             since: queryParams(request).get('since') ?? undefined,
-          })
+          }),
         ),
     },
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/project-context$/,
-      handler: async (request) => runtime.getProjectContext(await readJsonBody(request)),
+      handler: async (request) =>
+        runtime.getProjectContext(await readJsonBody(request)),
     },
     {
       method: 'POST',
@@ -289,7 +299,8 @@ function compileRoutes(
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/sessions$/,
-      handler: async (request) => runtime.createSession(await readJsonBody(request)),
+      handler: async (request) =>
+        runtime.createSession(await readJsonBody(request)),
     },
     {
       method: 'POST',
@@ -353,17 +364,20 @@ function compileRoutes(
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/edges$/,
-      handler: async (request) => runtime.linkSessions(await readJsonBody(request)),
+      handler: async (request) =>
+        runtime.linkSessions(await readJsonBody(request)),
     },
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/edges\/([^/]+)\/remove$/,
-      handler: (_request, params) => runtime.removeEdge({ edgeId: params.edgeId }),
+      handler: (_request, params) =>
+        runtime.removeEdge({ edgeId: params.edgeId }),
     },
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/clusters$/,
-      handler: async (request) => runtime.upsertCluster(await readJsonBody(request)),
+      handler: async (request) =>
+        runtime.upsertCluster(await readJsonBody(request)),
     },
     {
       method: 'POST',
@@ -448,7 +462,10 @@ function compileRoutes(
       handler: async (request, params) => {
         const body = await readJsonBody(request)
         return notFoundOnUnknownSource(() =>
-          runtime.removeExternalSource({ ...body, sourceId: params.sourceId })
+          runtime.removeExternalSource({
+            ...body,
+            sourceId: params.sourceId,
+          }),
         )
       },
     },
@@ -460,8 +477,7 @@ function compileRoutes(
       handler: async (request) => {
         const body = await readJsonBody(request)
         const headerToken = request.headers['x-orrery-source-token']
-        const token =
-          typeof headerToken === 'string' ? headerToken : body.token
+        const token = typeof headerToken === 'string' ? headerToken : body.token
         delete body.token
         if (!runtime.verifyExternalSourceToken(body.sourceId, token)) {
           throw new RuntimeHttpError(401, 'Invalid or missing source token')
@@ -485,6 +501,18 @@ function compileRoutes(
       pattern: /^\/api\/runtime\/review-workflows$/,
       handler: async (request) =>
         runtime.startReviewWorkflow(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/draft-workflows$/,
+      handler: async (request) =>
+        runtime.startDraftWorkflow(await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/agent-connections$/,
+      handler: async (request) =>
+        runtime.connectAgents(await readJsonBody(request)),
     },
     {
       method: 'POST',
@@ -553,7 +581,9 @@ function compileRoutes(
       method: 'GET',
       pattern: /^\/api\/runtime\/terminals\/([^/]+)$/,
       handler: async (_request, params) =>
-        runtime.getTerminal({ terminalId: params.terminalId }),
+        runtime.getTerminal({
+          terminalId: params.terminalId,
+        }),
     },
     {
       method: 'POST',
@@ -577,13 +607,17 @@ function compileRoutes(
       method: 'POST',
       pattern: /^\/api\/runtime\/terminals\/([^/]+)\/clear$/,
       handler: async (_request, params) =>
-        runtime.clearTerminal({ terminalId: params.terminalId }),
+        runtime.clearTerminal({
+          terminalId: params.terminalId,
+        }),
     },
     {
       method: 'POST',
       pattern: /^\/api\/runtime\/terminals\/([^/]+)\/close$/,
       handler: async (_request, params) =>
-        runtime.closeTerminal({ terminalId: params.terminalId }),
+        runtime.closeTerminal({
+          terminalId: params.terminalId,
+        }),
     },
   ]
 }
@@ -673,7 +707,7 @@ function writeSseEvent(client: SseClient, id: number, event: JsonRecord) {
 }
 
 export function createRuntimeHttpServer(
-  options: RuntimeHttpServerOptions = {}
+  options: RuntimeHttpServerOptions = {},
 ): RuntimeHttpServer {
   const clients = new Map<number, SseClient>()
   let nextClientId = 1
@@ -743,7 +777,10 @@ export function createRuntimeHttpServer(
       const client: SseClient = {
         id: clientId,
         response,
-        keepAlive: setInterval(() => response.write(': keep-alive\n\n'), sseKeepAliveMs),
+        keepAlive: setInterval(
+          () => response.write(': keep-alive\n\n'),
+          sseKeepAliveMs,
+        ),
       }
       clients.set(clientId, client)
       request.on('close', () => {
@@ -771,7 +808,9 @@ export function createRuntimeHttpServer(
       const params = routeParams(route.pattern, pathname) ?? {}
       const result = await route.handler(request, params)
       if (request.method === 'HEAD') {
-        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.writeHead(200, {
+          'Content-Type': 'application/json',
+        })
         response.end()
         return
       }
@@ -781,9 +820,9 @@ export function createRuntimeHttpServer(
         error instanceof RuntimeHttpError
           ? error.statusCode
           : error instanceof SyntaxError ||
-        (error instanceof Error && error.message.includes('Request body'))
-          ? 400
-          : 500
+              (error instanceof Error && error.message.includes('Request body'))
+            ? 400
+            : 500
       sendError(response, statusCode, error)
     }
   })
@@ -800,9 +839,7 @@ export function createRuntimeHttpServer(
           server.off('error', reject)
           const address = server.address()
           const actualPort =
-            typeof address === 'object' && address
-              ? address.port
-              : port
+            typeof address === 'object' && address ? address.port : port
           config.port = actualPort
           config.baseUrl = `http://${loopbackHost}:${actualPort}`
           config.eventsUrl = `${config.baseUrl}/api/runtime/events`
@@ -832,7 +869,7 @@ export function createRuntimeHttpServer(
 }
 
 export async function startRuntimeHttpServer(
-  options: RuntimeHttpServerOptions = {}
+  options: RuntimeHttpServerOptions = {},
 ) {
   const runtimeServer = createRuntimeHttpServer(options)
   const address = await runtimeServer.listen()

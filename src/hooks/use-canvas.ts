@@ -18,6 +18,8 @@ import {
 } from '@/lib/graph-view';
 import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/reports';
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
+import { draftCanvasEdges, draftCanvasNodes } from '@/lib/draft-graph-view';
+import type { DraftGraphState } from '@/hooks/use-draft-graph';
 
 function sameStringList(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -46,6 +48,7 @@ export function useCanvas({
   reportsById,
   setSelectedCanvasNodeIds,
   setActiveClusterId,
+  draft,
 }: {
   runtimeApi: RuntimeApi | undefined;
   runtimeState: GraphState;
@@ -54,7 +57,9 @@ export function useCanvas({
   reportsById: Map<string, Report>;
   setSelectedCanvasNodeIds: Dispatch<SetStateAction<string[]>>;
   setActiveClusterId: Dispatch<SetStateAction<string | undefined>>;
+  draft: DraftGraphState;
 }) {
+  const { graph: draftGraph, validation: draftValidation, dispatch: draftDispatch } = draft;
   const nodes: Node[] = useMemo(
     () => [
       ...clusterBoundaryNodes(runtimeState),
@@ -64,6 +69,7 @@ export function useCanvas({
       ...timerNodes(runtimeState),
       ...sourceNodes(runtimeState),
       ...loopBadgeNodes(runtimeState),
+      ...draftCanvasNodes(draftGraph, draftValidation.issues),
       ...runtimeState.nodes.map((node) => {
         const session = runtimeState.sessions[node.sessionId];
         const cluster = node.clusterId ? runtimeState.clusters[node.clusterId] : undefined;
@@ -95,7 +101,7 @@ export function useCanvas({
         };
       }),
     ],
-    [runtimeState],
+    [draftGraph, draftValidation.issues, runtimeState],
   );
   const [canvasNodes, setCanvasNodes] = useState<Node[]>(nodes);
   const canvasNodesSignatureRef = useRef(canvasNodesRenderSignature(nodes));
@@ -116,6 +122,7 @@ export function useCanvas({
         animated: edge.kind === 'create-session' || edge.kind === 'resume-session',
         markerEnd: { type: MarkerType.ArrowClosed },
         data: {
+          edgeId: edge.edgeId,
           kind: edge.kind,
           label: edge.label ?? edge.kind,
           sequence: sequenceById.get(edge.edgeId) ?? 0,
@@ -144,6 +151,7 @@ export function useCanvas({
         markerEnd: { type: MarkerType.ArrowClosed },
         zIndex: 5,
         data: {
+          subscriptionId: subscription.id,
           kind: 'subscription' as const,
           label: subscription.label ?? 'when',
           sequence: 0,
@@ -160,8 +168,8 @@ export function useCanvas({
       };
     });
 
-    return [...historyEdges, ...intentEdges];
-  }, [reportsById, runtimeState]);
+    return [...historyEdges, ...intentEdges, ...draftCanvasEdges(draftGraph)];
+  }, [draftGraph, reportsById, runtimeState]);
 
   useEffect(() => {
     if (isDraggingCanvasNodeRef.current) {
@@ -186,6 +194,10 @@ export function useCanvas({
   const persistCanvasNodePositions = useCallback(
     (_event: globalThis.MouseEvent | TouchEvent, node: Node, draggedNodes: Node[]) => {
       isDraggingCanvasNodeRef.current = false;
+      if (draftGraph.nodes[node.id]) {
+        draftDispatch({ type: 'update-node', id: node.id, patch: { position: { x: node.position.x, y: node.position.y } } });
+        return;
+      }
       const updates = nodePositionUpdatesFromFlowNodes(draggedNodes.length > 0 ? draggedNodes : [node]);
       if (updates.length === 0) {
         return;
@@ -205,14 +217,21 @@ export function useCanvas({
           setRuntimeError(error instanceof Error ? error.message : String(error));
         });
     },
-    [runtimeApi, setRuntimeError, setRuntimeState],
+    [draftDispatch, draftGraph.nodes, runtimeApi, setRuntimeError, setRuntimeState],
   );
 
   const updateCanvasSelection = useCallback(
     ({ nodes: selectedNodes }: { nodes: Node[] }) => {
       const nextSelection = selectedNodes
         .map((node) => node.id)
-        .filter((nodeId) => !nodeId.startsWith('cluster:') && !nodeId.startsWith('timer:') && !nodeId.startsWith('loop:') && !nodeId.startsWith('source:'));
+        .filter(
+          (nodeId) =>
+            !draftGraph.nodes[nodeId] &&
+            !nodeId.startsWith('cluster:') &&
+            !nodeId.startsWith('timer:') &&
+            !nodeId.startsWith('loop:') &&
+            !nodeId.startsWith('source:'),
+        );
 
       setSelectedCanvasNodeIds((previousSelection) => (sameStringList(previousSelection, nextSelection) ? previousSelection : nextSelection));
 
@@ -223,7 +242,7 @@ export function useCanvas({
         setActiveClusterId((current) => (current === selectedClusterId ? current : selectedClusterId));
       }
     },
-    [runtimeState.nodes, setActiveClusterId, setSelectedCanvasNodeIds],
+    [draftGraph.nodes, runtimeState.nodes, setActiveClusterId, setSelectedCanvasNodeIds],
   );
 
   return {

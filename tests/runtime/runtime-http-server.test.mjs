@@ -159,6 +159,36 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const missingLoopStop = await missingLoopStopResponse.json()
     assert.match(missingLoopStop.error, /Unknown loop/)
 
+    const invalidConnectionResponse = await fetch(
+      `${base}/api/runtime/agent-connections`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:48273',
+        },
+        body: JSON.stringify({}),
+      }
+    )
+    assert.equal(invalidConnectionResponse.status, 500)
+    const invalidConnection = await invalidConnectionResponse.json()
+    assert.match(invalidConnection.error, /Choose a source Agent/)
+
+    const missingSubscriptionStopResponse = await fetch(
+      `${base}/api/runtime/subscriptions/missing-subscription/stop`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'http://127.0.0.1:48273',
+        },
+        body: JSON.stringify({ reason: 'test stop' }),
+      }
+    )
+    assert.equal(missingSubscriptionStopResponse.status, 500)
+    const missingSubscriptionStop = await missingSubscriptionStopResponse.json()
+    assert.match(missingSubscriptionStop.error, /Unknown subscription/)
+
     const optionsResponse = await fetch(`${base}/api/runtime/state`, {
       method: 'OPTIONS',
       headers: { Origin: 'http://127.0.0.1:48273' },

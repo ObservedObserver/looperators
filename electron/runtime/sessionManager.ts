@@ -26,6 +26,14 @@ import {
   validateReviewWorkflowStart,
 } from '../../shared/review-workflow.js'
 import {
+  compileDraftRelation,
+  validateDraftGraph,
+} from '../../shared/draft-graph.js'
+import {
+  compileAgentConnection,
+  validateAgentConnection,
+} from '../../shared/agent-connection.js'
+import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
@@ -41,10 +49,7 @@ import {
   scheduleSummary,
   staticCheck,
 } from '../../shared/graph-core/index.js'
-import {
-  ContextChannelStore,
-  activationPreamble,
-} from './contextChannel.js'
+import { ContextChannelStore, activationPreamble } from './contextChannel.js'
 import { createExternalSourceAdapter } from './externalSourceAdapters.js'
 import {
   KernelStore,
@@ -141,7 +146,13 @@ const schedulerTriggerEventTypes = new Set([
   'external.timer',
 ])
 const recoverableActiveStatuses = new Set(['pending', 'running'])
-const validSessionStatuses = new Set(['pending', 'running', 'idle', 'failed', 'killed'])
+const validSessionStatuses = new Set([
+  'pending',
+  'running',
+  'idle',
+  'failed',
+  'killed',
+])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
 const validAgentBackends = new Set([
   'claude-cli',
@@ -199,7 +210,12 @@ const validProviderSandboxModes = new Set([
   'workspace-write',
   'danger-full-access',
 ])
-const validProviderReasoningEfforts = new Set(['low', 'medium', 'high', 'xhigh'])
+const validProviderReasoningEfforts = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+])
 const validProviderInteractionModes = new Set(['default', 'plan'])
 const validGraphEdgeKinds = new Set(graphEdgeKinds)
 const validOpenWorkspaceTargets = new Set(openWorkspaceTargetIds)
@@ -331,12 +347,12 @@ function validateRunnableCwd(cwd) {
   const stat = cwdStat(resolved)
   if (!stat) {
     throw new Error(
-      `Project folder not found: ${resolved}. Choose an existing cwd before starting the chat.`
+      `Project folder not found: ${resolved}. Choose an existing cwd before starting the chat.`,
     )
   }
   if (!stat.isDirectory()) {
     throw new Error(
-      `Project cwd is not a folder: ${resolved}. Choose an existing project directory.`
+      `Project cwd is not a folder: ${resolved}. Choose an existing project directory.`,
     )
   }
 
@@ -473,7 +489,7 @@ function buildWorkspaceFileTree(root, parentRelativePath, depth, state) {
         root,
         entry.path,
         depth + 1,
-        state
+        state,
       )
     }
 
@@ -490,7 +506,9 @@ function resolveWorkspaceFilePath(cwd, requestedPath) {
 
   const rawPath = requestedPath.trim()
   if (path.isAbsolute(rawPath)) {
-    throw new Error('Workspace file path must be relative to the project folder.')
+    throw new Error(
+      'Workspace file path must be relative to the project folder.',
+    )
   }
 
   const normalizedPath = path.normalize(rawPath)
@@ -564,7 +582,10 @@ function workspaceOpenCommand(target, cwd) {
     return { command: 'xdg-open', args: [cwd] }
   }
   if (target === 'terminal') {
-    return { command: 'x-terminal-emulator', args: ['--working-directory', cwd] }
+    return {
+      command: 'x-terminal-emulator',
+      args: ['--working-directory', cwd],
+    }
   }
   if (target === 'xcode') {
     throw new Error('Xcode is only available on macOS.')
@@ -610,7 +631,7 @@ function runWorkspaceOpenCommand(command, args, cwd) {
         return
       }
       settle(() =>
-        reject(new Error(`${command} failed with exit code ${String(code)}`))
+        reject(new Error(`${command} failed with exit code ${String(code)}`)),
       )
     })
   })
@@ -720,7 +741,9 @@ function normalizeChatAttachments(value) {
         : attachment.kind === 'text' || attachment.kind === 'file'
           ? 'text'
           : 'binary'
-    const size = Number.isFinite(attachment.size) ? Math.max(0, attachment.size) : 0
+    const size = Number.isFinite(attachment.size)
+      ? Math.max(0, attachment.size)
+      : 0
     const kind =
       requestedKind === 'image' &&
       supportedAttachmentImageMimeTypes.has(mediaType) &&
@@ -742,7 +765,9 @@ function normalizeChatAttachments(value) {
 
     return {
       id: nonEmptyString(attachment.id) ? attachment.id : randomUUID(),
-      name: nonEmptyString(attachment.name) ? attachment.name.trim() : 'attachment',
+      name: nonEmptyString(attachment.name)
+        ? attachment.name.trim()
+        : 'attachment',
       mediaType,
       size,
       kind,
@@ -769,9 +794,7 @@ function legacyAttachmentContext(attachments = []) {
       ].join('\n')
 
       if (attachment.kind === 'text' && typeof attachment.text === 'string') {
-        return `${header}\nText content${
-          attachment.truncated ? ' (truncated)' : ''
-        }:\n${attachment.text}`
+        return `${header}\nText content${attachment.truncated ? ' (truncated)' : ''}:\n${attachment.text}`
       }
 
       if (attachment.kind === 'image') {
@@ -822,7 +845,7 @@ function cwdPathParts(cwd) {
 function ephemeralWorktreeProjectName(cwd) {
   const parts = cwdPathParts(cwd)
   const codexIndex = parts.findIndex(
-    (part, index) => part === '.codex' && parts[index + 1] === 'worktrees'
+    (part, index) => part === '.codex' && parts[index + 1] === 'worktrees',
   )
   if (codexIndex >= 0) {
     return parts[codexIndex + 3]
@@ -881,11 +904,11 @@ function currentGitBranch(cwd) {
 
 function localGitBranches(cwd) {
   try {
-    return gitOutput(cwd, [
-      'for-each-ref',
-      '--format=%(refname:short)',
-      'refs/heads',
-    ], { quietStderr: true })
+    return gitOutput(
+      cwd,
+      ['for-each-ref', '--format=%(refname:short)', 'refs/heads'],
+      { quietStderr: true },
+    )
       .split('\n')
       .map((branch) => branch.trim())
       .filter(Boolean)
@@ -958,11 +981,13 @@ function branchSlug(value) {
 }
 
 function gitRefSlug(value) {
-  return String(value)
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/[/.]+$/g, '')
-    .replace(/^\.+/g, '')
-    .slice(0, 96) || 'unknown'
+  return (
+    String(value)
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/[/.]+$/g, '')
+      .replace(/^\.+/g, '')
+      .slice(0, 96) || 'unknown'
+  )
 }
 
 function checkpointRef({ sessionId, turnCount, turnId, stage }) {
@@ -1006,8 +1031,9 @@ function normalizeSessionProject(value, cwd) {
   }
 
   const workMode = normalizeWorkMode(value.workMode)
-  const name =
-    nonEmptyString(value.name) ? value.name.trim() : projectNameFromCwd(cwd)
+  const name = nonEmptyString(value.name)
+    ? value.name.trim()
+    : projectNameFromCwd(cwd)
   const projectCwd = nonEmptyString(value.cwd) ? safeCwd(value.cwd) : cwd
   const repoRoot = nonEmptyString(value.repoRoot)
     ? safeCwd(value.repoRoot)
@@ -1039,7 +1065,7 @@ function createSessionWorktree(projectCwd, sessionId, requestedBranch) {
   const worktreeRoot = path.join(
     path.dirname(context.repoRoot),
     '.orrery-worktrees',
-    context.projectName
+    context.projectName,
   )
   const worktreePath = path.join(worktreeRoot, shortId)
 
@@ -1059,7 +1085,7 @@ function createSessionWorktree(projectCwd, sessionId, requestedBranch) {
       context,
       'worktree',
       sessionBranch,
-      baseBranch
+      baseBranch,
     ),
   }
 }
@@ -1070,7 +1096,7 @@ function localSessionWorkspace(projectCwd, requestedBranch) {
   const requested = normalizeBranchName(requestedBranch)
   if (requested && currentBranch && requested !== currentBranch) {
     throw new Error(
-      `Work locally uses the currently checked out branch (${currentBranch}). Choose New worktree to start from ${requested}.`
+      `Work locally uses the currently checked out branch (${currentBranch}). Choose New worktree to start from ${requested}.`,
     )
   }
 
@@ -1080,7 +1106,7 @@ function localSessionWorkspace(projectCwd, requestedBranch) {
       context,
       'local',
       currentBranch ?? requested,
-      undefined
+      undefined,
     ),
   }
 }
@@ -1090,25 +1116,24 @@ function parseDiffFilesFromPatch(patch) {
     return []
   }
 
-  const files = parsePatchFiles(patch)
-    .flatMap((parsedPatch) =>
-      parsedPatch.files.map((file) => ({
-        path: file.name,
-        previousPath:
-          typeof file.prevName === 'string' && file.prevName.length > 0
-            ? file.prevName
-            : undefined,
-        changeType: typeof file.type === 'string' ? file.type : 'change',
-        additions: file.hunks.reduce(
-          (total, hunk) => total + hunk.additionLines,
-          0
-        ),
-        deletions: file.hunks.reduce(
-          (total, hunk) => total + hunk.deletionLines,
-          0
-        ),
-      }))
-    )
+  const files = parsePatchFiles(patch).flatMap((parsedPatch) =>
+    parsedPatch.files.map((file) => ({
+      path: file.name,
+      previousPath:
+        typeof file.prevName === 'string' && file.prevName.length > 0
+          ? file.prevName
+          : undefined,
+      changeType: typeof file.type === 'string' ? file.type : 'change',
+      additions: file.hunks.reduce(
+        (total, hunk) => total + hunk.additionLines,
+        0,
+      ),
+      deletions: file.hunks.reduce(
+        (total, hunk) => total + hunk.deletionLines,
+        0,
+      ),
+    })),
+  )
   const filesByPath = new Map()
   for (const file of files) {
     const existing = filesByPath.get(file.path)
@@ -1125,7 +1150,7 @@ function parseDiffFilesFromPatch(patch) {
   }
 
   return [...filesByPath.values()].sort((left, right) =>
-    left.path.localeCompare(right.path)
+    left.path.localeCompare(right.path),
   )
 }
 
@@ -1136,7 +1161,7 @@ function totalsForDiffFiles(files) {
       additions: totals.additions + file.additions,
       deletions: totals.deletions + file.deletions,
     }),
-    { files: 0, additions: 0, deletions: 0 }
+    { files: 0, additions: 0, deletions: 0 },
   )
 }
 
@@ -1164,7 +1189,10 @@ function backupFileFor(storageFile) {
 
 function readJsonFile(file) {
   try {
-    return { ok: true, value: JSON.parse(fs.readFileSync(file, 'utf8')) }
+    return {
+      ok: true,
+      value: JSON.parse(fs.readFileSync(file, 'utf8')),
+    }
   } catch (error) {
     return { ok: false, error }
   }
@@ -1199,22 +1227,30 @@ function combinedContext(...values) {
   return sections.length > 0 ? sections.join('\n\n') : undefined
 }
 
-function providerPromptContent({ providerKind, message, context, attachments }) {
+function providerPromptContent({
+  providerKind,
+  message,
+  context,
+  attachments,
+}) {
   if (providerKind === 'legacy-claude-cli') {
     return messageContent(
       message,
-      combinedContext(context, legacyAttachmentContext(attachments))
+      combinedContext(context, legacyAttachmentContext(attachments)),
     )
   }
 
   return messageContent(message, context)
 }
 
-function providerConfig(input: JsonRecord = {}, providerInstances: JsonRecord[] = []) {
+function providerConfig(
+  input: JsonRecord = {},
+  providerInstances: JsonRecord[] = [],
+) {
   const requestedInstanceId = optionalTrimmedString(input.providerInstanceId)
   const requestedInstance = requestedInstanceId
     ? providerInstances.find(
-        (instance) => instance.providerInstanceId === requestedInstanceId
+        (instance) => instance.providerInstanceId === requestedInstanceId,
       )
     : undefined
   if (requestedInstanceId && !requestedInstance) {
@@ -1235,7 +1271,7 @@ function providerConfig(input: JsonRecord = {}, providerInstances: JsonRecord[] 
 
   if (providerInstance.kind !== requestedKind) {
     throw new Error(
-      `Provider instance ${providerInstance.providerInstanceId} is ${providerInstance.kind}, not ${requestedKind}.`
+      `Provider instance ${providerInstance.providerInstanceId} is ${providerInstance.kind}, not ${requestedKind}.`,
     )
   }
 
@@ -1310,9 +1346,15 @@ function commandExists(command) {
       },
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    return { ok: resolved.length > 0, detail: resolved || command }
+    return {
+      ok: resolved.length > 0,
+      detail: resolved || command,
+    }
   } catch {
-    return { ok: false, detail: `Could not find ${command} on PATH.` }
+    return {
+      ok: false,
+      detail: `Could not find ${command} on PATH.`,
+    }
   }
 }
 
@@ -1322,14 +1364,15 @@ function providerSetupErrorDiagnostic(providerKind, diagnostics = []) {
       ? /codex|auth|login|account|rate.?limit/i
       : /claude|auth|login|account|rate.?limit/i
   return diagnostics.find((diagnostic) =>
-    providerPattern.test(`${diagnostic.type} ${diagnostic.message}`)
+    providerPattern.test(`${diagnostic.type} ${diagnostic.message}`),
   )
 }
 
 function defaultProviderInstanceForKind(providerKind) {
   return (
-    defaultProviderInstances.find((instance) => instance.kind === providerKind) ??
-    defaultProviderInstances[0]
+    defaultProviderInstances.find(
+      (instance) => instance.kind === providerKind,
+    ) ?? defaultProviderInstances[0]
   )
 }
 
@@ -1378,7 +1421,7 @@ function optionalTrimmedString(value) {
 function normalizeProviderInstance(
   value: JsonRecord = {},
   fallback?: JsonRecord,
-  { reuseOptionalFallback = true }: { reuseOptionalFallback?: boolean } = {}
+  { reuseOptionalFallback = true }: { reuseOptionalFallback?: boolean } = {},
 ) {
   const input = isObject(value) ? value : {}
   const fallbackInstance = isObject(fallback) ? fallback : undefined
@@ -1396,7 +1439,7 @@ function normalizeProviderInstance(
       : defaultProviderInstanceForKind('claude-code').kind
   if (fallbackInstance && fallbackInstance.kind !== kind) {
     throw new Error(
-      `Provider instance ${providerInstanceId} is ${fallbackInstance.kind}, not ${kind}.`
+      `Provider instance ${providerInstanceId} is ${fallbackInstance.kind}, not ${kind}.`,
     )
   }
 
@@ -1404,7 +1447,8 @@ function normalizeProviderInstance(
     optionalTrimmedString(input.label) ??
     optionalTrimmedString(fallbackInstance?.label) ??
     providerInstanceId
-  const hasOwn = (key: string) => Object.prototype.hasOwnProperty.call(input, key)
+  const hasOwn = (key: string) =>
+    Object.prototype.hasOwnProperty.call(input, key)
   const optionalValue = (key: string) =>
     hasOwn(key)
       ? input[key]
@@ -1440,7 +1484,7 @@ function normalizeProviderInstances(value) {
     defaultProviderInstances.map((instance) => [
       instance.providerInstanceId,
       { ...instance },
-    ])
+    ]),
   )
   const sourceInstances = Array.isArray(value) ? value : []
 
@@ -1494,12 +1538,17 @@ function normalizeProviderRuntimeSettings(value: JsonRecord = {}) {
   return settings
 }
 
-function normalizeProviderEffectiveRuntimeConfig(value, providerKind, runtimeSettings) {
+function normalizeProviderEffectiveRuntimeConfig(
+  value,
+  providerKind,
+  runtimeSettings,
+) {
   const input = isObject(value) ? value : {}
   const native = isObject(input.native) ? input.native : {}
   const runtimeMode = validProviderRuntimeModes.has(input.runtimeMode)
     ? input.runtimeMode
-    : runtimeSettings?.runtimeMode ?? defaultProviderRuntimeSettings.runtimeMode
+    : (runtimeSettings?.runtimeMode ??
+      defaultProviderRuntimeSettings.runtimeMode)
   return {
     providerKind: validProviderKinds.has(input.providerKind)
       ? input.providerKind
@@ -1514,7 +1563,9 @@ function normalizeProviderEffectiveRuntimeConfig(value, providerKind, runtimeSet
       : {}),
     native,
     ...(Array.isArray(input.notes)
-      ? { notes: input.notes.filter(nonEmptyString).map((note) => note.trim()) }
+      ? {
+          notes: input.notes.filter(nonEmptyString).map((note) => note.trim()),
+        }
       : {}),
   }
 }
@@ -1659,7 +1710,9 @@ export class RuntimeSessionManager {
         'storage.migrated',
         { fromFile: this.#storageFile },
         { actor: { kind: 'runtime' } },
-        { reason: 'Imported legacy JSON snapshot into the SQLite kernel store.' }
+        {
+          reason: 'Imported legacy JSON snapshot into the SQLite kernel store.',
+        },
       )
     } else if (this.#legacyImportKind === 'fossil-rollback') {
       this.#appendKernelEvent(
@@ -1669,7 +1722,7 @@ export class RuntimeSessionManager {
         {
           reason:
             'Kernel store was corrupt; restored the legacy JSON snapshot. State may have rolled back to the migration point.',
-        }
+        },
       )
     }
     for (const sessionId of this.#restartInterruptedSessionIds) {
@@ -1680,7 +1733,7 @@ export class RuntimeSessionManager {
         'session.failed',
         { sessionId, interruptedByRestart: true },
         { actor: { kind: 'runtime' } },
-        { reason: 'Interrupted by runtime restart.' }
+        { reason: 'Interrupted by runtime restart.' },
       )
     }
     this.#restartInterruptedSessionIds = []
@@ -1722,18 +1775,23 @@ export class RuntimeSessionManager {
     const actor = isObject(command.actor) ? command.actor : undefined
     if (!actor || !kernelActorKinds.has(actor.kind)) {
       throw new Error(
-        `Kernel command requires a valid actor: ${JSON.stringify(command.actor)}`
+        `Kernel command requires a valid actor: ${JSON.stringify(command.actor)}`,
       )
     }
     if (
       (actor.kind === 'master' || actor.kind === 'agent') &&
       !this.#state.sessions[optionalTrimmedString(actor.ref) ?? '']
     ) {
-      throw new Error(`Kernel command actor session is unknown: ${actor.ref ?? ''}`)
+      throw new Error(
+        `Kernel command actor session is unknown: ${actor.ref ?? ''}`,
+      )
     }
 
     const ctx = {
-      actor: { kind: actor.kind, ref: optionalTrimmedString(actor.ref) },
+      actor: {
+        kind: actor.kind,
+        ref: optionalTrimmedString(actor.ref),
+      },
       causeId: optionalTrimmedString(command.causeId),
       reason: optionalTrimmedString(command.reason),
     }
@@ -1801,7 +1859,10 @@ export class RuntimeSessionManager {
       type: optionalTrimmedString(request.type),
       tail: request.tail === true || request.tail === 'true',
     })
-    return { events, latestSeq: this.#kernelStore.latestSeq() }
+    return {
+      events,
+      latestSeq: this.#kernelStore.latestSeq(),
+    }
   }
 
   // The whole log in ascending seq order. listEvents caps a single page at
@@ -1811,7 +1872,10 @@ export class RuntimeSessionManager {
     const events = []
     let sinceSeq = 0
     for (;;) {
-      const batch = this.#kernelStore.listEvents({ sinceSeq, limit: 2000 })
+      const batch = this.#kernelStore.listEvents({
+        sinceSeq,
+        limit: 2000,
+      })
       events.push(...batch)
       if (batch.length < 2000) {
         return events
@@ -1826,14 +1890,20 @@ export class RuntimeSessionManager {
     if (stopped.length === 0) {
       return loops
     }
-    const keyOf = (loop) => `${loop.loopId}\u0000${[...loop.subscriptionIds].sort().join('\u0000')}`
+    const keyOf = (loop) =>
+      `${loop.loopId}\u0000${[...loop.subscriptionIds].sort().join('\u0000')}`
     const missing = stopped.filter(
-      (loop) => events !== undefined || !this.#loopTerminalFacts.has(keyOf(loop))
+      (loop) =>
+        events !== undefined || !this.#loopTerminalFacts.has(keyOf(loop)),
     )
     if (missing.length > 0) {
       const authoritativeEvents = events ?? this.#allKernelEvents()
       for (const loop of missing) {
-        const terminal = loopTimelineOf(view, authoritativeEvents, loop).stops.at(-1)
+        const terminal = loopTimelineOf(
+          view,
+          authoritativeEvents,
+          loop,
+        ).stops.at(-1)
         if (terminal) {
           this.#loopTerminalFacts.set(keyOf(loop), terminal)
         }
@@ -1855,7 +1925,7 @@ export class RuntimeSessionManager {
     const view = this.#kernelView()
     const events = this.#allKernelEvents()
     const loop = this.#loopViewsWithTerminalFacts(view, events).find(
-      (candidate) => candidate.loopId === loopId
+      (candidate) => candidate.loopId === loopId,
     )
     if (!loop) {
       throw new Error(`Unknown loop: ${loopId}`)
@@ -1869,7 +1939,10 @@ export class RuntimeSessionManager {
   }
 
   #subscriptionRuleCtx(subscriptionId, causeId) {
-    return { actor: { kind: 'rule', ref: subscriptionId }, causeId }
+    return {
+      actor: { kind: 'rule', ref: subscriptionId },
+      causeId,
+    }
   }
 
   // ---- Intent layer: subscriptions, gates, and the scheduling loop (G3) ----
@@ -1882,7 +1955,7 @@ export class RuntimeSessionManager {
     const sessions = {}
     for (const session of Object.values(this.#state.sessions as JsonRecord)) {
       const node = this.#state.nodes.find(
-        (item) => item.sessionId === session.sessionId
+        (item) => item.sessionId === session.sessionId,
       )
       sessions[session.sessionId] = {
         sessionId: session.sessionId,
@@ -1899,15 +1972,13 @@ export class RuntimeSessionManager {
         scopeId: cluster.clusterId,
         kind: 'cluster',
         parentId: undefined,
-        members: cluster.nodeIds.filter(
-          (id) => id !== cluster.masterSessionId
-        ),
+        members: cluster.nodeIds.filter((id) => id !== cluster.masterSessionId),
         masterSessionId: cluster.masterSessionId,
       }
     }
     const pending = {}
     for (const slot of Object.values(
-      (this.#state.pendingActivations ?? {}) as JsonRecord
+      (this.#state.pendingActivations ?? {}) as JsonRecord,
     )) {
       pending[slot.slotKey] = {
         slotKey: slot.slotKey,
@@ -1930,9 +2001,9 @@ export class RuntimeSessionManager {
   }
 
   #activeSubscriptionCount() {
-    return Object.values((this.#state.subscriptions ?? {}) as JsonRecord).filter(
-      (subscription) => subscription.state === 'active'
-    ).length
+    return Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord,
+    ).filter((subscription) => subscription.state === 'active').length
   }
 
   // Single-threaded scheduler (§2.4): kernel facts are processed strictly in
@@ -1947,7 +2018,10 @@ export class RuntimeSessionManager {
     ) {
       return
     }
-    if (this.#activeSubscriptionCount() === 0 && Object.keys(this.#state.pendingActivations ?? {}).length === 0) {
+    if (
+      this.#activeSubscriptionCount() === 0 &&
+      Object.keys(this.#state.pendingActivations ?? {}).length === 0
+    ) {
       return
     }
     this.#schedulerChain = this.#schedulerChain
@@ -1955,9 +2029,7 @@ export class RuntimeSessionManager {
       .then(() => this.#processSchedulerEvent(event))
       .catch((error) => {
         console.error(
-          `Subscription scheduler failed on ${event.type} (${event.id}): ${
-            error instanceof Error ? error.message : String(error)
-          }`
+          `Subscription scheduler failed on ${event.type} (${event.id}): ${error instanceof Error ? error.message : String(error)}`,
         )
       })
   }
@@ -1983,7 +2055,8 @@ export class RuntimeSessionManager {
       }
       if (decision.kind === 'deliver') {
         // Data-plane firing: forward the trigger source's artifact bundle.
-        const subscription = this.#state.subscriptions?.[decision.subscriptionId]
+        const subscription =
+          this.#state.subscriptions?.[decision.subscriptionId]
         try {
           this.#cmdDeliver(
             {
@@ -1991,9 +2064,12 @@ export class RuntimeSessionManager {
               source: eventSourceSession(event),
               topic: decision.topic,
               subscriptionId: decision.subscriptionId,
-              reportId: event.type === 'report.received' ? event.payload.reportId : undefined,
+              reportId:
+                event.type === 'report.received'
+                  ? event.payload.reportId
+                  : undefined,
             },
-            ctx
+            ctx,
           )
           if (subscription) {
             subscription.firings += 1
@@ -2002,9 +2078,7 @@ export class RuntimeSessionManager {
           }
         } catch (error) {
           console.error(
-            `Subscription ${decision.subscriptionId} delivery failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`
+            `Subscription ${decision.subscriptionId} delivery failed: ${error instanceof Error ? error.message : String(error)}`,
           )
         }
         continue
@@ -2023,7 +2097,7 @@ export class RuntimeSessionManager {
           'activation.dropped',
           { subscriptionId: decision.subscriptionId },
           ctx,
-          { reason: decision.reason }
+          { reason: decision.reason },
         )
         continue
       }
@@ -2036,13 +2110,23 @@ export class RuntimeSessionManager {
   }
 
   async #createPendingActivation(decision, event, ctx) {
-    if (decision.supersedes && this.#state.pendingActivations?.[decision.supersedes]) {
+    if (
+      decision.supersedes &&
+      this.#state.pendingActivations?.[decision.supersedes]
+    ) {
       delete this.#state.pendingActivations[decision.supersedes]
       this.#appendKernelEvent(
         'activation.superseded',
-        { subscriptionId: decision.subscriptionId, target: decision.target, slotKey: decision.supersedes },
+        {
+          subscriptionId: decision.subscriptionId,
+          target: decision.target,
+          slotKey: decision.supersedes,
+        },
         ctx,
-        { reason: 'A newer trigger superseded the pending activation (coalesce).' }
+        {
+          reason:
+            'A newer trigger superseded the pending activation (coalesce).',
+        },
       )
     }
 
@@ -2067,12 +2151,17 @@ export class RuntimeSessionManager {
       target: decision.target,
       triggerEventId: event.id,
       sourceSessionId: eventSourceSession(event),
-      reportId: event.type === 'report.received' ? event.payload.reportId : undefined,
+      reportId:
+        event.type === 'report.received' ? event.payload.reportId : undefined,
       // External triggers have no source session to bundle artifacts from;
       // the emit payload itself is the firing's data (delivered on execute).
       externalEvent:
         event.type.startsWith('external.') && event.type !== 'external.timer'
-          ? { type: event.type, ts: event.ts, payload: clone(event.payload ?? {}) }
+          ? {
+              type: event.type,
+              ts: event.ts,
+              payload: clone(event.payload ?? {}),
+            }
           : undefined,
       gate: decision.gate,
       masterSessionId: decision.masterSessionId,
@@ -2092,7 +2181,7 @@ export class RuntimeSessionManager {
         gate: decision.gate,
         masterSessionId: decision.masterSessionId,
       },
-      ctx
+      ctx,
     )
     slot.orderSeq = pendingEvent?.seq
     this.#touch()
@@ -2101,10 +2190,13 @@ export class RuntimeSessionManager {
       await this.#cmdApproveActivation(
         { slotKey },
         {
-          actor: { kind: 'rule', ref: decision.subscriptionId },
+          actor: {
+            kind: 'rule',
+            ref: decision.subscriptionId,
+          },
           causeId: pendingEvent?.id,
           reason: 'Auto gate: approved deterministically.',
-        }
+        },
       )
       return
     }
@@ -2115,7 +2207,10 @@ export class RuntimeSessionManager {
     }
     // gate === 'human' (or master with nobody to route to): the slot waits
     // for an approve/deny command from the UI/CLI.
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
   }
 
   #pendingRequestText(slot, subscription) {
@@ -2126,14 +2221,14 @@ export class RuntimeSessionManager {
       ? this.#state.sources?.[external.payload?.sourceId]
       : undefined
     const sourceLabel = slot.sourceSessionId
-      ? this.#state.sessions[slot.sourceSessionId]?.label ?? slot.sourceSessionId
+      ? (this.#state.sessions[slot.sourceSessionId]?.label ??
+        slot.sourceSessionId)
       : externalSource
         ? externalSourceSummary(externalSource)
         : external
-          ? external.payload?.sourceId ?? 'external source'
+          ? (external.payload?.sourceId ?? 'external source')
           : 'unknown'
-    const targetLabel =
-      this.#state.sessions[slot.target]?.label ?? slot.target
+    const targetLabel = this.#state.sessions[slot.target]?.label ?? slot.target
     const trigger = slot.reportId
       ? `report ${slot.reportId}`
       : external
@@ -2143,9 +2238,7 @@ export class RuntimeSessionManager {
     if (external) {
       const { sourceId: _sourceId, ...payload } = external.payload ?? {}
       const rendered = JSON.stringify(payload)
-      eventLine = `Event payload: ${
-        rendered.length > 600 ? `${rendered.slice(0, 600)}…` : rendered
-      }`
+      eventLine = `Event payload: ${rendered.length > 600 ? `${rendered.slice(0, 600)}…` : rendered}`
     }
     return [
       `Pending activation requires your decision (slotKey: ${slot.slotKey}).`,
@@ -2166,7 +2259,7 @@ export class RuntimeSessionManager {
     try {
       await this.#cmdActivate(
         { sessionId: slot.masterSessionId, note: request },
-        { actor: ctx.actor, causeId: slot.triggerEventId }
+        { actor: ctx.actor, causeId: slot.triggerEventId },
       )
     } catch {
       // Master is busy (or frozen): park the request in its channel so the
@@ -2179,7 +2272,10 @@ export class RuntimeSessionManager {
             topic: `pending-${slot.slotKey}`,
             note: request,
           },
-          { actor: ctx.actor, causeId: slot.triggerEventId }
+          {
+            actor: ctx.actor,
+            causeId: slot.triggerEventId,
+          },
         )
       } catch {
         // Nothing else to do; the slot stays approvable via UI/CLI.
@@ -2200,9 +2296,15 @@ export class RuntimeSessionManager {
       slot.approvedBy = ctx.actor
       this.#appendKernelEvent(
         'activation.approved',
-        { subscriptionId: slot.subscriptionId, target: slot.target, slotKey },
+        {
+          subscriptionId: slot.subscriptionId,
+          target: slot.target,
+          slotKey,
+        },
         ctx,
-        { reason: ctx.reason ?? slot.approvalNote }
+        {
+          reason: ctx.reason ?? slot.approvalNote,
+        },
       )
       this.#touch()
     }
@@ -2220,12 +2322,21 @@ export class RuntimeSessionManager {
     delete this.#state.pendingActivations[slotKey]
     this.#appendKernelEvent(
       'activation.denied',
-      { subscriptionId: slot.subscriptionId, target: slot.target, slotKey },
+      {
+        subscriptionId: slot.subscriptionId,
+        target: slot.target,
+        slotKey,
+      },
       ctx,
-      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
+      {
+        reason: ctx.reason ?? optionalTrimmedString(input.reason),
+      },
     )
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { ok: true, slotKey }
   }
 
@@ -2250,7 +2361,7 @@ export class RuntimeSessionManager {
       return
     }
     throw new Error(
-      `Session ${ctx.actor?.ref ?? ''} does not govern pending activation ${slot.slotKey}`
+      `Session ${ctx.actor?.ref ?? ''} does not govern pending activation ${slot.slotKey}`,
     )
   }
 
@@ -2264,7 +2375,7 @@ export class RuntimeSessionManager {
     // edge, so the order is inert for them. Firing a queue entry makes the
     // target busy, so the rest of its backlog parks until the next drain.
     const slots = Object.values(
-      (this.#state.pendingActivations ?? {}) as JsonRecord
+      (this.#state.pendingActivations ?? {}) as JsonRecord,
     )
       .filter((slot) => slot.status === 'approved')
       .sort((a, b) => (a.orderSeq ?? 0) - (b.orderSeq ?? 0))
@@ -2278,9 +2389,13 @@ export class RuntimeSessionManager {
         delete this.#state.pendingActivations[slot.slotKey]
         this.#appendKernelEvent(
           'activation.dropped',
-          { subscriptionId: slot.subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          {
+            subscriptionId: slot.subscriptionId,
+            target: slot.target,
+            slotKey: slot.slotKey,
+          },
           { actor: { kind: 'runtime' } },
-          { reason: 'The subscription or target is gone.' }
+          { reason: 'The subscription or target is gone.' },
         )
         continue
       }
@@ -2288,9 +2403,13 @@ export class RuntimeSessionManager {
         delete this.#state.pendingActivations[slot.slotKey]
         this.#appendKernelEvent(
           'activation.dropped',
-          { subscriptionId: slot.subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          {
+            subscriptionId: slot.subscriptionId,
+            target: slot.target,
+            slotKey: slot.slotKey,
+          },
           { actor: { kind: 'runtime' } },
-          { reason: `Target session is ${target.status}.` }
+          { reason: `Target session is ${target.status}.` },
         )
         continue
       }
@@ -2309,7 +2428,10 @@ export class RuntimeSessionManager {
   }
 
   async #executeApprovedSlot(slot, subscription) {
-    const ctx = this.#subscriptionRuleCtx(slot.subscriptionId, slot.triggerEventId)
+    const ctx = this.#subscriptionRuleCtx(
+      slot.subscriptionId,
+      slot.triggerEventId,
+    )
     try {
       // Data first (§2.5): the firing's payload is the trigger source's
       // artifact bundle (plus the rendered report for report triggers).
@@ -2324,7 +2446,7 @@ export class RuntimeSessionManager {
               entries,
               subscriptionId: slot.subscriptionId,
             },
-            ctx
+            ctx,
           )
         }
       } else if (slot.externalEvent) {
@@ -2343,7 +2465,7 @@ export class RuntimeSessionManager {
             ],
             subscriptionId: slot.subscriptionId,
           },
-          ctx
+          ctx,
         )
       }
 
@@ -2354,7 +2476,8 @@ export class RuntimeSessionManager {
       await this.#runActivation(slot.target, {
         note: note.length > 0 ? note : undefined,
         ctx: {
-          actor: slot.approvedBy?.kind === 'master' ? slot.approvedBy : ctx.actor,
+          actor:
+            slot.approvedBy?.kind === 'master' ? slot.approvedBy : ctx.actor,
           causeId: slot.triggerEventId,
         },
         edgeSourceSessionId:
@@ -2366,12 +2489,13 @@ export class RuntimeSessionManager {
       this.#syncLoopStateForSubscription(subscription, 'activated')
       this.#touch()
       await this.#stopSubscriptionAtMaxFirings(subscription, ctx)
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      this.#broadcast({
+        type: 'runtime.state',
+        state: this.getState(),
+      })
     } catch (error) {
       console.error(
-        `Approved activation ${slot.slotKey} failed to execute: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `Approved activation ${slot.slotKey} failed to execute: ${error instanceof Error ? error.message : String(error)}`,
       )
     }
   }
@@ -2387,16 +2511,21 @@ export class RuntimeSessionManager {
       return this.#artifactBundleEntries(sourceSessionId)
     }
     return [
-      { name: 'review.md', content: this.#renderReportMarkdown(report) },
+      {
+        name: 'review.md',
+        content: this.#renderReportMarkdown(report),
+      },
       ...this.#artifactBundleEntries(sourceSessionId).filter(
-        (entry) => entry.name !== 'turn-summary.md'
+        (entry) => entry.name !== 'turn-summary.md',
       ),
     ]
   }
 
   #renderReportMarkdown(report) {
     const payload = report.payload ?? {}
-    const lines = [`# Report from ${this.#state.sessions[report.from]?.label ?? report.from}`]
+    const lines = [
+      `# Report from ${this.#state.sessions[report.from]?.label ?? report.from}`,
+    ]
     if (payload.type === 'verdict') {
       lines.push(`Verdict: ${payload.verdict}`)
       if (payload.summary) {
@@ -2406,7 +2535,10 @@ export class RuntimeSessionManager {
       if (issues.length > 0) {
         lines.push('', '## Issues')
         for (const issue of issues) {
-          const location = [issue.file, Number.isFinite(issue.line) ? issue.line : undefined]
+          const location = [
+            issue.file,
+            Number.isFinite(issue.line) ? issue.line : undefined,
+          ]
             .filter(Boolean)
             .join(':')
           lines.push(`- ${issue.message}${location ? ` (${location})` : ''}`)
@@ -2425,7 +2557,7 @@ export class RuntimeSessionManager {
     const source = sourceId ? this.#state.sources?.[sourceId] : undefined
     const lines = [
       `# External event: ${externalEvent.type}`,
-      `Source: ${source ? externalSourceSummary(source) : sourceId ?? 'unknown'}`,
+      `Source: ${source ? externalSourceSummary(source) : (sourceId ?? 'unknown')}`,
       `At: ${externalEvent.ts}`,
       '',
       '```json',
@@ -2472,16 +2604,22 @@ export class RuntimeSessionManager {
         guarded.push(id)
         this.#appendKernelEvent(
           'subscription.guarded',
-          { subscriptionId: id, maxFirings: defaultCycleMaxFirings },
+          {
+            subscriptionId: id,
+            maxFirings: defaultCycleMaxFirings,
+          },
           { actor: { kind: 'runtime' } },
-          { reason: 'Static cycle check applied the default maxFirings guardrail.' }
+          {
+            reason:
+              'Static cycle check applied the default maxFirings guardrail.',
+          },
         )
       }
     }
     check = staticCheck(prospective)
     if (!check.ok) {
       throw new Error(
-        'Subscription would create an unguarded activation cycle; add a stop condition or a non-auto gate.'
+        'Subscription would create an unguarded activation cycle; add a stop condition or a non-auto gate.',
       )
     }
 
@@ -2491,12 +2629,17 @@ export class RuntimeSessionManager {
       'subscription.authored',
       { subscription: clone(subscription) },
       ctx,
-      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
+      {
+        reason: ctx.reason ?? optionalTrimmedString(input.reason),
+      },
     )
     this.#syncLoopStateForSubscription(subscription, 'subscription.authored')
     this.#syncTimerForSubscription(subscription)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return {
       subscription: clone(subscription),
       staticCheck: {
@@ -2512,10 +2655,16 @@ export class RuntimeSessionManager {
     const sourceClusterId = optionalTrimmedString(input.sourceClusterId)
     let source = isObject(input.source) ? input.source : undefined
     if (!source && sourceSessionId) {
-      source = { kind: 'session', sessionId: sourceSessionId }
+      source = {
+        kind: 'session',
+        sessionId: sourceSessionId,
+      }
     }
     if (!source && sourceClusterId) {
-      source = { kind: 'cluster', clusterId: sourceClusterId }
+      source = {
+        kind: 'cluster',
+        clusterId: sourceClusterId,
+      }
     }
     if (
       !source ||
@@ -2527,7 +2676,7 @@ export class RuntimeSessionManager {
         source.kind !== 'external')
     ) {
       throw new Error(
-        'Subscription source must be an existing session or cluster, {kind:"timer"}, or {kind:"external",sourceId}'
+        'Subscription source must be an existing session or cluster, {kind:"timer"}, or {kind:"external",sourceId}',
       )
     }
     let externalSource
@@ -2536,14 +2685,16 @@ export class RuntimeSessionManager {
       externalSource = sourceId ? this.#state.sources?.[sourceId] : undefined
       if (!externalSource || externalSource.state !== 'active') {
         throw new Error(
-          `Subscription external source must be a registered, active source (got: ${sourceId ?? ''})`
+          `Subscription external source must be a registered, active source (got: ${sourceId ?? ''})`,
         )
       }
     }
 
     const targetSessionId =
       optionalTrimmedString(input.targetSessionId) ??
-      (isObject(input.target) ? optionalTrimmedString(input.target.sessionId) : undefined)
+      (isObject(input.target)
+        ? optionalTrimmedString(input.target.sessionId)
+        : undefined)
     if (!targetSessionId || !this.#state.sessions[targetSessionId]) {
       throw new Error('Subscription target must be an existing session')
     }
@@ -2551,27 +2702,29 @@ export class RuntimeSessionManager {
     const on = isObject(input.on) ? input.on : { on: input.on }
     if (!validSubscriptionPatterns.has(on.on)) {
       throw new Error(
-        `Subscription pattern must be one of finished|failed|report|delivered|schedule|external`
+        `Subscription pattern must be one of finished|failed|report|delivered|schedule|external`,
       )
     }
     // Timer source ⟺ schedule pattern: a clock emits nothing but ticks, and
     // a schedule can be driven by nothing but a clock.
     if ((source.kind === 'timer') !== (on.on === 'schedule')) {
       throw new Error(
-        'A schedule pattern requires source {kind:"timer"}, and a timer source requires the schedule pattern'
+        'A schedule pattern requires source {kind:"timer"}, and a timer source requires the schedule pattern',
       )
     }
     // Same pairing for L2: an external source emits nothing but its own
     // facts, and the external pattern can be driven by nothing else.
     if ((source.kind === 'external') !== (on.on === 'external')) {
       throw new Error(
-        'An external pattern requires source {kind:"external",sourceId}, and an external source requires the external pattern'
+        'An external pattern requires source {kind:"external",sourceId}, and an external source requires the external pattern',
       )
     }
     const pattern: JsonRecord = { on: on.on }
     if (on.on === 'report' && isObject(on.match)) {
       pattern.match = {
-        ...(optionalTrimmedString(on.match.type) ? { type: on.match.type.trim() } : {}),
+        ...(optionalTrimmedString(on.match.type)
+          ? { type: on.match.type.trim() }
+          : {}),
         ...(optionalTrimmedString(on.match.verdict)
           ? { verdict: on.match.verdict.trim() }
           : {}),
@@ -2588,20 +2741,22 @@ export class RuntimeSessionManager {
       if (topic !== undefined) {
         if (topic !== externalSource.topic) {
           throw new Error(
-            `Subscription external topic must match the source's topic (${externalSource.topic})`
+            `Subscription external topic must match the source's topic (${externalSource.topic})`,
           )
         }
         pattern.topic = topic
       }
       if (on.match !== undefined) {
         if (!isObject(on.match)) {
-          throw new Error('Subscription external match must be an object of string fields')
+          throw new Error(
+            'Subscription external match must be an object of string fields',
+          )
         }
         const match = {}
         for (const [key, value] of Object.entries(on.match)) {
           if (typeof value !== 'string' || value.length === 0 || !key.trim()) {
             throw new Error(
-              'Subscription external match values must be non-empty strings'
+              'Subscription external match values must be non-empty strings',
             )
           }
           match[key.trim()] = value
@@ -2618,14 +2773,14 @@ export class RuntimeSessionManager {
       const hasDailyAt = optionalTrimmedString(on.dailyAt) !== undefined
       if (hasInterval === hasDailyAt) {
         throw new Error(
-          'Subscription schedule requires exactly one of everySeconds or dailyAt'
+          'Subscription schedule requires exactly one of everySeconds or dailyAt',
         )
       }
       if (hasDailyAt) {
         const dailyAt = normalizeDailyAt(on.dailyAt.trim())
         if (!dailyAt) {
           throw new Error(
-            'Subscription schedule.dailyAt must be HH:MM (24h, runtime-host local time)'
+            'Subscription schedule.dailyAt must be HH:MM (24h, runtime-host local time)',
           )
         }
         pattern.dailyAt = dailyAt
@@ -2634,16 +2789,20 @@ export class RuntimeSessionManager {
         const minimum = timerMinIntervalSeconds()
         if (!Number.isInteger(everySeconds) || everySeconds < minimum) {
           throw new Error(
-            `Subscription schedule.everySeconds must be an integer >= ${minimum}`
+            `Subscription schedule.everySeconds must be an integer >= ${minimum}`,
           )
         }
         pattern.everySeconds = everySeconds
       }
     }
 
-    const action = isObject(input.action) ? input.action : { kind: input.action }
+    const action = isObject(input.action)
+      ? input.action
+      : { kind: input.action }
     if (action.kind === 'create') {
-      throw new Error('Subscription action "create" lands in a later version; use a one-shot command')
+      throw new Error(
+        'Subscription action "create" lands in a later version; use a one-shot command',
+      )
     }
     if (action.kind !== 'deliver' && action.kind !== 'deliver+activate') {
       throw new Error('Subscription action must be deliver or deliver+activate')
@@ -2656,7 +2815,9 @@ export class RuntimeSessionManager {
     if (source.kind === 'external' && action.kind !== 'deliver+activate') {
       // The emit payload is delivered as part of the activation; a
       // deliver-only external edge has no source session to bundle from.
-      throw new Error('An external subscription requires action deliver+activate')
+      throw new Error(
+        'An external subscription requires action deliver+activate',
+      )
     }
 
     const gate = optionalTrimmedString(input.gate)
@@ -2665,37 +2826,50 @@ export class RuntimeSessionManager {
     }
     const concurrency = optionalTrimmedString(input.concurrency) ?? 'coalesce'
     if (!validSubscriptionConcurrencies.has(concurrency)) {
-      throw new Error('Subscription concurrency must be coalesce, queue, drop, or interrupt')
+      throw new Error(
+        'Subscription concurrency must be coalesce, queue, drop, or interrupt',
+      )
     }
     if (source.kind === 'timer' && concurrency === 'queue') {
       // Ticks are fungible: a backlog of stale ticks is exactly the
       // anti-pattern §6.1 warns about, so timer edges never queue even
       // though session/cluster edges may keep an ordered backlog.
       throw new Error(
-        'A timer subscription cannot use queue concurrency; ticks coalesce (or drop/interrupt)'
+        'A timer subscription cannot use queue concurrency; ticks coalesce (or drop/interrupt)',
       )
     }
     const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
     if (!validSubscriptionOnStops.has(onStop)) {
-      throw new Error('Subscription onStop must be freeze-edge, freeze-target, or freeze-cluster')
+      throw new Error(
+        'Subscription onStop must be freeze-edge, freeze-target, or freeze-cluster',
+      )
     }
 
     let stop
     if (isObject(input.stop)) {
       stop = {}
-      if (isObject(input.stop.whenReport) && optionalTrimmedString(input.stop.whenReport.verdict)) {
-        stop.whenReport = { verdict: input.stop.whenReport.verdict.trim() }
+      if (
+        isObject(input.stop.whenReport) &&
+        optionalTrimmedString(input.stop.whenReport.verdict)
+      ) {
+        stop.whenReport = {
+          verdict: input.stop.whenReport.verdict.trim(),
+        }
       }
       if (input.stop.maxFirings !== undefined) {
         const maxFirings = Number(input.stop.maxFirings)
         if (!Number.isInteger(maxFirings) || maxFirings <= 0) {
-          throw new Error('Subscription stop.maxFirings must be a positive integer')
+          throw new Error(
+            'Subscription stop.maxFirings must be a positive integer',
+          )
         }
         stop.maxFirings = maxFirings
       }
       if (optionalTrimmedString(input.stop.deadline)) {
         if (Number.isNaN(Date.parse(input.stop.deadline))) {
-          throw new Error('Subscription stop.deadline must be a parseable date-time')
+          throw new Error(
+            'Subscription stop.deadline must be a parseable date-time',
+          )
         }
         stop.deadline = input.stop.deadline.trim()
       }
@@ -2706,8 +2880,9 @@ export class RuntimeSessionManager {
 
     // A scheduled activation carries no upstream artifacts, so the note is
     // the whole activation message; default to a deterministic template.
-    const note = optionalTrimmedString(action.note)
-      ?? (source.kind === 'timer'
+    const note =
+      optionalTrimmedString(action.note) ??
+      (source.kind === 'timer'
         ? `Scheduled activation: this session runs on a timer (${scheduleSummary(pattern as { on: 'schedule' })}).`
         : source.kind === 'external'
           ? `External activation: triggered by ${externalSourceSummary(externalSource)}. The triggering event is in your channel as external-event.md.`
@@ -2721,13 +2896,24 @@ export class RuntimeSessionManager {
           : source.kind === 'timer'
             ? { kind: 'timer' }
             : source.kind === 'external'
-              ? { kind: 'external', sourceId: externalSource.id }
-              : { kind: 'cluster', clusterId: source.clusterId },
+              ? {
+                  kind: 'external',
+                  sourceId: externalSource.id,
+                }
+              : {
+                  kind: 'cluster',
+                  clusterId: source.clusterId,
+                },
       on: pattern,
-      target: { kind: 'session', sessionId: targetSessionId },
+      target: {
+        kind: 'session',
+        sessionId: targetSessionId,
+      },
       action: {
         kind: action.kind,
-        ...(optionalTrimmedString(action.topic) ? { topic: action.topic.trim() } : {}),
+        ...(optionalTrimmedString(action.topic)
+          ? { topic: action.topic.trim() }
+          : {}),
         ...(note ? { note } : {}),
       },
       gate: gate ?? undefined,
@@ -2759,12 +2945,9 @@ export class RuntimeSessionManager {
     // summaries after every new stop; subsequent reads are cached again.
     this.#loopTerminalFacts.clear()
     this.#clearTimer(subscriptionId)
-    this.#appendKernelEvent(
-      'subscription.stopped',
-      { subscriptionId },
-      ctx,
-      { reason: ctx.reason ?? optionalTrimmedString(input.reason) }
-    )
+    this.#appendKernelEvent('subscription.stopped', { subscriptionId }, ctx, {
+      reason: ctx.reason ?? optionalTrimmedString(input.reason),
+    })
     this.#discardSlotsForSubscription(subscriptionId, ctx)
     this.#syncLoopStateForSubscription(subscription, 'subscription.stopped')
     // Compiled-ring pairing: the two edges of a compiled pair live and die
@@ -2811,27 +2994,30 @@ export class RuntimeSessionManager {
           { subscriptionId: pairedId },
           {
             ...ctx,
-            reason: `${pairing.label} ended: ${
-              ctx.reason ?? optionalTrimmedString(input.reason) ?? 'the paired edge stopped.'
-            }`,
-          }
+            reason: `${pairing.label} ended: ${ctx.reason ?? optionalTrimmedString(input.reason) ?? 'the paired edge stopped.'}`,
+          },
         )
       }
       break
     }
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { ok: true, subscription: clone(subscription) }
   }
 
   #stopSubscriptionsForKilledParticipant(event) {
     const sessionId =
-      typeof event.payload?.sessionId === 'string' ? event.payload.sessionId : undefined
+      typeof event.payload?.sessionId === 'string'
+        ? event.payload.sessionId
+        : undefined
     if (!sessionId) {
       return
     }
     for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
       if (subscription.state !== 'active') {
         continue
@@ -2846,7 +3032,7 @@ export class RuntimeSessionManager {
             subscriptionId: subscription.id,
             reason: 'Participant session was killed.',
           },
-          { actor: { kind: 'runtime' }, causeId: event.id }
+          { actor: { kind: 'runtime' }, causeId: event.id },
         )
       }
     }
@@ -2864,7 +3050,9 @@ export class RuntimeSessionManager {
   // one immediate catch-up tick, never a replay of the missed backlog.
 
   #timerDelayMs(subscription) {
-    const anchor = Date.parse(subscription.lastTickAt ?? subscription.createdAt ?? '')
+    const anchor = Date.parse(
+      subscription.lastTickAt ?? subscription.createdAt ?? '',
+    )
     return scheduleDelayMs(subscription.on ?? {}, anchor, Date.now())
   }
 
@@ -2878,7 +3066,7 @@ export class RuntimeSessionManager {
     }
     const handle = setTimeout(
       () => this.#fireTimerTick(subscription.id),
-      this.#timerDelayMs(subscription)
+      this.#timerDelayMs(subscription),
     )
     handle.unref?.()
     this.#timers.set(subscription.id, handle)
@@ -2917,7 +3105,7 @@ export class RuntimeSessionManager {
           subscriptionId,
           reason: 'Participant session was killed.',
         },
-        { actor: { kind: 'runtime' } }
+        { actor: { kind: 'runtime' } },
       )
       return
     }
@@ -2938,7 +3126,9 @@ export class RuntimeSessionManager {
           : {}),
       },
       { actor: { kind: 'runtime' } },
-      { reason: `Timer tick (${scheduleSummary(subscription.on)}).` }
+      {
+        reason: `Timer tick (${scheduleSummary(subscription.on)}).`,
+      },
     )
     subscription.lastTickAt = tickEvent?.ts ?? now()
     this.#touch()
@@ -2947,9 +3137,12 @@ export class RuntimeSessionManager {
 
   #recoverTimers() {
     for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
-      if (subscription.on?.on !== 'schedule' || subscription.state !== 'active') {
+      if (
+        subscription.on?.on !== 'schedule' ||
+        subscription.state !== 'active'
+      ) {
         continue
       }
       // Reconcile the tick anchor from the event log before arming: the
@@ -2959,7 +3152,7 @@ export class RuntimeSessionManager {
       const logged = this.#kernelStore.latestEventWithPayloadValue(
         'external.timer',
         'subscriptionId',
-        subscription.id
+        subscription.id,
       )
       // An unparseable cached anchor counts as missing — otherwise the
       // NaN comparison would silently discard the exact logged fact.
@@ -2980,7 +3173,7 @@ export class RuntimeSessionManager {
   // so recovery (and #recoverTimers) never resurrects such an edge.
   #sweepKilledParticipantSubscriptions() {
     for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
       if (subscription.state !== 'active') {
         continue
@@ -2993,7 +3186,7 @@ export class RuntimeSessionManager {
       ].filter(Boolean)
       if (
         participants.some(
-          (sessionId) => this.#state.sessions[sessionId]?.status === 'killed'
+          (sessionId) => this.#state.sessions[sessionId]?.status === 'killed',
         )
       ) {
         this.#cmdStopSubscription(
@@ -3001,7 +3194,7 @@ export class RuntimeSessionManager {
             subscriptionId: subscription.id,
             reason: 'Participant session was killed.',
           },
-          { actor: { kind: 'runtime' } }
+          { actor: { kind: 'runtime' } },
         )
       }
     }
@@ -3013,7 +3206,7 @@ export class RuntimeSessionManager {
   // the canvas claiming it is active until another matching event arrives.
   #sweepExhaustedSubscriptions() {
     for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
       const decision = this.#maxFiringsStopDecision(subscription)
       if (decision) {
@@ -3039,16 +3232,17 @@ export class RuntimeSessionManager {
     const kind = optionalTrimmedString(request.kind)
     if (!kind || !externalSourceKinds.has(kind)) {
       throw new Error(
-        `External source kind must be one of ${[...externalSourceKinds].join('|')}`
+        `External source kind must be one of ${[...externalSourceKinds].join('|')}`,
       )
     }
     const topic = optionalTrimmedString(request.topic) ?? kind
     if (!isValidExternalTopic(topic)) {
       throw new Error(
-        'External source topic must be a lowercase slug ([a-z][a-z0-9_-]*); "timer" is reserved'
+        'External source topic must be a lowercase slug ([a-z][a-z0-9_-]*); "timer" is reserved',
       )
     }
-    const id = optionalTrimmedString(request.id) ?? `src-${randomUUID().slice(0, 8)}`
+    const id =
+      optionalTrimmedString(request.id) ?? `src-${randomUUID().slice(0, 8)}`
     if (this.#state.sources?.[id]) {
       throw new Error(`External source id already exists: ${id}`)
     }
@@ -3056,7 +3250,9 @@ export class RuntimeSessionManager {
     if (request.minIntervalSeconds !== undefined) {
       minIntervalSeconds = Number(request.minIntervalSeconds)
       if (!Number.isFinite(minIntervalSeconds) || minIntervalSeconds < 0) {
-        throw new Error('External source minIntervalSeconds must be a number >= 0')
+        throw new Error(
+          'External source minIntervalSeconds must be a number >= 0',
+        )
       }
     }
     const config = isObject(request.config) ? clone(request.config) : {}
@@ -3064,7 +3260,11 @@ export class RuntimeSessionManager {
       if (!optionalTrimmedString(config.command)) {
         throw new Error('A script source requires config.command')
       }
-      if (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== 'string'))) {
+      if (
+        config.args !== undefined &&
+        (!Array.isArray(config.args) ||
+          config.args.some((arg) => typeof arg !== 'string'))
+      ) {
         throw new Error('Script source config.args must be an array of strings')
       }
       const mode = config.mode ?? 'lines'
@@ -3074,7 +3274,9 @@ export class RuntimeSessionManager {
       if (mode === 'exit') {
         const everySeconds = Number(config.everySeconds ?? 60)
         if (!Number.isInteger(everySeconds) || everySeconds < 5) {
-          throw new Error('Script source config.everySeconds must be an integer >= 5')
+          throw new Error(
+            'Script source config.everySeconds must be an integer >= 5',
+          )
         }
         config.everySeconds = everySeconds
       }
@@ -3083,7 +3285,9 @@ export class RuntimeSessionManager {
     if (kind === 'git') {
       const repoPath = optionalTrimmedString(config.repoPath)
       if (!repoPath || !fs.existsSync(repoPath)) {
-        throw new Error('A git source requires config.repoPath pointing at an existing repository')
+        throw new Error(
+          'A git source requires config.repoPath pointing at an existing repository',
+        )
       }
       config.repoPath = repoPath
       if (config.pollSeconds !== undefined) {
@@ -3120,12 +3324,18 @@ export class RuntimeSessionManager {
       'source.registered',
       { source: clone(source) },
       { actor: { kind: 'human' } },
-      { reason: optionalTrimmedString(request.reason) }
+      { reason: optionalTrimmedString(request.reason) },
     )
     this.#syncAdapterForSource(source)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-    return { source: clone(source), ...(token ? { token } : {}) }
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
+    return {
+      source: clone(source),
+      ...(token ? { token } : {}),
+    }
   }
 
   removeExternalSource(input: JsonRecord = {}) {
@@ -3142,12 +3352,12 @@ export class RuntimeSessionManager {
       'source.removed',
       { sourceId },
       { actor: { kind: 'human' } },
-      { reason: optionalTrimmedString(input.reason) }
+      { reason: optionalTrimmedString(input.reason) },
     )
     // Participant parity with killed sessions: an edge whose source is gone
     // can never fire again, so leaving it active would only mislead.
     for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
       if (
         subscription.state === 'active' &&
@@ -3155,8 +3365,11 @@ export class RuntimeSessionManager {
         subscription.source.sourceId === sourceId
       ) {
         this.#cmdStopSubscription(
-          { subscriptionId: subscription.id, reason: 'External source was removed.' },
-          { actor: { kind: 'runtime' } }
+          {
+            subscriptionId: subscription.id,
+            reason: 'External source was removed.',
+          },
+          { actor: { kind: 'runtime' } },
         )
       }
     }
@@ -3165,7 +3378,10 @@ export class RuntimeSessionManager {
       delete this.#state.sourceTokens[sourceId]
     }
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { ok: true, source: clone(source) }
   }
 
@@ -3181,28 +3397,46 @@ export class RuntimeSessionManager {
     const topic = optionalTrimmedString(input.topic)
     if (topic !== undefined && topic !== source.topic) {
       throw new Error(
-        `Emit topic must match the source's declared topic (${source.topic})`
+        `Emit topic must match the source's declared topic (${source.topic})`,
       )
     }
     const payload = input.payload === undefined ? {} : input.payload
     if (!isObject(payload)) {
       throw new Error('Emit payload must be a JSON object')
     }
-    for (const reserved of ['sourceId', 'dedupeKey', 'subscriptionId', 'sessionId']) {
+    for (const reserved of [
+      'sourceId',
+      'dedupeKey',
+      'subscriptionId',
+      'sessionId',
+    ]) {
       if (payload[reserved] !== undefined) {
-        throw new Error(`Emit payload must not use the reserved key "${reserved}"`)
+        throw new Error(
+          `Emit payload must not use the reserved key "${reserved}"`,
+        )
       }
     }
-    if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > externalPayloadMaxBytes) {
+    if (
+      Buffer.byteLength(JSON.stringify(payload), 'utf8') >
+      externalPayloadMaxBytes
+    ) {
       throw new Error(
-        `Emit payload exceeds ${externalPayloadMaxBytes} bytes; deliver a pointer (path/URL), not the artifact`
+        `Emit payload exceeds ${externalPayloadMaxBytes} bytes; deliver a pointer (path/URL), not the artifact`,
       )
     }
     const dedupeKey = optionalTrimmedString(input.dedupeKey)
 
-    const decision = externalIngestionDecision(source, { dedupeKey }, Date.now())
+    const decision = externalIngestionDecision(
+      source,
+      { dedupeKey },
+      Date.now(),
+    )
     if (decision.ok !== true) {
-      return { ok: false, dropped: true, reason: decision.reason }
+      return {
+        ok: false,
+        dropped: true,
+        reason: decision.reason,
+      }
     }
 
     const event = this.#appendKernelEvent(
@@ -3213,7 +3447,9 @@ export class RuntimeSessionManager {
         ...(dedupeKey ? { dedupeKey } : {}),
       },
       { actor: { kind: 'runtime' } },
-      { reason: `External emit (${externalSourceSummary(source)}).` }
+      {
+        reason: `External emit (${externalSourceSummary(source)}).`,
+      },
     )
     // Snapshot anchors are caches of the appended fact (fold derives the
     // same values on replay). lastDedupeKey tracks the last accepted
@@ -3222,7 +3458,11 @@ export class RuntimeSessionManager {
     source.lastEventAt = event?.ts ?? now()
     source.lastDedupeKey = dedupeKey
     this.#touch()
-    return { ok: true, eventId: event?.id, type: `external.${source.topic}` }
+    return {
+      ok: true,
+      eventId: event?.id,
+      type: `external.${source.topic}`,
+    }
   }
 
   // Transport-layer auth for the HTTP ingestion path: sources without a
@@ -3250,7 +3490,10 @@ export class RuntimeSessionManager {
     }
     const adapter = createExternalSourceAdapter(source, {
       emit: (input) => {
-        const result = this.emitExternalEvent({ sourceId: source.id, ...input })
+        const result = this.emitExternalEvent({
+          sourceId: source.id,
+          ...input,
+        })
         if (result.ok) {
           const live = this.#state.sources?.[source.id]
           if (live?.lastError) {
@@ -3291,11 +3534,13 @@ export class RuntimeSessionManager {
   // the snapshot may be older than the last appended fact (events are
   // truth). Exact per-source lookup, mirroring #recoverTimers.
   #recoverExternalSourceAnchors() {
-    for (const source of Object.values((this.#state.sources ?? {}) as JsonRecord)) {
+    for (const source of Object.values(
+      (this.#state.sources ?? {}) as JsonRecord,
+    )) {
       const logged = this.#kernelStore.latestEventWithPayloadValue(
         `external.${source.topic}`,
         'sourceId',
-        source.id
+        source.id,
       )
       if (logged) {
         // Unconditional: both anchors are caches of appended facts, so the
@@ -3317,15 +3562,21 @@ export class RuntimeSessionManager {
 
   #discardSlotsForSubscription(subscriptionId, ctx) {
     for (const slot of Object.values(
-      (this.#state.pendingActivations ?? {}) as JsonRecord
+      (this.#state.pendingActivations ?? {}) as JsonRecord,
     )) {
       if (slot.subscriptionId === subscriptionId) {
         delete this.#state.pendingActivations[slot.slotKey]
         this.#appendKernelEvent(
           'activation.dropped',
-          { subscriptionId, target: slot.target, slotKey: slot.slotKey },
+          {
+            subscriptionId,
+            target: slot.target,
+            slotKey: slot.slotKey,
+          },
           ctx,
-          { reason: 'The subscription stopped.' }
+          {
+            reason: 'The subscription stopped.',
+          },
         )
       }
     }
@@ -3340,12 +3591,15 @@ export class RuntimeSessionManager {
     }
     this.#cmdStopSubscription(
       { subscriptionId: decision.subscriptionId },
-      { ...ctx, reason: decision.reason }
+      { ...ctx, reason: decision.reason },
     )
     if (decision.onStop === 'freeze-target') {
       this.#applyFreeze(
-        { targetId: subscription.target.sessionId, reason: decision.reason },
-        ctx
+        {
+          targetId: subscription.target.sessionId,
+          reason: decision.reason,
+        },
+        ctx,
       )
       return
     }
@@ -3355,7 +3609,7 @@ export class RuntimeSessionManager {
         this.#managedClusterId(
           subscription.source.kind === 'session'
             ? subscription.source.sessionId
-            : undefined
+            : undefined,
         ) ??
         (subscription.source.kind === 'cluster'
           ? subscription.source.clusterId
@@ -3365,7 +3619,7 @@ export class RuntimeSessionManager {
           targetId: clusterId ?? subscription.target.sessionId,
           reason: decision.reason,
         },
-        ctx
+        ctx,
       )
     }
   }
@@ -3408,9 +3662,9 @@ export class RuntimeSessionManager {
   }
 
   #loopSubscriptionsForCluster(clusterId) {
-    return Object.values((this.#state.subscriptions ?? {}) as JsonRecord).filter(
-      (subscription) => subscription.preset === `hero-loop:${clusterId}`
-    )
+    return Object.values(
+      (this.#state.subscriptions ?? {}) as JsonRecord,
+    ).filter((subscription) => subscription.preset === `hero-loop:${clusterId}`)
   }
 
   #syncLoopStateForCluster(clusterId, lastEventType) {
@@ -3436,9 +3690,9 @@ export class RuntimeSessionManager {
         : previous.lastEvent,
       reason: running
         ? `Loop subscriptions active (S2 firings: ${s2?.firings ?? 0}).`
-        : previous.reason ?? 'Loop subscriptions stopped.',
+        : (previous.reason ?? 'Loop subscriptions stopped.'),
       startedAt: previous.startedAt,
-      stoppedAt: running ? undefined : previous.stoppedAt ?? now(),
+      stoppedAt: running ? undefined : (previous.stoppedAt ?? now()),
     }
   }
 
@@ -3465,7 +3719,9 @@ export class RuntimeSessionManager {
     const sessions = Object.values(this.#state.sessions ?? {})
       .map((session) => this.#sessionSummary(session))
       .sort((left, right) =>
-        String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? ''))
+        String(right.updatedAt ?? '').localeCompare(
+          String(left.updatedAt ?? ''),
+        ),
       )
     return { sessions }
   }
@@ -3475,7 +3731,10 @@ export class RuntimeSessionManager {
     const session = this.#requireSession(request.sessionId)
     const view = optionalTrimmedString(request.view) ?? 'summary'
     if (view === 'summary') {
-      return { view, session: this.#sessionSummary(session) }
+      return {
+        view,
+        session: this.#sessionSummary(session),
+      }
     }
     if (view === 'raw') {
       return { view, session: clone(session) }
@@ -3537,7 +3796,7 @@ export class RuntimeSessionManager {
 
   #sessionSummary(session) {
     const node = this.#state.nodes.find(
-      (candidate) => candidate.sessionId === session.sessionId
+      (candidate) => candidate.sessionId === session.sessionId,
     )
     return {
       sessionId: session.sessionId,
@@ -3557,7 +3816,9 @@ export class RuntimeSessionManager {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       finishedAt: session.finishedAt,
-      messageCount: Array.isArray(session.messages) ? session.messages.length : 0,
+      messageCount: Array.isArray(session.messages)
+        ? session.messages.length
+        : 0,
       runtimeSettings: clone(session.runtimeSettings),
     }
   }
@@ -3603,7 +3864,10 @@ export class RuntimeSessionManager {
     const cwd = validateRunnableCwd(request.cwd ?? session.cwd)
     const existing = this.#runningTerminalForSession(sessionId, cwd)
     if (existing) {
-      return { ok: true, terminal: this.#cloneTerminal(existing.terminalId) }
+      return {
+        ok: true,
+        terminal: this.#cloneTerminal(existing.terminalId),
+      }
     }
 
     const shell = defaultTerminalShell()
@@ -3643,20 +3907,20 @@ export class RuntimeSessionManager {
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (data) =>
-      this.#appendTerminalStdout(terminalId, String(data))
+      this.#appendTerminalStdout(terminalId, String(data)),
     )
     child.stderr.on('data', (data) =>
-      this.#appendTerminalChunk(terminalId, 'stderr', String(data))
+      this.#appendTerminalChunk(terminalId, 'stderr', String(data)),
     )
     child.once('error', (error) => {
       this.#appendTerminalChunk(
         terminalId,
         'system',
-        `Terminal failed: ${error.message}\n`
+        `Terminal failed: ${error.message}\n`,
       )
     })
     child.once('close', (code, signal) =>
-      this.#handleTerminalClose(terminalId, code, signal)
+      this.#handleTerminalClose(terminalId, code, signal),
     )
 
     this.#broadcast({
@@ -3666,16 +3930,22 @@ export class RuntimeSessionManager {
     this.#appendTerminalChunk(
       terminalId,
       'system',
-      `Orrery terminal attached to ${cwd}\n`
+      `Orrery terminal attached to ${cwd}\n`,
     )
 
-    return { ok: true, terminal: this.#cloneTerminal(terminalId) }
+    return {
+      ok: true,
+      terminal: this.#cloneTerminal(terminalId),
+    }
   }
 
   getTerminal(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
     const terminal = this.#terminalById(request.terminalId)
-    return { ok: true, terminal: this.#cloneTerminal(terminal.terminalId) }
+    return {
+      ok: true,
+      terminal: this.#cloneTerminal(terminal.terminalId),
+    }
   }
 
   runTerminalCommand(input: JsonRecord = {}) {
@@ -3702,7 +3972,7 @@ export class RuntimeSessionManager {
     this.#appendTerminalChunk(
       terminal.terminalId,
       'stdin',
-      `${terminal.prompt ?? terminalPrompt(terminal.cwd)}${command}\n`
+      `${terminal.prompt ?? terminalPrompt(terminal.cwd)}${command}\n`,
     )
     run.child.stdin.write(`${command}\n${terminalCommandSentinel(commandId)}\n`)
 
@@ -3722,7 +3992,10 @@ export class RuntimeSessionManager {
 
     run.child.stdin.write(request.input)
     run.terminal.updatedAt = now()
-    return { ok: true, terminal: this.#cloneTerminal(run.terminal.terminalId) }
+    return {
+      ok: true,
+      terminal: this.#cloneTerminal(run.terminal.terminalId),
+    }
   }
 
   clearTerminal(input: JsonRecord = {}) {
@@ -3736,7 +4009,10 @@ export class RuntimeSessionManager {
       sessionId: terminal.sessionId,
       terminal: this.#cloneTerminal(terminal.terminalId),
     })
-    return { ok: true, terminal: this.#cloneTerminal(terminal.terminalId) }
+    return {
+      ok: true,
+      terminal: this.#cloneTerminal(terminal.terminalId),
+    }
   }
 
   closeTerminal(input: JsonRecord = {}) {
@@ -3765,7 +4041,10 @@ export class RuntimeSessionManager {
       sessionId: terminal.sessionId,
       terminal: this.#cloneTerminal(terminal.terminalId),
     })
-    return { ok: true, terminal: this.#cloneTerminal(terminal.terminalId) }
+    return {
+      ok: true,
+      terminal: this.#cloneTerminal(terminal.terminalId),
+    }
   }
 
   getProviderSetupStatus(input: JsonRecord = {}) {
@@ -3773,10 +4052,12 @@ export class RuntimeSessionManager {
     const requestedProviderKind = validProviderKinds.has(request.providerKind)
       ? request.providerKind
       : 'legacy-claude-cli'
-    const requestedInstanceId = optionalTrimmedString(request.providerInstanceId)
+    const requestedInstanceId = optionalTrimmedString(
+      request.providerInstanceId,
+    )
     const requestedInstance = requestedInstanceId
       ? this.#state.providerInstances.find(
-          (instance) => instance.providerInstanceId === requestedInstanceId
+          (instance) => instance.providerInstanceId === requestedInstanceId,
         )
       : undefined
     if (requestedInstanceId && !requestedInstance) {
@@ -3784,20 +4065,24 @@ export class RuntimeSessionManager {
     }
     if (requestedInstance && requestedInstance.kind !== requestedProviderKind) {
       throw new Error(
-        `Provider instance ${requestedInstance.providerInstanceId} is ${requestedInstance.kind}, not ${requestedProviderKind}.`
+        `Provider instance ${requestedInstance.providerInstanceId} is ${requestedInstance.kind}, not ${requestedProviderKind}.`,
       )
     }
     const providerKind = requestedProviderKind
     const providerInstance =
       requestedInstance ??
-      this.#state.providerInstances.find((instance) => instance.kind === providerKind)
+      this.#state.providerInstances.find(
+        (instance) => instance.kind === providerKind,
+      )
     const command = commandForProviderInstance(providerKind, providerInstance)
     const binary = commandExists(command)
-    const cwd = nonEmptyString(request.cwd) ? safeCwd(request.cwd) : process.cwd()
+    const cwd = nonEmptyString(request.cwd)
+      ? safeCwd(request.cwd)
+      : process.cwd()
     const cwdValid = isValidCwd(cwd)
     const providerDiagnostic = providerSetupErrorDiagnostic(
       providerKind,
-      this.#state.diagnostics ?? []
+      this.#state.diagnostics ?? [],
     )
 
     return {
@@ -3865,12 +4150,14 @@ export class RuntimeSessionManager {
 
   #cmdUpsertProviderInstance(input: JsonRecord = {}, ctx: JsonRecord) {
     if (!validProviderKinds.has(input.kind)) {
-      throw new Error(`Unsupported provider instance kind: ${String(input.kind)}`)
+      throw new Error(
+        `Unsupported provider instance kind: ${String(input.kind)}`,
+      )
     }
     const requestedId = optionalTrimmedString(input.providerInstanceId)
     const existing = requestedId
       ? this.#state.providerInstances.find(
-          (instance) => instance.providerInstanceId === requestedId
+          (instance) => instance.providerInstanceId === requestedId,
         )
       : undefined
     const normalizedInput = {
@@ -3879,12 +4166,17 @@ export class RuntimeSessionManager {
         requestedId ??
         defaultProviderInstanceForKind(input.kind).providerInstanceId,
     }
-    const providerInstance = normalizeProviderInstance(normalizedInput, existing, {
-      reuseOptionalFallback: false,
-    })
+    const providerInstance = normalizeProviderInstance(
+      normalizedInput,
+      existing,
+      {
+        reuseOptionalFallback: false,
+      },
+    )
     const nextInstances = [...this.#state.providerInstances]
     const index = nextInstances.findIndex(
-      (instance) => instance.providerInstanceId === providerInstance.providerInstanceId
+      (instance) =>
+        instance.providerInstanceId === providerInstance.providerInstanceId,
     )
     if (index >= 0) {
       nextInstances[index] = providerInstance
@@ -3900,11 +4192,17 @@ export class RuntimeSessionManager {
         providerInstanceId: providerInstance.providerInstanceId,
         kind: providerInstance.kind,
       },
-      ctx
+      ctx,
     )
     this.#touch()
-    this.#broadcast({ type: 'provider.instances.updated', state: this.getState() })
-    return { providerInstance: clone(providerInstance), state: this.getState() }
+    this.#broadcast({
+      type: 'provider.instances.updated',
+      state: this.getState(),
+    })
+    return {
+      providerInstance: clone(providerInstance),
+      state: this.getState(),
+    }
   }
 
   async createSession(input: JsonRecord = {}) {
@@ -3914,7 +4212,7 @@ export class RuntimeSessionManager {
   async #cmdCreateSession(
     input: JsonRecord = {},
     ctx: JsonRecord,
-    options: JsonRecord = {}
+    options: JsonRecord = {},
   ) {
     const deferStart = options.deferStart === true
     const sessionId = randomUUID()
@@ -3944,7 +4242,9 @@ export class RuntimeSessionManager {
     // Everything that can reject the command must run before the channel is
     // written: a failed create must not leave an orphan delivery with no
     // `delivered` fact behind it (events are the truth, files follow).
-    const runtimeSettings = normalizeProviderRuntimeSettings(input.runtimeSettings)
+    const runtimeSettings = normalizeProviderRuntimeSettings(
+      input.runtimeSettings,
+    )
     const workspace =
       normalizeWorkMode(input.workMode) === 'worktree'
         ? createSessionWorktree(input.cwd, sessionId, input.branch)
@@ -4042,10 +4342,15 @@ export class RuntimeSessionManager {
       agent: provider.agent,
       clusterId: cluster,
       status: deferStart ? 'idle' : 'pending',
-      position: {
-        x: 96 + (this.#state.nodes.length % 4) * 280,
-        y: 96 + Math.floor(this.#state.nodes.length / 4) * 180,
-      },
+      position:
+        options.position &&
+        Number.isFinite(options.position.x) &&
+        Number.isFinite(options.position.y)
+          ? { x: options.position.x, y: options.position.y }
+          : {
+              x: 96 + (this.#state.nodes.length % 4) * 280,
+              y: 96 + Math.floor(this.#state.nodes.length / 4) * 180,
+            },
     })
     if (cluster) {
       this.#ensureCluster(cluster)
@@ -4080,7 +4385,10 @@ export class RuntimeSessionManager {
         cwd,
       },
       ctx,
-      { reason: ctx.reason ?? this.#masterReasonFromInput(sourceSessionId, input) }
+      {
+        reason:
+          ctx.reason ?? this.#masterReasonFromInput(sourceSessionId, input),
+      },
     )
     if (handoffDelivery) {
       // The channel write happened before message composition; the fact
@@ -4094,11 +4402,18 @@ export class RuntimeSessionManager {
           channelSeq: handoffDelivery.seq,
           files: handoffDelivery.files,
         },
-        { ...ctx, causeId: createdEvent?.id ?? ctx.causeId }
+        {
+          ...ctx,
+          causeId: createdEvent?.id ?? ctx.causeId,
+        },
       )
     }
     this.#touch()
-    this.#broadcast({ type: 'session.created', sessionId, state: this.getState() })
+    this.#broadcast({
+      type: 'session.created',
+      sessionId,
+      state: this.getState(),
+    })
 
     if (deferStart) {
       return {
@@ -4170,7 +4485,7 @@ export class RuntimeSessionManager {
           topic: optionalTrimmedString(input.contextTopic) ?? 'context',
           entries: [{ name: 'context.md', content: context }],
         },
-        ctx
+        ctx,
       )
     }
 
@@ -4186,14 +4501,17 @@ export class RuntimeSessionManager {
   // Pure data-plane delivery (§4.1 deliver): writes to the target's channel
   // and records the `delivered` fact. Never activates.
   #cmdDeliver(input: JsonRecord = {}, ctx: JsonRecord) {
-    const target = optionalTrimmedString(input.sessionId) ?? optionalTrimmedString(input.target)
+    const target =
+      optionalTrimmedString(input.sessionId) ??
+      optionalTrimmedString(input.target)
     if (!target || !this.#state.sessions[target]) {
       throw new Error(`Unknown session: ${target ?? ''}`)
     }
 
     const topic = optionalTrimmedString(input.topic)
     const note = optionalTrimmedString(input.note)
-    const content = typeof input.content === 'string' ? input.content : undefined
+    const content =
+      typeof input.content === 'string' ? input.content : undefined
     // Attribution: a caller session (membrane actor.ref) cannot be spoofed;
     // rule actors reference a subscription rather than a session, so
     // subscription firings pass the trigger source explicitly instead.
@@ -4217,7 +4535,9 @@ export class RuntimeSessionManager {
       entries = this.#firingEntries(from, optionalTrimmedString(input.reportId))
     }
     if ((!entries || entries.length === 0) && !note) {
-      throw new Error('deliver requires content, a note, or a session source with artifacts')
+      throw new Error(
+        'deliver requires content, a note, or a session source with artifacts',
+      )
     }
 
     const delivery = this.#deliverToChannel(
@@ -4229,7 +4549,7 @@ export class RuntimeSessionManager {
         entries,
         subscriptionId: input.subscriptionId,
       },
-      ctx
+      ctx,
     )
     return {
       ok: true,
@@ -4289,8 +4609,16 @@ export class RuntimeSessionManager {
   }
 
   #deliverToChannel(
-    { target, from, fromLabel, topic, note, entries, subscriptionId }: JsonRecord,
-    ctx: JsonRecord
+    {
+      target,
+      from,
+      fromLabel,
+      topic,
+      note,
+      entries,
+      subscriptionId,
+    }: JsonRecord,
+    ctx: JsonRecord,
   ) {
     const sourceSession = from ? this.#state.sessions[from] : undefined
     const delivery = this.#channelStore.deliver({
@@ -4314,7 +4642,7 @@ export class RuntimeSessionManager {
         // deliver-only subscription's firings from this field.
         subscriptionId: optionalTrimmedString(subscriptionId),
       },
-      ctx
+      ctx,
     )
     return delivery
   }
@@ -4335,24 +4663,28 @@ export class RuntimeSessionManager {
         (message) =>
           message.role === 'assistant' &&
           message.status === 'complete' &&
-          message.content
+          message.content,
       )
     const summary = lastAssistant?.content ?? session.result
     if (typeof summary === 'string' && summary.trim().length > 0) {
-      entries.push({ name: 'turn-summary.md', content: summary })
+      entries.push({
+        name: 'turn-summary.md',
+        content: summary,
+      })
     }
     try {
       const diff = this.#gitDiffForSession(sessionId)
       if (typeof diff === 'string' && diff.trim().length > 0) {
-        entries.push({ name: 'workspace-diff.patch', content: diff })
+        entries.push({
+          name: 'workspace-diff.patch',
+          content: diff,
+        })
       }
       // An empty diff (no git repo / no changes) is a normal case: no file.
     } catch (error) {
       entries.push({
         name: 'workspace-diff-unavailable.md',
-        content: `Workspace diff could not be captured: ${
-          error instanceof Error ? error.message : String(error)
-        }\n`,
+        content: `Workspace diff could not be captured: ${error instanceof Error ? error.message : String(error)}\n`,
       })
     }
     return entries
@@ -4368,7 +4700,7 @@ export class RuntimeSessionManager {
       ctx,
       subscriptionId,
       slotKey,
-    }: JsonRecord
+    }: JsonRecord,
   ) {
     const session = this.#state.sessions[sessionId]
     const unread = this.#channelStore.unread(sessionId)
@@ -4428,7 +4760,10 @@ export class RuntimeSessionManager {
         kind: 'resume-session',
         envelope: this.#createEnvelope(edgeSourceSessionId),
         label: 'resume_session',
-        masterReason: this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
+        masterReason: this.#masterReasonFromInput(
+          edgeSourceSessionId,
+          edgeInput,
+        ),
       })
     }
 
@@ -4448,12 +4783,17 @@ export class RuntimeSessionManager {
       ctx,
       {
         reason:
-          ctx.reason ?? this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
-      }
+          ctx.reason ??
+          this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
+      },
     )
     this.#touch()
     // Broadcast keeps the runtime-plane name the renderer already consumes.
-    this.#broadcast({ type: 'session.resumed', sessionId, state: this.getState() })
+    this.#broadcast({
+      type: 'session.resumed',
+      sessionId,
+      state: this.getState(),
+    })
 
     if (firstPreparedTurn) {
       delete session.prepared
@@ -4489,7 +4829,10 @@ export class RuntimeSessionManager {
     this.#state.sessions[sessionId].archived = archived
     this.#appendKernelEvent('session.archived', { sessionId, archived }, ctx)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { ok: true, state: this.getState() }
   }
 
@@ -4497,7 +4840,8 @@ export class RuntimeSessionManager {
     const sessionId =
       typeof input === 'string'
         ? input
-        : typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
+        : typeof input.sessionId === 'string' &&
+            input.sessionId.trim().length > 0
           ? input.sessionId.trim()
           : undefined
 
@@ -4542,13 +4886,13 @@ export class RuntimeSessionManager {
         request.maxDepth,
         workspaceFilesMaxDepth,
         1,
-        workspaceFilesMaxDepth
+        workspaceFilesMaxDepth,
       ),
       remainingEntries: normalizeWorkspaceFilesLimit(
         request.maxEntries,
         workspaceFilesMaxEntries,
         25,
-        workspaceFilesMaxEntries
+        workspaceFilesMaxEntries,
       ),
       truncated: false,
     }
@@ -4568,7 +4912,8 @@ export class RuntimeSessionManager {
   getWorkspaceFileContent(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
     const sessionId =
-      typeof request.sessionId === 'string' && request.sessionId.trim().length > 0
+      typeof request.sessionId === 'string' &&
+      request.sessionId.trim().length > 0
         ? request.sessionId.trim()
         : undefined
 
@@ -4580,7 +4925,7 @@ export class RuntimeSessionManager {
     const cwd = validateRunnableCwd(session.cwd)
     const { absolutePath, relativePath } = resolveWorkspaceFilePath(
       cwd,
-      request.path
+      request.path,
     )
     const stat = fs.statSync(absolutePath)
     if (!stat.isFile()) {
@@ -4591,7 +4936,7 @@ export class RuntimeSessionManager {
       request.maxBytes,
       workspaceFileContentMaxBytes,
       1024,
-      workspaceFileContentMaxBytes
+      workspaceFileContentMaxBytes,
     )
     const bytesToRead = Math.min(stat.size, maxBytes + 1)
     const buffer = Buffer.alloc(bytesToRead)
@@ -4662,7 +5007,7 @@ export class RuntimeSessionManager {
       const killedEvent = this.#appendKernelEvent(
         'session.killed',
         { sessionId },
-        ctx
+        ctx,
       )
       if (context) {
         // The provider run's close handler re-broadcasts session.killed once
@@ -4727,13 +5072,15 @@ export class RuntimeSessionManager {
     }
     if (!validRuntimeRequestDecisions.has(decision)) {
       throw new Error(
-        'Runtime request decision must be accept, acceptForSession, decline, or cancel'
+        'Runtime request decision must be accept, acceptForSession, decline, or cancel',
       )
     }
     const normalizedDecision = normalizeRuntimeRequestDecision(decision)
 
     const session = this.#state.sessions[sessionId]
-    const request = session.runtimeRequests?.find((item) => item.id === requestId)
+    const request = session.runtimeRequests?.find(
+      (item) => item.id === requestId,
+    )
     if (!request) {
       throw new Error(`Unknown runtime request: ${requestId}`)
     }
@@ -4743,10 +5090,15 @@ export class RuntimeSessionManager {
 
     const run = this.#runs.get(sessionId)
     if (typeof run?.respondRuntimeRequest !== 'function') {
-      throw new Error(`Session cannot respond to runtime requests: ${sessionId}`)
+      throw new Error(
+        `Session cannot respond to runtime requests: ${sessionId}`,
+      )
     }
 
-    run.respondRuntimeRequest({ requestId, decision: normalizedDecision })
+    run.respondRuntimeRequest({
+      requestId,
+      decision: normalizedDecision,
+    })
     const event = {
       id: randomUUID(),
       ts: now(),
@@ -4758,8 +5110,12 @@ export class RuntimeSessionManager {
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
     this.#appendKernelEvent(
       'interaction.responded',
-      { sessionId, requestId, decision: normalizedDecision },
-      ctx
+      {
+        sessionId,
+        requestId,
+        decision: normalizedDecision,
+      },
+      ctx,
     )
     return { ok: true, state: this.getState() }
   }
@@ -4793,7 +5149,7 @@ export class RuntimeSessionManager {
 
     const session = this.#state.sessions[sessionId]
     const request = session.runtimeUserInputRequests?.find(
-      (item) => item.id === requestId
+      (item) => item.id === requestId,
     )
     if (!request) {
       throw new Error(`Unknown user input request: ${requestId}`)
@@ -4807,7 +5163,11 @@ export class RuntimeSessionManager {
       throw new Error(`Session cannot answer user input requests: ${sessionId}`)
     }
 
-    run.answerUserInput({ requestId, answer: primaryAnswer, answers })
+    run.answerUserInput({
+      requestId,
+      answer: primaryAnswer,
+      answers,
+    })
     const event = {
       id: randomUUID(),
       ts: now(),
@@ -4821,7 +5181,7 @@ export class RuntimeSessionManager {
     this.#appendKernelEvent(
       'interaction.answered',
       { sessionId, requestId },
-      ctx
+      ctx,
     )
     return { ok: true, state: this.getState() }
   }
@@ -4881,10 +5241,13 @@ export class RuntimeSessionManager {
     this.#appendKernelEvent(
       'scope.upserted',
       { clusterId, label, nodeIds },
-      ctx
+      ctx,
     )
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { clusterId, state: this.getState() }
   }
 
@@ -4907,7 +5270,7 @@ export class RuntimeSessionManager {
       this.#appendKernelEvent(
         'loop.policy-set',
         { clusterId, policy: clone(cluster.loopPolicy) },
-        ctx
+        ctx,
       )
     }
 
@@ -4915,8 +5278,14 @@ export class RuntimeSessionManager {
       if (this.#state.sessions[cluster.masterSessionId]) {
         this.#assignMaster(clusterId, cluster.masterSessionId, ctx)
         this.#touch()
-        this.#broadcast({ type: 'runtime.state', state: this.getState() })
-        return { sessionId: cluster.masterSessionId, state: this.getState() }
+        this.#broadcast({
+          type: 'runtime.state',
+          state: this.getState(),
+        })
+        return {
+          sessionId: cluster.masterSessionId,
+          state: this.getState(),
+        }
       }
 
       delete cluster.masterSessionId
@@ -4943,12 +5312,18 @@ export class RuntimeSessionManager {
         role: 'master',
         runtimeSettings: input.runtimeSettings,
       },
-      ctx
+      ctx,
     )
     this.#assignMaster(clusterId, result.sessionId, ctx)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-    return { sessionId: result.sessionId, state: this.getState() }
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
+    return {
+      sessionId: result.sessionId,
+      state: this.getState(),
+    }
   }
 
   assignMasterToCluster(input: JsonRecord = {}) {
@@ -4974,7 +5349,10 @@ export class RuntimeSessionManager {
 
     this.#assignMaster(clusterId, sessionId, ctx)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { state: this.getState() }
   }
 
@@ -4992,15 +5370,21 @@ export class RuntimeSessionManager {
     }
 
     this.#state.clusters[clusterId].loopPolicy = this.#normalizeLoopPolicy(
-      input.loopPolicy
+      input.loopPolicy,
     )
     this.#appendKernelEvent(
       'loop.policy-set',
-      { clusterId, policy: clone(this.#state.clusters[clusterId].loopPolicy) },
-      ctx
+      {
+        clusterId,
+        policy: clone(this.#state.clusters[clusterId].loopPolicy),
+      },
+      ctx,
     )
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { state: this.getState() }
   }
 
@@ -5029,7 +5413,9 @@ export class RuntimeSessionManager {
         continue
       }
 
-      const node = this.#state.nodes.find((candidate) => candidate.nodeId === nodeId)
+      const node = this.#state.nodes.find(
+        (candidate) => candidate.nodeId === nodeId,
+      )
       if (!node) {
         continue
       }
@@ -5044,7 +5430,10 @@ export class RuntimeSessionManager {
 
     if (changed) {
       this.#touch()
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      this.#broadcast({
+        type: 'runtime.state',
+        state: this.getState(),
+      })
     }
 
     return { state: this.getState() }
@@ -5091,7 +5480,7 @@ export class RuntimeSessionManager {
 
     if (
       this.#loopSubscriptionsForCluster(clusterId).some(
-        (subscription) => subscription.state === 'active'
+        (subscription) => subscription.state === 'active',
       )
     ) {
       throw new Error(`Cluster loop is already running: ${clusterId}`)
@@ -5113,7 +5502,7 @@ export class RuntimeSessionManager {
         prompt: this.#reviewerBootstrapPrompt(),
         masterReason: 'Loop preset created the reviewer.',
       }),
-      ctx
+      ctx,
     )
     const reviewerSessionId = reviewer.sessionId
 
@@ -5133,14 +5522,17 @@ export class RuntimeSessionManager {
         gate: 'master',
         concurrency: 'coalesce',
       },
-      ctx
+      ctx,
     )
     const s2 = this.#cmdAuthorSubscription(
       {
         label: 'S2',
         preset: `hero-loop:${clusterId}`,
         sourceSessionId: reviewerSessionId,
-        on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+        on: {
+          on: 'report',
+          match: { type: 'verdict', verdict: 'issues' },
+        },
         targetSessionId: coderSessionId,
         action: {
           kind: 'deliver+activate',
@@ -5151,13 +5543,17 @@ export class RuntimeSessionManager {
         concurrency: 'coalesce',
         stop: {
           ...(optionalTrimmedString(policy.until?.whenReport?.verdict)
-            ? { whenReport: { verdict: policy.until.whenReport.verdict } }
+            ? {
+                whenReport: {
+                  verdict: policy.until.whenReport.verdict,
+                },
+              }
             : {}),
           maxFirings: policy.maxIterations ?? defaultCycleMaxFirings,
         },
         onStop: 'freeze-cluster',
       },
-      ctx
+      ctx,
     )
 
     cluster.loopState = {
@@ -5180,7 +5576,7 @@ export class RuntimeSessionManager {
         subscriptionIds: [s1.subscription.id, s2.subscription.id],
       },
       ctx,
-      { reason: ctx.reason ?? reason }
+      { reason: ctx.reason ?? reason },
     )
     this.#touch()
     this.#broadcast({
@@ -5214,14 +5610,12 @@ export class RuntimeSessionManager {
               triggerEventId: startedEvent?.id,
             },
             syntheticTrigger,
-            this.#subscriptionRuleCtx(s1.subscription.id, startedEvent?.id)
-          )
+            this.#subscriptionRuleCtx(s1.subscription.id, startedEvent?.id),
+          ),
         )
         .catch((error) => {
           console.error(
-            `Loop kick failed for ${clusterId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`
+            `Loop kick failed for ${clusterId}: ${error instanceof Error ? error.message : String(error)}`,
           )
         })
     }
@@ -5241,13 +5635,14 @@ export class RuntimeSessionManager {
     const loopId = optionalTrimmedString(input.loopId)
     if (loopId) {
       const loop = loopsOf(this.#kernelView()).find(
-        (candidate) => candidate.loopId === loopId
+        (candidate) => candidate.loopId === loopId,
       )
       if (!loop) {
         throw new Error(`Unknown loop: ${loopId}`)
       }
       const reason =
-        optionalTrimmedString(input.reason) ?? 'Stopped by user from Loop panel.'
+        optionalTrimmedString(input.reason) ??
+        'Stopped by user from Loop panel.'
       for (const subscriptionId of loop.subscriptionIds) {
         const subscription = this.#state.subscriptions?.[subscriptionId]
         if (subscription?.state === 'active') {
@@ -5280,10 +5675,9 @@ export class RuntimeSessionManager {
 
     if (input.killRunning === true) {
       const cluster = this.#state.clusters[clusterId]
-      const runningIds = [
-        ...cluster.nodeIds,
-        cluster.masterSessionId,
-      ].filter((sessionId) => this.#runs.has(sessionId))
+      const runningIds = [...cluster.nodeIds, cluster.masterSessionId].filter(
+        (sessionId) => this.#runs.has(sessionId),
+      )
       for (const sessionId of runningIds) {
         this.#cmdKillSession({ sessionId }, ctx)
       }
@@ -5294,12 +5688,12 @@ export class RuntimeSessionManager {
 
   #stopClusterLoopSubscriptions(clusterId, reason, ctx) {
     const active = this.#loopSubscriptionsForCluster(clusterId).filter(
-      (subscription) => subscription.state === 'active'
+      (subscription) => subscription.state === 'active',
     )
     for (const subscription of active) {
       this.#cmdStopSubscription(
         { subscriptionId: subscription.id, reason },
-        ctx
+        ctx,
       )
     }
     const cluster = this.#state.clusters[clusterId]
@@ -5408,26 +5802,29 @@ export class RuntimeSessionManager {
   #isGoalPairShape(check, retry) {
     return Boolean(
       check &&
-        retry &&
-        /^goal-check-/.test(check.id ?? '') &&
-        retry.id === check.id.replace(/^goal-check-/, 'goal-retry-') &&
-        check.source?.kind === 'session' &&
-        retry.source?.kind === 'session' &&
-        retry.source.sessionId === check.target?.sessionId &&
-        retry.target?.sessionId === check.source.sessionId &&
-        check.on?.on === 'finished' &&
-        retry.on?.on === 'report' &&
-        retry.on?.match?.type === 'verdict' &&
-        retry.on?.match?.verdict === 'fail' &&
-        check.action?.kind === 'deliver+activate' &&
-        retry.action?.kind === 'deliver+activate' &&
-        check.stop?.whenReport?.verdict === 'done' &&
-        retry.stop?.whenReport?.verdict === 'done'
+      retry &&
+      /^goal-check-/.test(check.id ?? '') &&
+      retry.id === check.id.replace(/^goal-check-/, 'goal-retry-') &&
+      check.source?.kind === 'session' &&
+      retry.source?.kind === 'session' &&
+      retry.source.sessionId === check.target?.sessionId &&
+      retry.target?.sessionId === check.source.sessionId &&
+      check.on?.on === 'finished' &&
+      retry.on?.on === 'report' &&
+      retry.on?.match?.type === 'verdict' &&
+      retry.on?.match?.verdict === 'fail' &&
+      check.action?.kind === 'deliver+activate' &&
+      retry.action?.kind === 'deliver+activate' &&
+      check.stop?.whenReport?.verdict === 'done' &&
+      retry.stop?.whenReport?.verdict === 'done',
     )
   }
 
   #isCompiledGoalCheckEdge(subscription) {
-    if (subscription.state !== 'active' || !/^goal-check-/.test(subscription.id ?? '')) {
+    if (
+      subscription.state !== 'active' ||
+      !/^goal-check-/.test(subscription.id ?? '')
+    ) {
       return false
     }
     const retry =
@@ -5445,27 +5842,27 @@ export class RuntimeSessionManager {
   #isReviewPairShape(pass, fix) {
     return Boolean(
       pass &&
-        fix &&
-        /^review-pass-/.test(pass.id ?? '') &&
-        fix.id === pass.id.replace(/^review-pass-/, 'review-fix-') &&
-        pass.source?.kind === 'session' &&
-        fix.source?.kind === 'session' &&
-        fix.source.sessionId === pass.target?.sessionId &&
-        fix.target?.sessionId === pass.source.sessionId &&
-        pass.on?.on === 'finished' &&
-        fix.on?.on === 'report' &&
-        fix.on?.match?.type === 'verdict' &&
-        fix.on?.match?.verdict === 'issues' &&
-        pass.action?.kind === 'deliver+activate' &&
-        fix.action?.kind === 'deliver+activate' &&
-        pass.stop?.whenReport?.verdict === 'clean' &&
-        fix.stop?.whenReport?.verdict === 'clean'
+      fix &&
+      /^review-pass-/.test(pass.id ?? '') &&
+      fix.id === pass.id.replace(/^review-pass-/, 'review-fix-') &&
+      pass.source?.kind === 'session' &&
+      fix.source?.kind === 'session' &&
+      fix.source.sessionId === pass.target?.sessionId &&
+      fix.target?.sessionId === pass.source.sessionId &&
+      pass.on?.on === 'finished' &&
+      fix.on?.on === 'report' &&
+      fix.on?.match?.type === 'verdict' &&
+      fix.on?.match?.verdict === 'issues' &&
+      pass.action?.kind === 'deliver+activate' &&
+      fix.action?.kind === 'deliver+activate' &&
+      pass.stop?.whenReport?.verdict === 'clean' &&
+      fix.stop?.whenReport?.verdict === 'clean',
     )
   }
 
   #activeReviewPairRole(sessionId) {
     for (const pass of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     )) {
       if (
         pass.state !== 'active' ||
@@ -5474,18 +5871,588 @@ export class RuntimeSessionManager {
       ) {
         continue
       }
-      const fix = this.#state.subscriptions?.[
-        pass.id.replace(/^review-pass-/, 'review-fix-')
-      ]
-      if (
-        fix?.state === 'active' &&
-        this.#isReviewPairShape(pass, fix)
-      ) {
+      const fix =
+        this.#state.subscriptions?.[
+          pass.id.replace(/^review-pass-/, 'review-fix-')
+        ]
+      if (fix?.state === 'active' && this.#isReviewPairShape(pass, fix)) {
         if (pass.source.sessionId === sessionId) return 'Coder'
         if (pass.target?.sessionId === sessionId) return 'Reviewer'
       }
     }
     return undefined
+  }
+
+  // P3 static authoring compiler. The renderer sends its runtime-free Draft
+  // graph once; this command creates every new Agent in prepared state,
+  // installs every Relationship, and only then starts root Agents. Draft ids
+  // are returned as an explicit mapping and never enter the kernel log.
+  async startDraftWorkflow(input: JsonRecord = {}) {
+    const graph = input.graph as any
+    const sessionSummaries = {}
+    for (const session of Object.values(this.#state.sessions as JsonRecord)) {
+      const node = this.#state.nodes.find(
+        (candidate) => candidate.sessionId === session.sessionId,
+      )
+      sessionSummaries[session.sessionId] = {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        status: session.status,
+        frozen: node?.frozen === true,
+      }
+    }
+    const validation = validateDraftGraph(graph, {
+      sessions: sessionSummaries,
+      providerInstanceIds: this.#state.providerInstances.map(
+        (instance) => instance.providerInstanceId,
+      ),
+    })
+    if (!validation.ok) {
+      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+    }
+
+    const ctx = this.#humanCtx()
+    const createdSessionIds: string[] = []
+    const subscriptionIds: string[] = []
+    const nodeSessionIds = {}
+    const relationSubscriptionIds = {}
+    const preparedRuns = new Map()
+    const existingCheckpoints = new Map()
+
+    try {
+      // Instantiate in graph dependency order, not visual creation order.
+      // A new Review target must bind to the Coder's FINAL cwd (especially
+      // after worktree creation), so its source has to exist first.
+      const pendingNodeIds = new Set(graph.nodeOrder)
+      const instantiationOrder: string[] = []
+      while (pendingNodeIds.size > 0) {
+        const ready = graph.nodeOrder.filter(
+          (draftNodeId) =>
+            pendingNodeIds.has(draftNodeId) &&
+            graph.relationOrder.every((relationId) => {
+              const relation = graph.relations[relationId]
+              return (
+                relation.targetNodeId !== draftNodeId ||
+                !pendingNodeIds.has(relation.sourceNodeId)
+              )
+            }),
+        )
+        if (ready.length === 0) {
+          throw new Error('Draft workflow needs an acyclic starting order.')
+        }
+        for (const draftNodeId of ready) {
+          pendingNodeIds.delete(draftNodeId)
+          instantiationOrder.push(draftNodeId)
+        }
+      }
+
+      for (const draftNodeId of instantiationOrder) {
+        const draftNode = graph.nodes[draftNodeId]
+        const endpoint = draftNode.endpoint
+        if (endpoint.kind === 'existing') {
+          this.#assertActivatable(endpoint.sessionId, ctx)
+          nodeSessionIds[draftNodeId] = endpoint.sessionId
+          existingCheckpoints.set(endpoint.sessionId, {
+            session: clone(this.#state.sessions[endpoint.sessionId]),
+            nodeStatus: this.#state.nodes.find(
+              (node) => node.sessionId === endpoint.sessionId,
+            )?.status,
+          })
+          continue
+        }
+
+        const sourceReview = graph.relationOrder
+          .map((relationId) => graph.relations[relationId])
+          .find(
+            (relation) =>
+              relation.kind === 'review-loop' &&
+              relation.sourceNodeId === draftNodeId,
+          )
+        const targetReview = graph.relationOrder
+          .map((relationId) => graph.relations[relationId])
+          .find(
+            (relation) =>
+              relation.kind === 'review-loop' &&
+              relation.targetNodeId === draftNodeId,
+          )
+        const prompt = sourceReview
+          ? coderActivationInstruction(endpoint.prompt)
+          : targetReview
+            ? reviewerBootstrapInstruction(
+                optionalTrimmedString(targetReview.instruction) ??
+                  endpoint.prompt,
+              )
+            : endpoint.prompt
+        const reviewSourceSessionId = targetReview
+          ? nodeSessionIds[targetReview.sourceNodeId]
+          : undefined
+        const reviewSource = reviewSourceSessionId
+          ? this.#state.sessions[reviewSourceSessionId]
+          : undefined
+        const created = await this.#cmdCreateSession(
+          {
+            prompt,
+            // P1 workspace contract: a Reviewer observes the exact checkout
+            // the Coder changed. Its independent provider settings remain,
+            // but workspace/worktree settings do not fork the review target.
+            cwd: reviewSource?.cwd ?? endpoint.cwd,
+            workMode: reviewSource ? 'local' : endpoint.workMode,
+            branch: reviewSource ? undefined : endpoint.branch,
+            label: endpoint.label,
+            providerKind: endpoint.providerKind,
+            providerInstanceId: endpoint.providerInstanceId,
+            runtimeSettings: endpoint.runtimeSettings,
+          },
+          ctx,
+          {
+            deferStart: true,
+            position: draftNode.position,
+          },
+        )
+        nodeSessionIds[draftNodeId] = created.sessionId
+        createdSessionIds.push(created.sessionId)
+        preparedRuns.set(created.sessionId, created.preparedRun)
+      }
+
+      for (const relationId of graph.relationOrder) {
+        const relation = graph.relations[relationId]
+        if (relation.kind !== 'review-loop') continue
+        const sourceSessionId = nodeSessionIds[relation.sourceNodeId]
+        const targetSessionId = nodeSessionIds[relation.targetNodeId]
+        if (
+          this.#state.sessions[sourceSessionId]?.cwd !==
+          this.#state.sessions[targetSessionId]?.cwd
+        ) {
+          throw new Error(
+            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
+          )
+        }
+      }
+
+      for (const relationId of graph.relationOrder) {
+        const relation = graph.relations[relationId]
+        const compiled = compileDraftRelation(graph, relationId)
+        const sourceSessionId = nodeSessionIds[relation.sourceNodeId]
+        const targetSessionId = nodeSessionIds[relation.targetNodeId]
+        if (compiled.kind === 'subscription') {
+          const subscriptionId = `draft-${randomUUID().slice(0, 8)}`
+          subscriptionIds.push(subscriptionId)
+          this.#cmdAuthorSubscription(
+            {
+              id: subscriptionId,
+              label: compiled.label,
+              sourceSessionId,
+              on: compiled.on,
+              targetSessionId,
+              action: compiled.action,
+              gate: 'auto',
+              concurrency: 'coalesce',
+              stop: compiled.stop,
+              onStop: 'freeze-edge',
+            },
+            ctx,
+          )
+          relationSubscriptionIds[relationId] = [subscriptionId]
+          continue
+        }
+
+        const suffix = randomUUID().slice(0, 8)
+        const passId = `review-pass-${suffix}`
+        const fixId = `review-fix-${suffix}`
+        subscriptionIds.push(passId, fixId)
+        const stop = {
+          whenReport: { verdict: 'clean' },
+          maxFirings: compiled.input.maxLaps,
+        }
+        this.#cmdAuthorSubscription(
+          {
+            id: passId,
+            label: 'review pass',
+            preset: 'review-workflow',
+            sourceSessionId,
+            on: { on: 'finished' },
+            targetSessionId,
+            action: {
+              kind: 'deliver+activate',
+              topic: 'diff',
+              note: reviewerActivationInstruction(
+                compiled.input.reviewer.instruction,
+                compiled.input.blocking,
+              ),
+            },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            stop,
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        this.#cmdAuthorSubscription(
+          {
+            id: fixId,
+            label: 'blocking issues',
+            preset: 'review-workflow',
+            sourceSessionId: targetSessionId,
+            on: {
+              on: 'report',
+              match: { type: 'verdict', verdict: 'issues' },
+            },
+            targetSessionId: sourceSessionId,
+            action: {
+              kind: 'deliver+activate',
+              topic: 'review',
+              note: coderFixInstruction(),
+            },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            stop,
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        relationSubscriptionIds[relationId] = [passId, fixId]
+      }
+
+      const targets = new Set(
+        graph.relationOrder.map(
+          (relationId) => graph.relations[relationId].targetNodeId,
+        ),
+      )
+      const rootNodeIds = graph.nodeOrder.filter((id) => !targets.has(id))
+      if (rootNodeIds.length === 0) {
+        throw new Error('Draft workflow needs at least one starting Agent.')
+      }
+      for (const draftNodeId of rootNodeIds) {
+        const endpoint = graph.nodes[draftNodeId].endpoint
+        const sessionId = nodeSessionIds[draftNodeId]
+        if (endpoint.kind === 'new') {
+          const preparedRun = preparedRuns.get(sessionId)
+          delete this.#state.sessions[sessionId].prepared
+          await this.#startRun(sessionId, {
+            ...preparedRun,
+            runKind: 'create',
+          })
+        } else {
+          const sourceReview = graph.relationOrder
+            .map((relationId) => graph.relations[relationId])
+            .some(
+              (relation) =>
+                relation.kind === 'review-loop' &&
+                relation.sourceNodeId === draftNodeId,
+            )
+          await this.#cmdResumeSession(
+            {
+              sessionId,
+              message: sourceReview
+                ? coderActivationInstruction(endpoint.prompt)
+                : endpoint.prompt,
+            },
+            ctx,
+          )
+        }
+        if (this.#state.sessions[sessionId]?.status === 'failed') {
+          throw new Error(
+            this.#state.sessions[sessionId].error ??
+              `The provider for ${draftNodeId} could not start.`,
+          )
+        }
+      }
+
+      return {
+        mapping: {
+          nodeSessionIds,
+          relationSubscriptionIds,
+        },
+        createdSessionIds,
+        subscriptionIds,
+        state: this.getState(),
+      }
+    } catch (error) {
+      for (const subscriptionId of subscriptionIds) {
+        this.#discardWorkflowSubscription(subscriptionId)
+      }
+      for (const sessionId of [...createdSessionIds].reverse()) {
+        this.#discardWorkflowSession(sessionId)
+      }
+      for (const [sessionId, checkpoint] of existingCheckpoints) {
+        if (this.#runs.has(sessionId)) continue
+        this.#state.sessions[sessionId] = checkpoint.session
+        const node = this.#state.nodes.find(
+          (candidate) => candidate.sessionId === sessionId,
+        )
+        if (node && checkpoint.nodeStatus) node.status = checkpoint.nodeStatus
+      }
+      this.#touch()
+      this.#broadcast({
+        type: 'runtime.state',
+        state: this.getState(),
+      })
+      throw error
+    }
+  }
+
+  // P3 dynamic authoring compiler. Current-result is an immediate command;
+  // next-completion is standing intent. Both paths share one preflight and
+  // one compensation boundary so the renderer never assembles half a
+  // Relationship from low-level HTTP/IPC calls.
+  async connectAgents(input: JsonRecord = {}) {
+    const validation = validateAgentConnection(
+      input as any,
+      this.#state.providerInstances.map(
+        (instance) => instance.providerInstanceId,
+      ),
+    )
+    if (!validation.ok) {
+      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
+    }
+    const sourceSessionId = optionalTrimmedString(input.sourceSessionId)
+    const source = this.#state.sessions[sourceSessionId]
+    if (!source) throw new Error(`Unknown source Agent: ${sourceSessionId}`)
+    if (source.status === 'killed')
+      throw new Error('Killed Agent cannot be connected.')
+    if (
+      input.timing === 'current-result' &&
+      (source.status === 'running' || source.status === 'pending')
+    ) {
+      throw new Error(
+        'The source Agent is still working. Wait for next completion to avoid delivering a partial workspace.',
+      )
+    }
+
+    const targetInput = input.target as JsonRecord
+    const behavior = input.behavior
+    const instruction = optionalTrimmedString(input.instruction)
+    const compiled = compileAgentConnection(input as any)
+    const ctx = this.#humanCtx()
+    const createdSessionIds: string[] = []
+    const subscriptionIds: string[] = []
+    let targetSessionId: string
+    let existingCheckpoint
+
+    try {
+      if (targetInput.kind === 'new') {
+        const reviewerLike = [
+          'one-review',
+          'keep-reviewing',
+          'review-loop',
+        ].includes(behavior)
+        const created = await this.#cmdCreateSession(
+          {
+            prompt:
+              behavior === 'review-loop'
+                ? reviewerBootstrapInstruction(instruction)
+                : reviewerLike
+                  ? `You are a Reviewer connected from another Orrery Agent. ${instruction}`
+                  : instruction,
+            cwd: optionalTrimmedString(targetInput.cwd) ?? source.cwd,
+            workMode: 'local',
+            label: targetInput.label,
+            providerKind: targetInput.providerKind,
+            providerInstanceId: targetInput.providerInstanceId,
+            runtimeSettings: targetInput.runtimeSettings,
+          },
+          ctx,
+          {
+            deferStart: true,
+            position: targetInput.position,
+          },
+        )
+        targetSessionId = created.sessionId
+        createdSessionIds.push(targetSessionId)
+      } else {
+        targetSessionId = optionalTrimmedString(targetInput.sessionId)
+        this.#assertActivatable(targetSessionId, ctx)
+        existingCheckpoint = {
+          session: clone(this.#state.sessions[targetSessionId]),
+          nodeStatus: this.#state.nodes.find(
+            (node) => node.sessionId === targetSessionId,
+          )?.status,
+        }
+      }
+      if (targetSessionId === sourceSessionId)
+        throw new Error('Connect two different Agents.')
+      if (
+        ['one-review', 'keep-reviewing', 'review-loop'].includes(behavior) &&
+        this.#state.sessions[targetSessionId].cwd !== source.cwd
+      ) {
+        throw new Error(
+          'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
+        )
+      }
+
+      let forwardSubscriptionId
+      if (compiled.relationships.length === 2) {
+        const suffix = randomUUID().slice(0, 8)
+        const passId = `review-pass-${suffix}`
+        const fixId = `review-fix-${suffix}`
+        subscriptionIds.push(passId, fixId)
+        const review = (input.review as JsonRecord) ?? {
+          blocking: { mode: 'p0-p1' },
+          maxLaps: defaultCycleMaxFirings,
+        }
+        const stop = {
+          whenReport: { verdict: 'clean' },
+          maxFirings: Number(review.maxLaps),
+        }
+        this.#cmdAuthorSubscription(
+          {
+            id: passId,
+            label: 'review pass',
+            preset: 'review-workflow',
+            sourceSessionId,
+            on: { on: 'finished' },
+            targetSessionId,
+            action: {
+              kind: 'deliver+activate',
+              topic: 'diff',
+              note: reviewerActivationInstruction(
+                instruction,
+                review.blocking as any,
+              ),
+            },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            stop,
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        this.#cmdAuthorSubscription(
+          {
+            id: fixId,
+            label: 'blocking issues',
+            preset: 'review-workflow',
+            sourceSessionId: targetSessionId,
+            on: {
+              on: 'report',
+              match: { type: 'verdict', verdict: 'issues' },
+            },
+            targetSessionId: sourceSessionId,
+            action: {
+              kind: 'deliver+activate',
+              topic: 'review',
+              note: coderFixInstruction(),
+            },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            stop,
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        forwardSubscriptionId = passId
+      } else if (!compiled.immediate || behavior === 'keep-reviewing') {
+        const subscriptionId = `connect-${randomUUID().slice(0, 8)}`
+        subscriptionIds.push(subscriptionId)
+        const reviewLike = behavior !== 'handoff-once'
+        this.#cmdAuthorSubscription(
+          {
+            id: subscriptionId,
+            label:
+              behavior === 'handoff-once'
+                ? 'handoff once'
+                : behavior === 'one-review'
+                  ? 'one review'
+                  : 'review future turns',
+            sourceSessionId,
+            on: { on: 'finished' },
+            targetSessionId,
+            action: {
+              kind: 'deliver+activate',
+              topic: reviewLike ? 'diff' : 'handoff',
+              note: instruction,
+            },
+            gate: 'auto',
+            concurrency: 'coalesce',
+            ...(behavior === 'handoff-once' || behavior === 'one-review'
+              ? { stop: { maxFirings: 1 } }
+              : {}),
+            onStop: 'freeze-edge',
+          },
+          ctx,
+        )
+        forwardSubscriptionId = subscriptionId
+      }
+
+      if (compiled.immediate) {
+        if (forwardSubscriptionId) {
+          const subscription = this.#state.subscriptions[forwardSubscriptionId]
+          const startedEvent = this.#appendKernelEvent(
+            'relationship.started',
+            {
+              sessionId: sourceSessionId,
+              targetSessionId,
+              subscriptionId: forwardSubscriptionId,
+            },
+            ctx,
+            {
+              reason:
+                'The user connected the current result to this Relationship.',
+            },
+          )
+          await this.#createPendingActivation(
+            {
+              kind: 'pend-activation',
+              subscriptionId: forwardSubscriptionId,
+              target: targetSessionId,
+              action: subscription.action,
+              gate: subscription.gate,
+              triggerEventId: startedEvent?.id,
+            },
+            startedEvent,
+            this.#subscriptionRuleCtx(forwardSubscriptionId, startedEvent?.id),
+          )
+        } else {
+          this.#cmdDeliver(
+            {
+              sessionId: targetSessionId,
+              source: sourceSessionId,
+              topic: behavior === 'handoff-once' ? 'handoff' : 'diff',
+              note: instruction,
+            },
+            ctx,
+          )
+          await this.#cmdActivate(
+            {
+              sessionId: targetSessionId,
+              note: instruction,
+              edgeSourceSessionId: sourceSessionId,
+            },
+            ctx,
+          )
+        }
+      }
+
+      return {
+        targetSessionId,
+        createdSessionIds,
+        subscriptionIds,
+        state: this.getState(),
+      }
+    } catch (error) {
+      for (const subscriptionId of subscriptionIds)
+        this.#discardWorkflowSubscription(subscriptionId)
+      for (const sessionId of [...createdSessionIds].reverse())
+        this.#discardWorkflowSession(sessionId)
+      if (
+        existingCheckpoint &&
+        targetSessionId &&
+        !this.#runs.has(targetSessionId)
+      ) {
+        this.#state.sessions[targetSessionId] = existingCheckpoint.session
+        const node = this.#state.nodes.find(
+          (candidate) => candidate.sessionId === targetSessionId,
+        )
+        if (node && existingCheckpoint.nodeStatus)
+          node.status = existingCheckpoint.nodeStatus
+      }
+      this.#touch()
+      this.#broadcast({
+        type: 'runtime.state',
+        state: this.getState(),
+      })
+      throw error
+    }
   }
 
   // Product-facing Review until clean compiler. Unlike the older template
@@ -5496,7 +6463,7 @@ export class RuntimeSessionManager {
     const sessionSummaries = {}
     for (const session of Object.values(this.#state.sessions as JsonRecord)) {
       const node = this.#state.nodes.find(
-        (candidate) => candidate.sessionId === session.sessionId
+        (candidate) => candidate.sessionId === session.sessionId,
       )
       sessionSummaries[session.sessionId] = {
         sessionId: session.sessionId,
@@ -5508,7 +6475,7 @@ export class RuntimeSessionManager {
     const validation = validateReviewWorkflowStart(input as any, {
       sessions: sessionSummaries,
       providerInstanceIds: this.#state.providerInstances.map(
-        (instance) => instance.providerInstanceId
+        (instance) => instance.providerInstanceId,
       ),
     })
     if (!validation.ok) {
@@ -5547,7 +6514,7 @@ export class RuntimeSessionManager {
             runtimeSettings: coderInput.runtimeSettings,
           },
           ctx,
-          { deferStart: true }
+          { deferStart: true },
         )
         coderSessionId = created.sessionId
         preparedCoderRun = created.preparedRun
@@ -5558,7 +6525,7 @@ export class RuntimeSessionManager {
         existingCoderCheckpoint = {
           session: clone(this.#state.sessions[coderSessionId]),
           nodeStatus: this.#state.nodes.find(
-            (node) => node.sessionId === coderSessionId
+            (node) => node.sessionId === coderSessionId,
           )?.status,
         }
       }
@@ -5578,7 +6545,7 @@ export class RuntimeSessionManager {
             linkLabel: 'review partner',
           },
           ctx,
-          { deferStart: true }
+          { deferStart: true },
         )
         reviewerSessionId = created.sessionId
         createdSessionIds.push(reviewerSessionId)
@@ -5587,7 +6554,7 @@ export class RuntimeSessionManager {
         this.#assertActivatable(reviewerSessionId, ctx)
         if (this.#state.sessions[reviewerSessionId].cwd !== coder.cwd) {
           throw new Error(
-            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.'
+            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
           )
         }
       }
@@ -5615,7 +6582,7 @@ export class RuntimeSessionManager {
             topic: 'diff',
             note: reviewerActivationInstruction(
               String(reviewerInput.instruction),
-              input.blocking as any
+              input.blocking as any,
             ),
           },
           gate: 'auto',
@@ -5623,7 +6590,7 @@ export class RuntimeSessionManager {
           stop,
           onStop: 'freeze-edge',
         },
-        ctx
+        ctx,
       )
       const fix = this.#cmdAuthorSubscription(
         {
@@ -5631,7 +6598,10 @@ export class RuntimeSessionManager {
           label: 'blocking issues',
           preset: 'review-workflow',
           sourceSessionId: reviewerSessionId,
-          on: { on: 'report', match: { type: 'verdict', verdict: 'issues' } },
+          on: {
+            on: 'report',
+            match: { type: 'verdict', verdict: 'issues' },
+          },
           targetSessionId: coderSessionId,
           action: {
             kind: 'deliver+activate',
@@ -5643,12 +6613,14 @@ export class RuntimeSessionManager {
           stop,
           onStop: 'freeze-edge',
         },
-        ctx
+        ctx,
       )
       // The normalized ids are pinned above; retain these assertions close to
       // the compiler boundary in case authoring ever rewrites explicit ids.
       if (pass.subscription.id !== passId || fix.subscription.id !== fixId) {
-        throw new Error('Review workflow relationship ids changed during authoring.')
+        throw new Error(
+          'Review workflow relationship ids changed during authoring.',
+        )
       }
 
       // The first provider invocation is deliberately last. At this point
@@ -5666,19 +6638,19 @@ export class RuntimeSessionManager {
             sessionId: coderSessionId,
             message: coderActivationInstruction(String(coderInput.prompt)),
           },
-          ctx
+          ctx,
         )
       }
       if (this.#state.sessions[coderSessionId]?.status === 'failed') {
         throw new Error(
           this.#state.sessions[coderSessionId].error ??
-            'The Coder provider could not start.'
+            'The Coder provider could not start.',
         )
       }
 
       const state = this.getState()
-      const loop = state.loops?.find(
-        (candidate) => candidate.subscriptionIds.includes(passId)
+      const loop = state.loops?.find((candidate) =>
+        candidate.subscriptionIds.includes(passId),
       )
       return {
         coderSessionId,
@@ -5707,14 +6679,17 @@ export class RuntimeSessionManager {
       ) {
         this.#state.sessions[coderSessionId] = existingCoderCheckpoint.session
         const node = this.#state.nodes.find(
-          (candidate) => candidate.sessionId === coderSessionId
+          (candidate) => candidate.sessionId === coderSessionId,
         )
         if (node && existingCoderCheckpoint.nodeStatus) {
           node.status = existingCoderCheckpoint.nodeStatus
         }
       }
       this.#touch()
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
+      this.#broadcast({
+        type: 'runtime.state',
+        state: this.getState(),
+      })
       throw error
     }
   }
@@ -5722,7 +6697,7 @@ export class RuntimeSessionManager {
   #discardWorkflowSubscription(subscriptionId: string) {
     this.#clearTimer(subscriptionId)
     for (const [slotKey, slot] of Object.entries(
-      (this.#state.pendingActivations ?? {}) as JsonRecord
+      (this.#state.pendingActivations ?? {}) as JsonRecord,
     )) {
       if (slot.subscriptionId === subscriptionId) {
         delete this.#state.pendingActivations[slotKey]
@@ -5766,10 +6741,10 @@ export class RuntimeSessionManager {
     }
     delete this.#state.sessions[sessionId]
     this.#state.nodes = this.#state.nodes.filter(
-      (node) => node.sessionId !== sessionId
+      (node) => node.sessionId !== sessionId,
     )
     this.#state.edges = this.#state.edges.filter(
-      (edge) => edge.source !== sessionId && edge.target !== sessionId
+      (edge) => edge.source !== sessionId && edge.target !== sessionId,
     )
     for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
       cluster.nodeIds = cluster.nodeIds.filter((id) => id !== sessionId)
@@ -5794,7 +6769,9 @@ export class RuntimeSessionManager {
       ? this.#state.sessions[workerSessionId]
       : undefined
     if (!worker) {
-      throw new Error(`Unknown goal loop worker session: ${workerSessionId ?? ''}`)
+      throw new Error(
+        `Unknown goal loop worker session: ${workerSessionId ?? ''}`,
+      )
     }
     if (worker.status === 'killed') {
       throw new Error('Cannot set a goal on a killed session')
@@ -5804,7 +6781,9 @@ export class RuntimeSessionManager {
       throw new Error('A goal loop requires a non-empty goal sentence')
     }
     const maxLaps =
-      input.maxLaps === undefined ? defaultCycleMaxFirings : Number(input.maxLaps)
+      input.maxLaps === undefined
+        ? defaultCycleMaxFirings
+        : Number(input.maxLaps)
     if (!Number.isInteger(maxLaps) || maxLaps < 1 || maxLaps > 99) {
       throw new Error('Goal loop maxLaps must be an integer between 1 and 99')
     }
@@ -5816,24 +6795,26 @@ export class RuntimeSessionManager {
     // input must never leave a half-compiled preset behind.
     const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
     if (!validSubscriptionOnStops.has(onStop)) {
-      throw new Error('Goal loop onStop must be freeze-edge, freeze-target, or freeze-cluster')
+      throw new Error(
+        'Goal loop onStop must be freeze-edge, freeze-target, or freeze-cluster',
+      )
     }
     const duplicate = Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord
+      (this.#state.subscriptions ?? {}) as JsonRecord,
     ).find(
       (subscription) =>
         subscription.source?.kind === 'session' &&
         subscription.source.sessionId === worker.sessionId &&
-        this.#isCompiledGoalCheckEdge(subscription)
+        this.#isCompiledGoalCheckEdge(subscription),
     )
     if (duplicate) {
       throw new Error(
-        `Session already has an active goal loop (${duplicate.id}); stop it before setting a new goal`
+        `Session already has an active goal loop (${duplicate.id}); stop it before setting a new goal`,
       )
     }
     if (this.#goalLoopInFlight.has(worker.sessionId)) {
       throw new Error(
-        'A goal loop is already being created for this session; wait for it to finish'
+        'A goal loop is already being created for this session; wait for it to finish',
       )
     }
     this.#goalLoopInFlight.add(worker.sessionId)
@@ -5854,12 +6835,14 @@ export class RuntimeSessionManager {
           // read-only judge could not even run the test suite the goal
           // demands), and the same model unless a provider override says so.
           ...(isObject(worker.runtimeSettings)
-            ? { runtimeSettings: clone(worker.runtimeSettings) }
+            ? {
+                runtimeSettings: clone(worker.runtimeSettings),
+              }
             : {}),
           sourceSessionId: worker.sessionId,
           linkLabel: 'goal judge',
         },
-        this.#humanCtx()
+        this.#humanCtx(),
       )
       const judgeSessionId = created.sessionId
 
@@ -5876,7 +6859,7 @@ export class RuntimeSessionManager {
           // Best-effort cleanup; the throw below is the real signal.
         }
         throw new Error(
-          'The worker session was killed while the goal loop was being created'
+          'The worker session was killed while the goal loop was being created',
         )
       }
 
@@ -5884,7 +6867,10 @@ export class RuntimeSessionManager {
       // in subscription.authored facts — it belongs in judge prompts only
       // (the check edge's note IS the judge's activation prompt).
       const suffix = randomUUID().slice(0, 8)
-      const stop = { whenReport: { verdict: 'done' }, maxFirings: maxLaps }
+      const stop = {
+        whenReport: { verdict: 'done' },
+        maxFirings: maxLaps,
+      }
       // Optional provenance tag (the L6 template library passes
       // `template:goal-loop`); pairing/stop logic never reads it.
       const preset = optionalTrimmedString(input.preset)
@@ -5904,12 +6890,15 @@ export class RuntimeSessionManager {
             sourceSessionId: worker.sessionId,
             on: { on: 'finished' },
             targetSessionId: judgeSessionId,
-            action: { kind: 'deliver+activate', note: this.#goalJudgeActivationNote(goal) },
+            action: {
+              kind: 'deliver+activate',
+              note: this.#goalJudgeActivationNote(goal),
+            },
             gate,
             stop,
             onStop,
           },
-          this.#humanCtx()
+          this.#humanCtx(),
         )
         retry = this.#cmdAuthorSubscription(
           {
@@ -5917,14 +6906,20 @@ export class RuntimeSessionManager {
             label: 'goal retry',
             ...(preset ? { preset } : {}),
             sourceSessionId: judgeSessionId,
-            on: { on: 'report', match: { type: 'verdict', verdict: 'fail' } },
+            on: {
+              on: 'report',
+              match: { type: 'verdict', verdict: 'fail' },
+            },
             targetSessionId: worker.sessionId,
-            action: { kind: 'deliver+activate', note: this.#goalWorkerRetryNote() },
+            action: {
+              kind: 'deliver+activate',
+              note: this.#goalWorkerRetryNote(),
+            },
             gate,
             stop,
             onStop,
           },
-          this.#humanCtx()
+          this.#humanCtx(),
         )
       } catch (error) {
         if (check) {
@@ -5934,7 +6929,7 @@ export class RuntimeSessionManager {
                 subscriptionId: check.subscription.id,
                 reason: 'Goal loop compile aborted before completing the ring.',
               },
-              { actor: { kind: 'runtime' } }
+              { actor: { kind: 'runtime' } },
             )
           } catch {
             // Best-effort cleanup; the rethrow below is the real signal.
@@ -5968,7 +6963,9 @@ export class RuntimeSessionManager {
   // never reads them, so they live in the snapshot, never the kernel log.
 
   listTemplates() {
-    return { templates: templateDescriptors(this.#state.templates) }
+    return {
+      templates: templateDescriptors(this.#state.templates),
+    }
   }
 
   async applyTemplate(input: JsonRecord = {}) {
@@ -5988,7 +6985,7 @@ export class RuntimeSessionManager {
       const session = this.#state.sessions[sessionId]
       if (!session || session.status === 'killed') {
         throw new Error(
-          `Template ${role} must be an existing session (got: ${sessionId})`
+          `Template ${role} must be an existing session (got: ${sessionId})`,
         )
       }
     }
@@ -6017,7 +7014,7 @@ export class RuntimeSessionManager {
             const source = this.#state.sources?.[endpoint.external]
             if (!source || source.state !== 'active') {
               throw new Error(
-                `Template ${role} must be a registered, active external source (got: ${endpoint.external})`
+                `Template ${role} must be a registered, active external source (got: ${endpoint.external})`,
               )
             }
           }
@@ -6057,7 +7054,7 @@ export class RuntimeSessionManager {
         const sessionId = refs.get(endpoint.ref)
         if (!sessionId) {
           throw new Error(
-            `Template plan step references "${endpoint.ref}" before creating it`
+            `Template plan step references "${endpoint.ref}" before creating it`,
           )
         }
         return sessionId
@@ -6084,7 +7081,7 @@ export class RuntimeSessionManager {
               subscriptionId: authoredId,
               reason: 'Template apply aborted before completing its plan.',
             },
-            { actor: { kind: 'runtime' } }
+            { actor: { kind: 'runtime' } },
           )
         } catch {
           // The kill sweep may have stopped it already.
@@ -6107,12 +7104,14 @@ export class RuntimeSessionManager {
               providerKind: from.providerKind,
               providerInstanceId: from.providerInstanceId,
               ...(isObject(from.runtimeSettings)
-                ? { runtimeSettings: clone(from.runtimeSettings) }
+                ? {
+                    runtimeSettings: clone(from.runtimeSettings),
+                  }
                 : {}),
               sourceSessionId: from.sessionId,
               ...(step.linkLabel ? { linkLabel: step.linkLabel } : {}),
             },
-            this.#humanCtx()
+            this.#humanCtx(),
           )
           refs.set(step.ref, created.sessionId)
           createdSessionIds.push(created.sessionId)
@@ -6127,7 +7126,7 @@ export class RuntimeSessionManager {
             const session = this.#state.sessions[sessionId]
             if (!session || session.status === 'killed') {
               throw new Error(
-                'A participant session was killed while the template was being applied'
+                'A participant session was killed while the template was being applied',
               )
             }
           }
@@ -6139,13 +7138,14 @@ export class RuntimeSessionManager {
           const ctx = this.#humanCtx()
           this.#assertActivatable(to, ctx)
           this.#cmdDeliver(
-            { sessionId: to, source: from, topic: step.topic },
-            ctx
+            {
+              sessionId: to,
+              source: from,
+              topic: step.topic,
+            },
+            ctx,
           )
-          await this.#cmdActivate(
-            { sessionId: to, note: step.note },
-            ctx
-          )
+          await this.#cmdActivate({ sessionId: to, note: step.note }, ctx)
           deliveredTo.push(to)
         } else if (step.kind === 'goal-loop') {
           // Whole-ring delegation: the L3 preset owns judge creation, the
@@ -6159,7 +7159,7 @@ export class RuntimeSessionManager {
           createdSessionIds.push(result.judgeSessionId)
           subscriptionIds.push(
             result.checkSubscription.id,
-            result.retrySubscription.id
+            result.retrySubscription.id,
           )
         } else {
           const body = step.input
@@ -6167,8 +7167,14 @@ export class RuntimeSessionManager {
             'timer' in body.source
               ? { kind: 'timer' }
               : 'external' in body.source
-                ? { kind: 'external', sourceId: body.source.external }
-                : { kind: 'session', sessionId: resolveSession(body.source) }
+                ? {
+                    kind: 'external',
+                    sourceId: body.source.external,
+                  }
+                : {
+                    kind: 'session',
+                    sessionId: resolveSession(body.source),
+                  }
           const targetSessionId = resolveSession(body.target)
           // Endpoint liveness recheck: the pre-validation above ran before
           // any awaited session creation, so a kill landing inside that gap
@@ -6184,7 +7190,7 @@ export class RuntimeSessionManager {
             const session = this.#state.sessions[sessionId]
             if (!session || session.status === 'killed') {
               throw new Error(
-                'A participant session was killed while the template was being applied'
+                'A participant session was killed while the template was being applied',
               )
             }
           }
@@ -6203,7 +7209,7 @@ export class RuntimeSessionManager {
               ...(body.stop ? { stop: clone(body.stop) } : {}),
               ...(body.onStop ? { onStop: body.onStop } : {}),
             },
-            this.#humanCtx()
+            this.#humanCtx(),
           )
           subscriptionIds.push(authored.subscription.id)
         }
@@ -6229,7 +7235,9 @@ export class RuntimeSessionManager {
       throw new Error('saveTemplate requires a name')
     }
     const ids = Array.isArray(input.subscriptionIds)
-      ? input.subscriptionIds.map((id) => optionalTrimmedString(id)).filter(Boolean)
+      ? input.subscriptionIds
+          .map((id) => optionalTrimmedString(id))
+          .filter(Boolean)
       : []
     const subscriptions = ids.map((id) => {
       const subscription = this.#state.subscriptions?.[id]
@@ -6257,13 +7265,21 @@ export class RuntimeSessionManager {
     this.#state.templates = this.#state.templates ?? {}
     this.#state.templates[template.id] = template
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-    return { template: clone(template), state: this.getState() }
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
+    return {
+      template: clone(template),
+      state: this.getState(),
+    }
   }
 
   removeTemplate(input: JsonRecord = {}) {
     const templateId = optionalTrimmedString(input.templateId)
-    const template = templateId ? this.#state.templates?.[templateId] : undefined
+    const template = templateId
+      ? this.#state.templates?.[templateId]
+      : undefined
     if (!template) {
       throw new Error(`Unknown template: ${templateId ?? ''}`)
     }
@@ -6272,12 +7288,18 @@ export class RuntimeSessionManager {
     // still point at).
     delete this.#state.templates[templateId]
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
     return { ok: true, state: this.getState() }
   }
 
   stopSubscription(input: JsonRecord = {}) {
-    return this.#cmdStopSubscription(input, this.#humanCtx())
+    return {
+      ...this.#cmdStopSubscription(input, this.#humanCtx()),
+      state: this.getState(),
+    }
   }
 
   async approveActivation(input: JsonRecord = {}) {
@@ -6314,7 +7336,7 @@ export class RuntimeSessionManager {
         source: input.source,
         masterReason: input.masterReason,
       },
-      ctx
+      ctx,
     )
   }
 
@@ -6331,14 +7353,16 @@ export class RuntimeSessionManager {
     }
 
     const label = nonEmptyString(request.label) ? request.label.trim() : 'link'
-    const reason = nonEmptyString(request.reason) ? request.reason.trim() : undefined
+    const reason = nonEmptyString(request.reason)
+      ? request.reason.trim()
+      : undefined
 
     const existing = this.#state.edges.find(
       (edge) =>
         edge.kind === 'link' &&
         edge.source === source &&
         edge.target === target &&
-        edge.label === label
+        edge.label === label,
     )
     if (existing) {
       // Idempotent on source+target+label, but a fresh reason replaces the
@@ -6347,12 +7371,23 @@ export class RuntimeSessionManager {
         existing.summary = reason
         this.#appendKernelEvent(
           'edge.linked',
-          { edgeId: existing.edgeId, source, target, label, refreshedReason: true },
+          {
+            edgeId: existing.edgeId,
+            source,
+            target,
+            label,
+            refreshedReason: true,
+          },
           ctx,
-          { reason: ctx.reason ?? reason }
+          {
+            reason: ctx.reason ?? reason,
+          },
         )
         this.#touch()
-        this.#broadcast({ type: 'runtime.state', state: this.getState() })
+        this.#broadcast({
+          type: 'runtime.state',
+          state: this.getState(),
+        })
       }
       return { edge: clone(existing) }
     }
@@ -6371,7 +7406,7 @@ export class RuntimeSessionManager {
       'edge.linked',
       { edgeId: edge.edgeId, source, target, label },
       ctx,
-      { reason: ctx.reason ?? reason }
+      { reason: ctx.reason ?? reason },
     )
     this.#touch()
     this.#broadcast({
@@ -6388,7 +7423,9 @@ export class RuntimeSessionManager {
 
   #cmdRemoveEdge(input: JsonRecord = {}, ctx: JsonRecord) {
     const request = isObject(input) ? input : {}
-    const edgeId = nonEmptyString(request.edgeId) ? request.edgeId.trim() : undefined
+    const edgeId = nonEmptyString(request.edgeId)
+      ? request.edgeId.trim()
+      : undefined
     if (!edgeId) {
       throw new Error('removeEdge edgeId is required')
     }
@@ -6402,14 +7439,16 @@ export class RuntimeSessionManager {
     if (edge.kind !== 'link') {
       // Runtime-semantic edges (create/resume/report/freeze) are history of
       // what actually happened; only declared relationships are removable.
-      throw new Error(`Only link edges can be removed, ${edgeId} is ${edge.kind}`)
+      throw new Error(
+        `Only link edges can be removed, ${edgeId} is ${edge.kind}`,
+      )
     }
 
     this.#state.edges.splice(index, 1)
     this.#appendKernelEvent(
       'edge.removed',
       { edgeId, source: edge.source, target: edge.target },
-      ctx
+      ctx,
     )
     this.#touch()
     this.#broadcast({
@@ -6432,7 +7471,7 @@ export class RuntimeSessionManager {
       const reviewRole = this.#activeReviewPairRole(source)
       if (reviewRole) {
         throw new Error(
-          `${reviewRole} is already assigned to an active Review until clean workflow. Do not create another session; continue your assigned work and finish so Orrery can advance the existing review pair.`
+          `${reviewRole} is already assigned to an active Review until clean workflow. Do not create another session; continue your assigned work and finish so Orrery can advance the existing review pair.`,
         )
       }
       const result = await this.dispatchCommand({
@@ -6509,8 +7548,13 @@ export class RuntimeSessionManager {
       return this.dispatchCommand({
         kind: 'approve_activation',
         actor,
-        reason: optionalTrimmedString(request.note) ?? optionalTrimmedString(request.reason),
-        input: { slotKey: request.slotKey, note: request.note },
+        reason:
+          optionalTrimmedString(request.note) ??
+          optionalTrimmedString(request.reason),
+        input: {
+          slotKey: request.slotKey,
+          note: request.note,
+        },
       })
     }
 
@@ -6519,7 +7563,10 @@ export class RuntimeSessionManager {
         kind: 'deny_activation',
         actor,
         reason: optionalTrimmedString(request.reason),
-        input: { slotKey: request.slotKey, reason: request.reason },
+        input: {
+          slotKey: request.slotKey,
+          reason: request.reason,
+        },
       })
     }
 
@@ -6554,7 +7601,8 @@ export class RuntimeSessionManager {
 
   #membraneActor(source) {
     return {
-      kind: this.#state.sessions[source]?.role === 'master' ? 'master' : 'agent',
+      kind:
+        this.#state.sessions[source]?.role === 'master' ? 'master' : 'agent',
       ref: source,
     }
   }
@@ -6576,7 +7624,9 @@ export class RuntimeSessionManager {
       throw new Error(`Unsupported agent for P2 membrane: ${input.agent}`)
     }
 
-    const sourceNode = this.#state.nodes.find((node) => node.sessionId === source)
+    const sourceNode = this.#state.nodes.find(
+      (node) => node.sessionId === source,
+    )
     const sourceSession = this.#state.sessions[source]
     const cluster =
       typeof input.cluster === 'string' && input.cluster.trim().length > 0
@@ -6609,7 +7659,7 @@ export class RuntimeSessionManager {
       userMessageId,
       activationEventId,
       channelReadSeqs = [],
-    }
+    },
   ) {
     const session = this.#state.sessions[sessionId]
     const runId = randomUUID()
@@ -6669,7 +7719,10 @@ export class RuntimeSessionManager {
       status: 'running',
     })
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcast({
+      type: 'runtime.state',
+      state: this.getState(),
+    })
 
     let run
     try {
@@ -6682,7 +7735,7 @@ export class RuntimeSessionManager {
         cwd: session.cwd,
         backendSessionId:
           runKind === 'resume'
-            ? session.providerSessionId ?? session.backendSessionId
+            ? (session.providerSessionId ?? session.backendSessionId)
             : undefined,
         providerResumeCursor: session.providerResumeCursor,
         sessionId,
@@ -6706,12 +7759,14 @@ export class RuntimeSessionManager {
     this.#runs.set(sessionId, run)
 
     run.on('stream', (chunk) => this.#appendStreamChunk(sessionId, chunk))
-    run.on('native', (event) => this.#appendNativeProviderEnvelope(sessionId, event))
+    run.on('native', (event) =>
+      this.#appendNativeProviderEnvelope(sessionId, event),
+    )
     run.on('providerEvent', (event) =>
-      this.#appendExternalProviderRuntimeEvent(sessionId, event)
+      this.#appendExternalProviderRuntimeEvent(sessionId, event),
     )
     run.on('providerSession', (event) =>
-      this.#recordProviderSession(sessionId, event)
+      this.#recordProviderSession(sessionId, event),
     )
     run.on('stderr', (data) => this.#appendProviderStderr(sessionId, data))
     run.on('result', (event) => this.#recordResult(sessionId, event))
@@ -6789,7 +7844,10 @@ export class RuntimeSessionManager {
         const finishedEvent = this.#appendKernelEvent(
           'session.finished',
           { sessionId, exitCode: code },
-          { actor: { kind: 'provider' }, causeId: context?.activationEventId }
+          {
+            actor: { kind: 'provider' },
+            causeId: context?.activationEventId,
+          },
         )
         this.#touch()
         this.#emitRuntimeEvent({
@@ -6803,7 +7861,7 @@ export class RuntimeSessionManager {
 
       this.#failSession(
         sessionId,
-        current.error ?? `Claude exited with code ${code ?? 'null'}`
+        current.error ?? `Claude exited with code ${code ?? 'null'}`,
       )
     })
   }
@@ -6815,7 +7873,8 @@ export class RuntimeSessionManager {
     }
 
     this.#markRunProducedOutput(sessionId)
-    const backendSessionId = chunk.event?.session_id ?? chunk.event?.event?.session_id
+    const backendSessionId =
+      chunk.event?.session_id ?? chunk.event?.event?.session_id
     if (typeof backendSessionId === 'string') {
       session.backendSessionId = backendSessionId
       session.providerSessionId = backendSessionId
@@ -6838,7 +7897,7 @@ export class RuntimeSessionManager {
     const providerEvents = this.#appendLegacyProviderRuntimeEvents(
       sessionId,
       streamChunk,
-      chunk
+      chunk,
     )
     this.#appendAssistantMessage(sessionId, chunk)
     session.updatedAt = streamChunk.ts
@@ -6941,7 +8000,10 @@ export class RuntimeSessionManager {
   }
 
   #appendContentDeltaMessage(sessionId, event) {
-    if (event.streamKind !== 'assistant_text' || typeof event.text !== 'string') {
+    if (
+      event.streamKind !== 'assistant_text' ||
+      typeof event.text !== 'string'
+    ) {
       return
     }
 
@@ -7008,7 +8070,7 @@ export class RuntimeSessionManager {
     this.#providerService.recordRuntimeEvent(sessionId, event)
     const removedEvents = truncateEvents(session.runtimeEvents)
     const removedDiffEvent = removedEvents.some(
-      (removedEvent) => removedEvent.type === 'turn.diff.updated'
+      (removedEvent) => removedEvent.type === 'turn.diff.updated',
     )
     if (event.type === 'turn.diff.updated' || removedDiffEvent) {
       this.#pruneTurnCheckpointRefs(sessionId)
@@ -7018,7 +8080,7 @@ export class RuntimeSessionManager {
       session.effectiveRuntimeConfig = normalizeProviderEffectiveRuntimeConfig(
         event.effectiveRuntimeConfig,
         session.providerKind,
-        session.runtimeSettings
+        session.runtimeSettings,
       )
       return
     }
@@ -7035,7 +8097,7 @@ export class RuntimeSessionManager {
     if (event.type === 'request.opened') {
       session.runtimeRequests ??= []
       const existing = session.runtimeRequests.find(
-        (item) => item.id === event.request.id
+        (item) => item.id === event.request.id,
       )
       if (existing) {
         Object.assign(existing, event.request)
@@ -7049,7 +8111,7 @@ export class RuntimeSessionManager {
     if (event.type === 'request.resolved') {
       session.runtimeRequests ??= []
       const request = session.runtimeRequests.find(
-        (item) => item.id === event.requestId
+        (item) => item.id === event.requestId,
       )
       if (request) {
         request.status = event.status ?? 'resolved'
@@ -7061,7 +8123,7 @@ export class RuntimeSessionManager {
     if (event.type === 'user-input.requested') {
       session.runtimeUserInputRequests ??= []
       const existing = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.request.id
+        (item) => item.id === event.request.id,
       )
       const nextRequest = {
         status: 'open',
@@ -7079,7 +8141,7 @@ export class RuntimeSessionManager {
     if (event.type === 'user-input.answered') {
       session.runtimeUserInputRequests ??= []
       const request = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.requestId
+        (item) => item.id === event.requestId,
       )
       if (request) {
         request.status = 'answered'
@@ -7093,7 +8155,7 @@ export class RuntimeSessionManager {
     if (event.type === 'user-input.resolved') {
       session.runtimeUserInputRequests ??= []
       const request = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.requestId
+        (item) => item.id === event.requestId,
       )
       if (request) {
         request.status = event.status ?? 'resolved'
@@ -7105,7 +8167,7 @@ export class RuntimeSessionManager {
     if (event.type === 'plan.updated') {
       session.runtimePlans ??= []
       const index = session.runtimePlans.findIndex(
-        (plan) => plan.id === event.plan.id
+        (plan) => plan.id === event.plan.id,
       )
       if (index >= 0) {
         session.runtimePlans[index] = event.plan
@@ -7123,7 +8185,7 @@ export class RuntimeSessionManager {
     }
 
     const openRequests = (session.runtimeRequests ?? []).filter(
-      (request) => request.status === 'open'
+      (request) => request.status === 'open',
     )
     for (const request of openRequests) {
       this.#appendProviderRuntimeEvent(sessionId, {
@@ -7136,9 +8198,9 @@ export class RuntimeSessionManager {
       })
     }
 
-    const openUserInputRequests = (session.runtimeUserInputRequests ?? []).filter(
-      (request) => request.status === 'open'
-    )
+    const openUserInputRequests = (
+      session.runtimeUserInputRequests ?? []
+    ).filter((request) => request.status === 'open')
     for (const request of openUserInputRequests) {
       this.#appendProviderRuntimeEvent(sessionId, {
         id: randomUUID(),
@@ -7159,7 +8221,7 @@ export class RuntimeSessionManager {
     }
 
     const alreadyCompleted = session.runtimeEvents?.some(
-      (event) => event.type === 'turn.completed' && event.turnId === turnId
+      (event) => event.type === 'turn.completed' && event.turnId === turnId,
     )
     if (alreadyCompleted) {
       return
@@ -7177,13 +8239,18 @@ export class RuntimeSessionManager {
   #upsertRuntimeActivity(session, item) {
     session.runtimeActivities ??= []
     const existing = session.runtimeActivities.find(
-      (activity) => activity.id === item.id
+      (activity) => activity.id === item.id,
     )
     const next = {
       ...(existing ?? {}),
       ...item,
       sessionId: session.sessionId,
-      title: item.title ?? existing?.title ?? item.command ?? item.providerName ?? item.id,
+      title:
+        item.title ??
+        existing?.title ??
+        item.command ??
+        item.providerName ??
+        item.id,
       status:
         item.status ??
         existing?.status ??
@@ -7329,11 +8396,14 @@ export class RuntimeSessionManager {
     this.#runContext.delete(sessionId)
     const failedEvent = this.#appendKernelEvent(
       'session.failed',
-      { sessionId, error: truncateForLog(String(error ?? ''), 400) },
+      {
+        sessionId,
+        error: truncateForLog(String(error ?? ''), 400),
+      },
       ctx ?? {
         actor: { kind: 'provider' },
         causeId: context?.activationEventId,
-      }
+      },
     )
     this.#touch()
     this.#emitRuntimeEvent({
@@ -7353,7 +8423,7 @@ export class RuntimeSessionManager {
     }
 
     const message = session.messages.find(
-      (item) => item.id === context.assistantMessageId
+      (item) => item.id === context.assistantMessageId,
     )
     if (message) {
       message.status = status
@@ -7400,7 +8470,7 @@ export class RuntimeSessionManager {
 
   #removeNodeFromOtherClusters(sessionId, clusterId) {
     for (const [candidateId, cluster] of Object.entries(
-      this.#state.clusters as JsonRecord
+      this.#state.clusters as JsonRecord,
     )) {
       if (candidateId === clusterId) {
         continue
@@ -7411,13 +8481,13 @@ export class RuntimeSessionManager {
 
   #masterClusterId(sessionId) {
     return Object.values(this.#state.clusters as JsonRecord).find(
-      (cluster) => cluster.masterSessionId === sessionId
+      (cluster) => cluster.masterSessionId === sessionId,
     )?.clusterId
   }
 
   #managedClusterId(sessionId) {
     return Object.values(this.#state.clusters as JsonRecord).find((cluster) =>
-      cluster.nodeIds.includes(sessionId)
+      cluster.nodeIds.includes(sessionId),
     )?.clusterId
   }
 
@@ -7436,19 +8506,24 @@ export class RuntimeSessionManager {
   #isSessionFrozen(sessionId) {
     const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
     const clusterId = this.#managedClusterId(sessionId)
-    return node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
+    return (
+      node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
+    )
   }
 
   #reportSummary(payload) {
     if (payload.type === 'verdict') {
-      if (typeof payload.summary === 'string' && payload.summary.trim().length > 0) {
+      if (
+        typeof payload.summary === 'string' &&
+        payload.summary.trim().length > 0
+      ) {
         return payload.summary.trim()
       }
 
       if (Array.isArray(payload.issues) && payload.issues.length > 0) {
         return payload.issues
           .map((issue) =>
-            issue.file ? `${issue.message} (${issue.file})` : issue.message
+            issue.file ? `${issue.message} (${issue.file})` : issue.message,
           )
           .join('\n')
       }
@@ -7535,10 +8610,10 @@ export class RuntimeSessionManager {
     }
 
     for (const [candidateClusterId, candidateCluster] of Object.entries(
-      this.#state.clusters as JsonRecord
+      this.#state.clusters as JsonRecord,
     )) {
       candidateCluster.nodeIds = candidateCluster.nodeIds.filter(
-        (nodeId) => nodeId !== sessionId
+        (nodeId) => nodeId !== sessionId,
       )
 
       if (
@@ -7574,7 +8649,7 @@ export class RuntimeSessionManager {
       this.#appendKernelEvent(
         'role.assigned',
         { clusterId, masterSessionId: sessionId },
-        ctx ?? { actor: { kind: 'runtime' } }
+        ctx ?? { actor: { kind: 'runtime' } },
       )
     }
   }
@@ -7598,7 +8673,9 @@ export class RuntimeSessionManager {
     if (policy.maxIterations !== undefined) {
       const value = Number(policy.maxIterations)
       if (!Number.isInteger(value) || value < 1 || value > 100) {
-        throw new Error('LoopPolicy maxIterations must be an integer from 1 to 100')
+        throw new Error(
+          'LoopPolicy maxIterations must be an integer from 1 to 100',
+        )
       }
       maxIterations = value
     }
@@ -7628,14 +8705,16 @@ export class RuntimeSessionManager {
           diagnostic(
             'storage.subscription_skipped',
             'Skipped an invalid persisted subscription.',
-            { id }
-          )
+            { id },
+          ),
         )
         continue
       }
       subscriptions[candidate.id] = {
         ...candidate,
-        gate: validSubscriptionGates.has(candidate.gate) ? candidate.gate : 'master',
+        gate: validSubscriptionGates.has(candidate.gate)
+          ? candidate.gate
+          : 'master',
         concurrency: validSubscriptionConcurrencies.has(candidate.concurrency)
           ? candidate.concurrency
           : 'coalesce',
@@ -7667,15 +8746,17 @@ export class RuntimeSessionManager {
           diagnostic(
             'storage.pending_activation_skipped',
             'Skipped an invalid persisted pending activation.',
-            { slotKey }
-          )
+            { slotKey },
+          ),
         )
         continue
       }
       slots[candidate.slotKey] = {
         ...candidate,
         status: candidate.status === 'approved' ? 'approved' : 'pending',
-        orderSeq: Number.isFinite(candidate.orderSeq) ? candidate.orderSeq : undefined,
+        orderSeq: Number.isFinite(candidate.orderSeq)
+          ? candidate.orderSeq
+          : undefined,
       }
     }
     return slots
@@ -7700,7 +8781,8 @@ export class RuntimeSessionManager {
         ? loopState.reviewerSessionId
         : undefined,
       lastEvent:
-        isObject(loopState.lastEvent) && nonEmptyString(loopState.lastEvent.type)
+        isObject(loopState.lastEvent) &&
+        nonEmptyString(loopState.lastEvent.type)
           ? {
               type: loopState.lastEvent.type,
               ts: nonEmptyString(loopState.lastEvent.ts)
@@ -7748,9 +8830,7 @@ export class RuntimeSessionManager {
       .then(() => this.#drainApprovedSlots())
       .catch((error) => {
         console.error(
-          `Scheduler recovery failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`
+          `Scheduler recovery failed: ${error instanceof Error ? error.message : String(error)}`,
         )
       })
   }
@@ -7759,10 +8839,9 @@ export class RuntimeSessionManager {
     this.#broadcast(event)
   }
 
-
   #completedTurnCount(session) {
     return (session.runtimeEvents ?? []).filter(
-      (event) => event.type === 'turn.completed'
+      (event) => event.type === 'turn.completed',
     ).length
   }
 
@@ -7779,13 +8858,20 @@ export class RuntimeSessionManager {
       repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Project folder is not a Git work tree: ${cwd}. ${message}`)
+      throw new Error(
+        `Project folder is not a Git work tree: ${cwd}. ${message}`,
+      )
     }
 
-    const ref = checkpointRef({ sessionId, turnCount, turnId, stage })
+    const ref = checkpointRef({
+      sessionId,
+      turnCount,
+      turnId,
+      stage,
+    })
     const tempIndex = path.join(
       os.tmpdir(),
-      `orrery-checkpoint-${process.pid}-${randomUUID()}.index`
+      `orrery-checkpoint-${process.pid}-${randomUUID()}.index`,
     )
     const env = gitCheckpointEnv(tempIndex)
 
@@ -7847,7 +8933,7 @@ export class RuntimeSessionManager {
     const rawPatch = gitOutput(
       cwd,
       [...diffArgs, fromCheckpointRef, toCheckpointRef, '--', '.'],
-      { maxBuffer: gitDiffMaxBuffer }
+      { maxBuffer: gitDiffMaxBuffer },
     )
     const files = parseDiffFilesFromPatch(rawPatch)
 
@@ -7880,7 +8966,9 @@ export class RuntimeSessionManager {
 
     context.turnDiffRecorded = true
     const turnId = context.runId
-    const fromTurnCount = Number.isInteger(context.turnCheckpoint?.fromTurnCount)
+    const fromTurnCount = Number.isInteger(
+      context.turnCheckpoint?.fromTurnCount,
+    )
       ? context.turnCheckpoint.fromTurnCount
       : this.#completedTurnCount(session)
     const toTurnCount = fromTurnCount + 1
@@ -8038,7 +9126,9 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown session: ${sessionId}`)
     }
 
-    const turnId = nonEmptyString(options.turnId) ? options.turnId.trim() : undefined
+    const turnId = nonEmptyString(options.turnId)
+      ? options.turnId.trim()
+      : undefined
     if (!turnId) {
       throw new Error('Turn id is required for checkpoint diff.')
     }
@@ -8049,7 +9139,7 @@ export class RuntimeSessionManager {
         (event) =>
           event.type === 'turn.diff.updated' &&
           event.turnId === turnId &&
-          isObject(event.diff)
+          isObject(event.diff),
       )
     if (!diffEvent) {
       throw new Error(`No checkpoint diff found for turn: ${turnId}`)
@@ -8102,12 +9192,14 @@ export class RuntimeSessionManager {
       repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Project folder is not a Git work tree: ${cwd}. ${message}`)
+      throw new Error(
+        `Project folder is not a Git work tree: ${cwd}. ${message}`,
+      )
     }
 
     const tempIndex = path.join(
       os.tmpdir(),
-      `orrery-diff-${process.pid}-${randomUUID()}.index`
+      `orrery-diff-${process.pid}-${randomUUID()}.index`,
     )
     const env = {
       ...process.env,
@@ -8120,7 +9212,9 @@ export class RuntimeSessionManager {
       const indexTree = gitOutput(cwd, ['write-tree'])
       gitOutput(cwd, ['read-tree', indexTree], { env })
       gitOutput(cwd, ['add', '-A', '--', '.'], { env })
-      const workingTree = gitOutput(cwd, ['write-tree'], { env })
+      const workingTree = gitOutput(cwd, ['write-tree'], {
+        env,
+      })
       const diffArgs = [
         'diff',
         '--patch',
@@ -8134,13 +9228,17 @@ export class RuntimeSessionManager {
         diffArgs.push('--ignore-all-space')
       }
 
-      const stagedPatch = gitOutput(cwd, [...diffArgs, baseTree, indexTree, '--', '.'], {
-        maxBuffer: gitDiffMaxBuffer,
-      })
+      const stagedPatch = gitOutput(
+        cwd,
+        [...diffArgs, baseTree, indexTree, '--', '.'],
+        {
+          maxBuffer: gitDiffMaxBuffer,
+        },
+      )
       const unstagedPatch = gitOutput(
         cwd,
         [...diffArgs, indexTree, workingTree, '--', '.'],
-        { maxBuffer: gitDiffMaxBuffer }
+        { maxBuffer: gitDiffMaxBuffer },
       )
       const rawPatch = [stagedPatch, unstagedPatch]
         .filter((section) => section.trim().length > 0)
@@ -8150,7 +9248,7 @@ export class RuntimeSessionManager {
       const statusOutput = gitOutput(
         cwd,
         ['status', '--short', '--untracked-files=all', '--', '.'],
-        { maxBuffer: 4 * 1024 * 1024 }
+        { maxBuffer: 4 * 1024 * 1024 },
       )
 
       return {
@@ -8183,7 +9281,11 @@ export class RuntimeSessionManager {
 
   #loopCoderSessionId(cluster) {
     const existing = cluster.loopState?.coderSessionId
-    if (existing && cluster.nodeIds.includes(existing) && this.#state.sessions[existing]) {
+    if (
+      existing &&
+      cluster.nodeIds.includes(existing) &&
+      this.#state.sessions[existing]
+    ) {
       return existing
     }
 
@@ -8193,11 +9295,16 @@ export class RuntimeSessionManager {
     })
   }
 
-  #applyFreeze({ targetId, reason, source, masterReason }: JsonRecord, ctx: JsonRecord) {
+  #applyFreeze(
+    { targetId, reason, source, masterReason }: JsonRecord,
+    ctx: JsonRecord,
+  ) {
     const cluster = this.#state.clusters[targetId]
     const session = this.#state.sessions[targetId]
     const sourceSessionId =
-      typeof source === 'string' && this.#state.sessions[source] ? source : undefined
+      typeof source === 'string' && this.#state.sessions[source]
+        ? source
+        : undefined
     const finalReason = reason ?? masterReason ?? 'Frozen.'
 
     let targetSessionIds = []
@@ -8218,10 +9325,12 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown freeze target: ${targetId}`)
     }
 
-    const envelope = sourceSessionId ? this.#createEnvelope(sourceSessionId) : undefined
+    const envelope = sourceSessionId
+      ? this.#createEnvelope(sourceSessionId)
+      : undefined
     for (const targetSessionId of targetSessionIds) {
       const node = this.#state.nodes.find(
-        (item) => item.sessionId === targetSessionId
+        (item) => item.sessionId === targetSessionId,
       )
       if (node) {
         node.frozen = true
@@ -8250,7 +9359,7 @@ export class RuntimeSessionManager {
       'freeze.applied',
       { targetId, targetSessionIds, sourceSessionId },
       ctx,
-      { reason: finalReason }
+      { reason: finalReason },
     )
     this.#touch()
     this.#broadcast({
@@ -8309,7 +9418,9 @@ export class RuntimeSessionManager {
         reportId: report.id,
         verdict: payload.type === 'verdict' ? payload.verdict : undefined,
         issueCount:
-          payload.type === 'verdict' ? (payload.issues?.length ?? 0) : undefined,
+          payload.type === 'verdict'
+            ? (payload.issues?.length ?? 0)
+            : undefined,
         summary: this.#reportSummary(payload),
       })
     }
@@ -8323,7 +9434,7 @@ export class RuntimeSessionManager {
         verdict: payload.type === 'verdict' ? payload.verdict : undefined,
         summary: truncateForLog(this.#reportSummary(payload), 200),
       },
-      ctx
+      ctx,
     )
     this.#touch()
     this.#emitRuntimeEvent({
@@ -8406,7 +9517,10 @@ export class RuntimeSessionManager {
     }
 
     if (input.type === 'verdict') {
-      if (typeof input.verdict !== 'string' || input.verdict.trim().length === 0) {
+      if (
+        typeof input.verdict !== 'string' ||
+        input.verdict.trim().length === 0
+      ) {
         throw new Error('report verdict is required')
       }
 
@@ -8436,7 +9550,9 @@ export class RuntimeSessionManager {
             issue.line !== undefined &&
             (typeof issue.line !== 'number' || !Number.isFinite(issue.line))
           ) {
-            throw new Error(`verdict issue ${index} line must be a finite number`)
+            throw new Error(
+              `verdict issue ${index} line must be a finite number`,
+            )
           }
 
           if (
@@ -8444,7 +9560,7 @@ export class RuntimeSessionManager {
             !['info', 'warn', 'error'].includes(issue.severity)
           ) {
             throw new Error(
-              `verdict issue ${index} severity must be info, warn, or error`
+              `verdict issue ${index} severity must be info, warn, or error`,
             )
           }
 
@@ -8470,7 +9586,10 @@ export class RuntimeSessionManager {
     }
 
     if (input.type === 'relationship') {
-      if (typeof input.target !== 'string' || input.target.trim().length === 0) {
+      if (
+        typeof input.target !== 'string' ||
+        input.target.trim().length === 0
+      ) {
         throw new Error('relationship report target is required')
       }
 
@@ -8480,7 +9599,7 @@ export class RuntimeSessionManager {
         nature: this.#optionalString(input.nature, 'relationship nature'),
         sessionRef: this.#optionalString(
           input.sessionRef,
-          'relationship sessionRef'
+          'relationship sessionRef',
         ),
       }
     }
@@ -8617,7 +9736,7 @@ export class RuntimeSessionManager {
       this.#finishTerminalCommand(
         terminalId,
         sentinelMatch[1],
-        Number(sentinelMatch[2])
+        Number(sentinelMatch[2]),
       )
       return
     }
@@ -8728,9 +9847,7 @@ export class RuntimeSessionManager {
       // notification failure must never turn a committed mutation into a
       // thrown command (or strand resources before compensation can see ids).
       console.error(
-        `Runtime event broadcast failed (${event?.type ?? 'unknown'}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `Runtime event broadcast failed (${event?.type ?? 'unknown'}): ${error instanceof Error ? error.message : String(error)}`,
       )
     }
   }
@@ -8745,7 +9862,7 @@ export class RuntimeSessionManager {
 
   #kernelStoreDiagnostics() {
     return this.#kernelStore.diagnostics.map((item) =>
-      diagnostic(item.code, item.message, item.context ?? {})
+      diagnostic(item.code, item.message, item.context ?? {}),
     )
   }
 
@@ -8760,7 +9877,7 @@ export class RuntimeSessionManager {
     // after a preserved-corrupt store, the JSON file is a stale fossil -- we
     // still restore it (better than empty), but the rollback must be loud.
     const storeWasCorrupted = this.#kernelStore.diagnostics.some((item) =>
-      String(item.code ?? '').startsWith('kernel-store.')
+      String(item.code ?? '').startsWith('kernel-store.'),
     )
     const fossilExists = this.#storageFile && fs.existsSync(this.#storageFile)
     if (storeWasCorrupted && fossilExists) {
@@ -8774,15 +9891,20 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.state_rolled_back',
           'Kernel store was corrupt; state was restored from the legacy JSON snapshot and may be older than your latest work.',
-          { storageFile: this.#storageFile, fossilModifiedAt }
-        )
+          {
+            storageFile: this.#storageFile,
+            fossilModifiedAt,
+          },
+        ),
       )
     }
 
     const legacy = this.#loadLegacyJsonState(storeDiagnostics)
     if (legacy) {
       if (legacy.imported) {
-        this.#legacyImportKind = storeWasCorrupted ? 'fossil-rollback' : 'migration'
+        this.#legacyImportKind = storeWasCorrupted
+          ? 'fossil-rollback'
+          : 'migration'
       }
       return legacy.state
     }
@@ -8817,8 +9939,8 @@ export class RuntimeSessionManager {
           storageFile: this.#storageFile,
           error: primary.error.message,
           preservedFile: preserveCorruptFile(this.#storageFile),
-        }
-      )
+        },
+      ),
     )
 
     const backupFile = backupFileFor(this.#storageFile)
@@ -8829,8 +9951,8 @@ export class RuntimeSessionManager {
           diagnostic(
             'storage.recovered_from_backup',
             'Recovered Orrery runtime state from the last valid backup.',
-            { backupFile }
-          )
+            { backupFile },
+          ),
         )
         return {
           state: this.#normalizeState(backup.value, diagnostics),
@@ -8842,13 +9964,13 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.backup_parse_failed',
           'Backup Orrery runtime state could not be parsed.',
-          { backupFile, error: backup.error.message }
-        )
+          { backupFile, error: backup.error.message },
+        ),
       )
     }
 
     console.error(
-      `Failed to load Orrery runtime state: ${primary.error.message}; starting with an empty recoverable state.`
+      `Failed to load Orrery runtime state: ${primary.error.message}; starting with an empty recoverable state.`,
     )
     return {
       state: this.#withDiagnostics(createEmptyGraphState(), diagnostics),
@@ -8863,21 +9985,28 @@ export class RuntimeSessionManager {
       ...fallback,
       ...source,
       version: graphStateVersion,
-      updatedAt: nonEmptyString(source.updatedAt) ? source.updatedAt : fallback.updatedAt,
+      updatedAt: nonEmptyString(source.updatedAt)
+        ? source.updatedAt
+        : fallback.updatedAt,
       nodes: [],
       edges: Array.isArray(source.edges)
         ? source.edges.map((edge) => this.#normalizeEdge(edge))
         : [],
       sessions: {},
       providerInstances: normalizeProviderInstances(source.providerInstances),
-      clusters: isObject(source.clusters) ? this.#normalizeClusters(source.clusters) : {},
+      clusters: isObject(source.clusters)
+        ? this.#normalizeClusters(source.clusters)
+        : {},
       reports: Array.isArray(source.reports)
         ? source.reports.map((report) => this.#normalizeReport(report))
         : [],
-      subscriptions: this.#normalizeSubscriptions(source.subscriptions, diagnostics),
+      subscriptions: this.#normalizeSubscriptions(
+        source.subscriptions,
+        diagnostics,
+      ),
       pendingActivations: this.#normalizePendingActivations(
         source.pendingActivations,
-        diagnostics
+        diagnostics,
       ),
     }
 
@@ -8885,13 +10014,21 @@ export class RuntimeSessionManager {
     for (const [storageKey, sessionValue] of Object.entries(sourceSessions)) {
       if (!isObject(sessionValue)) {
         diagnostics.push(
-          diagnostic('storage.session_skipped', 'Skipped an invalid session record.', {
-            storageKey,
-          })
+          diagnostic(
+            'storage.session_skipped',
+            'Skipped an invalid session record.',
+            {
+              storageKey,
+            },
+          ),
         )
         continue
       }
-      const session = this.#normalizeSession(storageKey, sessionValue, diagnostics)
+      const session = this.#normalizeSession(
+        storageKey,
+        sessionValue,
+        diagnostics,
+      )
       state.sessions[session.sessionId] = session
     }
 
@@ -8900,7 +10037,10 @@ export class RuntimeSessionManager {
     for (const nodeValue of sourceNodes) {
       if (!isObject(nodeValue)) {
         diagnostics.push(
-          diagnostic('storage.node_skipped', 'Skipped an invalid graph node record.')
+          diagnostic(
+            'storage.node_skipped',
+            'Skipped an invalid graph node record.',
+          ),
         )
         continue
       }
@@ -8908,10 +10048,14 @@ export class RuntimeSessionManager {
       const nodeSessionId = this.#nodeSessionId(nodeValue)
       if (!nodeSessionId || seenNodeSessionIds.has(nodeSessionId)) {
         diagnostics.push(
-          diagnostic('storage.node_skipped', 'Skipped a duplicate or unidentified graph node.', {
-            nodeId: nodeValue.nodeId,
-            sessionId: nodeValue.sessionId,
-          })
+          diagnostic(
+            'storage.node_skipped',
+            'Skipped a duplicate or unidentified graph node.',
+            {
+              nodeId: nodeValue.nodeId,
+              sessionId: nodeValue.sessionId,
+            },
+          ),
         )
         continue
       }
@@ -8921,12 +10065,14 @@ export class RuntimeSessionManager {
           diagnostic(
             'storage.placeholder_session_created',
             'Created a failed placeholder session for a graph node without a session record.',
-            { sessionId: nodeSessionId }
-          )
+            {
+              sessionId: nodeSessionId,
+            },
+          ),
         )
         state.sessions[nodeSessionId] = this.#placeholderSessionFromNode(
           nodeSessionId,
-          nodeValue
+          nodeValue,
         )
       }
 
@@ -8944,13 +10090,16 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.node_created',
           'Created a graph node for a session without a node record.',
-          { sessionId: session.sessionId }
-        )
+          { sessionId: session.sessionId },
+        ),
       )
       state.nodes.push(this.#nodeFromSession(session))
     }
 
-    state.diagnostics = this.#activePersistedDiagnostics(state, source.diagnostics)
+    state.diagnostics = this.#activePersistedDiagnostics(
+      state,
+      source.diagnostics,
+    )
 
     return this.#withDiagnostics(state, diagnostics)
   }
@@ -9011,14 +10160,21 @@ export class RuntimeSessionManager {
           ? 'claude-code'
           : 'legacy-claude-cli'
     let cwd = safeCwd(value.cwd)
-    const cwdRepair = !isValidCwd(cwd) ? cwdRepairCandidate(cwd, value) : undefined
+    const cwdRepair = !isValidCwd(cwd)
+      ? cwdRepairCandidate(cwd, value)
+      : undefined
     if (cwdRepair) {
       diagnostics.push(
         diagnostic(
           'storage.cwd_repaired',
           'Repointed a restored session from a missing worktree to an available project folder.',
-          { sessionId, oldCwd: cwd, cwd: cwdRepair.cwd, reason: cwdRepair.reason }
-        )
+          {
+            sessionId,
+            oldCwd: cwd,
+            cwd: cwdRepair.cwd,
+            reason: cwdRepair.reason,
+          },
+        ),
       )
       cwd = cwdRepair.cwd
       if (
@@ -9033,8 +10189,8 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.cwd_invalid',
           'A restored session points at a project folder that is no longer available.',
-          { sessionId, cwd }
-        )
+          { sessionId, cwd },
+        ),
       )
       value.error =
         value.error ??
@@ -9054,7 +10210,9 @@ export class RuntimeSessionManager {
         branch: currentGitBranch(cwd) ?? project.baseBranch ?? project.branch,
       }
     }
-    const runtimeSettings = normalizeProviderRuntimeSettings(value.runtimeSettings)
+    const runtimeSettings = normalizeProviderRuntimeSettings(
+      value.runtimeSettings,
+    )
     const session = {
       ...value,
       sessionId,
@@ -9066,7 +10224,7 @@ export class RuntimeSessionManager {
       providerKind,
       providerInstanceId: normalizeSessionProviderInstanceId(
         providerKind,
-        value.providerInstanceId
+        value.providerInstanceId,
       ),
       providerSessionId: nonEmptyString(value.providerSessionId)
         ? value.providerSessionId
@@ -9077,7 +10235,9 @@ export class RuntimeSessionManager {
         ? value.providerResumeCursor
         : undefined,
       agent: nonEmptyString(value.agent) ? value.agent : 'claude-code',
-      label: nonEmptyString(value.label) ? value.label : `Claude ${sessionId.slice(0, 8)}`,
+      label: nonEmptyString(value.label)
+        ? value.label
+        : `Claude ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
       cwd,
       project,
@@ -9090,22 +10250,25 @@ export class RuntimeSessionManager {
         : [],
       messages: Array.isArray(value.messages)
         ? value.messages.map((message) =>
-            this.#normalizeMessage(sessionId, message, status, diagnostics)
+            this.#normalizeMessage(sessionId, message, status, diagnostics),
           )
-        : this.#messagesFromLegacySession({ ...value, sessionId }),
+        : this.#messagesFromLegacySession({
+            ...value,
+            sessionId,
+          }),
       nativeEvents: Array.isArray(value.nativeEvents)
         ? value.nativeEvents.map((event) =>
-            this.#normalizeNativeProviderEvent(sessionId, providerKind, event)
+            this.#normalizeNativeProviderEvent(sessionId, providerKind, event),
           )
         : [],
       runtimeEvents: Array.isArray(value.runtimeEvents)
         ? value.runtimeEvents.map((event) =>
-            this.#normalizeProviderRuntimeEvent(sessionId, event)
+            this.#normalizeProviderRuntimeEvent(sessionId, event),
           )
         : [],
       runtimeActivities: Array.isArray(value.runtimeActivities)
         ? value.runtimeActivities.map((activity) =>
-            this.#normalizeRuntimeActivity(sessionId, activity)
+            this.#normalizeRuntimeActivity(sessionId, activity),
           )
         : [],
       runtimeRequests: Array.isArray(value.runtimeRequests)
@@ -9113,7 +10276,7 @@ export class RuntimeSessionManager {
             sessionId,
             value.runtimeRequests,
             recoveredActiveSession,
-            diagnostics
+            diagnostics,
           )
         : [],
       runtimeUserInputRequests: Array.isArray(value.runtimeUserInputRequests)
@@ -9121,7 +10284,7 @@ export class RuntimeSessionManager {
             sessionId,
             value.runtimeUserInputRequests,
             recoveredActiveSession,
-            diagnostics
+            diagnostics,
           )
         : [],
       runtimePlans: Array.isArray(value.runtimePlans)
@@ -9132,7 +10295,7 @@ export class RuntimeSessionManager {
         ? normalizeProviderEffectiveRuntimeConfig(
             value.effectiveRuntimeConfig,
             providerKind,
-            runtimeSettings
+            runtimeSettings,
           )
         : undefined,
       archived: value.archived === true,
@@ -9143,8 +10306,11 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.session_identity_repaired',
           'Repaired a session whose nodeId did not match sessionId.',
-          { sessionId, previousNodeId: value.nodeId }
-        )
+          {
+            sessionId,
+            previousNodeId: value.nodeId,
+          },
+        ),
       )
     }
 
@@ -9157,8 +10323,11 @@ export class RuntimeSessionManager {
         diagnostic(
           'runtime.active_session_recovered',
           'Recovered a session that was active when the previous runtime stopped.',
-          { sessionId, previousStatus: session.status }
-        )
+          {
+            sessionId,
+            previousStatus: session.status,
+          },
+        ),
       )
       session.error =
         session.error ??
@@ -9173,8 +10342,8 @@ export class RuntimeSessionManager {
         diagnostic(
           'storage.legacy_status_migrated',
           'Migrated legacy finished status to idle.',
-          { sessionId }
-        )
+          { sessionId },
+        ),
       )
       return 'idle'
     }
@@ -9187,11 +10356,12 @@ export class RuntimeSessionManager {
       diagnostic(
         'storage.invalid_status_repaired',
         'Repaired a session with an unknown status.',
-        { sessionId, previousStatus: session.status }
-      )
+        { sessionId, previousStatus: session.status },
+      ),
     )
     session.error =
-      session.error ?? `Recovered unknown persisted status: ${String(session.status)}`
+      session.error ??
+      `Recovered unknown persisted status: ${String(session.status)}`
     return 'failed'
   }
 
@@ -9271,7 +10441,9 @@ export class RuntimeSessionManager {
       startedAt: nonEmptyString(activity.startedAt)
         ? activity.startedAt
         : undefined,
-      updatedAt: nonEmptyString(activity.updatedAt) ? activity.updatedAt : now(),
+      updatedAt: nonEmptyString(activity.updatedAt)
+        ? activity.updatedAt
+        : now(),
       completedAt: nonEmptyString(activity.completedAt)
         ? activity.completedAt
         : undefined,
@@ -9284,7 +10456,12 @@ export class RuntimeSessionManager {
     }
   }
 
-  #normalizeRuntimeRequests(sessionId, values, recoveredActiveSession, diagnostics) {
+  #normalizeRuntimeRequests(
+    sessionId,
+    values,
+    recoveredActiveSession,
+    diagnostics,
+  ) {
     return values.filter(isObject).map((value) => {
       const status = validRuntimeRequestStatuses.has(value.status)
         ? value.status
@@ -9295,8 +10472,8 @@ export class RuntimeSessionManager {
           diagnostic(
             'runtime.request_stale',
             'Marked an open provider approval request as stale after runtime restart.',
-            { sessionId, requestId: value.id }
-          )
+            { sessionId, requestId: value.id },
+          ),
         )
       }
 
@@ -9320,7 +10497,12 @@ export class RuntimeSessionManager {
     })
   }
 
-  #normalizeUserInputRequests(sessionId, values, recoveredActiveSession, diagnostics) {
+  #normalizeUserInputRequests(
+    sessionId,
+    values,
+    recoveredActiveSession,
+    diagnostics,
+  ) {
     return values.filter(isObject).map((value) => {
       const status = validUserInputRequestStatuses.has(value.status)
         ? value.status
@@ -9331,8 +10513,11 @@ export class RuntimeSessionManager {
           diagnostic(
             'runtime.user_input_stale',
             'Marked an open provider user-input request as stale after runtime restart.',
-            { sessionId, requestId: value.id }
-          )
+            {
+              sessionId,
+              requestId: value.id,
+            },
+          ),
         )
       }
 
@@ -9364,7 +10549,9 @@ export class RuntimeSessionManager {
       id: nonEmptyString(message.id) ? message.id : randomUUID(),
       sessionId,
       role:
-        message.role === 'assistant' || message.role === 'system' ? message.role : 'user',
+        message.role === 'assistant' || message.role === 'system'
+          ? message.role
+          : 'user',
       content: typeof message.content === 'string' ? message.content : '',
       attachments: normalizeChatAttachments(message.attachments),
       ts: nonEmptyString(message.ts) ? message.ts : now(),
@@ -9377,8 +10564,11 @@ export class RuntimeSessionManager {
         diagnostic(
           'runtime.streaming_message_recovered',
           'Marked an interrupted streaming assistant message as failed.',
-          { sessionId, messageId: normalized.id }
-        )
+          {
+            sessionId,
+            messageId: normalized.id,
+          },
+        ),
       )
     }
 
@@ -9396,7 +10586,10 @@ export class RuntimeSessionManager {
   }
 
   #normalizeNode(node, session, diagnostics) {
-    if (node.nodeId !== session.sessionId || node.sessionId !== session.sessionId) {
+    if (
+      node.nodeId !== session.sessionId ||
+      node.sessionId !== session.sessionId
+    ) {
       diagnostics.push(
         diagnostic(
           'storage.node_identity_repaired',
@@ -9405,8 +10598,8 @@ export class RuntimeSessionManager {
             sessionId: session.sessionId,
             previousNodeId: node.nodeId,
             previousSessionId: node.sessionId,
-          }
-        )
+          },
+        ),
       )
     }
 
@@ -9425,8 +10618,12 @@ export class RuntimeSessionManager {
           }
         : { x: 96, y: 96 },
       frozen: node.frozen === true,
-      freezeReason: nonEmptyString(node.freezeReason) ? node.freezeReason : undefined,
-      masterReason: nonEmptyString(node.masterReason) ? node.masterReason : undefined,
+      freezeReason: nonEmptyString(node.freezeReason)
+        ? node.freezeReason
+        : undefined,
+      masterReason: nonEmptyString(node.masterReason)
+        ? node.masterReason
+        : undefined,
     }
   }
 
@@ -9457,7 +10654,9 @@ export class RuntimeSessionManager {
       providerInstanceId: 'legacy-claude-cli',
       providerSessionId: sessionId,
       agent: nonEmptyString(node.agent) ? node.agent : 'claude-code',
-      label: nonEmptyString(node.label) ? node.label : `Recovered ${sessionId.slice(0, 8)}`,
+      label: nonEmptyString(node.label)
+        ? node.label
+        : `Recovered ${sessionId.slice(0, 8)}`,
       prompt: '',
       cwd: process.cwd(),
       role: node.role === 'master' ? 'master' : 'worker',
@@ -9489,7 +10688,9 @@ export class RuntimeSessionManager {
       }
     }
 
-    const kind = validGraphEdgeKinds.has(value.kind) ? value.kind : 'create-session'
+    const kind = validGraphEdgeKinds.has(value.kind)
+      ? value.kind
+      : 'create-session'
 
     return {
       ...value,
@@ -9500,7 +10701,9 @@ export class RuntimeSessionManager {
       ts: nonEmptyString(value.ts) ? value.ts : now(),
       reportId: nonEmptyString(value.reportId) ? value.reportId : undefined,
       verdict: nonEmptyString(value.verdict) ? value.verdict : undefined,
-      issueCount: Number.isFinite(value.issueCount) ? value.issueCount : undefined,
+      issueCount: Number.isFinite(value.issueCount)
+        ? value.issueCount
+        : undefined,
       summary: nonEmptyString(value.summary) ? value.summary : undefined,
       masterReason: nonEmptyString(value.masterReason)
         ? value.masterReason
@@ -9549,7 +10752,9 @@ export class RuntimeSessionManager {
             clusterId,
             {
               ...cluster,
-              clusterId: nonEmptyString(cluster.clusterId) ? cluster.clusterId : clusterId,
+              clusterId: nonEmptyString(cluster.clusterId)
+                ? cluster.clusterId
+                : clusterId,
               label: nonEmptyString(cluster.label) ? cluster.label : clusterId,
               nodeIds: Array.isArray(cluster.nodeIds)
                 ? cluster.nodeIds.filter(nonEmptyString)
@@ -9559,13 +10764,15 @@ export class RuntimeSessionManager {
                 ? cluster.freezeReason
                 : undefined,
               ...(nonEmptyString(cluster.masterSessionId)
-                ? { masterSessionId: cluster.masterSessionId }
+                ? {
+                    masterSessionId: cluster.masterSessionId,
+                  }
                 : {}),
               ...(loopPolicy ? { loopPolicy } : {}),
               ...(loopState ? { loopState } : {}),
             },
           ]
-        })
+        }),
     )
   }
 

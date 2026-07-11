@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:create-goal-loop', input),
     startReviewWorkflow: (input) =>
       ipcRenderer.invoke('orrery:start-review-workflow', input),
+    startDraftWorkflow: (input) =>
+      ipcRenderer.invoke('orrery:start-draft-workflow', input),
+    connectAgents: (input) =>
+      ipcRenderer.invoke('orrery:connect-agents', input),
+    stopSubscription: (input) =>
+      ipcRenderer.invoke('orrery:stop-subscription', input),
     registerExternalSource: (input) =>
       ipcRenderer.invoke('orrery:register-external-source', input),
     removeExternalSource: (input) =>
@@ -25,8 +31,7 @@ contextBridge.exposeInMainWorld('orrery', {
     listTemplates: () => ipcRenderer.invoke('orrery:list-templates'),
     applyTemplate: (input) =>
       ipcRenderer.invoke('orrery:apply-template', input),
-    saveTemplate: (input) =>
-      ipcRenderer.invoke('orrery:save-template', input),
+    saveTemplate: (input) => ipcRenderer.invoke('orrery:save-template', input),
     removeTemplate: (input) =>
       ipcRenderer.invoke('orrery:remove-template', input),
     getProjectContext: (input) =>
@@ -35,9 +40,12 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:get-provider-setup-status', input),
     upsertProviderInstance: (input) =>
       ipcRenderer.invoke('orrery:upsert-provider-instance', input),
-    chooseProjectFolder: () => ipcRenderer.invoke('orrery:choose-project-folder'),
-    createSession: (input) => ipcRenderer.invoke('orrery:create-session', input),
-    resumeSession: (input) => ipcRenderer.invoke('orrery:resume-session', input),
+    chooseProjectFolder: () =>
+      ipcRenderer.invoke('orrery:choose-project-folder'),
+    createSession: (input) =>
+      ipcRenderer.invoke('orrery:create-session', input),
+    resumeSession: (input) =>
+      ipcRenderer.invoke('orrery:resume-session', input),
     archiveSession: (input) =>
       ipcRenderer.invoke('orrery:archive-session', input),
     killSession: (sessionId) =>
@@ -46,7 +54,8 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:respond-runtime-request', input),
     answerUserInput: (input) =>
       ipcRenderer.invoke('orrery:answer-user-input', input),
-    upsertCluster: (input) => ipcRenderer.invoke('orrery:upsert-cluster', input),
+    upsertCluster: (input) =>
+      ipcRenderer.invoke('orrery:upsert-cluster', input),
     createMasterForCluster: (input) =>
       ipcRenderer.invoke('orrery:create-master-for-cluster', input),
     assignMasterToCluster: (input) =>
@@ -70,8 +79,7 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:open-workspace', input),
     createTerminal: (input) =>
       ipcRenderer.invoke('orrery:create-terminal', input),
-    getTerminal: (input) =>
-      ipcRenderer.invoke('orrery:get-terminal', input),
+    getTerminal: (input) => ipcRenderer.invoke('orrery:get-terminal', input),
     runTerminalCommand: (input) =>
       ipcRenderer.invoke('orrery:run-terminal-command', input),
     writeTerminalInput: (input) =>

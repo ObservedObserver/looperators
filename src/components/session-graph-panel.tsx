@@ -1,21 +1,27 @@
-import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow } from '@xyflow/react';
-import { Activity, FileText, MessageSquarePlus, Moon, PanelRightClose, Sun, Webhook, Workflow } from 'lucide-react';
+import { Background, BackgroundVariant, Controls, MiniMap, ReactFlow, type Connection, type ReactFlowInstance } from '@xyflow/react';
+import { Activity, FileText, MessageSquarePlus, Moon, PanelRightClose, Plus, Sun, Webhook, Workflow } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { canvasPanelMinWidth, type RailTab } from '@/lib/layout-prefs';
-import { edgeKindClassNames, activityTitle, kernelActorLabel, kernelEventLabel, kernelEventSubject } from '@/lib/graph-view';
+import { edgeKindClassNames, activityTitle, kernelActorLabel, kernelEventLabel, kernelEventSubject, type GraphEdgeData } from '@/lib/graph-view';
 import { nodeTypes, edgeTypes } from '@/components/canvas';
 import { WorkingTreeDiffPanel } from '@/components/working-tree-diff-panel';
 import { LoopPanel } from '@/components/loop-panel';
 import { SourceDirectoryPanel } from '@/components/source-directory';
-import { type Dispatch, type SetStateAction, useState } from 'react';
+import { type Dispatch, type SetStateAction, useCallback, useMemo, useRef, useState } from 'react';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type LayoutPrefsState } from '@/hooks/use-layout-prefs';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
 import { type DiffPanelState } from '@/hooks/use-diff-panel';
 import { type CanvasState } from '@/hooks/use-canvas';
 import { workflowEmptyState } from '@shared/workflow-catalog';
+import type { DraftGraphState } from '@/hooks/use-draft-graph';
+import { DraftWorkflowPanel } from '@/components/draft-workflow-panel';
+import type { DraftEdgeData } from '@/lib/draft-graph-view';
+import { useAgentConnection } from '@/hooks/use-agent-connection';
+import { AgentConnectionPanel } from '@/components/agent-connection-panel';
+import { RelationshipInspectorPanel } from '@/components/relationship-inspector-panel';
 
 type SessionGraphPanelProps = {
   core: RuntimeCoreState;
@@ -23,6 +29,7 @@ type SessionGraphPanelProps = {
   actions: SessionActionsState;
   diff: DiffPanelState;
   canvas: CanvasState;
+  draft: DraftGraphState;
   isWorkflowLibraryOpen: boolean;
   setIsWorkflowLibraryOpen: Dispatch<SetStateAction<boolean>>;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
@@ -48,6 +55,7 @@ export function SessionGraphPanel({
   actions,
   diff,
   canvas,
+  draft,
   isWorkflowLibraryOpen,
   setIsWorkflowLibraryOpen,
   setActiveTab,
@@ -61,6 +69,10 @@ export function SessionGraphPanel({
   // L4 loop timeline panel: opened by clicking a ring badge on the canvas.
   // L2 trigger-source directory: opened from the header or a source node.
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance>();
+  const [selectedRelationship, setSelectedRelationship] = useState<GraphEdgeData>();
+  const connectionSourceRef = useRef<string | undefined>(undefined);
+  const connectionHandledRef = useRef(false);
   const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
   const { setPendingLinkedSourceId, startNewChat } = actions;
   const {
@@ -75,6 +87,114 @@ export function SessionGraphPanel({
   } = diff;
   const { edges, canvasNodes, updateCanvasNodePositions, beginCanvasNodeDrag, persistCanvasNodePositions, updateCanvasSelection } = canvas;
   const emptyState = workflowEmptyState(Object.keys(runtimeState.sessions).length);
+  const showEmptyState = emptyState.show && draft.graph.nodeOrder.length === 0;
+  const agentConnection = useAgentConnection({
+    runtimeApi,
+    runtimeState,
+    setRuntimeState,
+    setRuntimeError,
+    setSelectedSessionId,
+  });
+  const { setDraft: setAgentConnectionDraft } = agentConnection;
+  const { dispatch: dispatchDraft, setPendingConnection: setDraftPendingConnection } = draft;
+
+  const inspectRelationship = useCallback(
+    (data: GraphEdgeData) => {
+      setAgentConnectionDraft(undefined);
+      setDraftPendingConnection(undefined);
+      dispatchDraft({ type: 'select', selection: undefined });
+      setSelectedRelationship(data);
+    },
+    [dispatchDraft, setAgentConnectionDraft, setDraftPendingConnection],
+  );
+
+  const inspectDraftRelationship = useCallback(
+    (relationId: string) => {
+      setSelectedRelationship(undefined);
+      setAgentConnectionDraft(undefined);
+      setDraftPendingConnection(undefined);
+      dispatchDraft({ type: 'select', selection: { kind: 'relation', id: relationId } });
+    },
+    [dispatchDraft, setAgentConnectionDraft, setDraftPendingConnection],
+  );
+
+  const renderedEdges = useMemo(
+    () =>
+      edges.map((edge) => {
+        if (!edge.data) return edge;
+        if (edge.type === 'draft') {
+          const data = edge.data as DraftEdgeData;
+          return {
+            ...edge,
+            data: {
+              ...data,
+              inspect: () => inspectDraftRelationship(data.relationId),
+            },
+          };
+        }
+        if (edge.type !== 'readability') return edge;
+        const data = edge.data as GraphEdgeData;
+        return {
+          ...edge,
+          data: {
+            ...data,
+            inspect: () => inspectRelationship(data),
+          },
+        };
+      }),
+    [edges, inspectDraftRelationship, inspectRelationship],
+  );
+
+  const connectNodes = (connection: Connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    if (draft.graph.nodes[connection.source] && draft.graph.nodes[connection.target]) {
+      connectionHandledRef.current = true;
+      setSelectedRelationship(undefined);
+      agentConnection.setDraft(undefined);
+      draft.connect(connection);
+      return;
+    }
+    if (runtimeState.sessions[connection.source] && runtimeState.sessions[connection.target]) {
+      connectionHandledRef.current = true;
+      setSelectedRelationship(undefined);
+      draft.setPendingConnection(undefined);
+      draft.dispatch({ type: 'select', selection: undefined });
+      agentConnection.openExisting(connection.source, connection.target);
+    }
+  };
+
+  const completeConnectionAt = (sourceNodeId: string, clientX: number, clientY: number, eventTarget?: EventTarget | null) => {
+    if (!flowInstance) return;
+    const hitTarget = document.elementFromPoint(clientX, clientY);
+    const targetHandle =
+      hitTarget?.closest<HTMLElement>('.react-flow__handle') ??
+      (eventTarget instanceof Element ? eventTarget.closest<HTMLElement>('.react-flow__handle') : null);
+    const targetNodeId = targetHandle?.dataset.nodeid;
+    if (targetNodeId && targetNodeId !== sourceNodeId && targetHandle?.matches('.target')) {
+      connectNodes({ source: sourceNodeId, target: targetNodeId, sourceHandle: null, targetHandle: targetHandle.dataset.handleid ?? null });
+      connectionHandledRef.current = false;
+      return;
+    }
+    if (targetHandle) return;
+    if (!runtimeState.sessions[sourceNodeId]) return;
+    draft.setPendingConnection(undefined);
+    draft.dispatch({ type: 'select', selection: undefined });
+    setSelectedRelationship(undefined);
+    agentConnection.openNew(sourceNodeId, flowInstance.screenToFlowPosition({ x: clientX, y: clientY }));
+  };
+
+  const connectToBlank = (event: MouseEvent | TouchEvent) => {
+    const sourceNodeId = connectionSourceRef.current;
+    connectionSourceRef.current = undefined;
+    if (connectionHandledRef.current) {
+      connectionHandledRef.current = false;
+      return;
+    }
+    if (!sourceNodeId) return;
+    const point = 'changedTouches' in event ? event.changedTouches[0] : event;
+    if (!point) return;
+    completeConnectionAt(sourceNodeId, point.clientX, point.clientY, event.target);
+  };
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-background" style={{ minWidth: canvasPanelMinWidth }}>
@@ -88,6 +208,15 @@ export function SessionGraphPanel({
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <Button
+            className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
+            variant={draft.graph.nodeOrder.length > 0 ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => draft.addAgent()}
+          >
+            <Plus className="size-3.5" />
+            <span className="truncate">Agent</span>
+          </Button>
           <Button
             className="h-8 font-mono text-[11px] uppercase tracking-[0.08em]"
             variant={isWorkflowLibraryOpen ? 'secondary' : 'outline'}
@@ -157,8 +286,37 @@ export function SessionGraphPanel({
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <div className="relative min-h-0 flex-1">
-          {emptyState.show ? (
+        <div
+          className="relative min-h-0 flex-1"
+          onPointerDownCapture={(event) => {
+            const sourceHandle =
+              event.target instanceof Element ? event.target.closest<HTMLElement>('.react-flow__handle.source') : null;
+            const sourceNodeId = sourceHandle?.dataset.nodeid;
+            if (!sourceNodeId) return;
+            connectionHandledRef.current = false;
+            connectionSourceRef.current = sourceNodeId;
+          }}
+          onPointerUpCapture={(event) => {
+            const sourceNodeId = connectionSourceRef.current;
+            if (!sourceNodeId) return;
+            const { clientX, clientY } = event;
+            const eventTarget = event.target;
+            requestAnimationFrame(() => {
+              if (connectionSourceRef.current !== sourceNodeId) return;
+              connectionSourceRef.current = undefined;
+              if (connectionHandledRef.current) {
+                connectionHandledRef.current = false;
+                return;
+              }
+              completeConnectionAt(sourceNodeId, clientX, clientY, eventTarget);
+            });
+          }}
+          onPointerCancelCapture={() => {
+            connectionSourceRef.current = undefined;
+            connectionHandledRef.current = false;
+          }}
+        >
+          {showEmptyState ? (
             <div className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center p-8">
               <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-border bg-background/92 p-5 text-center shadow-sm backdrop-blur">
                 <div className="mx-auto flex size-10 items-center justify-center rounded-xl border border-accent-ink/25 bg-accent-ink/10">
@@ -264,13 +422,21 @@ export function SessionGraphPanel({
           <ReactFlow
             colorMode={colorScheme}
             nodes={canvasNodes}
-            edges={edges}
+            edges={renderedEdges}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
+            onInit={setFlowInstance}
             onNodesChange={updateCanvasNodePositions}
             onNodeDragStart={beginCanvasNodeDrag}
             onNodeDragStop={persistCanvasNodePositions}
             onNodeClick={(_event, node) => {
+              if (draft.graph.nodes[node.id]) {
+                setSelectedRelationship(undefined);
+                agentConnection.setDraft(undefined);
+                draft.setPendingConnection(undefined);
+                draft.dispatch({ type: 'select', selection: { kind: 'node', id: node.id } });
+                return;
+              }
               if (node.id.startsWith('loop:')) {
                 setOpenLoopId(node.id.slice('loop:'.length));
                 return;
@@ -280,6 +446,8 @@ export function SessionGraphPanel({
                 return;
               }
               if (!node.id.startsWith('cluster:') && !node.id.startsWith('timer:')) {
+                setSelectedRelationship(undefined);
+                agentConnection.setDraft(undefined);
                 const graphNode = runtimeState.nodes.find((candidate) => candidate.nodeId === node.id);
                 if (graphNode?.clusterId) {
                   setActiveClusterId(graphNode.clusterId);
@@ -289,6 +457,25 @@ export function SessionGraphPanel({
                 setActiveTab('chat');
               }
             }}
+            onEdgeClick={(_event, edge) => {
+              if (edge.type === 'draft') {
+                const relationId = (edge.data as DraftEdgeData | undefined)?.relationId;
+                if (relationId) {
+                  inspectDraftRelationship(relationId);
+                }
+                return;
+              }
+              const data = edge.data as GraphEdgeData | undefined;
+              if (data) {
+                inspectRelationship(data);
+              }
+            }}
+            onConnectStart={(_event, params) => {
+              connectionHandledRef.current = false;
+              connectionSourceRef.current = params.handleType === 'source' && typeof params.nodeId === 'string' ? params.nodeId : undefined;
+            }}
+            onConnect={connectNodes}
+            onConnectEnd={connectToBlank}
             onSelectionChange={updateCanvasSelection}
             selectionOnDrag
             fitView
@@ -305,6 +492,20 @@ export function SessionGraphPanel({
               nodeStrokeColor="var(--border)"
             />
           </ReactFlow>
+          {agentConnection.draft ? <AgentConnectionPanel runtimeState={runtimeState} connection={agentConnection} /> : null}
+          {!agentConnection.draft && selectedRelationship ? (
+            <RelationshipInspectorPanel
+              data={selectedRelationship}
+              runtimeState={runtimeState}
+              runtimeApi={runtimeApi}
+              onClose={() => setSelectedRelationship(undefined)}
+              onStateChange={setRuntimeState}
+              onError={(message) => setRuntimeError(message)}
+            />
+          ) : null}
+          {!agentConnection.draft && !selectedRelationship && (draft.graph.selection || draft.pendingConnection) ? (
+            <DraftWorkflowPanel runtimeState={runtimeState} draft={draft} />
+          ) : null}
         </div>
 
         {openLoopId ? (

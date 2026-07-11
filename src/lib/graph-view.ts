@@ -41,6 +41,8 @@ export type AgentNodeData = {
 export type CanvasEdgeKind = GraphEdgeKind | 'subscription';
 
 export type GraphEdgeData = {
+  edgeId?: string;
+  subscriptionId?: string;
   kind: CanvasEdgeKind;
   label: string;
   sequence: number;
@@ -60,6 +62,7 @@ export type GraphEdgeData = {
   untilSummary?: string;
   subscriptionState?: Subscription['state'];
   pendingStatus?: 'pending' | 'approved';
+  inspect?: () => void;
 };
 
 export type ActivityEvent = {
@@ -352,6 +355,7 @@ export function timerNodes(state: GraphState): Node<TimerNodeData>[] {
         selectable: false,
         zIndex: 8,
         data: {
+          subscriptionId: subscription.id,
           label: subscriptionPatternLabel(subscription),
           lastTickAt: subscription.lastTickAt,
           stopped: subscription.state === 'stopped',

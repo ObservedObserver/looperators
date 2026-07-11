@@ -26,6 +26,7 @@ import { useInteractions } from '@/hooks/use-interactions';
 import { useDiffPanel } from '@/hooks/use-diff-panel';
 import { useCanvas } from '@/hooks/use-canvas';
 import { useOrchestration } from '@/hooks/use-orchestration';
+import { useDraftGraph } from '@/hooks/use-draft-graph';
 
 function App() {
   const [activeTab, setActiveTab] = useState<RailTab>('chat');
@@ -187,6 +188,14 @@ function App() {
     selectedSessionId,
   });
 
+  const draft = useDraftGraph({
+    runtimeApi,
+    runtimeState,
+    defaultCwd: newCwd,
+    setRuntimeState,
+    setRuntimeError,
+  });
+
   const canvas = useCanvas({
     runtimeApi,
     runtimeState,
@@ -195,6 +204,7 @@ function App() {
     reportsById,
     setSelectedCanvasNodeIds,
     setActiveClusterId,
+    draft,
   });
 
   const orchestration = useOrchestration({
@@ -336,6 +346,7 @@ function App() {
             actions={actions}
             diff={diff}
             canvas={canvas}
+            draft={draft}
             isWorkflowLibraryOpen={isWorkflowLibraryOpen}
             setIsWorkflowLibraryOpen={setIsWorkflowLibraryOpen}
             setActiveTab={setActiveTab}

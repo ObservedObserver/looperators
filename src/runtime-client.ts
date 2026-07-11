@@ -43,6 +43,10 @@ import type {
   StartMasterLoopInput,
   StartReviewWorkflowInput,
   StartReviewWorkflowResult,
+  StartDraftWorkflowInput,
+  StartDraftWorkflowResult,
+  ConnectAgentsInput,
+  ConnectAgentsResult,
   StopMasterLoopInput,
   StopLoopInput,
   UpdateNodePositionsInput,
@@ -78,6 +82,8 @@ export type RuntimeApi = {
   getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
   createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
   startReviewWorkflow: (input: StartReviewWorkflowInput) => Promise<StartReviewWorkflowResult>;
+  startDraftWorkflow: (input: StartDraftWorkflowInput) => Promise<StartDraftWorkflowResult>;
+  connectAgents: (input: ConnectAgentsInput) => Promise<ConnectAgentsResult>;
   registerExternalSource: (input: RegisterExternalSourceInput) => Promise<RegisterExternalSourceResult>;
   removeExternalSource: (input: { sourceId: string; reason?: string }) => Promise<{ ok: boolean }>;
   emitExternalEvent: (input: EmitExternalEventInput) => Promise<EmitExternalEventResult>;
@@ -103,6 +109,7 @@ export type RuntimeApi = {
   startMasterLoop: (input: StartMasterLoopInput) => Promise<{ state: GraphState }>;
   stopMasterLoop: (input: StopMasterLoopInput) => Promise<{ state: GraphState }>;
   stopLoop: (input: StopLoopInput) => Promise<{ state: GraphState }>;
+  stopSubscription: (input: { subscriptionId: string; reason?: string }) => Promise<{ ok: boolean; state: GraphState }>;
   freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
   getWorkingTreeDiff: (input: WorkingTreeDiffInput) => Promise<WorkingTreeDiffResult>;
   getWorkspaceFiles: (input: WorkspaceFilesInput) => Promise<WorkspaceFilesResult>;
@@ -419,6 +426,18 @@ class HttpRuntimeApi implements RuntimeApi {
 
   startReviewWorkflow(input: StartReviewWorkflowInput) {
     return this.#post<StartReviewWorkflowResult>('review-workflows', input);
+  }
+
+  startDraftWorkflow(input: StartDraftWorkflowInput) {
+    return this.#post<StartDraftWorkflowResult>('draft-workflows', input);
+  }
+
+  connectAgents(input: ConnectAgentsInput) {
+    return this.#post<ConnectAgentsResult>('agent-connections', input);
+  }
+
+  stopSubscription(input: { subscriptionId: string; reason?: string }) {
+    return this.#post<{ ok: boolean; state: GraphState }>(`subscriptions/${encodeURIComponent(input.subscriptionId)}/stop`, input);
   }
 
   registerExternalSource(input: RegisterExternalSourceInput) {

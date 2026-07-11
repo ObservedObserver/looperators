@@ -3,11 +3,12 @@ import { ArrowDown, CheckCircle2, FolderOpen, GitPullRequestArrow, Loader2, Play
 
 import { Button } from '@/components/ui/button';
 import type { AgentSession, GraphState, ProjectContext, StartReviewWorkflowInput } from '@/shared/graph-state';
-import { providerCapability, type ProviderKind, type ProviderReasoningEffort, type ProviderRuntimeMode } from '@/shared/provider-runtime';
+import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { cn } from '@/lib/utils';
-import { modelOptionsForKind, providerInstanceForKind, providerOptions, reasoningEffortOptions } from '@/lib/provider-catalog';
+import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
 import { blockingCriteriaText, validateReviewWorkflowStart, type ReviewBlockingMode } from '@shared/review-workflow';
+import { AgentRuntimeFields, ReviewPolicyFields } from '@/components/workflow-form-fields';
 
 type EndpointMode = 'new' | 'existing';
 
@@ -168,9 +169,7 @@ export function ReviewWorkflowComposer({
   const providerCheckKey = useMemo(
     () =>
       JSON.stringify({
-        endpoints: [coder, reviewer]
-          .filter((agent) => agent.mode === 'new')
-          .map((agent) => [agent.providerKind, agent.providerInstanceId]),
+        endpoints: [coder, reviewer].filter((agent) => agent.mode === 'new').map((agent) => [agent.providerKind, agent.providerInstanceId]),
         cwd: coder.mode === 'new' ? cwd.trim() : sessionContext[coder.sessionId]?.cwd,
       }),
     [coder, cwd, reviewer, sessionContext],
@@ -269,17 +268,6 @@ export function ReviewWorkflowComposer({
     };
   }, [coder, cwd, providerCheckKey, reviewer, runtimeApi, sessionContext]);
 
-  const updateProvider = (which: 'coder' | 'reviewer', providerKind: ProviderKind) => {
-    const setter = which === 'coder' ? setCoder : setReviewer;
-    setter((current) => ({
-      ...current,
-      providerKind,
-      providerInstanceId: providerInstanceForKind(instances, providerKind).providerInstanceId,
-      model: workflowModelDefault(providerKind),
-      runtimeMode: providerCapability(providerKind).runtimeModes[0]?.id ?? 'approval-required',
-    }));
-  };
-
   const chooseFolder = async () => {
     if (!runtimeApi) return;
     try {
@@ -329,83 +317,12 @@ export function ReviewWorkflowComposer({
           ))}
         </select>
       ) : (
-        <>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="space-y-1">
-              <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Provider</span>
-              <select className={fieldClass} value={agent.providerKind} onChange={(event) => updateProvider(which, event.target.value as ProviderKind)}>
-                {providerOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Instance</span>
-              <select
-                className={fieldClass}
-                value={agent.providerInstanceId}
-                onChange={(event) => setAgent((current) => ({ ...current, providerInstanceId: event.target.value }))}
-              >
-                {instances
-                  .filter((instance) => instance.kind === agent.providerKind)
-                  .map((instance) => (
-                    <option key={instance.providerInstanceId} value={instance.providerInstanceId}>
-                      {instance.label}
-                    </option>
-                  ))}
-              </select>
-            </label>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="space-y-1">
-              <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Model</span>
-              <select className={fieldClass} value={agent.model} onChange={(event) => setAgent((current) => ({ ...current, model: event.target.value }))}>
-                <option value="">Provider default</option>
-                {modelOptionsForKind(agent.providerKind).map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1">
-              <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Runtime</span>
-              <select
-                className={fieldClass}
-                value={agent.runtimeMode}
-                onChange={(event) => setAgent((current) => ({ ...current, runtimeMode: event.target.value as ProviderRuntimeMode }))}
-              >
-                {providerCapability(agent.providerKind).runtimeModes.length > 0 ? (
-                  providerCapability(agent.providerKind).runtimeModes.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
-                  ))
-                ) : (
-                  <option value="approval-required">CLI default</option>
-                )}
-              </select>
-            </label>
-          </div>
-          {agent.providerKind === 'codex' ? (
-            <label className="block space-y-1">
-              <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Reasoning</span>
-              <select
-                className={fieldClass}
-                value={agent.reasoningEffort}
-                onChange={(event) => setAgent((current) => ({ ...current, reasoningEffort: event.target.value as ProviderReasoningEffort }))}
-              >
-                {reasoningEffortOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-        </>
+        <AgentRuntimeFields
+          value={agent}
+          instances={instances}
+          idPrefix={`review-workflow-${which}`}
+          onChange={(value) => setAgent((current) => ({ ...current, ...value }))}
+        />
       )}
       {agent.mode === 'existing' && agent.sessionId ? (
         <p className="rounded-lg border border-border bg-muted/30 px-2 py-1.5 text-[10px] leading-4 text-muted-foreground">
@@ -482,26 +399,16 @@ export function ReviewWorkflowComposer({
 
       <section className="rounded-xl border border-border bg-background p-3">
         <h3 className="text-[11px] font-medium text-foreground">3 · Stop when clean</h3>
-        <label className="mt-2 block space-y-1">
-          <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Blocking issues</span>
-          <select className={fieldClass} value={blockingMode} onChange={(event) => setBlockingMode(event.target.value as ReviewBlockingMode)}>
-            <option value="any-issue">Any issue blocks</option>
-            <option value="p0-p1">P0/P1 only</option>
-            <option value="custom">Custom criteria</option>
-          </select>
-        </label>
-        {blockingMode === 'custom' ? (
-          <textarea
-            className="mt-2 min-h-16 w-full rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px]"
-            value={customCriteria}
-            placeholder="Example: security, data loss, or failing acceptance tests"
-            onChange={(event) => setCustomCriteria(event.target.value)}
+        <div className="mt-2">
+          <ReviewPolicyFields
+            value={{ blockingMode, customCriteria, maxLaps }}
+            onChange={(value) => {
+              setBlockingMode(value.blockingMode);
+              setCustomCriteria(value.customCriteria);
+              setMaxLaps(value.maxLaps);
+            }}
           />
-        ) : null}
-        <label className="mt-2 block space-y-1">
-          <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Max laps · 1–99</span>
-          <input className={fieldClass} type="number" min={1} max={99} value={maxLaps} onChange={(event) => setMaxLaps(event.target.value)} />
-        </label>
+        </div>
       </section>
 
       <section className="rounded-xl border border-sky-500/25 bg-sky-500/[0.05] p-3">

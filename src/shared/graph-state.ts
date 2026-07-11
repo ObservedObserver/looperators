@@ -14,6 +14,8 @@ import type {
   UserInputAnswerMap,
 } from './provider-runtime';
 import type { ReviewWorkflowStartInput } from '@shared/review-workflow';
+import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
+import type { ConnectAgentsInput } from '@shared/agent-connection';
 
 export const graphStateVersion = 7;
 
@@ -713,6 +715,26 @@ export type StartReviewWorkflowResult = {
   createdSessionIds: SessionId[];
   subscriptionIds: string[];
   loop?: LoopView;
+  state: GraphState;
+};
+
+export type StartDraftWorkflowInput = {
+  graph: DraftGraph;
+};
+
+export type StartDraftWorkflowResult = {
+  mapping: DraftInstantiationMap;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
+  state: GraphState;
+};
+
+export type { ConnectAgentsInput };
+
+export type ConnectAgentsResult = {
+  targetSessionId: SessionId;
+  createdSessionIds: SessionId[];
+  subscriptionIds: string[];
   state: GraphState;
 };
 
