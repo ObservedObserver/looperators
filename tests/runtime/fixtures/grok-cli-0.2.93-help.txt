@@ -1,0 +1,24 @@
+grok 0.2.93 (f00f96316d4b)
+
+Run Grok without the interactive UI
+
+Usage: grok agent [OPTIONS] [COMMAND]
+
+Commands:
+  stdio     Run the agent over stdio
+  headless  Run the agent headlessly over the Grok WebSocket relay
+  serve     Run as a WebSocket server
+  leader    Run as the shared leader process for other clients
+  help      Print help for a subcommand
+
+Options observed for this version:
+  --reauth
+  --model <MODEL>
+  --reasoning-effort <EFFORT>
+  --always-approve
+  --agent-profile <PATH>
+  --plugin-dir <DIR>
+  --leader
+  --no-leader
+  --debug
+  --debug-file <FILE>

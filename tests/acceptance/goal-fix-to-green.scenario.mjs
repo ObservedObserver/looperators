@@ -10,7 +10,7 @@ export const timeoutMs = 900_000
 
 export async function run({ orrery, provider, workDir, log }) {
   const providerInstanceId =
-    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'claude-code' ? 'default-claude-sdk' : 'claude-code'
+    provider.providerKind === 'codex' ? 'default-codex' : provider.providerKind === 'grok' ? 'default-grok' : 'default-claude-sdk'
   // A real, dependency-free repo whose suite fails for one honest reason.
   fs.writeFileSync(
     path.join(workDir, 'package.json'),

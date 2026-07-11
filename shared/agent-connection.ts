@@ -10,7 +10,7 @@ export type AgentConnectionTarget =
       label: string
       instruction: string
       cwd?: string
-      providerKind: 'claude-code' | 'codex'
+      providerKind: 'claude-code' | 'codex' | 'grok'
       providerInstanceId: string
       runtimeSettings: ReviewRuntimeSettings
       position?: { x: number; y: number }

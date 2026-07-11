@@ -5,7 +5,15 @@ import { cn } from '@/lib/utils';
 import { TermLabel, termInputCls, termTextareaCls } from '@/components/terminal';
 import { type ProviderSetupStatus } from '@/shared/graph-state';
 import { type ProviderInstance, type ProviderKind } from '@/shared/provider-runtime';
-import { providerOption, providerInstanceForKind, launchArgsText, providerInstanceFromDraft, providerSetupHints } from '@/lib/provider-catalog';
+import {
+  providerOption,
+  providerInstanceForKind,
+  launchArgsText,
+  providerEnvFromText,
+  providerEnvText,
+  providerInstanceFromDraft,
+  providerSetupHints,
+} from '@/lib/provider-catalog';
 import { selectProviderSetupProfile } from '@shared/provider-setup';
 
 export function providerSetupCheckClassName(status: ProviderSetupStatus['checks'][number]['status']) {
@@ -55,11 +63,19 @@ export function ProviderInstanceSettingsPanel({
   const instanceHomePath = instance.homePath ?? '';
   const instanceShadowHomePath = instance.shadowHomePath ?? '';
   const instanceLaunchArgs = launchArgsText(instance);
+  const instanceEnvText = providerEnvText(instance);
   const [label, setLabel] = useState(instanceLabel);
   const [binaryPath, setBinaryPath] = useState(instanceBinaryPath);
   const [homePath, setHomePath] = useState(instanceHomePath);
   const [shadowHomePath, setShadowHomePath] = useState(instanceShadowHomePath);
   const [launchArgs, setLaunchArgs] = useState(instanceLaunchArgs);
+  const [envText, setEnvText] = useState(instanceEnvText);
+  let envError: string | undefined;
+  try {
+    providerEnvFromText(envText);
+  } catch (error) {
+    envError = error instanceof Error ? error.message : String(error);
+  }
   const isSaving = savingInstanceId === instance.providerInstanceId;
 
   useEffect(() => {
@@ -68,7 +84,8 @@ export function ProviderInstanceSettingsPanel({
     setHomePath(instanceHomePath);
     setShadowHomePath(instanceShadowHomePath);
     setLaunchArgs(instanceLaunchArgs);
-  }, [instanceBinaryPath, instanceHomePath, instanceId, instanceLabel, instanceLaunchArgs, instanceShadowHomePath]);
+    setEnvText(instanceEnvText);
+  }, [instanceBinaryPath, instanceEnvText, instanceHomePath, instanceId, instanceLabel, instanceLaunchArgs, instanceShadowHomePath]);
 
   return (
     <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
@@ -98,12 +115,12 @@ export function ProviderInstanceSettingsPanel({
             className={termInputCls}
             value={binaryPath}
             disabled={disabled || isSaving}
-            placeholder={providerKind === 'codex' ? 'codex' : 'claude'}
+            placeholder={providerKind === 'codex' ? 'codex' : providerKind === 'grok' ? 'grok' : 'claude'}
             onChange={(event) => setBinaryPath(event.target.value)}
           />
         </label>
 
-        <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2">
+        <div className={cn('grid grid-cols-1 gap-2', providerKind === 'codex' && 'min-[420px]:grid-cols-2')}>
           <label className="grid gap-1">
             <TermLabel>home path</TermLabel>
             <input
@@ -115,16 +132,18 @@ export function ProviderInstanceSettingsPanel({
             />
           </label>
 
-          <label className="grid gap-1">
-            <TermLabel>{providerKind === 'codex' ? 'shadow home' : 'state path'}</TermLabel>
-            <input
-              className={termInputCls}
-              value={shadowHomePath}
-              disabled={disabled || isSaving || providerKind !== 'codex'}
-              placeholder={providerKind === 'codex' ? 'optional' : 'Codex only'}
-              onChange={(event) => setShadowHomePath(event.target.value)}
-            />
-          </label>
+          {providerKind === 'codex' ? (
+            <label className="grid gap-1">
+              <TermLabel>shadow home</TermLabel>
+              <input
+                className={termInputCls}
+                value={shadowHomePath}
+                disabled={disabled || isSaving}
+                placeholder="optional"
+                onChange={(event) => setShadowHomePath(event.target.value)}
+              />
+            </label>
+          ) : null}
         </div>
 
         <label className="grid gap-1">
@@ -138,12 +157,26 @@ export function ProviderInstanceSettingsPanel({
           />
         </label>
 
-        {error ? <div className="rounded-md border border-term-rose/35 bg-term-rose/10 px-2 py-1.5 text-[11px] leading-4 text-term-rose">{error}</div> : null}
+        <label className="grid gap-1">
+          <TermLabel>environment (non-secret)</TermLabel>
+          <textarea
+            className={cn(termTextareaCls, 'min-h-16 resize-y text-[11.5px] leading-5')}
+            value={envText}
+            disabled={disabled || isSaving}
+            placeholder={'NAME=value\none per line'}
+            onChange={(event) => setEnvText(event.target.value)}
+          />
+          <span className="text-[10px] leading-4 text-term-faint">Credentials and token/key/secret/password variables must be set in the Orrery runtime environment.</span>
+        </label>
+
+        {envError || error ? (
+          <div className="rounded-md border border-term-rose/35 bg-term-rose/10 px-2 py-1.5 text-[11px] leading-4 text-term-rose">{envError ?? error}</div>
+        ) : null}
 
         <Button
           className="h-8 justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
           size="sm"
-          disabled={disabled || isSaving}
+          disabled={disabled || isSaving || Boolean(envError)}
           onClick={() =>
             onSave(
               providerInstanceFromDraft({
@@ -153,6 +186,7 @@ export function ProviderInstanceSettingsPanel({
                 homePath,
                 shadowHomePath: providerKind === 'codex' ? shadowHomePath : '',
                 launchArgs,
+                envText,
               }),
             )
           }
@@ -231,6 +265,27 @@ export function ProviderSetupDiagnostics({
             </div>
           </div>
         </div>
+
+        {setupStatus?.models ? (
+          <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
+            <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-dim2">Discovered models</div>
+            <div className="space-y-1 text-[11.5px] leading-5">
+              <div className="flex gap-2">
+                <span className="w-20 shrink-0 text-term-dim2">current</span>
+                <span className="text-term-name">{setupStatus.models.currentModelId ?? 'provider default'}</span>
+              </div>
+              {setupStatus.models.availableModels.map((model) => (
+                <div key={model.modelId} className="flex min-w-0 gap-2 rounded bg-ink px-2 py-1">
+                  <span className="min-w-0 flex-1 truncate text-term-name">{model.name}</span>
+                  <span className="shrink-0 text-term-faint">{model.modelId}</span>
+                </div>
+              ))}
+              {setupStatus.models.setupCreatesSession ? (
+                <p className="text-[10px] leading-4 text-term-faint">This readiness check creates an upstream provider session.</p>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
           <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-dim2">Setup checks</div>

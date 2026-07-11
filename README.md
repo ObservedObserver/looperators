@@ -53,7 +53,7 @@ The default entry points are `New Chat` and `New Workflow`:
 - IPC bridge: `electron/main.ts` and `electron/preload.ts`
 - Electron build output: `dist-electron/electron/main.js`
 - Invariant: `nodeId === sessionId`
-- Providers: Claude Code SDK and Codex
+- Providers: Claude Code SDK, Codex app-server, and Grok Build over ACP
 - Runtime persistence covers session restore, corrupt-state recovery, invalid
   cwd diagnostics, archive state, linked sessions, cluster/master state, and
   loop policy.
@@ -96,15 +96,40 @@ npm run test:kernel:codex-interaction
 - Membrane validation and stop cleanup for the Claude SDK bridge:
   `npm run test:kernel:membrane`
 
-Headless real-scenario acceptance (real providers, cheap model preset,
+Headless real-scenario acceptance (real providers, cheap model preset where a
+verified cheap model exists; Grok intentionally uses its provider default,
 minutes per scenario; artifacts land in `output/acceptance/<run-id>/`):
 
 ```sh
 npm run acceptance:headless                       # all scenarios
 npm run acceptance:headless -- --filter linked    # by name
 npm run acceptance:headless -- --list             # list scenarios
+npm run acceptance:headless -- --provider grok --list
+npm run acceptance:headless -- --provider grok --filter grok-two-turn-resume
 npm run acceptance:membrane                       # live membrane create/resume/report
 ```
+
+## Grok Build setup
+
+Orrery expects a local Grok Build CLI with ACP stdio support. The integration
+baseline was verified with `grok 0.2.93` and launches `grok agent stdio`.
+
+1. Install Grok Build and make `grok` available on `PATH`, or set
+   `ORRERY_GROK_BIN` before starting Orrery. A custom binary path and launch
+   arguments can also be saved in Provider setup.
+2. Authenticate with `grok login`, or provide `XAI_API_KEY` to the Orrery
+   runtime process. Orrery reuses that provider-managed authentication; it does
+   not read, store, or refresh OAuth/API credentials.
+3. Select **Grok Build** in New Chat. The lazy setup check performs a real ACP
+   initialize/auth/session setup and discovers the available models. Because
+   the current ACP exposes no verified delete-session method, this readiness
+   check creates an upstream Grok session.
+
+Provider setup accepts only non-sensitive `KEY=value` environment overrides.
+Credential-like names such as `TOKEN`, `KEY`, `SECRET`, `PASSWORD`, and
+`CREDENTIAL` are rejected; pass credentials to the Orrery process instead.
+Grok may still load native MCP servers from `~/.grok`. Orrery injects and cleans
+up its per-turn graph membrane, but does not claim to isolate that user config.
 
 Headless debugging against a dev instance:
 

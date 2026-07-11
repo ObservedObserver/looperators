@@ -41,6 +41,31 @@ export async function run() {
 }
 `
 
+const grokOnlyScenario = `export const name = 'runner-grok-only'
+export const description = 'provider-specific discovery check'
+export const providers = ['grok']
+export async function run() {}
+`
+
+const timeoutCleanupScenario = `import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+
+export const name = 'runner-timeout-cleanup'
+export const description = 'abort signal terminates scenario-owned child process'
+
+export async function run({ workDir, signal }) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
+  fs.writeFileSync(workDir + '/child.pid', String(child.pid))
+  await new Promise((resolve) => {
+    child.once('exit', () => {
+      fs.writeFileSync(workDir + '/child-exited', 'yes')
+      resolve()
+    })
+    signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true })
+  })
+}
+`
+
 async function runRunner(args, env) {
   try {
     const { stdout, stderr } = await execFileAsync(
@@ -70,6 +95,10 @@ test('acceptance runner persists artifacts and reports failures', async () => {
     path.join(scenariosDir, 'failing.scenario.mjs'),
     failingScenario
   )
+  fs.writeFileSync(
+    path.join(scenariosDir, 'grok-only.scenario.mjs'),
+    grokOnlyScenario
+  )
   const env = {
     ORRERY_RUNTIME_CLI_PATH: path.resolve('tests/runtime/support/deterministic-runtime-cli.mjs'),
   }
@@ -89,6 +118,7 @@ test('acceptance runner persists artifacts and reports failures', async () => {
     assert.equal(listed.code, 0)
     assert.match(listed.stdout, /runner-passing/)
     assert.match(listed.stdout, /runner-failing/)
+    assert.doesNotMatch(listed.stdout, /runner-grok-only/)
 
     const full = await runRunner(baseArgs, env)
     assert.equal(full.code, 1, 'a failing scenario must fail the run')
@@ -147,6 +177,55 @@ test('acceptance runner persists artifacts and reports failures', async () => {
     const badPreset = await runRunner([...baseArgs, '--preset', 'no-such-preset'], env)
     assert.equal(badPreset.code, 2, 'unknown preset must fail before spawning runtimes')
     assert.match(badPreset.stderr, /--preset must be one of/)
+
+    const coveredGrokPreset = await runRunner(
+      [...baseArgs, '--provider', 'grok', '--list'],
+      env
+    )
+    assert.equal(coveredGrokPreset.code, 0)
+    assert.match(coveredGrokPreset.stdout, /runner-passing/)
+    assert.match(coveredGrokPreset.stdout, /runner-grok-only/)
+
+    const timeoutScenariosDir = path.join(tempRoot, 'timeout-scenarios')
+    const timeoutOutDir = path.join(tempRoot, 'timeout-out')
+    fs.mkdirSync(timeoutScenariosDir)
+    fs.writeFileSync(
+      path.join(timeoutScenariosDir, 'timeout.scenario.mjs'),
+      timeoutCleanupScenario
+    )
+    const timedOut = await runRunner(
+      [
+        '--dir',
+        timeoutScenariosDir,
+        '--out',
+        timeoutOutDir,
+        '--provider',
+        'claude-code',
+        '--timeout',
+        '100',
+        '--skip-preflight',
+      ],
+      env
+    )
+    assert.equal(timedOut.code, 1)
+    assert.match(timedOut.stdout, /Scenario timed out after 100ms/)
+    const timeoutRunDir = path.join(timeoutOutDir, fs.readdirSync(timeoutOutDir)[0])
+    const timeoutResult = JSON.parse(
+      fs.readFileSync(
+        path.join(timeoutRunDir, 'runner-timeout-cleanup', 'result.json'),
+        'utf8'
+      )
+    )
+    assert.equal(timeoutResult.ok, false)
+    assert.equal(
+      fs.readFileSync(path.join(timeoutResult.workDir, 'child-exited'), 'utf8'),
+      'yes'
+    )
+    const childPid = Number(
+      fs.readFileSync(path.join(timeoutResult.workDir, 'child.pid'), 'utf8')
+    )
+    assert.throws(() => process.kill(childPid, 0), /ESRCH/)
+    fs.rmSync(timeoutResult.workDir, { recursive: true, force: true })
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

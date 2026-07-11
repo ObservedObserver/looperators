@@ -24,6 +24,7 @@ function trimmedString(value) {
 const validProviderKinds = new Set([
   'claude-code',
   'codex',
+  'grok',
 ])
 
 // Accepts either a named preset ('cheap') or an already-resolved
@@ -64,11 +65,7 @@ export function resolveRequestedProviderKind(
   const requested =
     input.providerKind ??
     requestedInstance?.kind ??
-    (input.agent === 'codex'
-      ? 'codex'
-      : input.agent === 'claude-code'
-        ? 'claude-code'
-        : undefined) ??
+    (validProviderKinds.has(input.agent) ? input.agent : undefined) ??
     'claude-code'
   if (!validProviderKinds.has(requested)) {
     throw new Error(`Unsupported provider kind: ${String(requested)}`)
@@ -339,10 +336,12 @@ export class OrreryClient {
     const providerInstances = needsInstanceLookup
       ? ((await this.state()).providerInstances ?? [])
       : []
-    const preset =
-      this.#modelPreset[resolveRequestedProviderKind(input, providerInstances)]
+    const providerKind = resolveRequestedProviderKind(input, providerInstances)
+    const preset = this.#modelPreset[providerKind]
     if (!preset) {
-      return input
+      throw new Error(
+        `Model preset does not cover provider: ${providerKind}. Choose a preset with an explicit provider model before starting a real run.`,
+      )
     }
     return {
       ...input,

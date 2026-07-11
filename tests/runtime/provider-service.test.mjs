@@ -90,3 +90,20 @@ test('ProviderService manages provider instances, bindings, active turns, and lo
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('ProviderService registers the default Grok profile', () => {
+  const service = new ProviderService()
+  try {
+    assert.equal(
+      service.listProviderInstances().some(
+        (instance) =>
+          instance.providerInstanceId === 'default-grok' &&
+          instance.kind === 'grok' &&
+          instance.label === 'Grok Build'
+      ),
+      true
+    )
+  } finally {
+    service.closeAll()
+  }
+})

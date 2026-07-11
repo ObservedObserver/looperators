@@ -1,8 +1,7 @@
 import type { AgentMessage, DiffRange, SessionId, SessionStatus, WorkingTreeDiffFile } from './graph-state';
+import type { ProviderAgentKind, ProviderKind } from '../../shared/provider-metadata';
 
-export type ProviderKind = 'claude-code' | 'codex';
-
-export type ProviderAgentKind = 'claude-code' | 'codex';
+export type { ProviderAgentKind, ProviderKind } from '../../shared/provider-metadata';
 
 export type ProviderRuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
 
@@ -36,6 +35,7 @@ export type ProviderCapability = {
   agent: ProviderAgentKind;
   label: string;
   supportsReasoningEffort: boolean;
+  reasoningEfforts: ProviderReasoningEffort[];
   runtimeModes: ProviderRuntimeModeCapability[];
 };
 
@@ -76,6 +76,7 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     agent: 'claude-code',
     label: 'Claude Code',
     supportsReasoningEffort: false,
+    reasoningEfforts: [],
     runtimeModes: providerRuntimeModeOptions,
   },
   codex: {
@@ -83,12 +84,21 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     agent: 'codex',
     label: 'Codex',
     supportsReasoningEffort: true,
+    reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    runtimeModes: providerRuntimeModeOptions,
+  },
+  grok: {
+    providerKind: 'grok',
+    agent: 'grok',
+    label: 'Grok Build',
+    supportsReasoningEffort: true,
+    reasoningEfforts: ['low', 'medium', 'high'],
     runtimeModes: providerRuntimeModeOptions,
   },
 };
 
 export function providerCapability(providerKind: ProviderKind) {
-  return providerCapabilities[providerKind] ?? providerCapabilities['claude-code'];
+  return providerCapabilities[providerKind];
 }
 
 export function providerRuntimeModeCapability(providerKind: ProviderKind, runtimeMode: ProviderRuntimeMode) {
@@ -101,6 +111,10 @@ export function providerSupportsRuntimeMode(providerKind: ProviderKind, runtimeM
 
 export function providerSupportsReasoningEffort(providerKind: ProviderKind) {
   return providerCapability(providerKind).supportsReasoningEffort;
+}
+
+export function providerReasoningEfforts(providerKind: ProviderKind) {
+  return providerCapability(providerKind).reasoningEfforts;
 }
 
 export type ChatAttachmentKind = 'text' | 'image' | 'binary';
@@ -155,7 +169,12 @@ export type RawEnvelope = {
     | 'claude.sdk.permission'
     | 'claude.sdk.user-dialog'
     | 'codex.app-server.notification'
-    | 'codex.app-server.request';
+    | 'codex.app-server.request'
+    | 'grok.acp.notification'
+    | 'grok.acp.request'
+    | 'grok.acp.response'
+    | 'grok.acp.stderr'
+    | 'grok.xai.extension';
   method?: string;
   messageType?: string;
   payload: unknown;

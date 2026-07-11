@@ -1,0 +1,77 @@
+{
+  "grokVersion": "0.2.93",
+  "binaryBuild": "f00f96316d4b",
+  "capturedAt": "2026-07-11",
+  "initializeRequest": {
+    "method": "initialize",
+    "params": {
+      "protocolVersion": 1,
+      "clientInfo": {
+        "name": "orrery-plan-review",
+        "version": "0.0.0"
+      },
+      "clientCapabilities": {
+        "fs": {
+          "readTextFile": false,
+          "writeTextFile": false
+        }
+      }
+    }
+  },
+  "initializeResult": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "promptCapabilities": {
+        "image": false,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      }
+    },
+    "authMethods": [
+      {
+        "id": "cached_token",
+        "name": "cached_token"
+      },
+      {
+        "id": "grok.com",
+        "name": "Grok"
+      }
+    ],
+    "_meta": {
+      "agentVersion": "0.2.93",
+      "modelState": {
+        "currentModelId": "grok-4.5",
+        "availableModels": [
+          {
+            "modelId": "grok-4.5",
+            "name": "Grok 4.5",
+            "_meta": {
+              "totalContextTokens": 500000,
+              "supportsReasoningEffort": true,
+              "reasoningEfforts": [
+                { "id": "high", "default": true },
+                { "id": "medium", "default": false },
+                { "id": "low", "default": false }
+              ]
+            }
+          },
+          {
+            "modelId": "grok-composer-2.5-fast",
+            "name": "Composer 2.5"
+          }
+        ]
+      }
+    }
+  },
+  "redactions": [
+    "agentId",
+    "agentInstanceId",
+    "hostname",
+    "currentWorkingDirectory"
+  ]
+}

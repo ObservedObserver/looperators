@@ -22,7 +22,7 @@ const usage = `Usage: node scripts/orrery-cli.mjs [global flags] <command>
 Commands:
   sessions [--all]                      List session summaries (--all includes archived)
   session create --prompt <text>        Create a session
-    [--cwd <dir>] [--provider claude-code|codex]
+    [--cwd <dir>] [--provider claude-code|codex|grok]
     [--model <model>] [--preset <name>] [--label <text>]
     [--link <session>] [--link-label <text>] [--wait] [--timeout <ms>]
   session show <id> [--view transcript|summary|raw] [--json]
@@ -206,7 +206,7 @@ async function commandSessions(client, values) {
   process.stdout.write(`${formatTable(rows)}\n`)
 }
 
-const providerKinds = ['claude-code', 'codex']
+const providerKinds = ['claude-code', 'codex', 'grok']
 
 async function commandSessionCreate(client, values) {
   assertWritable(values, 'session create')

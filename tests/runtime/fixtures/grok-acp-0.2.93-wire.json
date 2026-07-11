@@ -1,0 +1,383 @@
+{
+  "grokVersion": "0.2.93",
+  "binaryBuild": "f00f96316d4b",
+  "capturedAt": "2026-07-11",
+  "redactions": {
+    "sessionId": "$SESSION_ID",
+    "firstPromptId": "$PROMPT_ID_1",
+    "secondPromptId": "$PROMPT_ID_2",
+    "toolCallId": "$TOOL_CALL_ID",
+    "cwd": "$CWD"
+  },
+  "messages": [
+    {
+      "capture": "model-selection-session",
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "authenticate",
+        "params": { "methodId": "cached_token" }
+      }
+    },
+    {
+      "capture": "model-selection-session",
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "_meta": {
+            "auth_mode": "Oidc",
+            "coding_data_retention_opt_out": true
+          }
+        }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/new",
+        "params": { "cwd": "$CWD", "mcpServers": [] }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "sessionId": "$SESSION_ID",
+          "models": {
+            "currentModelId": "grok-4.5",
+            "availableModels": [
+              {
+                "modelId": "grok-4.5",
+                "name": "Grok 4.5",
+                "_meta": {
+                  "supportsReasoningEffort": true,
+                  "reasoningEfforts": [
+                    { "id": "high", "default": true },
+                    { "id": "medium", "default": false },
+                    { "id": "low", "default": false }
+                  ]
+                }
+              },
+              { "modelId": "grok-composer-2.5-fast", "name": "Composer 2.5" }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "capture": "model-selection-session",
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "session/set_model",
+        "params": {
+          "sessionId": "$MODEL_SESSION_ID",
+          "modelId": "grok-composer-2.5-fast"
+        }
+      }
+    },
+    {
+      "capture": "model-selection-session",
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": { "_meta": { "model": { "Ok": "grok-composer-2.5-fast" } } }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Remember the nonce ORRERY-MEMORY-7Q9 and create probe.txt containing ORRERY_GROK_P0."
+            }
+          ],
+          "_meta": { "promptId": "$PROMPT_ID_1", "requestId": "$PROMPT_ID_1" }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "$TOOL_CALL_ID",
+            "title": "write",
+            "rawInput": { "file_path": "$CWD/probe.txt", "content": "ORRERY_GROK_P0" },
+            "_meta": {
+              "x.ai/tool": {
+                "version": 1,
+                "name": "write",
+                "kind": "write",
+                "namespace": "opencode",
+                "label": "Write",
+                "read_only": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "$TOOL_CALL_ID",
+            "kind": "edit",
+            "title": "Write $CWD/probe.txt",
+            "status": "completed",
+            "content": [
+              {
+                "type": "diff",
+                "path": "$CWD/probe.txt",
+                "oldText": "",
+                "newText": "ORRERY_GROK_P0"
+              }
+            ],
+            "rawOutput": {
+              "type": "SearchReplace",
+              "EditsApplied": {
+                "tool_output_for_prompt": "The file $CWD/probe.txt has been created.",
+                "absolute_path": "$CWD/probe.txt"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Created probe.txt. Nonce ORRERY-MEMORY-7Q9 noted."
+            }
+          }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "_x.ai/session/prompt_complete",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "promptId": "$PROMPT_ID_1",
+          "stopReason": "end_turn",
+          "agentResult": null
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "stopReason": "end_turn",
+          "_meta": {
+            "sessionId": "$SESSION_ID",
+            "requestId": "$PROMPT_ID_1",
+            "promptId": "$PROMPT_ID_1",
+            "modelId": "grok-4.5"
+          }
+        }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "session/load",
+        "params": { "sessionId": "$SESSION_ID", "cwd": "$CWD", "mcpServers": [] }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Remember the nonce ORRERY-MEMORY-7Q9 and create probe.txt containing ORRERY_GROK_P0."
+            }
+          },
+          "_meta": { "isReplay": true }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Created probe.txt. Nonce ORRERY-MEMORY-7Q9 noted."
+            }
+          },
+          "_meta": { "isReplay": true }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "models": {
+            "currentModelId": "grok-4.5",
+            "availableModels": [{ "modelId": "grok-4.5", "name": "Grok 4.5" }]
+          },
+          "_meta": { "sessionId": "$SESSION_ID" }
+        }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Without reading files, return the nonce from the previous turn."
+            }
+          ],
+          "_meta": { "promptId": "$PROMPT_ID_2", "requestId": "$PROMPT_ID_2" }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": { "type": "text", "text": "ORRERY-MEMORY-7Q9" }
+          }
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "_x.ai/ask_user_question",
+        "params": {
+          "sessionId": "$SESSION_ID",
+          "toolCallId": "$TOOL_CALL_ID",
+          "questions": [
+            {
+              "id": "choice",
+              "question": "Which option do you prefer?",
+              "options": [
+                { "id": "alpha", "label": "Alpha", "description": "Alpha" },
+                { "id": "beta", "label": "Beta", "description": "Beta" }
+              ],
+              "multiSelect": null
+            }
+          ],
+          "mode": "default"
+        }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "result": {
+          "outcome": "accepted",
+          "answers": { "Which option do you prefer?": ["Alpha"] }
+        }
+      }
+    },
+    {
+      "direction": "send",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/cancel",
+        "params": { "sessionId": "$CANCEL_SESSION_ID" }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "_x.ai/session/prompt_complete",
+        "params": {
+          "sessionId": "$CANCEL_SESSION_ID",
+          "promptId": "$CANCEL_PROMPT_ID",
+          "stopReason": "cancelled",
+          "agentResult": null
+        }
+      }
+    },
+    {
+      "direction": "receive",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "result": {
+          "stopReason": "cancelled",
+          "_meta": {
+            "sessionId": "$CANCEL_SESSION_ID",
+            "requestId": "$CANCEL_PROMPT_ID",
+            "promptId": "$CANCEL_PROMPT_ID",
+            "modelId": "grok-composer-2.5-fast",
+            "cancellationCategory": "MidTurnAbort"
+          }
+        }
+      }
+    }
+  ]
+}

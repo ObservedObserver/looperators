@@ -465,6 +465,8 @@ export function ChatDetail({
                 runtimeMode={newRuntimeMode}
                 model={newModel}
                 reasoningEffort={newReasoningEffort}
+                discoveredModels={providerSetupStatus?.models?.availableModels}
+                currentModelId={providerSetupStatus?.models?.currentModelId}
                 disabled={isCreating || !isRuntimeAvailable}
                 canChooseProject={isElectron}
                 onProjectChange={setNewCwd}

@@ -27,6 +27,12 @@ export function answerValueAsString(value: UserInputAnswerValue | undefined) {
   return Array.isArray(value) ? value.join(', ') : (value ?? '');
 }
 
+export function userInputAnswerHasContent(value: UserInputAnswerValue | undefined) {
+  return Array.isArray(value)
+    ? value.some((entry) => entry.trim().length > 0)
+    : typeof value === 'string' && value.trim().length > 0;
+}
+
 export function RuntimeInteractionPanel({
   requests,
   userInputRequests,
@@ -112,6 +118,9 @@ export function RuntimeInteractionPanel({
           const hasStructuredQuestions = questions.length > 0;
           const draft = answerValueAsString(userInputDrafts[userInputDraftKey(request)]);
           const isPending = pendingInteractionIds[request.id] === true;
+          const canSubmit = hasStructuredQuestions
+            ? questions.every((question) => userInputAnswerHasContent(userInputDrafts[userInputDraftKey(request, question.id)]))
+            : draft.trim().length > 0;
           return (
             <div key={request.id} className="rounded-lg border border-term-cyan/35 bg-term-cyan/10 p-3 font-mono">
               <div className="text-[12.5px] font-medium text-term-name">Input requested</div>
@@ -122,6 +131,12 @@ export function RuntimeInteractionPanel({
                     const draftKey = userInputDraftKey(request, question.id);
                     const questionDraft = userInputDrafts[draftKey];
                     const optionValues = Array.isArray(questionDraft) ? questionDraft : [];
+                    const optionIds = new Set((question.options ?? []).map((option) => option.id));
+                    const customValue = question.multiSelect
+                      ? optionValues.filter((value) => !optionIds.has(value)).join('\n')
+                      : typeof questionDraft === 'string' && !optionIds.has(questionDraft)
+                        ? questionDraft
+                        : '';
                     return (
                       <div key={question.id} className="rounded-md border border-ink-line/80 bg-ink/70 p-2.5">
                         <div className="text-[11px] uppercase tracking-[0.08em] text-term-faint">{question.header ?? 'Question'}</div>
@@ -160,6 +175,24 @@ export function RuntimeInteractionPanel({
                                 </label>
                               );
                             })}
+                            <label className="block rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] leading-4 text-term-dim">
+                              <span className="block text-term-name">Other</span>
+                              <textarea
+                                className="mt-1.5 max-h-20 min-h-10 w-full resize-y rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                value={customValue}
+                                placeholder="Type another answer"
+                                disabled={isPending}
+                                onChange={(event) => {
+                                  const nextCustom = event.target.value;
+                                  if (question.multiSelect) {
+                                    const selectedOptions = optionValues.filter((value) => optionIds.has(value));
+                                    onDraftChange(draftKey, nextCustom ? [...selectedOptions, nextCustom] : selectedOptions);
+                                    return;
+                                  }
+                                  onDraftChange(draftKey, nextCustom);
+                                }}
+                              />
+                            </label>
                           </div>
                         ) : (
                           <>
@@ -198,7 +231,7 @@ export function RuntimeInteractionPanel({
               )}
               <Button
                 className="mt-2 h-8 w-full justify-center font-mono text-[11px] uppercase tracking-[0.08em]"
-                disabled={isPending}
+                disabled={isPending || !canSubmit}
                 onClick={() => onAnswer(request)}
               >
                 <Send className="size-3.5" />

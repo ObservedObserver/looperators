@@ -2,8 +2,13 @@ import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import {
+  defaultProviderInstances,
+  providerKinds,
+} from '../../shared/provider-metadata.js'
 import { ClaudeAgentSdkAdapter } from './providers/claudeAgentSdkAdapter.js'
 import { CodexAppServerAdapter } from './providers/codexAppServerAdapter.js'
+import { GrokAcpAdapter } from './providers/grokAcpAdapter.js'
 
 type JsonRecord = Record<string, any>
 
@@ -12,18 +17,7 @@ type ProviderAdapter = {
   closeAll?: () => void
 }
 
-const defaultProviderInstances = [
-  {
-    providerInstanceId: 'default-claude-sdk',
-    kind: 'claude-code',
-    label: 'Claude SDK',
-  },
-  {
-    providerInstanceId: 'default-codex',
-    kind: 'codex',
-    label: 'Codex',
-  },
-]
+const knownProviderKinds: ReadonlySet<string> = new Set(providerKinds)
 
 function now() {
   return new Date().toISOString()
@@ -62,6 +56,7 @@ export class ProviderService extends EventEmitter {
     const defaultAdapters = new Map<string, ProviderAdapter>([
         ['claude-code', new ClaudeAgentSdkAdapter()],
         ['codex', new CodexAppServerAdapter()],
+        ['grok', new GrokAcpAdapter()],
       ])
     this.#adapters = new Map([
       ...defaultAdapters,
@@ -82,7 +77,7 @@ export class ProviderService extends EventEmitter {
     ) {
       throw new Error('Provider instance id is required.')
     }
-    if (typeof instance.kind !== 'string' || !this.#adapters.has(instance.kind)) {
+    if (typeof instance.kind !== 'string' || !knownProviderKinds.has(instance.kind)) {
       throw new Error(`Unsupported provider instance kind: ${String(instance.kind)}`)
     }
 
@@ -150,7 +145,7 @@ export class ProviderService extends EventEmitter {
 
     const adapter = this.#adapters.get(providerKind)
     if (!adapter) {
-      throw new Error(`Unsupported provider runtime: ${providerKind}`)
+      throw new Error(`Provider runtime unavailable: ${providerKind}`)
     }
 
     this.bindSession({

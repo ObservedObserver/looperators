@@ -5,6 +5,7 @@ import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from 
 import type { RuntimeApi } from '@/runtime-client';
 import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
 import { validateAgentConnection, type AgentConnectionBehavior, type AgentConnectionTiming } from '@shared/agent-connection';
+import { nextProviderKind } from '@shared/provider-metadata';
 
 type NewTargetDraft = {
   kind: 'new';
@@ -116,7 +117,7 @@ export function useAgentConnection({
     (sourceSessionId: string, position: { x: number; y: number }) => {
       const source = runtimeState.sessions[sourceSessionId];
       if (!source) return;
-      const providerKind: ProviderKind = source.providerKind === 'codex' ? 'claude-code' : 'codex';
+      const providerKind: ProviderKind = nextProviderKind(source.providerKind);
       const instance = providerInstanceForKind(runtimeState.providerInstances, providerKind);
       setDraft({
         sourceSessionId,

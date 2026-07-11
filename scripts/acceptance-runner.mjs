@@ -19,12 +19,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 import { OrreryHarness } from './lib/orrery-client.mjs'
-import { modelPresets } from './lib/model-presets.mjs'
+import { modelPresetNotes, modelPresets } from './lib/model-presets.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const defaultScenarioDir = path.join(repoRoot, 'tests', 'acceptance')
 const defaultOutDir = path.join(repoRoot, 'output', 'acceptance')
 const defaultScenarioTimeoutMs = 600_000
+const validProviders = ['claude-code', 'codex', 'grok']
 
 function fail(message, exitCode = 1) {
   process.stderr.write(`${message}\n`)
@@ -42,18 +43,35 @@ function slimEvent(event) {
   return rest
 }
 
-function withTimeout(promise, timeoutMs, label) {
+async function withTimeout(run, timeoutMs, label) {
+  const controller = new AbortController()
   let timer
   const timeout = new Promise((_resolve, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`Scenario timed out after ${timeoutMs}ms: ${label}`)),
+      () => {
+        controller.abort(new Error(`Scenario timed out: ${label}`))
+        reject(new Error(`Scenario timed out after ${timeoutMs}ms: ${label}`))
+      },
       timeoutMs
     )
   })
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+  const operation = Promise.resolve().then(() => run(controller.signal))
+  try {
+    return await Promise.race([operation, timeout])
+  } catch (error) {
+    if (controller.signal.aborted) {
+      await Promise.race([
+        operation.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ])
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-async function discoverScenarios(dir, filter) {
+async function discoverScenarios(dir, filter, providerKind) {
   if (!fs.existsSync(dir)) {
     fail(`Scenario directory not found: ${dir}`, 2)
   }
@@ -67,6 +85,17 @@ async function discoverScenarios(dir, filter) {
     const module = await import(pathToFileURL(path.join(dir, file)).href)
     if (typeof module.run !== 'function' || typeof module.name !== 'string') {
       fail(`Scenario ${file} must export a string \`name\` and an async \`run(ctx)\``, 2)
+    }
+    if (
+      module.providers !== undefined &&
+      (!Array.isArray(module.providers) ||
+        module.providers.length === 0 ||
+        module.providers.some((provider) => !validProviders.includes(provider)))
+    ) {
+      fail(
+        `Scenario ${file} providers must be a non-empty subset of: ${validProviders.join(', ')}`,
+        2,
+      )
     }
     // The name becomes an artifact directory segment; keep it path-safe and
     // unique so scenarios cannot clobber (or escape) each other's artifacts.
@@ -82,12 +111,15 @@ async function discoverScenarios(dir, filter) {
       name: module.name,
       description: module.description ?? '',
       timeoutMs: module.timeoutMs,
+      providers: module.providers,
       run: module.run,
     })
   }
-  return filter
-    ? scenarios.filter((scenario) => scenario.name.includes(filter))
-    : scenarios
+  return scenarios.filter(
+    (scenario) =>
+      (!filter || scenario.name.includes(filter)) &&
+      (!scenario.providers || scenario.providers.includes(providerKind)),
+  )
 }
 
 async function preflight(providerKind) {
@@ -184,7 +216,7 @@ async function runScenario(scenario, config) {
     // dead stream from hanging the whole run before the timeout even starts.
     await Promise.race([subscription.ready, subscription.done])
     await withTimeout(
-      scenario.run({
+      (signal) => scenario.run({
         orrery: harness,
         provider: { providerKind: config.providerKind },
         modelPreset: harness.modelPreset,
@@ -192,6 +224,7 @@ async function runScenario(scenario, config) {
         artifactsDir: scenarioDir,
         timeoutMs: scenario.timeoutMs ?? config.timeoutMs,
         log,
+        signal,
       }),
       scenario.timeoutMs ?? config.timeoutMs,
       scenario.name
@@ -242,7 +275,6 @@ async function main() {
   const scenarioDir = values.dir ? path.resolve(values.dir) : defaultScenarioDir
   const outDir = values.out ? path.resolve(values.out) : defaultOutDir
   const providerKind = values.provider ?? 'claude-code'
-  const validProviders = ['claude-code', 'codex']
   if (!validProviders.includes(providerKind)) {
     // Reject before any real-model work starts so a typo cannot launch the
     // wrong provider or bypass the selected model preset.
@@ -257,12 +289,22 @@ async function main() {
       2
     )
   }
+  if (!Object.hasOwn(modelPresets[preset], providerKind)) {
+    fail(
+      `--preset ${preset} does not cover provider ${providerKind}; choose a preset with an explicit provider model.`,
+      2
+    )
+  }
   const timeoutMs = values.timeout ? Number(values.timeout) : defaultScenarioTimeoutMs
   if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
     fail(`--timeout must be a positive integer, got "${values.timeout}"`, 2)
   }
 
-  const scenarios = await discoverScenarios(scenarioDir, values.filter)
+  const scenarios = await discoverScenarios(
+    scenarioDir,
+    values.filter,
+    providerKind,
+  )
   if (values.list) {
     for (const scenario of scenarios) {
       process.stdout.write(`${scenario.name}  ${scenario.description}\n`)
@@ -298,6 +340,8 @@ async function main() {
   process.stdout.write(
     `Running ${scenarios.length} scenario(s) with provider=${providerKind} preset=${preset}\nArtifacts: ${runDir}\n\n`
   )
+  const presetNote = modelPresetNotes[preset]?.[providerKind]
+  if (presetNote) process.stdout.write(`[preset] ${presetNote}\n\n`)
 
   const config = { runDir, providerKind, preset, timeoutMs }
   const results = []

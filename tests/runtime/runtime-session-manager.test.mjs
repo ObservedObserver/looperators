@@ -12,6 +12,7 @@ import {
 } from './support/deterministic-provider.mjs'
 
 const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
+const fakeGrokAgentPath = path.resolve('tests/runtime/fixtures/fake-grok-agent.mjs')
 
 function fakeCodexAppServerSource(markerFile) {
   return `#!/usr/bin/env node
@@ -574,7 +575,7 @@ test('compiled RuntimeSessionManager opens an auxiliary terminal for a session',
   }
 })
 
-test('compiled RuntimeSessionManager persists provider instance settings', () => {
+test('compiled RuntimeSessionManager persists provider instance settings', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-settings-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   const fakeCodex = path.join(tempRoot, 'codex')
@@ -585,7 +586,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
 
   try {
     const initialState = manager.getState()
-    assert.equal(initialState.providerInstances.length, 2)
+    assert.equal(initialState.providerInstances.length, 3)
     assert.ok(
       initialState.providerInstances.some(
         (instance) => instance.providerInstanceId === 'default-codex'
@@ -600,11 +601,12 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
       homePath: path.join(tempRoot, 'codex-home'),
       shadowHomePath: path.join(tempRoot, 'codex-shadow-home'),
       launchArgs: ['app-server', '--experimental'],
+      env: { CODEX_PROFILE: 'local' },
     })
     assert.equal(result.providerInstance.label, 'Codex Local')
     assert.equal(result.providerInstance.binaryPath, fakeCodex)
 
-    const setup = manager.getProviderSetupStatus({
+    const setup = await manager.getProviderSetupStatus({
       providerKind: 'codex',
       providerInstanceId: 'default-codex',
       cwd: tempRoot,
@@ -627,6 +629,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
       )
     assert.equal(restoredCodex?.label, 'Codex Local')
     assert.deepEqual(restoredCodex?.launchArgs, ['app-server', '--experimental'])
+    assert.deepEqual(restoredCodex?.env, { CODEX_PROFILE: 'local' })
 
     const cleared = restored.upsertProviderInstance({
       providerInstanceId: 'default-codex',
@@ -637,7 +640,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
     assert.equal(cleared.providerInstance.homePath, undefined)
     assert.equal(cleared.providerInstance.shadowHomePath, undefined)
     assert.equal(cleared.providerInstance.launchArgs, undefined)
-    assert.throws(
+    await assert.rejects(
       () =>
         restored.getProviderSetupStatus({
           providerKind: 'codex',
@@ -646,7 +649,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
         }),
       /Unknown provider instance/
     )
-    assert.throws(
+    await assert.rejects(
       () =>
         restored.getProviderSetupStatus({
           providerKind: 'codex',
@@ -655,7 +658,7 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
         }),
       /not codex/
     )
-    assert.throws(
+    await assert.rejects(
       () =>
         restored.getProviderSetupStatus({
           providerKind: 'unknown-provider',
@@ -672,6 +675,412 @@ test('compiled RuntimeSessionManager persists provider instance settings', () =>
         }),
       /Unsupported provider instance kind/
     )
+    assert.throws(
+      () =>
+        restored.upsertProviderInstance({
+          providerInstanceId: 'default-grok',
+          kind: 'grok',
+          label: 'Grok Secret',
+          env: { XAI_API_KEY: 'MUST_NOT_PERSIST' },
+        }),
+      /XAI_API_KEY cannot be persisted/
+    )
+    assert.doesNotMatch(JSON.stringify(restored.getState()), /MUST_NOT_PERSIST/)
+    assert.throws(
+      () =>
+        restored.upsertProviderInstance({
+          providerInstanceId: 'default-grok',
+          kind: 'grok',
+          label: 'Grok Generic Secret',
+          env: { ACCESS_TOKEN: 'MUST_NOT_RETURN' },
+        }),
+      /looks sensitive.*cannot be persisted/
+    )
+    assert.doesNotMatch(JSON.stringify(restored.getState()), /MUST_NOT_RETURN/)
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('old v8 state gains default-grok without rewriting existing sessions', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-v8-normalize-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const sessionId = 'existing-claude-session'
+  const ts = '2026-07-01T00:00:00.000Z'
+  fs.writeFileSync(
+    storageFile,
+    JSON.stringify({
+      version: 8,
+      updatedAt: ts,
+      providerInstances: [
+        {
+          providerInstanceId: 'custom-claude',
+          kind: 'claude-code',
+          label: 'Existing Claude',
+          binaryPath: '/tmp/existing-claude',
+        },
+      ],
+      nodes: [
+        {
+          nodeId: sessionId,
+          sessionId,
+          label: 'Existing session',
+          role: 'worker',
+          agent: 'claude-code',
+          status: 'idle',
+          position: { x: 12, y: 34 },
+        },
+      ],
+      edges: [],
+      sessions: {
+        [sessionId]: {
+          sessionId,
+          nodeId: sessionId,
+          backend: 'claude-agent-sdk',
+          providerKind: 'claude-code',
+          providerInstanceId: 'custom-claude',
+          providerSessionId: 'upstream-existing',
+          agent: 'claude-code',
+          label: 'Existing session',
+          prompt: 'keep me',
+          cwd: process.cwd(),
+          role: 'worker',
+          status: 'idle',
+          createdAt: ts,
+          updatedAt: ts,
+        },
+      },
+      clusters: {},
+      reports: [],
+      subscriptions: {},
+      pendingActivations: {},
+    })
+  )
+
+  const manager = new RuntimeSessionManager({ storageFile })
+  try {
+    const state = manager.getState()
+    assert.equal(state.version, 8)
+    assert.deepEqual(
+      state.providerInstances.find((instance) => instance.providerInstanceId === 'default-grok'),
+      { providerInstanceId: 'default-grok', kind: 'grok', label: 'Grok Build' }
+    )
+    assert.deepEqual(
+      {
+        backend: state.sessions[sessionId].backend,
+        providerKind: state.sessions[sessionId].providerKind,
+        providerInstanceId: state.sessions[sessionId].providerInstanceId,
+        providerSessionId: state.sessions[sessionId].providerSessionId,
+        agent: state.sessions[sessionId].agent,
+        label: state.sessions[sessionId].label,
+        prompt: state.sessions[sessionId].prompt,
+      },
+      {
+        backend: 'claude-agent-sdk',
+        providerKind: 'claude-code',
+        providerInstanceId: 'custom-claude',
+        providerSessionId: 'upstream-existing',
+        agent: 'claude-code',
+        label: 'Existing session',
+        prompt: 'keep me',
+      }
+    )
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('Grok create requests preserve provider, instance, backend, and agent metadata', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-provider-contract-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const adapter = new DeterministicProviderAdapter({ kind: 'grok' })
+  const manager = new BaseRuntimeSessionManager({
+    storageFile,
+    providerAdapters: new Map([['grok', adapter]]),
+  })
+
+  try {
+    const created = await manager.createSession({
+      prompt: 'Grok provider contract',
+      cwd: tempRoot,
+      providerKind: 'grok',
+      providerInstanceId: 'default-grok',
+      runtimeSettings: {
+        runtimeMode: 'approval-required',
+        reasoningEffort: 'high',
+      },
+    })
+    await waitFor(
+      'Grok contract session idle',
+      () => manager.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+
+    const session = manager.getState().sessions[created.sessionId]
+    assert.equal(session.providerKind, 'grok')
+    assert.equal(session.providerInstanceId, 'default-grok')
+    assert.equal(session.backend, 'grok-acp')
+    assert.equal(session.agent, 'grok')
+    assert.equal(adapter.startedTurns[0].providerKind, 'grok')
+    assert.equal(adapter.startedTurns[0].providerInstanceId, 'default-grok')
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager runs and cold-loads Grok through the production adapter', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-production-adapter-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const manager = new BaseRuntimeSessionManager({ storageFile })
+
+  try {
+    manager.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Fake Grok',
+      binaryPath: fakeGrokAgentPath,
+      env: { FAKE_GROK_SCENARIO: 'normal' },
+    })
+    const created = await manager.createSession({
+      prompt: 'first Grok turn',
+      cwd: tempRoot,
+      providerKind: 'grok',
+      providerInstanceId: 'default-grok',
+    })
+    await waitFor(
+      'first Grok turn idle',
+      () => manager.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+    const first = manager.getState().sessions[created.sessionId]
+    assert.equal(first.providerSessionId, 'fake-grok-session')
+    assert.ok(first.messages.some((message) => message.content === 'FAKE_GROK_TEXT'))
+
+    await manager.resumeSession({ sessionId: created.sessionId, message: 'second Grok turn' })
+    await waitFor(
+      'second Grok turn idle',
+      () =>
+        manager.getState().sessions[created.sessionId]?.status === 'idle' &&
+        manager.getState().sessions[created.sessionId]?.messages.filter(
+          (message) => message.role === 'assistant'
+        ).length >= 2
+    )
+    const resumed = manager.getState().sessions[created.sessionId]
+    assert.equal(resumed.providerSessionId, 'fake-grok-session')
+    assert.equal(
+      resumed.messages.some((message) => message.content.includes('REPLAY_MUST_NOT_PROJECT')),
+      false
+    )
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager answers Grok permissions and structured input end to end', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-interactions-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const logFile = path.join(tempRoot, 'grok-wire.jsonl')
+  const manager = new BaseRuntimeSessionManager({ storageFile })
+
+  try {
+    manager.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Fake Grok Interactions',
+      binaryPath: fakeGrokAgentPath,
+      env: {
+        FAKE_GROK_SCENARIO: 'interaction-flow',
+        FAKE_GROK_LOG: logFile,
+      },
+    })
+    const created = await manager.createSession({
+      prompt: 'request Grok interactions',
+      cwd: tempRoot,
+      providerKind: 'grok',
+      providerInstanceId: 'default-grok',
+    })
+    await waitFor(
+      'Grok permission request open',
+      () =>
+        manager.getState().sessions[created.sessionId]?.runtimeRequests?.[0]
+          ?.status === 'open'
+    )
+    const permission = manager.getState().sessions[created.sessionId].runtimeRequests[0]
+    assert.equal(
+      manager.respondRuntimeRequest({
+        sessionId: created.sessionId,
+        requestId: permission.id,
+        decision: 'acceptForSession',
+      }).ok,
+      true
+    )
+
+    await waitFor(
+      'Grok structured input open',
+      () =>
+        manager.getState().sessions[created.sessionId]?.runtimeUserInputRequests?.[0]
+          ?.status === 'open'
+    )
+    const question =
+      manager.getState().sessions[created.sessionId].runtimeUserInputRequests[0]
+    assert.deepEqual(question.questions.map((item) => item.id), ['choice', 'many'])
+    assert.throws(
+      () => manager.answerUserInput({
+        sessionId: created.sessionId,
+        requestId: question.id,
+        answers: { choice: 'beta-id' },
+      }),
+      /Every user input question requires a non-empty answer/,
+    )
+    assert.equal(
+      manager.getState().sessions[created.sessionId].runtimeUserInputRequests[0].status,
+      'open',
+    )
+    assert.equal(
+      fs.existsSync(logFile) && fs.readFileSync(logFile, 'utf8').includes('"id":911'),
+      false,
+    )
+    assert.equal(
+      manager.answerUserInput({
+        sessionId: created.sessionId,
+        requestId: question.id,
+        answers: { choice: 'beta-id', many: ['tests-id', 'custom note'] },
+      }).ok,
+      true
+    )
+    await waitFor(
+      'Grok interaction session idle',
+      () => manager.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+    const session = manager.getState().sessions[created.sessionId]
+    assert.equal(session.runtimeRequests[0].status, 'approved_for_session')
+    assert.equal(session.runtimeUserInputRequests[0].status, 'answered')
+    assert.deepEqual(session.runtimeUserInputRequests[0].answers, {
+      choice: 'beta-id',
+      many: ['tests-id', 'custom note'],
+    })
+    const wire = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.deepEqual(wire.find((message) => message.id === 910)?.result, {
+      outcome: { outcome: 'selected', optionId: 'allow-session' },
+    })
+    assert.deepEqual(wire.find((message) => message.id === 911)?.result, {
+      outcome: 'accepted',
+      answers: { 'Pick one': ['Beta'], 'Pick many': ['Tests', 'Other'] },
+      annotations: { 'Pick many': { notes: 'custom note' } },
+    })
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager records Grok wire cancellation instead of the unavailable requested direction', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-permission-fallback-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const logFile = path.join(tempRoot, 'grok-wire.jsonl')
+  const manager = new BaseRuntimeSessionManager({ storageFile })
+
+  try {
+    manager.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Fake Grok Missing Always',
+      binaryPath: fakeGrokAgentPath,
+      env: {
+        FAKE_GROK_SCENARIO: 'permission-no-always',
+        FAKE_GROK_LOG: logFile,
+      },
+    })
+    const created = await manager.createSession({
+      prompt: 'request unavailable permission direction',
+      cwd: tempRoot,
+      providerKind: 'grok',
+    })
+    await waitFor(
+      'Grok permission without allow_always open',
+      () =>
+        manager.getState().sessions[created.sessionId]?.runtimeRequests?.[0]
+          ?.status === 'open'
+    )
+    const request = manager.getState().sessions[created.sessionId].runtimeRequests[0]
+    const response = manager.respondRuntimeRequest({
+      sessionId: created.sessionId,
+      requestId: request.id,
+      decision: 'acceptForSession',
+    })
+    assert.equal(response.ok, true)
+    assert.equal(
+      response.state.sessions[created.sessionId].runtimeRequests[0].status,
+      'canceled'
+    )
+    await waitFor(
+      'Grok permission fallback session idle',
+      () => manager.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+    const wire = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.deepEqual(wire.find((message) => message.id === 910)?.result, {
+      outcome: { outcome: 'cancelled' },
+    })
+  } finally {
+    manager.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager rejects an all-empty Grok answer and keeps the request open', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-empty-answer-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const logFile = path.join(tempRoot, 'grok-wire.jsonl')
+  const manager = new BaseRuntimeSessionManager({ storageFile })
+
+  try {
+    manager.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Fake Grok Empty Answer',
+      binaryPath: fakeGrokAgentPath,
+      env: {
+        FAKE_GROK_SCENARIO: 'interaction-flow',
+        FAKE_GROK_LOG: logFile,
+      },
+    })
+    const created = await manager.createSession({
+      prompt: 'request empty Grok answer',
+      cwd: tempRoot,
+      providerKind: 'grok',
+    })
+    await waitFor(
+      'Grok empty-answer permission open',
+      () =>
+        manager.getState().sessions[created.sessionId]?.runtimeRequests?.[0]
+          ?.status === 'open'
+    )
+    manager.respondRuntimeRequest({
+      sessionId: created.sessionId,
+      requestId: '910',
+      decision: 'accept',
+    })
+    await waitFor(
+      'Grok empty-answer question open',
+      () =>
+        manager.getState().sessions[created.sessionId]?.runtimeUserInputRequests?.[0]
+          ?.status === 'open'
+    )
+    assert.throws(
+      () => manager.answerUserInput({
+        sessionId: created.sessionId,
+        requestId: '911',
+        answers: { choice: '', many: [] },
+      }),
+      /Every user input question requires a non-empty answer/,
+    )
+    assert.equal(
+      manager.getState().sessions[created.sessionId].runtimeUserInputRequests[0].status,
+      'open',
+    )
+    assert.equal(fs.readFileSync(logFile, 'utf8').includes('"id":911'), false)
   } finally {
     manager.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
@@ -1367,14 +1776,14 @@ test('compiled RuntimeSessionManager persists structured attachments without inl
   }
 })
 
-test('compiled RuntimeSessionManager reports provider setup diagnostics', () => {
+test('compiled RuntimeSessionManager reports provider setup diagnostics', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-setup-test-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
   process.env.ORRERY_CLAUDE_BIN = path.join(tempRoot, 'missing-claude')
 
   try {
     const runtime = new RuntimeSessionManager({ storageFile })
-    const status = runtime.getProviderSetupStatus({
+    const status = await runtime.getProviderSetupStatus({
       providerKind: 'claude-code',
       cwd: path.join(tempRoot, 'missing-project'),
     })
@@ -1387,6 +1796,69 @@ test('compiled RuntimeSessionManager reports provider setup diagnostics', () => 
     assert.equal(auth.status, 'unknown')
   } finally {
     delete process.env.ORRERY_CLAUDE_BIN
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager lazily probes Grok ACP and exposes the dynamic model catalog', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-setup-status-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const logFile = path.join(tempRoot, 'grok-wire.jsonl')
+  const runtime = new RuntimeSessionManager({ storageFile })
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Probe Grok',
+      binaryPath: fakeGrokAgentPath,
+      env: {
+        FAKE_GROK_SCENARIO: 'probe-models',
+        FAKE_GROK_LOG: logFile,
+      },
+    })
+    assert.equal(fs.existsSync(logFile), false, 'saving/selecting a profile must not probe eagerly')
+    const [left, right] = await Promise.all([
+      runtime.getProviderSetupStatus({ providerKind: 'grok', cwd: tempRoot }),
+      runtime.getProviderSetupStatus({ providerKind: 'grok', cwd: tempRoot }),
+    ])
+    assert.deepEqual(right.models, left.models)
+    assert.equal(left.checks.find((check) => check.id === 'auth')?.status, 'ok')
+    assert.equal(left.checks.find((check) => check.id === 'acp-session')?.status, 'ok')
+    assert.equal(left.models.currentModelId, 'grok-default')
+    assert.deepEqual(
+      left.models.availableModels.map((model) => model.modelId),
+      ['grok-default', 'grok-no-reasoning']
+    )
+    assert.equal(left.models.availableModels[1].supportsReasoningEffort, false)
+    const wire = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.equal(wire.filter((entry) => entry.startup).length, 1)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('compiled RuntimeSessionManager does not launch a Grok ACP probe when the binary is missing', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-missing-setup-'))
+  const runtime = new RuntimeSessionManager({
+    storageFile: path.join(tempRoot, 'runtime-state.json'),
+  })
+  try {
+    runtime.upsertProviderInstance({
+      providerInstanceId: 'default-grok',
+      kind: 'grok',
+      label: 'Missing Grok',
+      binaryPath: path.join(tempRoot, 'missing-grok'),
+    })
+    const status = await runtime.getProviderSetupStatus({
+      providerKind: 'grok',
+      cwd: tempRoot,
+    })
+    assert.equal(status.checks.find((check) => check.id === 'binary')?.status, 'error')
+    assert.equal(status.checks.find((check) => check.id === 'auth')?.status, 'unknown')
+    assert.equal(status.models, undefined)
+  } finally {
+    runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

@@ -14,6 +14,7 @@ import {
   type DraftPoint,
   type DraftRelationKind,
 } from '@shared/draft-graph';
+import { providerKindForOrdinal } from '@shared/provider-metadata';
 
 export type PendingDraftConnection = {
   sourceNodeId: string;
@@ -121,7 +122,7 @@ export function useDraftGraph({
   const addAgent = useCallback(
     (position?: DraftPoint) => {
       const ordinal = graph.nodeOrder.length;
-      const providerKind: ProviderKind = ordinal % 2 === 0 ? 'claude-code' : 'codex';
+      const providerKind: ProviderKind = providerKindForOrdinal(ordinal);
       const providerInstance = providerInstanceForKind(runtimeState.providerInstances, providerKind);
       dispatch({
         type: 'add-node',

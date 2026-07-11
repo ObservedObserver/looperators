@@ -1,7 +1,7 @@
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AgentSession, GraphState, ProjectContext, ProviderSetupStatus, WorkMode } from '@/shared/graph-state';
-import type { ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
+import { providerReasoningEfforts, type ProviderInstance, type ProviderKind, type ProviderReasoningEffort, type ProviderRuntimeMode } from '@/shared/provider-runtime';
 import { providerCapability, providerRuntimeModeCapability } from '@/shared/provider-runtime';
 import type { RuntimeApi, RuntimeClient } from '@/runtime-client';
 import { defaultWorkspaceCwd, demoMode, latestSessionCwd, projectNameFromCwd, projectOptionsFromSessions, validateProjectCwd } from '@/lib/workspace';
@@ -54,6 +54,14 @@ export function useNewChatSetup({
   const changeNewProviderKind = useCallback((providerKind: ProviderKind) => {
     setNewProviderKind(providerKind);
     setNewModel('');
+    const reasoningEfforts = providerReasoningEfforts(providerKind);
+    if (reasoningEfforts.length > 0) {
+      setNewReasoningEffort((current) =>
+        reasoningEfforts.includes(current)
+          ? current
+          : (reasoningEfforts.includes('medium') ? 'medium' : reasoningEfforts[0]),
+      );
+    }
     const runtimeModes = providerCapability(providerKind).runtimeModes;
     setNewRuntimeMode((current) => (providerRuntimeModeCapability(providerKind, current) ? current : (runtimeModes[0]?.id ?? 'approval-required')));
   }, []);
@@ -180,7 +188,7 @@ export function useNewChatSetup({
   }, [newCwd, newCwdValidation.ok, runtimeApi]);
 
   useEffect(() => {
-    if (!showRawEvents || selectedSession || !runtimeApi) {
+    if ((!showRawEvents && newProviderKind !== 'grok') || selectedSession || !runtimeApi) {
       setProviderSetupStatus(undefined);
       setIsLoadingProviderSetupStatus(false);
       return;

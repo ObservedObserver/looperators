@@ -15,7 +15,7 @@ export type ReviewNewCoderEndpoint = {
   cwd: string;
   workMode: 'local' | 'worktree';
   branch?: string;
-  providerKind: 'claude-code' | 'codex';
+  providerKind: 'claude-code' | 'codex' | 'grok';
   providerInstanceId: string;
   runtimeSettings: ReviewRuntimeSettings;
 };
@@ -30,7 +30,7 @@ export type ReviewNewReviewerEndpoint = {
   kind: 'new';
   label?: string;
   instruction: string;
-  providerKind: 'claude-code' | 'codex';
+  providerKind: 'claude-code' | 'codex' | 'grok';
   providerInstanceId: string;
   runtimeSettings: ReviewRuntimeSettings;
 };

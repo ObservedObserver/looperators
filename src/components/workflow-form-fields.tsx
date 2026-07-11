@@ -1,6 +1,6 @@
 import type { ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
-import { providerCapability } from '@/shared/provider-runtime';
-import { modelOptionsForKind, providerInstanceForKind, providerOptions, reasoningEffortOptions } from '@/lib/provider-catalog';
+import { providerCapability, providerReasoningEfforts, providerSupportsReasoningEffort } from '@/shared/provider-runtime';
+import { modelOptionsForKind, providerInstanceForKind, providerOptions, reasoningEffortOptionsForKind } from '@/lib/provider-catalog';
 import type { ReviewBlockingMode } from '@shared/review-workflow';
 
 const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
@@ -25,11 +25,15 @@ export function AgentRuntimeFields({
   onChange: (value: AgentRuntimeConfigValue) => void;
 }) {
   const updateProvider = (providerKind: ProviderKind) => {
+    const reasoningEfforts = providerReasoningEfforts(providerKind);
     onChange({
       ...value,
       providerKind,
       providerInstanceId: providerInstanceForKind(instances, providerKind).providerInstanceId,
       model: providerKind === 'codex' ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '',
+      reasoningEffort: reasoningEfforts.includes(value.reasoningEffort)
+        ? value.reasoningEffort
+        : (reasoningEfforts.includes('medium') ? 'medium' : (reasoningEfforts[0] ?? value.reasoningEffort)),
       runtimeMode: providerCapability(providerKind).runtimeModes[0]?.id ?? 'approval-required',
     });
   };
@@ -95,7 +99,7 @@ export function AgentRuntimeFields({
           </select>
         </label>
       </div>
-      {value.providerKind === 'codex' ? (
+      {providerSupportsReasoningEffort(value.providerKind) ? (
         <label className="block space-y-1">
           <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Reasoning</span>
           <select
@@ -103,7 +107,7 @@ export function AgentRuntimeFields({
             value={value.reasoningEffort}
             onChange={(event) => onChange({ ...value, reasoningEffort: event.target.value as ProviderReasoningEffort })}
           >
-            {reasoningEffortOptions.map((option) => (
+            {reasoningEffortOptionsForKind(value.providerKind).map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label}
               </option>

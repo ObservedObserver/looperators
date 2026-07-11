@@ -34,7 +34,13 @@ test('compiled runtime HTTP server exposes state, config, CORS, and SSE', async 
     const state = await stateResponse.json()
     assert.equal(state.version, 8)
     assert.deepEqual(state.nodes, [])
-    assert.equal(state.providerInstances.length, 2)
+    assert.equal(state.providerInstances.length, 3)
+    assert.equal(
+      state.providerInstances.some(
+        (instance) => instance.providerInstanceId === 'default-grok' && instance.kind === 'grok'
+      ),
+      true
+    )
 
     const providerResponse = await fetch(`${base}/api/runtime/provider-instances`, {
       method: 'POST',

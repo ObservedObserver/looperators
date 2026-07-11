@@ -154,6 +154,14 @@ test('named model presets resolve from the shared registry', () => {
   )
 })
 
+test('cheap preset explicitly covers Grok with provider default and no fake cheap model id', () => {
+  const client = OrreryClient.attach('http://127.0.0.1:48274', {
+    modelPreset: 'cheap',
+  })
+  assert.deepEqual(client.modelPreset.grok, {})
+  assert.equal(client.modelPreset.grok.model, undefined)
+})
+
 test('harness rejects unknown presets before spawning a runtime child', async () => {
   await assert.rejects(
     () => OrreryHarness.start({ modelPreset: 'no-such-preset' }),
@@ -246,6 +254,7 @@ test('preset kind resolution mirrors the server providerConfig exactly', () => {
   const instances = [
     { providerInstanceId: 'isolated-codex', kind: 'codex' },
     { providerInstanceId: 'default-claude-sdk', kind: 'claude-code' },
+    { providerInstanceId: 'default-grok', kind: 'grok' },
   ]
   assert.equal(resolveRequestedProviderKind({}, instances), 'claude-code')
   assert.equal(
@@ -255,6 +264,14 @@ test('preset kind resolution mirrors the server providerConfig exactly', () => {
   assert.equal(
     resolveRequestedProviderKind({ agent: 'codex' }, instances),
     'codex'
+  )
+  assert.equal(
+    resolveRequestedProviderKind({ agent: 'grok' }, instances),
+    'grok'
+  )
+  assert.equal(
+    resolveRequestedProviderKind({ providerInstanceId: 'default-grok' }, instances),
+    'grok'
   )
   assert.equal(
     resolveRequestedProviderKind({ providerInstanceId: 'isolated-codex' }, instances),

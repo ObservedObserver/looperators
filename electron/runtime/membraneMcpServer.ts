@@ -35,7 +35,8 @@ const tools = [
       properties: {
         agent: {
           type: 'string',
-          description: 'Agent preset to launch, for example claude-code.',
+          enum: ['claude-code', 'codex', 'grok'],
+          description: 'Agent provider to launch: claude-code, codex, or grok.',
         },
         prompt: {
           type: 'string',

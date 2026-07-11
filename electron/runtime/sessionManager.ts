@@ -11,6 +11,12 @@ import {
   openWorkspaceTargetIds,
   runtimeTerminalStreams,
 } from '../../shared/graph-state.js'
+import {
+  defaultProviderInstances,
+  providerKinds,
+  providerMetadata,
+} from '../../shared/provider-metadata.js'
+import { providerEnvKeyIsSensitive } from '../../shared/provider-setup.js'
 import { projectSession } from '../../shared/session-projection.js'
 import {
   compileBuiltinTemplate,
@@ -63,8 +69,9 @@ import {
 } from './kernelStore.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
-import { buildPath, claudeCommand } from './claudeRuntimeShared.js'
+import { buildPath } from './claudeRuntimeShared.js'
 import { resultSublines } from './providers/claudeRuntimeMapper.js'
+import { probeGrokProvider } from './providers/grokAcpProbeService.js'
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
@@ -156,14 +163,10 @@ const validSessionStatuses = new Set([
   'killed',
 ])
 const validMessageStatuses = new Set(['streaming', 'complete', 'failed'])
-const validAgentBackends = new Set([
-  'claude-agent-sdk',
-  'codex-app-server',
-])
-const validProviderKinds = new Set([
-  'claude-code',
-  'codex',
-])
+const validProviderKinds: ReadonlySet<string> = new Set(providerKinds)
+const validAgentBackends = new Set(
+  Object.values(providerMetadata).map((metadata) => metadata.backend),
+)
 const validWorkModes = new Set(['local', 'worktree'])
 const validRuntimeItemStatuses = new Set([
   'pending',
@@ -257,19 +260,6 @@ const supportedAttachmentImageMimeTypes = new Set([
   'image/gif',
   'image/webp',
 ])
-const defaultProviderInstances = [
-  {
-    providerInstanceId: 'default-claude-sdk',
-    kind: 'claude-code',
-    label: 'Claude SDK',
-  },
-  {
-    providerInstanceId: 'default-codex',
-    kind: 'codex',
-    label: 'Codex',
-  },
-]
-
 const macWorkspaceOpenAppNames = {
   vscode: 'Visual Studio Code',
   cursor: 'Cursor',
@@ -292,8 +282,8 @@ type JsonRecord = Record<string, any>
 type RuntimeEventEmitter = (event: JsonRecord) => void
 type RuntimeRun = JsonRecord & {
   kill: () => boolean
-  respondRuntimeRequest?: (input: JsonRecord) => void
-  answerUserInput?: (input: JsonRecord) => void
+  respondRuntimeRequest?: (input: JsonRecord) => JsonRecord | void
+  answerUserInput?: (input: JsonRecord) => JsonRecord | void
 }
 type RuntimeTerminalRun = {
   child: ReturnType<typeof spawn>
@@ -1208,7 +1198,9 @@ function providerConfig(
   const requested =
     input.providerKind ??
     requestedInstance?.kind ??
-    (input.agent === 'codex' ? 'codex' : input.agent === 'claude-code' ? 'claude-code' : undefined) ??
+    (typeof input.agent === 'string' && validProviderKinds.has(input.agent)
+      ? input.agent
+      : undefined) ??
     'claude-code'
   if (!validProviderKinds.has(requested)) {
     throw new Error(`Unsupported provider kind: ${String(requested)}`)
@@ -1225,35 +1217,19 @@ function providerConfig(
     )
   }
 
-  if (requestedKind === 'codex') {
-    return {
-      agent: 'codex',
-      backend: 'codex-app-server',
-      providerKind: 'codex',
-      providerInstanceId: providerInstance.providerInstanceId,
-      labelPrefix: 'Codex',
-    }
+  const metadata = providerMetadata[requestedKind]
+  return {
+    agent: metadata.agent,
+    backend: metadata.backend,
+    providerKind: requestedKind,
+    providerInstanceId: providerInstance.providerInstanceId,
+    labelPrefix: metadata.labelPrefix,
   }
-
-  if (requestedKind === 'claude-code') {
-    return {
-      agent: 'claude-code',
-      backend: 'claude-agent-sdk',
-      providerKind: 'claude-code',
-      providerInstanceId: providerInstance.providerInstanceId,
-      labelPrefix: 'Claude',
-    }
-  }
-
-  throw new Error(`Unsupported provider kind: ${String(requestedKind)}`)
 }
 
 function defaultCommandForProvider(providerKind) {
-  if (providerKind === 'codex') {
-    return process.env.ORRERY_CODEX_BIN || 'codex'
-  }
-
-  return claudeCommand()
+  const metadata = providerMetadata[providerKind]
+  return process.env[metadata.commandEnv] || metadata.defaultCommand
 }
 
 function commandForProviderInstance(providerKind, providerInstance) {
@@ -1304,20 +1280,19 @@ function commandExists(command) {
 
 function providerSetupErrorDiagnostic(providerKind, diagnostics = []) {
   const providerPattern =
-    providerKind === 'codex'
-      ? /codex|auth|login|account|rate.?limit/i
-      : /claude|auth|login|account|rate.?limit/i
+    providerMetadata[providerKind]?.diagnosticPattern ?? /auth|login|account|rate.?limit/i
   return diagnostics.find((diagnostic) =>
     providerPattern.test(`${diagnostic.type} ${diagnostic.message}`),
   )
 }
 
 function defaultProviderInstanceForKind(providerKind) {
-  return (
-    defaultProviderInstances.find(
-      (instance) => instance.kind === providerKind,
-    ) ?? defaultProviderInstances[0]
-  )
+  const metadata = providerMetadata[providerKind] ?? providerMetadata['claude-code']
+  return {
+    providerInstanceId: metadata.defaultInstanceId,
+    kind: providerKind in providerMetadata ? providerKind : 'claude-code',
+    label: metadata.instanceLabel,
+  }
 }
 
 function normalizeLaunchArgs(value) {
@@ -1342,7 +1317,7 @@ function normalizeEnv(value) {
       key.trim(),
       typeof entryValue === 'string' ? entryValue : String(entryValue),
     ])
-    .filter(([key]) => key.length > 0)
+    .filter(([key]) => key.length > 0 && !providerEnvKeyIsSensitive(key))
 
   return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
@@ -1576,6 +1551,21 @@ function firstUserInputAnswer(answer, answers) {
     return value.join(', ')
   }
   return typeof value === 'string' ? value : undefined
+}
+
+function userInputAnswerHasContent(value) {
+  return Array.isArray(value)
+    ? value.some((item) => typeof item === 'string' && item.trim().length > 0)
+    : typeof value === 'string' && value.trim().length > 0
+}
+
+function userInputQuestionsAreComplete(request, answer, answers) {
+  const questions = Array.isArray(request?.questions) ? request.questions : []
+  if (questions.length === 0) return true
+  if (questions.length === 1 && userInputAnswerHasContent(answer)) return true
+  return questions.every((question) =>
+    userInputAnswerHasContent(answers?.[question.id] ?? answers?.[question.label]),
+  )
 }
 
 export class RuntimeSessionManager {
@@ -3985,7 +3975,7 @@ export class RuntimeSessionManager {
     }
   }
 
-  getProviderSetupStatus(input: JsonRecord = {}) {
+  async getProviderSetupStatus(input: JsonRecord = {}) {
     const request = isObject(input) ? input : {}
     const requestedProviderKind = request.providerKind ?? 'claude-code'
     if (!validProviderKinds.has(requestedProviderKind)) {
@@ -4025,11 +4015,24 @@ export class RuntimeSessionManager {
       providerKind,
       this.#state.diagnostics ?? [],
     )
+    const grokProbe =
+      providerKind === 'grok' && binary.ok && cwdValid
+        ? await probeGrokProvider({
+            providerInstance,
+            cwd,
+            totalTimeoutMs:
+              typeof request.timeoutMs === 'number' && request.timeoutMs > 0
+                ? request.timeoutMs
+                : 15_000,
+          })
+        : undefined
+    const grokReady = grokProbe?.status === 'ready'
 
     return {
       providerKind,
       providerInstanceId: providerInstance?.providerInstanceId,
       generatedAt: now(),
+      ...(grokProbe?.catalog ? { models: grokProbe.catalog } : {}),
       checks: [
         {
           id: 'runtime',
@@ -4066,12 +4069,46 @@ export class RuntimeSessionManager {
         {
           id: 'auth',
           label: 'Auth/account',
-          status: providerDiagnostic ? 'warning' : 'unknown',
-          message: providerDiagnostic
-            ? providerDiagnostic.message
-            : 'Provider auth and account status are managed by the local CLI; start a chat to verify.',
-          detail: providerDiagnostic?.type,
+          status:
+            providerKind === 'grok'
+              ? grokReady
+                ? 'ok'
+                : grokProbe
+                  ? 'error'
+                  : 'unknown'
+              : providerDiagnostic
+                ? 'warning'
+                : 'unknown',
+          message:
+            providerKind === 'grok'
+              ? grokProbe?.message ??
+                'Grok auth was not probed because the binary or project folder is unavailable.'
+              : providerDiagnostic
+                ? providerDiagnostic.message
+                : 'Provider auth and account status are managed by the local CLI; start a chat to verify.',
+          detail:
+            providerKind === 'grok'
+              ? grokProbe?.detail
+              : providerDiagnostic?.type,
         },
+        ...(providerKind === 'grok'
+          ? [
+              {
+                id: 'acp-session',
+                label: 'ACP session setup',
+                status: grokReady ? 'ok' : grokProbe ? 'error' : 'unknown',
+                message: grokReady
+                  ? 'initialize, authenticate, and session/new completed successfully.'
+                  : grokProbe
+                    ? grokProbe.message
+                    : 'ACP session setup was not attempted.',
+                detail:
+                  grokProbe?.catalog?.setupCreatesSession === true
+                    ? 'The readiness probe creates an upstream Grok session.'
+                    : undefined,
+              },
+            ]
+          : []),
         {
           id: 'mcp',
           label: 'MCP / tools',
@@ -4079,7 +4116,9 @@ export class RuntimeSessionManager {
           message:
             providerKind === 'codex'
               ? 'Orrery membrane MCP bridge is mounted per-thread for Codex sessions.'
-              : 'Orrery membrane MCP bridge is available for Claude sessions.',
+              : providerKind === 'grok'
+                ? 'Orrery membrane MCP bridge will be injected into Grok ACP sessions.'
+                : 'Orrery membrane MCP bridge is available for Claude sessions.',
         },
       ],
     }
@@ -4093,6 +4132,19 @@ export class RuntimeSessionManager {
     if (!validProviderKinds.has(input.kind)) {
       throw new Error(
         `Unsupported provider instance kind: ${String(input.kind)}`,
+      )
+    }
+    const sensitiveEnvKey = isObject(input.env)
+      ? Object.keys(input.env).find(providerEnvKeyIsSensitive)
+      : undefined
+    if (sensitiveEnvKey?.trim().toUpperCase() === 'XAI_API_KEY') {
+      throw new Error(
+        'XAI_API_KEY cannot be persisted in a provider profile. Set it in the Orrery runtime environment instead.',
+      )
+    }
+    if (sensitiveEnvKey) {
+      throw new Error(
+        `${sensitiveEnvKey} looks sensitive and cannot be persisted in a provider profile. Set it in the Orrery runtime environment instead.`,
       )
     }
     const requestedId = optionalTrimmedString(input.providerInstanceId)
@@ -5026,7 +5078,6 @@ export class RuntimeSessionManager {
     if (request.status !== 'open') {
       return { ok: false, state: this.getState() }
     }
-
     const run = this.#runs.get(sessionId)
     if (typeof run?.respondRuntimeRequest !== 'function') {
       throw new Error(
@@ -5034,17 +5085,23 @@ export class RuntimeSessionManager {
       )
     }
 
-    run.respondRuntimeRequest({
+    const providerResult = run.respondRuntimeRequest({
       requestId,
       decision: normalizedDecision,
     })
+    const providerDecision = isObject(providerResult)
+      ? providerResult.decision
+      : undefined
+    const appliedDecision = validRuntimeRequestDecisions.has(providerDecision)
+      ? normalizeRuntimeRequestDecision(providerDecision)
+      : normalizedDecision
     const event = {
       id: randomUUID(),
       ts: now(),
       type: 'request.resolved',
       sessionId,
       requestId,
-      status: runtimeRequestStatusForDecision(normalizedDecision, request),
+      status: runtimeRequestStatusForDecision(appliedDecision, request),
     }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
     this.#appendKernelEvent(
@@ -5052,7 +5109,7 @@ export class RuntimeSessionManager {
       {
         sessionId,
         requestId,
-        decision: normalizedDecision,
+        decision: appliedDecision,
       },
       ctx,
     )
@@ -5096,30 +5153,44 @@ export class RuntimeSessionManager {
     if (request.status !== 'open') {
       return { ok: false, state: this.getState() }
     }
+    if (!userInputQuestionsAreComplete(request, answer, answers)) {
+      throw new Error('Every user input question requires a non-empty answer')
+    }
 
     const run = this.#runs.get(sessionId)
     if (typeof run?.answerUserInput !== 'function') {
       throw new Error(`Session cannot answer user input requests: ${sessionId}`)
     }
 
-    run.answerUserInput({
+    const providerResult = run.answerUserInput({
       requestId,
       answer: primaryAnswer,
       answers,
     })
-    const event = {
-      id: randomUUID(),
-      ts: now(),
-      type: 'user-input.answered',
-      sessionId,
-      requestId,
-      answer: primaryAnswer,
-      ...(answers ? { answers } : {}),
-    }
+    const canceled =
+      isObject(providerResult) && providerResult.outcome === 'cancelled'
+    const event = canceled
+      ? {
+          id: randomUUID(),
+          ts: now(),
+          type: 'user-input.resolved',
+          sessionId,
+          requestId,
+          status: 'canceled',
+        }
+      : {
+          id: randomUUID(),
+          ts: now(),
+          type: 'user-input.answered',
+          sessionId,
+          requestId,
+          answer: primaryAnswer,
+          ...(answers ? { answers } : {}),
+        }
     this.#appendExternalProviderRuntimeEvent(sessionId, event)
     this.#appendKernelEvent(
       'interaction.answered',
-      { sessionId, requestId },
+      { sessionId, requestId, outcome: canceled ? 'cancelled' : 'answered' },
       ctx,
     )
     return { ok: true, state: this.getState() }
@@ -5241,7 +5312,7 @@ export class RuntimeSessionManager {
 
     const result = await this.#cmdCreateSession(
       {
-        agent: input.agent === 'codex' ? 'codex' : 'claude-code',
+        agent: validProviderKinds.has(input.agent) ? input.agent : undefined,
         providerKind: input.providerKind,
         providerInstanceId: input.providerInstanceId,
         prompt,
@@ -7892,10 +7963,10 @@ export class RuntimeSessionManager {
     }
   }
 
-  // Maps a membrane create_session request onto the unified command input:
-  // children inherit the creator's cwd and runtime settings (a cheap-model
-  // master never silently spawns default-model sessions), and the creator
-  // becomes the lineage edge source.
+  // Maps a membrane create_session request onto the unified command input.
+  // Same-provider children inherit the exact instance/settings; cross-provider
+  // children use the target provider defaults so incompatible model/runtime
+  // knobs never leak across provider boundaries.
   #membraneCreateInput(source, input: JsonRecord = {}) {
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
@@ -7905,14 +7976,20 @@ export class RuntimeSessionManager {
       throw new Error('create_session prompt is required')
     }
 
-    if (input.agent && input.agent !== 'claude-code') {
-      throw new Error(`Unsupported agent for P2 membrane: ${input.agent}`)
-    }
-
     const sourceNode = this.#state.nodes.find(
       (node) => node.sessionId === source,
     )
     const sourceSession = this.#state.sessions[source]
+    const requestedAgent = optionalTrimmedString(input.agent)
+    if (requestedAgent && !validProviderKinds.has(requestedAgent)) {
+      throw new Error(
+        `Unsupported membrane agent: ${requestedAgent}. Expected one of ${providerKinds.join(', ')}.`,
+      )
+    }
+    // Preserve the pre-provider membrane contract for internal callers that
+    // omitted agent; the MCP schema asks agents to choose explicitly.
+    const requestedKind = requestedAgent ?? 'claude-code'
+    const sameProvider = sourceSession?.providerKind === requestedKind
     const cluster =
       typeof input.cluster === 'string' && input.cluster.trim().length > 0
         ? input.cluster.trim()
@@ -7920,12 +7997,12 @@ export class RuntimeSessionManager {
     const label = optionalTrimmedString(input.label)
 
     return {
-      agent: 'claude-code',
-      providerKind: 'claude-code',
+      agent: providerMetadata[requestedKind].agent,
+      providerKind: requestedKind,
       providerInstanceId:
-        sourceSession?.providerKind === 'claude-code'
+        sameProvider
           ? sourceSession.providerInstanceId
-          : defaultProviderInstanceForKind('claude-code').providerInstanceId,
+          : defaultProviderInstanceForKind(requestedKind).providerInstanceId,
       prompt,
       cwd: sourceSession?.cwd,
       context: input.context,
@@ -7933,7 +8010,7 @@ export class RuntimeSessionManager {
       cluster,
       label: input.label,
       runtimeSettings:
-        sourceSession?.providerKind === 'claude-code'
+        sameProvider
           ? sourceSession.runtimeSettings
           : defaultProviderRuntimeSettings,
       sourceSessionId: source,
@@ -10346,9 +10423,7 @@ export class RuntimeSessionManager {
     }
     const backend = validAgentBackends.has(value.backend)
       ? value.backend
-      : value.agent === 'codex'
-        ? 'codex-app-server'
-        : 'claude-agent-sdk'
+      : providerMetadata[value.agent]?.backend ?? 'claude-agent-sdk'
     if (
       value.providerKind !== undefined &&
       !validProviderKinds.has(value.providerKind)
@@ -10359,9 +10434,9 @@ export class RuntimeSessionManager {
     }
     const providerKind = validProviderKinds.has(value.providerKind)
       ? value.providerKind
-      : backend === 'codex-app-server'
-        ? 'codex'
-        : 'claude-code'
+      : Object.entries(providerMetadata).find(
+          ([, metadata]) => metadata.backend === backend,
+        )?.[0] ?? 'claude-code'
     const providerInstanceId =
       optionalTrimmedString(value.providerInstanceId) ??
       defaultProviderInstanceForKind(providerKind).providerInstanceId
@@ -10450,10 +10525,12 @@ export class RuntimeSessionManager {
       providerResumeCursor: nonEmptyString(value.providerResumeCursor)
         ? value.providerResumeCursor
         : undefined,
-      agent: nonEmptyString(value.agent) ? value.agent : 'claude-code',
+      agent: nonEmptyString(value.agent)
+        ? value.agent
+        : providerMetadata[providerKind].agent,
       label: nonEmptyString(value.label)
         ? value.label
-        : `Claude ${sessionId.slice(0, 8)}`,
+        : `${providerMetadata[providerKind].labelPrefix} ${sessionId.slice(0, 8)}`,
       prompt: typeof value.prompt === 'string' ? value.prompt : '',
       cwd,
       project,

@@ -108,3 +108,75 @@ test('membrane create_session from Codex uses the default Claude SDK profile', a
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('membrane create_session applies the full same-provider and cross-provider inheritance matrix', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-membrane-provider-matrix-'))
+  const kinds = ['claude-code', 'codex', 'grok']
+  const defaultInstances = {
+    'claude-code': 'default-claude-sdk',
+    codex: 'default-codex',
+    grok: 'default-grok',
+  }
+  const backends = {
+    'claude-code': 'claude-agent-sdk',
+    codex: 'codex-app-server',
+    grok: 'grok-acp',
+  }
+  const runtime = new BaseRuntimeSessionManager({
+    storageFile: path.join(tempRoot, 'runtime-state.json'),
+    providerAdapters: new Map(
+      kinds.map((kind) => [kind, new DeterministicProviderAdapter({ kind })]),
+    ),
+  })
+
+  try {
+    const creators = {}
+    for (const kind of kinds) {
+      runtime.upsertProviderInstance({
+        providerInstanceId: `custom-${kind}`,
+        kind,
+        label: `Custom ${kind}`,
+      })
+      creators[kind] = await runtime.createSession({
+        prompt: `${kind} creator`,
+        cwd: process.cwd(),
+        agent: kind,
+        providerInstanceId: `custom-${kind}`,
+        runtimeSettings: {
+          runtimeMode: 'full-access',
+          model: `${kind}-only-model`,
+          reasoningEffort: 'low',
+        },
+      })
+      await waitForIdle(runtime, creators[kind].sessionId)
+    }
+
+    for (const sourceKind of kinds) {
+      for (const targetKind of kinds) {
+        const child = await runtime.handleMembraneRequest({
+          tool: 'create_session',
+          source: creators[sourceKind].sessionId,
+          input: {
+            agent: targetKind,
+            prompt: `${sourceKind} creates ${targetKind}`,
+          },
+        })
+        const session = runtime.getState().sessions[child.sessionId]
+        assert.equal(session.providerKind, targetKind)
+        assert.equal(session.backend, backends[targetKind])
+        if (sourceKind === targetKind) {
+          assert.equal(session.providerInstanceId, `custom-${sourceKind}`)
+          assert.equal(session.runtimeSettings.model, `${sourceKind}-only-model`)
+          assert.equal(session.runtimeSettings.runtimeMode, 'full-access')
+        } else {
+          assert.equal(session.providerInstanceId, defaultInstances[targetKind])
+          assert.equal(session.runtimeSettings.model, undefined)
+          assert.equal(session.runtimeSettings.runtimeMode, 'approval-required')
+        }
+      }
+    }
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

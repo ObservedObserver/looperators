@@ -1,0 +1,133 @@
+{
+  "grokVersion": "0.2.93",
+  "binaryBuild": "f00f96316d4b",
+  "capturedAt": "2026-07-11",
+  "firstTurn": {
+    "method": "session/new",
+    "stopReason": "end_turn",
+    "modelId": "grok-4.5",
+    "fsCallbacksAdvertised": false,
+    "fileWriteSucceeded": true,
+    "sentinel": "ORRERY_GROK_P0"
+  },
+  "coldResume": {
+    "method": "session/load",
+    "newProcess": true,
+    "contextRecovered": true,
+    "expectedNonce": "ORRERY-MEMORY-7Q9",
+    "replayedUpdateKinds": [
+      "user_message_chunk",
+      "agent_thought_chunk",
+      "tool_call",
+      "agent_message_chunk",
+      "available_commands_update"
+    ],
+    "loadResponseFollowedReplayUpdatesInThisCapture": true,
+    "orderingIsNotTreatedAsAProtocolGuarantee": true
+  },
+  "completion": {
+    "standardResponseObserved": true,
+    "privateNotificationObserved": true,
+    "privateMethod": "_x.ai/session/prompt_complete"
+  },
+  "askUserQuestion": {
+    "method": "_x.ai/ask_user_question",
+    "wrappedParams": false,
+    "request": {
+      "questions": [
+        {
+          "id": "choice",
+          "question": "Which option do you prefer?",
+          "options": [
+            { "id": "alpha", "label": "Alpha", "description": "Alpha" },
+            { "id": "beta", "label": "Beta", "description": "Beta" }
+          ],
+          "multiSelect": null
+        }
+      ],
+      "mode": "default"
+    },
+    "response": {
+      "outcome": "accepted",
+      "answers": {
+        "Which option do you prefer?": ["Alpha"]
+      }
+    }
+  },
+  "permissionRequest": {
+    "observed": false,
+    "attempts": [
+      "direct file write in an isolated cwd",
+      "terminal touch command in an isolated cwd",
+      "slash command /always-approve off followed by terminal touch in a cold-loaded process"
+    ],
+    "fixtureRequired": true,
+    "cancelShapeFromReferenceWire": {
+      "outcome": { "outcome": "cancelled" }
+    }
+  },
+  "cancel": {
+    "notificationObserved": true,
+    "privateCompletionStopReason": "cancelled",
+    "standardResponseStopReason": "cancelled",
+    "cancellationCategory": "MidTurnAbort"
+  },
+  "loadMeasurements": [
+    { "completedTurnsBeforeLoad": 2, "replayUpdateCount": 10, "loadRpcMs": 654.99 },
+    { "completedTurnsBeforeLoad": 3, "replayUpdateCount": 13, "loadRpcMs": 650.58 },
+    { "completedTurnsBeforeLoad": 4, "replayUpdateCount": 16, "loadRpcMs": 653.86 },
+    {
+      "completedTurnsBeforeLoad": 5,
+      "replayUpdateCount": 19,
+      "loadRpcMs": 654.79,
+      "processRssKb": {
+        "afterInitialize": 55056,
+        "afterSetup": 77248,
+        "afterPrompt": 85168
+      }
+    },
+    {
+      "completedTurnsBeforeLoad": 6,
+      "replayUpdateCount": 22,
+      "loadRpcMs": 653.7,
+      "processRssKb": { "afterInitialize": 55344, "afterSetup": 77584, "afterPrompt": 85360 }
+    },
+    {
+      "completedTurnsBeforeLoad": 7,
+      "replayUpdateCount": 25,
+      "loadRpcMs": 656.63,
+      "processRssKb": { "afterInitialize": 57392, "afterSetup": 76640, "afterPrompt": 84496 }
+    },
+    {
+      "completedTurnsBeforeLoad": 8,
+      "replayUpdateCount": 28,
+      "loadRpcMs": 649.97,
+      "processRssKb": { "afterInitialize": 55440, "afterSetup": 77968, "afterPrompt": 86128 }
+    },
+    {
+      "completedTurnsBeforeLoad": 9,
+      "replayUpdateCount": 31,
+      "loadRpcMs": 649.46,
+      "processRssKb": { "afterInitialize": 58960, "afterSetup": 78128, "afterPrompt": 86064 }
+    }
+  ],
+  "modelSwitchBoundary": {
+    "from": "grok-4.5",
+    "to": "grok-composer-2.5-fast",
+    "sameSessionAccepted": false,
+    "error": "Target model requires a different agent type; start a new session."
+  },
+  "nativeConfiguration": {
+    "userConfiguredMcpWasInherited": true,
+    "hostInjectedMcpServers": []
+  },
+  "redactions": [
+    "sessionId",
+    "promptId",
+    "requestId",
+    "agentId",
+    "agentInstanceId",
+    "hostname",
+    "absoluteTemporaryPaths"
+  ]
+}

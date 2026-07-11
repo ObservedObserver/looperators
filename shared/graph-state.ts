@@ -1,3 +1,5 @@
+import { defaultProviderInstances } from './provider-metadata.js'
+
 export const graphStateVersion = 8
 
 // Intent-layer enums (kernel doc §7.3). Kept as value arrays so the electron
@@ -50,18 +52,7 @@ export const runtimeTerminalStreams = [
   'system',
 ]
 
-export const defaultGraphProviderInstances = [
-  {
-    providerInstanceId: 'default-claude-sdk',
-    kind: 'claude-code',
-    label: 'Claude SDK',
-  },
-  {
-    providerInstanceId: 'default-codex',
-    kind: 'codex',
-    label: 'Codex',
-  },
-]
+export const defaultGraphProviderInstances = defaultProviderInstances
 
 export const graphStateSchema = {
   version: graphStateVersion,
@@ -447,7 +438,7 @@ export const graphStateSchema = {
         clusterId: 'ClusterId',
         prompt: 'string?',
         cwd: 'string?; project cwd selected by the UI for the master session',
-        agent: '"claude-code" | "codex"?',
+        agent: '"claude-code" | "codex" | "grok"?',
         providerKind: 'ProviderKind?',
         providerInstanceId: 'string?',
         runtimeSettings: 'ProviderRuntimeSettings?',
@@ -495,8 +486,8 @@ export const graphStateSchema = {
       masterReason: 'string?',
     },
     AgentSession: {
-      backend: '"claude-agent-sdk" | "codex-app-server"',
-      providerKind: '"claude-code" | "codex"',
+      backend: '"claude-agent-sdk" | "codex-app-server" | "grok-acp"',
+      providerKind: '"claude-code" | "codex" | "grok"',
       providerInstanceId: 'string',
       providerSessionId: 'string?',
       runtimeSettings: 'ProviderRuntimeSettings?',

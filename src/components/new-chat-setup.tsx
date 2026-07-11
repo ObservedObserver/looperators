@@ -17,7 +17,7 @@ import { DropdownMenu as DropdownMenuPrimitive, Select as SelectPrimitive } from
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { type OpenWorkspaceTarget, type WorkMode } from '@/shared/graph-state';
+import { type OpenWorkspaceTarget, type ProviderSetupModel, type WorkMode } from '@/shared/graph-state';
 import {
   type ProviderKind,
   type ProviderReasoningEffort,
@@ -27,7 +27,7 @@ import {
   providerSupportsReasoningEffort,
 } from '@/shared/provider-runtime';
 import { workspaceOpenTargetOptions, workspaceOpenTargetOption, workspaceOpenTargetAvailable } from '@/lib/layout-prefs';
-import { providerOptions, modelOptionsForKind, workModeOptions, reasoningEffortOptions } from '@/lib/provider-catalog';
+import { providerOptions, modelOptionsForKind, workModeOptions, reasoningEffortOptionsForKind } from '@/lib/provider-catalog';
 import { type ProjectCwdValidation, type NewChatProjectOption, chooseProjectOptionValue, uniqueStrings } from '@/lib/workspace';
 
 export function ProviderSegmentedControl({
@@ -329,15 +329,17 @@ export const modelCustomOptionValue = '__orrery_model_custom__';
 export function ModelPickerPill({
   providerKind,
   model,
+  discoveredOptions,
   disabled,
   onChange,
 }: {
   providerKind: ProviderKind;
   model: string;
+  discoveredOptions?: { value: string; label: string }[];
   disabled?: boolean;
   onChange: (model: string) => void;
 }) {
-  const options = modelOptionsForKind(providerKind);
+  const options = discoveredOptions ?? modelOptionsForKind(providerKind);
   const trimmed = model.trim();
   const isCustomValue = trimmed !== '' && !options.some((option) => option.value === trimmed);
   const [forceCustom, setForceCustom] = useState(false);
@@ -395,6 +397,8 @@ export function NewChatSetupBar({
   runtimeMode,
   model,
   reasoningEffort,
+  discoveredModels,
+  currentModelId,
   disabled,
   canChooseProject,
   onProjectChange,
@@ -415,6 +419,8 @@ export function NewChatSetupBar({
   runtimeMode: ProviderRuntimeMode;
   model: string;
   reasoningEffort: ProviderReasoningEffort;
+  discoveredModels?: ProviderSetupModel[];
+  currentModelId?: string;
   disabled?: boolean;
   canChooseProject?: boolean;
   onProjectChange: (cwd: string) => void;
@@ -435,6 +441,16 @@ export function NewChatSetupBar({
   const isKnownNonGitProject = selectedProject?.isGitRepo === false;
   const canPickBranch = workMode === 'worktree' && branchOptions.length > 0;
   const providerRuntimeModes = providerCapability(providerKind).runtimeModes;
+  const selectedCatalogModel = discoveredModels?.find(
+    (entry) => entry.modelId === (model.trim() || currentModelId),
+  );
+  const baseEffortOptions = reasoningEffortOptionsForKind(providerKind);
+  const effortOptions =
+    selectedCatalogModel?.supportsReasoningEffort === false
+      ? []
+      : selectedCatalogModel?.reasoningEfforts
+        ? baseEffortOptions.filter((option) => selectedCatalogModel.reasoningEfforts?.includes(option.id))
+        : baseEffortOptions;
 
   return (
     <div className="app-region-no-drag mb-2">
@@ -494,7 +510,13 @@ export function NewChatSetupBar({
           }}
         />
 
-        <ModelPickerPill providerKind={providerKind} model={model} disabled={disabled} onChange={onModelChange} />
+        <ModelPickerPill
+          providerKind={providerKind}
+          model={model}
+          discoveredOptions={discoveredModels?.map((entry) => ({ value: entry.modelId, label: entry.name }))}
+          disabled={disabled}
+          onChange={onModelChange}
+        />
 
         <NewChatSetupPill
           icon={Terminal}
@@ -548,13 +570,13 @@ export function NewChatSetupBar({
           />
         ) : null}
 
-        {providerSupportsReasoningEffort(providerKind) ? (
+        {providerSupportsReasoningEffort(providerKind) && effortOptions.length > 0 ? (
           <NewChatSetupPill
             icon={Activity}
             label="Think"
             value={reasoningEffort}
             tone="secondary"
-            options={reasoningEffortOptions.map((option) => ({
+            options={effortOptions.map((option) => ({
               value: option.id,
               label: option.label,
             }))}

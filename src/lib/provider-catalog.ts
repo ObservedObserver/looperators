@@ -6,30 +6,25 @@ import {
   type ProviderReasoningEffort,
   type ProviderRuntimeMode,
   type ProviderRuntimeSettings,
-  providerCapability,
+  providerCapabilities,
   providerRuntimeModeCapability,
+  providerReasoningEfforts,
   providerSupportsReasoningEffort,
 } from '@/shared/provider-runtime';
+import { parseProviderEnvText } from '@shared/provider-setup';
 
 export const providerOptions: {
   id: ProviderKind;
   agent: ProviderAgentKind;
   label: string;
-}[] = [
-  {
-    id: 'claude-code',
-    agent: providerCapability('claude-code').agent,
-    label: providerCapability('claude-code').label,
-  },
-  {
-    id: 'codex',
-    agent: providerCapability('codex').agent,
-    label: providerCapability('codex').label,
-  },
-];
+}[] = Object.values(providerCapabilities).map((capability) => ({
+  id: capability.providerKind,
+  agent: capability.agent,
+  label: capability.label,
+}));
 
 export function providerOption(providerKind: ProviderKind) {
-  return providerOptions.find((option) => option.id === providerKind) ?? providerOptions[0];
+  return providerOptions.find((option) => option.id === providerKind)!;
 }
 
 // Curated, per-agent model presets. Values are the real model ids each runtime
@@ -49,6 +44,9 @@ export const modelCatalog: Record<ProviderAgentKind, { value: string; label: str
     { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
     { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
   ],
+  // Grok model ids are discovered lazily from ACP initialize metadata. Until
+  // discovery is available, the picker keeps Default plus its Custom escape hatch.
+  grok: [],
 };
 
 export function modelOptionsForKind(providerKind: ProviderKind) {
@@ -63,14 +61,14 @@ export function modelLabelForKind(providerKind: ProviderKind, model: string | un
   return modelOptionsForKind(providerKind).find((option) => option.value === trimmed)?.label ?? trimmed;
 }
 
+const providerDefaultInstanceIds: Record<ProviderKind, string> = {
+  'claude-code': 'default-claude-sdk',
+  codex: 'default-codex',
+  grok: 'default-grok',
+};
+
 export function defaultProviderInstanceIdForKind(providerKind: ProviderKind) {
-  switch (providerKind) {
-    case 'codex':
-      return 'default-codex';
-    case 'claude-code':
-    default:
-      return 'default-claude-sdk';
-  }
+  return providerDefaultInstanceIds[providerKind];
 }
 
 export function fallbackProviderInstance(providerKind: ProviderKind): ProviderInstance {
@@ -90,6 +88,17 @@ export function launchArgsText(instance: ProviderInstance) {
   return (instance.launchArgs ?? []).join('\n');
 }
 
+export function providerEnvText(instance: ProviderInstance) {
+  return Object.entries(instance.env ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+}
+
+export function providerEnvFromText(value: string) {
+  return parseProviderEnvText(value);
+}
+
 export function providerInstanceFromDraft(input: {
   instance: ProviderInstance;
   label: string;
@@ -97,11 +106,13 @@ export function providerInstanceFromDraft(input: {
   homePath: string;
   shadowHomePath: string;
   launchArgs: string;
+  envText?: string;
 }): ProviderInstance {
   const launchArgs = input.launchArgs
     .split('\n')
     .map((arg) => arg.trim())
     .filter(Boolean);
+  const env = input.envText === undefined ? input.instance.env : providerEnvFromText(input.envText);
   return {
     providerInstanceId: input.instance.providerInstanceId,
     kind: input.instance.kind,
@@ -110,7 +121,7 @@ export function providerInstanceFromDraft(input: {
     ...(input.homePath.trim() ? { homePath: input.homePath.trim() } : {}),
     ...(input.shadowHomePath.trim() ? { shadowHomePath: input.shadowHomePath.trim() } : {}),
     ...(launchArgs.length ? { launchArgs } : {}),
-    ...(input.instance.env ? { env: input.instance.env } : {}),
+    ...(env ? { env } : {}),
   };
 }
 
@@ -143,6 +154,11 @@ export const reasoningEffortOptions: { id: ProviderReasoningEffort; label: strin
   { id: 'xhigh', label: 'XHigh' },
 ];
 
+export function reasoningEffortOptionsForKind(providerKind: ProviderKind) {
+  const supported = new Set(providerReasoningEfforts(providerKind));
+  return reasoningEffortOptions.filter((option) => supported.has(option.id));
+}
+
 // One-line summary of the runtime config (model · [effort] · mode), used in the
 // chat header so the effective agent setup is always visible.
 
@@ -167,18 +183,23 @@ export function runtimeConfigSummary(
   return parts.join(' · ');
 }
 
+const providerSetupHintCatalog: Record<ProviderKind, string[]> = {
+  'claude-code': [
+    'Confirm Claude SDK auth is available to the runtime.',
+    'Check that this app can start @anthropic-ai/claude-agent-sdk.',
+  ],
+  codex: [
+    'Confirm the Codex provider is enabled and authenticated.',
+    'Check that the Codex app-server can access this workspace path.',
+    'Restart the runtime after auth or provider changes.',
+  ],
+  grok: [
+    'Confirm the Grok CLI is installed and authenticated.',
+    'Check that `grok agent stdio` can access this workspace path.',
+    'Orrery reuses the local Grok CLI login or XAI_API_KEY; it does not store credentials.',
+  ],
+};
+
 export function providerSetupHints(providerKind: ProviderKind) {
-  switch (providerKind) {
-    case 'claude-code':
-      return [
-        'Confirm Claude SDK auth is available to the runtime.',
-        'Check that this app can start @anthropic-ai/claude-agent-sdk.',
-      ];
-    case 'codex':
-      return [
-        'Confirm the Codex provider is enabled and authenticated.',
-        'Check that the Codex app-server can access this workspace path.',
-        'Restart the runtime after auth or provider changes.',
-      ];
-  }
+  return providerSetupHintCatalog[providerKind];
 }

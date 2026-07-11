@@ -13,6 +13,7 @@ import type {
   UserInputRequest,
   UserInputAnswerMap,
 } from './provider-runtime';
+import { defaultProviderInstances } from '../../shared/provider-metadata';
 import type { ReviewWorkflowStartInput } from '@shared/review-workflow';
 import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
 import type { ConnectAgentsInput } from '@shared/agent-connection';
@@ -39,18 +40,7 @@ export const runtimeTerminalStatuses = ['running', 'exited', 'closed'] as const;
 
 export const runtimeTerminalStreams = ['stdin', 'stdout', 'stderr', 'system'] as const;
 
-export const defaultGraphProviderInstances: ProviderInstance[] = [
-  {
-    providerInstanceId: 'default-claude-sdk',
-    kind: 'claude-code',
-    label: 'Claude SDK',
-  },
-  {
-    providerInstanceId: 'default-codex',
-    kind: 'codex',
-    label: 'Codex',
-  },
-];
+export const defaultGraphProviderInstances: ProviderInstance[] = defaultProviderInstances;
 
 export const graphStateSchema = {
   version: graphStateVersion,
@@ -277,7 +267,7 @@ export const graphStateSchema = {
         clusterId: 'ClusterId',
         prompt: 'string?',
         cwd: 'string?; project cwd selected by the UI for the master session',
-        agent: '"claude-code" | "codex"?',
+        agent: '"claude-code" | "codex" | "grok"?',
         providerKind: 'ProviderKind?',
         providerInstanceId: 'string?',
         runtimeSettings: 'ProviderRuntimeSettings?',
@@ -347,7 +337,7 @@ export type CallId = string;
 
 export type SessionStatus = (typeof sessionStatuses)[number];
 
-export type AgentBackend = 'claude-agent-sdk' | 'codex-app-server';
+export type AgentBackend = 'claude-agent-sdk' | 'codex-app-server' | 'grok-acp';
 export type SessionRole = 'worker' | 'master';
 export type WorkMode = 'local' | 'worktree';
 
@@ -911,7 +901,7 @@ export type CreateRuntimeSessionInput = {
   cwd?: string;
   workMode?: WorkMode;
   branch?: string;
-  agent?: 'claude-code' | 'codex';
+  agent?: 'claude-code' | 'codex' | 'grok';
   providerKind?: ProviderKind;
   providerInstanceId?: string;
   runtimeSettings?: ProviderRuntimeSettings;
@@ -957,12 +947,26 @@ export type ProviderSetupStatusInput = {
   providerKind: ProviderKind;
   providerInstanceId?: string;
   cwd?: string;
+  timeoutMs?: number;
+};
+
+export type ProviderSetupModel = {
+  modelId: string;
+  name: string;
+  supportsReasoningEffort?: boolean;
+  reasoningEfforts?: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export type ProviderSetupStatus = {
   providerKind: ProviderKind;
   providerInstanceId?: string;
   generatedAt: string;
+  models?: {
+    currentModelId?: string;
+    availableModels: ProviderSetupModel[];
+    setupCreatesSession: boolean;
+  };
   checks: ProviderSetupCheck[];
 };
 
@@ -1004,7 +1008,7 @@ export type CreateMasterForClusterInput = {
   clusterId: ClusterId;
   prompt?: string;
   cwd?: string;
-  agent?: 'claude-code' | 'codex';
+  agent?: 'claude-code' | 'codex' | 'grok';
   providerKind?: ProviderKind;
   providerInstanceId?: string;
   runtimeSettings?: ProviderRuntimeSettings;
