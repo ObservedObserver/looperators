@@ -142,9 +142,20 @@ test('product status: failed participant keeps provider/model/auth/workspace rea
     const view = deriveLoopProductView(fixture({ reviewer: { status: 'failed', error } }))
     assert.equal(view.phase, 'failed')
     assert.equal(view.failureKind, expected)
-    assert.equal(view.recovery?.kind, expected === 'auth' || expected === 'provider' ? 'open-provider-settings' : 'open-agent')
+    assert.equal(
+      view.recovery?.kind,
+      expected === 'model' ? 'open-workflow-builder' : expected === 'auth' || expected === 'provider' ? 'open-provider-settings' : 'open-agent',
+    )
     assert.equal(view.canRetry, false)
   }
+})
+
+test('model failure offers an executable rebuild path and keeps the failed Agent inspectable', () => {
+  const view = deriveLoopProductView(fixture({ reviewer: { status: 'failed', error: 'The selected model is not supported by this account.' } }))
+  assert.equal(view.recovery?.kind, 'open-workflow-builder')
+  assert.equal(view.recovery?.label, 'Rebuild with compatible model')
+  assert.match(view.recovery?.guidance ?? '', /Stop this loop.*Review until clean.*compatible model.*replacement workflow/i)
+  assert.equal(view.responsibleSessionId, 'reviewer')
 })
 
 test('goal completion has a Goal product state, never a Review verdict', () => {

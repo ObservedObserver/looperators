@@ -521,6 +521,11 @@ export function SessionGraphPanel({
               setActiveTab('chat');
             }}
             onOpenProviderSetup={onOpenProviderSetup}
+            onOpenWorkflowBuilder={() => {
+              setOpenLoopId(undefined);
+              requestWorkflowClose();
+              setIsWorkflowLibraryOpen(true);
+            }}
             onOpenDiff={(sessionId) => {
               setSelectedSessionId(sessionId);
               setActiveTab('chat');

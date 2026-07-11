@@ -28,6 +28,7 @@ export function LoopPanel({
   onStateChange,
   onOpenAgent,
   onOpenProviderSetup,
+  onOpenWorkflowBuilder,
   onOpenDiff,
   onFreezeRing,
 }: {
@@ -39,6 +40,7 @@ export function LoopPanel({
   onStateChange: (state: GraphState) => void;
   onOpenAgent: (sessionId: string) => void;
   onOpenProviderSetup: (sessionId: string) => void;
+  onOpenWorkflowBuilder: () => void;
   onOpenDiff: (sessionId: string) => void;
   onFreezeRing: (memberSessionIds: string[]) => void;
 }) {
@@ -204,7 +206,15 @@ export function LoopPanel({
                   }
                 >
                   <ExternalLink className="size-3" />
-                  {product.recovery?.label ?? `Open ${product.responsibleLabel ?? 'Agent'}`}
+                  {product.recovery?.kind === 'open-workflow-builder'
+                    ? `Open ${product.responsibleLabel ?? 'Agent'}`
+                    : product.recovery?.label ?? `Open ${product.responsibleLabel ?? 'Agent'}`}
+                </Button>
+              ) : null}
+              {product.recovery?.kind === 'open-workflow-builder' ? (
+                <Button size="sm" variant="outline" className="h-7 bg-background/70 text-[10px]" onClick={onOpenWorkflowBuilder}>
+                  <RotateCw className="size-3" />
+                  {product.recovery.label}
                 </Button>
               ) : null}
               {!product.canStop && product.coderSessionId ? (

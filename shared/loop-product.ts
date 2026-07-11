@@ -85,7 +85,7 @@ export type LoopProductInput = {
 };
 
 export type LoopProductRecovery = {
-  kind: 'open-agent' | 'open-provider-settings' | 'resume-manually';
+  kind: 'open-agent' | 'open-provider-settings' | 'open-workflow-builder' | 'resume-manually';
   label: string;
   sessionId?: string;
   guidance: string;
@@ -212,7 +212,14 @@ function deriveGenericProductView(input: LoopProductInput): LoopProductView {
       responsibleSessionId: failed.sessionId,
       responsibleLabel: failed.label,
       failureKind,
-      recovery: providerSetupFailure
+      recovery: failureKind === 'model'
+        ? {
+            kind: 'open-workflow-builder',
+            label: 'Open New Workflow',
+            sessionId: failed.sessionId,
+            guidance: 'Stop this loop, open Run until goal in New Workflow, choose a compatible model, and start a replacement workflow.',
+          }
+        : providerSetupFailure
         ? {
             kind: 'open-provider-settings',
             label: 'Open Provider setup',
@@ -394,7 +401,7 @@ export function deriveLoopProductView(input: LoopProductInput): LoopProductView 
       failureKind === 'auth'
         ? 'Open the Agent, then check Provider setup and sign in before resuming manually.'
         : failureKind === 'model'
-          ? 'Open the Agent and choose a model supported by its local runtime before resuming manually.'
+          ? 'Stop this loop, open Review until clean in New Workflow, choose a compatible model, and start a replacement workflow.'
           : failureKind === 'workspace'
             ? 'Open the Agent and fix its workspace path or Git baseline before resuming manually.'
             : 'Open the failed Agent, inspect the provider error, and resume manually after correcting it.';
@@ -408,8 +415,8 @@ export function deriveLoopProductView(input: LoopProductInput): LoopProductView 
       responsibleLabel: failed.label,
       failureKind,
       recovery: {
-        kind: providerSetupFailure ? 'open-provider-settings' : 'open-agent',
-        label: providerSetupFailure ? 'Open Provider setup' : `Open ${failed.label ?? 'Agent'}`,
+        kind: failureKind === 'model' ? 'open-workflow-builder' : providerSetupFailure ? 'open-provider-settings' : 'open-agent',
+        label: failureKind === 'model' ? 'Rebuild with compatible model' : providerSetupFailure ? 'Open Provider setup' : `Open ${failed.label ?? 'Agent'}`,
         sessionId: failed.sessionId,
         guidance: providerSetupFailure ? 'Open Provider setup, correct the binary or sign-in problem, then resume the Agent manually.' : guidance,
       },
