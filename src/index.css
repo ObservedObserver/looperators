@@ -75,6 +75,7 @@
 
 /* ===== LIGHT: neutral chrome, lime identity ===== */
 :root {
+  color-scheme: light;
   --background: #f8fafc;
   --foreground: #171a1f;
   --card: #ffffff;
@@ -129,6 +130,7 @@
 
 /* ===== DARK: ink terminal everywhere, lime identity ===== */
 .dark {
+  color-scheme: dark;
   --background: #07090a;
   --foreground: #e5e7eb;
   --card: #0d120e;
