@@ -20,7 +20,6 @@ export function useNewChatSetup({
   invalidProjectCwds,
   providerInstances,
   selectedSession,
-  showRawEvents,
 }: {
   runtimeApi: RuntimeApi | undefined;
   runtimeClient: RuntimeClient;
@@ -31,7 +30,6 @@ export function useNewChatSetup({
   invalidProjectCwds: Set<string>;
   providerInstances: ProviderInstance[];
   selectedSession: AgentSession | undefined;
-  showRawEvents: boolean;
 }) {
   const [newProviderKind, setNewProviderKind] = useState<ProviderKind>('claude-code');
   const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd);
@@ -188,7 +186,7 @@ export function useNewChatSetup({
   }, [newCwd, newCwdValidation.ok, runtimeApi]);
 
   useEffect(() => {
-    if ((!showRawEvents && newProviderKind !== 'grok') || selectedSession || !runtimeApi) {
+    if (selectedSession || !runtimeApi) {
       setProviderSetupStatus(undefined);
       setIsLoadingProviderSetupStatus(false);
       return;
@@ -236,7 +234,7 @@ export function useNewChatSetup({
     return () => {
       isMounted = false;
     };
-  }, [newCwd, newProviderInstance.providerInstanceId, newProviderInstanceSetupKey, newProviderKind, runtimeApi, selectedSession, showRawEvents]);
+  }, [newCwd, newProviderInstance.providerInstanceId, newProviderInstanceSetupKey, newProviderKind, runtimeApi, selectedSession]);
 
   useEffect(() => {
     if (newWorkMode === 'worktree' && newProjectContext?.cwd === newCwd.trim() && newProjectContext.isGitRepo === false) {

@@ -4,7 +4,7 @@ import { ArrowDown, CheckCircle2, Flag, GitBranch, Loader2, Play } from 'lucide-
 import { Button } from '@/components/ui/button';
 import { AgentRuntimeFields } from '@/components/workflow-form-fields';
 import { cn } from '@/lib/utils';
-import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
+import { modelOptionsForInstance, providerInstanceForKind } from '@/lib/provider-catalog';
 import { providerSetupProfileFingerprint } from '@shared/provider-setup';
 import type { GraphState } from '@/shared/graph-state';
 import type { SavedWorkflowSpec } from '@/shared/graph-state';
@@ -51,7 +51,7 @@ function newAgent(instances: GraphState['providerInstances'], role: string, prov
     branch: '',
     providerKind,
     providerInstanceId: providerInstanceForKind(instances, providerKind).providerInstanceId,
-    model: providerKind === 'codex' ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '',
+    model: '',
     reasoningEffort: role === 'Receiver' ? 'high' : 'medium',
     runtimeMode: role === 'Receiver' ? 'approval-required' : 'auto-accept-edits',
   };
@@ -370,6 +370,7 @@ export function ClassicWorkflowComposer({
               runtimeMode: value.runtimeMode,
             }}
             instances={instances}
+            modelCatalogs={runtimeState.providerModelCatalogs}
             idPrefix={`classic-${kind}-${title.toLowerCase()}`}
             onChange={(next) => setValue((current) => ({ ...current, ...next }))}
           />
@@ -486,8 +487,7 @@ export function ClassicWorkflowComposer({
               onChange={(event) => {
                 const providerInstanceId = event.target.value;
                 setJudgeProviderInstanceId(providerInstanceId);
-                const providerKind = instances.find((instance) => instance.providerInstanceId === providerInstanceId)?.kind;
-                setJudgeModel(providerKind ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '');
+                setJudgeModel('');
               }}
             >
               <option value="">Inherit Worker provider</option>
@@ -501,7 +501,22 @@ export function ClassicWorkflowComposer({
           {judgeProviderInstanceId ? (
             <label className="block space-y-1">
               <span className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground">Judge model</span>
-              <input className={fieldClass} value={judgeModel} placeholder="Provider default" onChange={(event) => setJudgeModel(event.target.value)} />
+              <input
+                className={fieldClass}
+                list="goal-judge-models"
+                value={judgeModel}
+                placeholder="Provider default"
+                onChange={(event) => setJudgeModel(event.target.value)}
+              />
+              <datalist id="goal-judge-models">
+                {selectedJudgeProviderKind
+                  ? modelOptionsForInstance(
+                      runtimeState.providerModelCatalogs,
+                      selectedJudgeProviderKind,
+                      selectedJudgeProviderInstanceId,
+                    ).map((option) => <option key={option.value} value={option.value} />)
+                  : null}
+              </datalist>
             </label>
           ) : null}
           <p className="rounded-lg border border-border bg-background px-2.5 py-2 text-[10.5px] leading-4 text-muted-foreground">

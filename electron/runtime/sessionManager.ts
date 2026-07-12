@@ -72,6 +72,9 @@ import { ProviderService } from './providerService.js'
 import { buildPath } from './claudeRuntimeShared.js'
 import { resultSublines } from './providers/claudeRuntimeMapper.js'
 import { probeGrokProvider } from './providers/grokAcpProbeService.js'
+import { probeCodexModelCatalog } from './providers/codexModelCatalogService.js'
+import { probeClaudeModelCatalog } from './providers/claudeModelCatalogService.js'
+import { fallbackProviderModelCatalog } from '../../shared/provider-model-catalog.js'
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
@@ -80,6 +83,7 @@ const defaultProviderRuntimeSettings = {
 }
 
 const storageBackupSuffix = '.bak'
+const providerModelCatalogTtlMs = 5 * 60 * 1000
 // The unified command channel (kernel doc §7.5): every state mutation from any
 // actor (human/IPC, master/agent via membrane, rule via loop automation) goes
 // through dispatchCommand → validate → execute → append kernel event.
@@ -4027,12 +4031,106 @@ export class RuntimeSessionManager {
           })
         : undefined
     const grokReady = grokProbe?.status === 'ready'
+    const providerInstanceId =
+      providerInstance?.providerInstanceId ??
+      defaultProviderInstanceForKind(providerKind).providerInstanceId
+    const previousCatalog = isObject(
+      this.#state.providerModelCatalogs?.[providerInstanceId],
+    )
+      ? this.#state.providerModelCatalogs[providerInstanceId]
+      : undefined
+    const previousFetchedAt = Date.parse(previousCatalog?.fetchedAt ?? '')
+    const previousIsFresh =
+      request.forceRefresh !== true &&
+      previousCatalog?.source === 'live' &&
+      Number.isFinite(previousFetchedAt) &&
+      Date.now() - previousFetchedAt < providerModelCatalogTtlMs
+    let models = previousCatalog
+    let modelDiscoveryError
+
+    if (binary.ok && cwdValid && (providerKind === 'grok' || !previousIsFresh)) {
+      try {
+        const discovered =
+          providerKind === 'codex'
+            ? await probeCodexModelCatalog({
+                providerInstance,
+                cwd,
+                totalTimeoutMs:
+                  typeof request.timeoutMs === 'number' && request.timeoutMs > 0
+                    ? request.timeoutMs
+                    : 15_000,
+              })
+            : providerKind === 'claude-code'
+              ? await probeClaudeModelCatalog({
+                  providerInstance,
+                  cwd,
+                  totalTimeoutMs:
+                    typeof request.timeoutMs === 'number' && request.timeoutMs > 0
+                      ? request.timeoutMs
+                      : 15_000,
+                })
+              : grokProbe?.catalog
+
+        if (!discovered) {
+          throw new Error(
+            grokProbe?.message ?? `${providerKind} returned no model catalog.`,
+          )
+        }
+        if (discovered.availableModels.length === 0) {
+          throw new Error(`${providerKind} returned an empty model catalog.`)
+        }
+        models = {
+          ...discovered,
+          providerKind,
+          providerInstanceId,
+          fetchedAt: now(),
+          source: 'live',
+          stale: false,
+        }
+      } catch (error) {
+        modelDiscoveryError =
+          error instanceof Error ? error.message : String(error)
+        models = previousCatalog?.availableModels?.length
+          ? {
+              ...previousCatalog,
+              source: 'cache',
+              stale: true,
+              error: modelDiscoveryError,
+            }
+          : fallbackProviderModelCatalog(
+              providerKind,
+              providerInstanceId,
+              modelDiscoveryError,
+            )
+      }
+    } else if (!models) {
+      const reason = !binary.ok
+        ? `Provider binary is not available: ${command}.`
+        : !cwdValid
+          ? `Workspace is not available: ${cwd}.`
+          : undefined
+      models = fallbackProviderModelCatalog(
+        providerKind,
+        providerInstanceId,
+        reason,
+      )
+      modelDiscoveryError = reason
+    }
+
+    this.#state.providerModelCatalogs = {
+      ...(isObject(this.#state.providerModelCatalogs)
+        ? this.#state.providerModelCatalogs
+        : {}),
+      [providerInstanceId]: models,
+    }
+    this.#touchDeferred()
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
 
     return {
       providerKind,
-      providerInstanceId: providerInstance?.providerInstanceId,
+      providerInstanceId,
       generatedAt: now(),
-      ...(grokProbe?.catalog ? { models: grokProbe.catalog } : {}),
+      models,
       checks: [
         {
           id: 'runtime',
@@ -4057,6 +4155,18 @@ export class RuntimeSessionManager {
             ? `Using ${command}.`
             : `Provider binary is not available: ${command}.`,
           detail: binary.detail,
+        },
+        {
+          id: 'models',
+          label: 'Models',
+          status: modelDiscoveryError
+            ? 'warning'
+            : models.stale
+              ? 'warning'
+              : 'ok',
+          message: modelDiscoveryError
+            ? `Using ${models.source} model catalog: ${modelDiscoveryError}`
+            : `Discovered ${models.availableModels.length} model${models.availableModels.length === 1 ? '' : 's'} from ${providerKind}.`,
         },
         {
           id: 'cwd',
@@ -4178,6 +4288,11 @@ export class RuntimeSessionManager {
     }
 
     this.#state.providerInstances = nextInstances
+    if (isObject(this.#state.providerModelCatalogs)) {
+      delete this.#state.providerModelCatalogs[
+        providerInstance.providerInstanceId
+      ]
+    }
     this.#providerService.registerProviderInstance(providerInstance)
     this.#appendKernelEvent(
       'provider.instance-upserted',

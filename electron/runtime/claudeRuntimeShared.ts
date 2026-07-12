@@ -19,7 +19,9 @@ function nonEmptyString(value) {
 
 export function buildPath() {
   const currentPath = process.env.PATH ?? ''
-  return [...commonCliPaths, currentPath].filter(Boolean).join(path.delimiter)
+  // Respect the user's configured runtime first. Common GUI-app fallback
+  // paths come afterwards so they cannot shadow a newer CLI already on PATH.
+  return [currentPath, ...commonCliPaths].filter(Boolean).join(path.delimiter)
 }
 
 export function claudeCommand() {

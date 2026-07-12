@@ -18,6 +18,7 @@ import type { ReviewWorkflowStartInput } from '@shared/review-workflow';
 import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
 import type { ConnectAgentsInput } from '@shared/agent-connection';
 import type { GoalWorkflowStartInput, HandoffWorkflowStartInput } from '@shared/classic-workflow';
+import type { ProviderModel, ProviderModelCatalog } from '@shared/provider-model-catalog';
 
 export const graphStateVersion = 8;
 
@@ -886,6 +887,7 @@ export type GraphState = {
   edges: GraphEdge[];
   sessions: Record<SessionId, AgentSession>;
   providerInstances: ProviderInstance[];
+  providerModelCatalogs?: Record<string, ProviderModelCatalog>;
   clusters: Record<ClusterId, Cluster>;
   reports: Report[];
   subscriptions?: Record<string, Subscription>;
@@ -948,25 +950,16 @@ export type ProviderSetupStatusInput = {
   providerInstanceId?: string;
   cwd?: string;
   timeoutMs?: number;
+  forceRefresh?: boolean;
 };
 
-export type ProviderSetupModel = {
-  modelId: string;
-  name: string;
-  supportsReasoningEffort?: boolean;
-  reasoningEfforts?: string[];
-  metadata?: Record<string, unknown>;
-};
+export type ProviderSetupModel = ProviderModel;
 
 export type ProviderSetupStatus = {
   providerKind: ProviderKind;
   providerInstanceId?: string;
   generatedAt: string;
-  models?: {
-    currentModelId?: string;
-    availableModels: ProviderSetupModel[];
-    setupCreatesSession: boolean;
-  };
+  models?: ProviderModelCatalog;
   checks: ProviderSetupCheck[];
 };
 
@@ -1289,6 +1282,7 @@ export function createEmptyGraphState(): GraphState {
     providerInstances: defaultGraphProviderInstances.map((instance) => ({
       ...instance,
     })),
+    providerModelCatalogs: {},
     clusters: {},
     reports: [],
     subscriptions: {},

@@ -4,7 +4,7 @@ import type { Connection } from '@xyflow/react';
 import type { GraphState } from '@/shared/graph-state';
 import type { ProviderKind } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
-import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
+import { providerInstanceForKind } from '@/lib/provider-catalog';
 import {
   emptyDraftGraph,
   reduceDraftGraph,
@@ -139,7 +139,6 @@ export function useDraftGraph({
             runtimeSettings: {
               runtimeMode: ordinal === 0 ? 'auto-accept-edits' : 'approval-required',
               reasoningEffort: ordinal === 0 ? 'medium' : 'high',
-              ...(providerKind === 'codex' ? { model: modelOptionsForKind(providerKind)[0]?.value } : {}),
             },
           },
         },

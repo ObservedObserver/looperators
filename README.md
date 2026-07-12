@@ -54,6 +54,11 @@ The default entry points are `New Chat` and `New Workflow`:
 - Electron build output: `dist-electron/electron/main.js`
 - Invariant: `nodeId === sessionId`
 - Providers: Claude Code SDK, Codex app-server, and Grok Build over ACP
+- Model catalogs are discovered from the configured provider instance
+  (Codex `model/list`, Claude SDK initialization, Grok ACP session state),
+  cached in runtime state, and shared by every chat/workflow model picker.
+- An empty model setting means provider default; Custom remains available when
+  discovery is stale or a private model is not advertised.
 - Runtime persistence covers session restore, corrupt-state recovery, invalid
   cwd diagnostics, archive state, linked sessions, cluster/master state, and
   loop policy.

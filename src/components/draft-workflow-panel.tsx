@@ -124,6 +124,7 @@ export function DraftWorkflowPanel({ runtimeState, draft }: { runtimeState: Grap
                     runtimeMode: selectedNewEndpoint.runtimeSettings.runtimeMode,
                   }}
                   instances={runtimeState.providerInstances}
+                  modelCatalogs={runtimeState.providerModelCatalogs}
                   idPrefix={`draft-${selectedNode.id}`}
                   onChange={(value) =>
                     updateNewEndpoint({

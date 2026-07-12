@@ -109,6 +109,7 @@ export function AgentConnectionPanel({ runtimeState, connection }: { runtimeStat
             <AgentRuntimeFields
               value={target}
               instances={runtimeState.providerInstances}
+              modelCatalogs={runtimeState.providerModelCatalogs}
               idPrefix="dynamic-agent"
               onChange={(value) => connection.updateNewTarget(value)}
             />

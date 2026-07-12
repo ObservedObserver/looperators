@@ -6,7 +6,7 @@ import type { AgentSession, GraphState, ProjectContext, SavedWorkflowSpec, Start
 import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { cn } from '@/lib/utils';
-import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
+import { providerInstanceForKind } from '@/lib/provider-catalog';
 import { blockingCriteriaText, validateReviewWorkflowStart, type ReviewBlockingMode } from '@shared/review-workflow';
 import { AgentRuntimeFields, ReviewPolicyFields } from '@/components/workflow-form-fields';
 
@@ -24,14 +24,6 @@ type AgentDraft = {
 };
 
 const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
-
-// A provider-level default can move ahead of the locally installed runtime.
-// Review workflows need a deterministic, cross-provider cold start, so Codex
-// starts on Orrery's first curated compatible model instead of delegating the
-// choice to an older app-server binary.
-function workflowModelDefault(providerKind: ProviderKind) {
-  return providerKind === 'codex' ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '';
-}
 
 function runtimeSettings(agent: AgentDraft) {
   return {
@@ -99,7 +91,7 @@ export function ReviewWorkflowComposer({
     draftFromEndpoint(savedInput?.reviewer, {
       mode: 'new', sessionId: '', label: 'Reviewer', providerKind: initialReviewerKind,
       providerInstanceId: providerInstanceForKind(instances, initialReviewerKind).providerInstanceId,
-      model: workflowModelDefault(initialReviewerKind), reasoningEffort: 'high', runtimeMode: 'approval-required',
+      model: '', reasoningEffort: 'high', runtimeMode: 'approval-required',
     }),
   );
   const [cwd, setCwd] = useState(savedInput?.coder.kind === 'new' ? savedInput.coder.cwd : defaultCwd);
@@ -368,6 +360,7 @@ export function ReviewWorkflowComposer({
           <AgentRuntimeFields
             value={agent}
             instances={instances}
+            modelCatalogs={runtimeState.providerModelCatalogs}
             idPrefix={`review-workflow-${which}`}
             onChange={(value) => setAgent((current) => ({ ...current, ...value }))}
           />

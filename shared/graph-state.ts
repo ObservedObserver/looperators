@@ -524,6 +524,7 @@ export function createEmptyGraphState() {
     providerInstances: defaultGraphProviderInstances.map((instance) => ({
       ...instance,
     })),
+    providerModelCatalogs: {},
     clusters: {},
     reports: [],
     subscriptions: {},

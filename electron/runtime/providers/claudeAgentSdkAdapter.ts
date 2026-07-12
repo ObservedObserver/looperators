@@ -28,7 +28,7 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-function providerExtraArgs(providerInstance) {
+export function providerExtraArgs(providerInstance) {
   const args = Array.isArray(providerInstance?.launchArgs)
     ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
     : []
@@ -66,7 +66,7 @@ function providerExtraArgs(providerInstance) {
   return Object.keys(extraArgs).length > 0 ? extraArgs : undefined
 }
 
-function providerEnv(providerInstance) {
+export function providerEnv(providerInstance) {
   const homePath = expandHomePath(providerInstance?.homePath)
   return {
     ...process.env,
@@ -77,7 +77,7 @@ function providerEnv(providerInstance) {
   }
 }
 
-function providerClaudeCommand(providerInstance) {
+export function providerClaudeCommand(providerInstance) {
   return nonEmptyString(providerInstance?.binaryPath)
     ? providerInstance.binaryPath.trim()
     : claudeCommand()

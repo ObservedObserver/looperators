@@ -1,4 +1,4 @@
-import { type AgentSession, type WorkMode } from '@/shared/graph-state';
+import { type AgentSession, type GraphState, type WorkMode } from '@/shared/graph-state';
 import {
   type ProviderAgentKind,
   type ProviderInstance,
@@ -12,6 +12,7 @@ import {
   providerSupportsReasoningEffort,
 } from '@/shared/provider-runtime';
 import { parseProviderEnvText } from '@shared/provider-setup';
+import { fallbackProviderModels, type ProviderModelCatalog } from '@shared/provider-model-catalog';
 
 export const providerOptions: {
   id: ProviderKind;
@@ -27,30 +28,37 @@ export function providerOption(providerKind: ProviderKind) {
   return providerOptions.find((option) => option.id === providerKind)!;
 }
 
-// Curated, per-agent model presets. Values are the real model ids each runtime
-// accepts (Claude Agent SDK / Codex app-server); the picker also exposes a
-// "Default" (no override — let the provider decide) and a "Custom…" escape
-// hatch for ids not listed here.
-
-export const modelCatalog: Record<ProviderAgentKind, { value: string; label: string }[]> = {
-  'claude-code': [
-    { value: 'claude-opus-4-8', label: 'Opus 4.8' },
-    { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-    { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-  ],
-  codex: [
-    { value: 'gpt-5.5', label: 'GPT-5.5' },
-    { value: 'gpt-5.4', label: 'GPT-5.4' },
-    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
-    { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
-  ],
-  // Grok model ids are discovered lazily from ACP initialize metadata. Until
-  // discovery is available, the picker keeps Default plus its Custom escape hatch.
-  grok: [],
-};
+// Offline-only fallback. Live catalogs are stored per provider instance in
+// GraphState and take precedence everywhere in the UI.
+export const modelCatalog: Record<ProviderAgentKind, { value: string; label: string }[]> = Object.fromEntries(
+  Object.entries(fallbackProviderModels).map(([kind, models]) => [
+    kind,
+    models.map((model) => ({ value: model.modelId, label: model.name })),
+  ]),
+) as Record<ProviderAgentKind, { value: string; label: string }[]>;
 
 export function modelOptionsForKind(providerKind: ProviderKind) {
   return modelCatalog[providerOption(providerKind).agent] ?? [];
+}
+
+export function modelOptionsForCatalog(catalog: ProviderModelCatalog | undefined, providerKind: ProviderKind) {
+  if (!catalog) return modelOptionsForKind(providerKind);
+  return catalog.availableModels.map((model) => ({ value: model.modelId, label: model.name }));
+}
+
+export function modelCatalogForInstance(
+  catalogs: GraphState['providerModelCatalogs'],
+  providerInstanceId: string,
+) {
+  return catalogs?.[providerInstanceId];
+}
+
+export function modelOptionsForInstance(
+  catalogs: GraphState['providerModelCatalogs'],
+  providerKind: ProviderKind,
+  providerInstanceId: string,
+) {
+  return modelOptionsForCatalog(modelCatalogForInstance(catalogs, providerInstanceId), providerKind);
 }
 
 export function modelLabelForKind(providerKind: ProviderKind, model: string | undefined) {

@@ -87,7 +87,6 @@ function App() {
     invalidProjectCwds,
     providerInstances,
     selectedSession,
-    showRawEvents,
   });
   const {
     newProviderKind,

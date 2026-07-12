@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetState
 import type { ConnectAgentsInput, GraphState } from '@/shared/graph-state';
 import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
-import { modelOptionsForKind, providerInstanceForKind } from '@/lib/provider-catalog';
+import { providerInstanceForKind } from '@/lib/provider-catalog';
 import { validateAgentConnection, type AgentConnectionBehavior, type AgentConnectionTiming } from '@shared/agent-connection';
 import { nextProviderKind } from '@shared/provider-metadata';
 
@@ -127,7 +127,7 @@ export function useAgentConnection({
           cwd: source.cwd,
           providerKind,
           providerInstanceId: instance.providerInstanceId,
-          model: providerKind === 'codex' ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '',
+          model: '',
           reasoningEffort: 'high',
           runtimeMode: 'approval-required',
           position,

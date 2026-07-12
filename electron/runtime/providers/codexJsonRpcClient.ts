@@ -9,12 +9,11 @@ function codexCommand() {
 function buildPath() {
   const currentPath = process.env.PATH ?? ''
   return [
+    currentPath,
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
     '/bin',
-    '/Users/observedobserver/.nvs/default/bin',
-    currentPath,
   ]
     .filter(Boolean)
     .join(':')

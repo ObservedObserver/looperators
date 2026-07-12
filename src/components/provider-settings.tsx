@@ -271,6 +271,12 @@ export function ProviderSetupDiagnostics({
             <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-term-dim2">Discovered models</div>
             <div className="space-y-1 text-[11.5px] leading-5">
               <div className="flex gap-2">
+                <span className="w-20 shrink-0 text-term-dim2">source</span>
+                <span className={setupStatus.models.stale ? 'text-term-amber' : 'text-term-name'}>
+                  {setupStatus.models.source}{setupStatus.models.stale ? ' · stale' : ''}
+                </span>
+              </div>
+              <div className="flex gap-2">
                 <span className="w-20 shrink-0 text-term-dim2">current</span>
                 <span className="text-term-name">{setupStatus.models.currentModelId ?? 'provider default'}</span>
               </div>
@@ -282,6 +288,9 @@ export function ProviderSetupDiagnostics({
               ))}
               {setupStatus.models.setupCreatesSession ? (
                 <p className="text-[10px] leading-4 text-term-faint">This readiness check creates an upstream provider session.</p>
+              ) : null}
+              {setupStatus.models.error ? (
+                <p className="text-[10px] leading-4 text-term-amber">{setupStatus.models.error}</p>
               ) : null}
             </div>
           </div>

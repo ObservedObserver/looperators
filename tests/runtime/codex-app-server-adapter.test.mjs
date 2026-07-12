@@ -175,7 +175,8 @@ fs.writeFileSync(${JSON.stringify(markerFile)}, JSON.stringify({
   argv: process.argv.slice(2),
   codexHome: process.env.CODEX_HOME,
   sharedHome: process.env.ORRERY_CODEX_SHARED_HOME,
-  custom: process.env.ORRERY_CODEX_TEST
+  custom: process.env.ORRERY_CODEX_TEST,
+  path: process.env.PATH
 }))
 setTimeout(() => process.exit(0), 25)
 `
@@ -208,6 +209,7 @@ setTimeout(() => process.exit(0), 25)
     assert.equal(marker.codexHome, shadowHomePath)
     assert.equal(marker.sharedHome, homePath)
     assert.equal(marker.custom, 'yes')
+    assert.ok(marker.path.startsWith(process.env.PATH), 'the existing PATH keeps precedence over GUI fallbacks')
   } finally {
     client.close()
     fs.rmSync(tempRoot, { recursive: true, force: true })

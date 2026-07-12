@@ -59,7 +59,8 @@ test('legacy shortcuts do not compete with the three golden workflow composers',
   assert.match(classicComposer, /initialInput as GoalWorkflowStartInput[^\n]+\?\.judgeProviderInstanceId/);
   assert.match(classicComposer, /judgeProviderInstanceId \? \{ judgeProviderInstanceId \}/);
   assert.match(classicComposer, /judgeModel\.trim\(\) \? \{ judgeModel:/);
-  assert.match(classicComposer, /modelOptionsForKind\(providerKind\)\[0\]/);
+  assert.match(classicComposer, /model: ''/);
+  assert.doesNotMatch(classicComposer, /modelOptionsForKind\(providerKind\)\[0\]/);
   assert.match(reviewComposer, /label: endpoint\.label \?\? fallback\.label/);
   assert.match(reviewComposer, /label: coder\.label/);
   assert.match(reviewComposer, /label: reviewer\.label/);

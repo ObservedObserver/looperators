@@ -1856,7 +1856,9 @@ test('compiled RuntimeSessionManager does not launch a Grok ACP probe when the b
     })
     assert.equal(status.checks.find((check) => check.id === 'binary')?.status, 'error')
     assert.equal(status.checks.find((check) => check.id === 'auth')?.status, 'unknown')
-    assert.equal(status.models, undefined)
+    assert.equal(status.models.source, 'fallback')
+    assert.equal(status.models.stale, true)
+    assert.equal(status.models.availableModels[0]?.modelId, 'grok-build')
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })

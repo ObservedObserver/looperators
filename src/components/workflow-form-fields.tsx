@@ -1,6 +1,7 @@
 import type { ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import { providerCapability, providerReasoningEfforts, providerSupportsReasoningEffort } from '@/shared/provider-runtime';
-import { modelOptionsForKind, providerInstanceForKind, providerOptions, reasoningEffortOptionsForKind } from '@/lib/provider-catalog';
+import { modelOptionsForInstance, providerInstanceForKind, providerOptions, reasoningEffortOptionsForKind } from '@/lib/provider-catalog';
+import type { GraphState } from '@/shared/graph-state';
 import type { ReviewBlockingMode } from '@shared/review-workflow';
 
 const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
@@ -16,11 +17,13 @@ export type AgentRuntimeConfigValue = {
 export function AgentRuntimeFields({
   value,
   instances,
+  modelCatalogs,
   idPrefix,
   onChange,
 }: {
   value: AgentRuntimeConfigValue;
   instances: ProviderInstance[];
+  modelCatalogs?: GraphState['providerModelCatalogs'];
   idPrefix: string;
   onChange: (value: AgentRuntimeConfigValue) => void;
 }) {
@@ -30,7 +33,7 @@ export function AgentRuntimeFields({
       ...value,
       providerKind,
       providerInstanceId: providerInstanceForKind(instances, providerKind).providerInstanceId,
-      model: providerKind === 'codex' ? (modelOptionsForKind(providerKind)[0]?.value ?? '') : '',
+      model: '',
       reasoningEffort: reasoningEfforts.includes(value.reasoningEffort)
         ? value.reasoningEffort
         : (reasoningEfforts.includes('medium') ? 'medium' : (reasoningEfforts[0] ?? value.reasoningEffort)),
@@ -53,7 +56,11 @@ export function AgentRuntimeFields({
         </label>
         <label className="space-y-1">
           <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Profile</span>
-          <select className={fieldClass} value={value.providerInstanceId} onChange={(event) => onChange({ ...value, providerInstanceId: event.target.value })}>
+          <select
+            className={fieldClass}
+            value={value.providerInstanceId}
+            onChange={(event) => onChange({ ...value, providerInstanceId: event.target.value, model: '' })}
+          >
             {instances
               .filter((instance) => instance.kind === value.providerKind)
               .map((instance) => (
@@ -75,7 +82,7 @@ export function AgentRuntimeFields({
             onChange={(event) => onChange({ ...value, model: event.target.value })}
           />
           <datalist id={`${idPrefix}-models`}>
-            {modelOptionsForKind(value.providerKind).map((option) => (
+            {modelOptionsForInstance(modelCatalogs, value.providerKind, value.providerInstanceId).map((option) => (
               <option key={option.value} value={option.value} />
             ))}
           </datalist>
