@@ -27,6 +27,8 @@ import { useDiffPanel } from '@/hooks/use-diff-panel';
 import { useCanvas } from '@/hooks/use-canvas';
 import { useOrchestration } from '@/hooks/use-orchestration';
 import { useDraftGraph } from '@/hooks/use-draft-graph';
+import { PlanCouncilWorkbench } from '@/components/plan-council-workbench';
+import { preferRuntimeSnapshot } from '../shared/runtime-state-patch';
 
 function App() {
   const [activeTab, setActiveTab] = useState<RailTab>('chat');
@@ -38,6 +40,7 @@ function App() {
   const [activeClusterId, setActiveClusterId] = useState<string>();
   const [workflowNotice, setWorkflowNotice] = useState<string>();
   const [openLoopId, setOpenLoopId] = useState<string>();
+  const [openPlanCouncilId, setOpenPlanCouncilId] = useState<string>();
   const workflowCloseRequestRef = useRef<(() => void) | undefined>(undefined);
 
   const core = useRuntimeCore();
@@ -73,6 +76,10 @@ function App() {
     graphForcedCollapsed,
     effectiveGraphCollapsed,
   } = layout;
+  const openPlanCouncil = openPlanCouncilId ? runtimeState.planCouncils?.[openPlanCouncilId] : undefined;
+  const acceptRuntimeState = (incoming: typeof runtimeState) => {
+    setRuntimeState((current) => preferRuntimeSnapshot(current, incoming) as typeof runtimeState);
+  };
 
   const composer = useComposer({ setRuntimeError });
   const { message, composerAttachments, composerEditorRef, setComposerText, clearComposer } = composer;
@@ -286,6 +293,10 @@ function App() {
                 setProviderSetupSessionId={setProviderSetupSessionId}
                 isWorkspacePanelOpen={isWorkspacePanelOpen}
                 setIsWorkspacePanelOpen={setIsWorkspacePanelOpen}
+                onOpenPlanCouncil={(workflowId) => {
+                  setOpenPlanCouncilId(workflowId);
+                  setGraphCollapsed(false);
+                }}
               />
             ) : null}
           </div>
@@ -371,6 +382,24 @@ function App() {
             />
           </div>
         ) : null}
+        {openPlanCouncil ? (
+          <div className="app-region-no-drag absolute bottom-0 right-0 top-14 z-40 w-[min(72vw,1080px)] min-w-[560px] max-w-full">
+            <PlanCouncilWorkbench
+              council={openPlanCouncil}
+              runtimeState={runtimeState}
+              runtimeApi={runtimeApi}
+              onStateChange={acceptRuntimeState}
+              onError={setRuntimeError}
+              onClose={() => setOpenPlanCouncilId(undefined)}
+              onOpenGraph={() => setOpenPlanCouncilId(undefined)}
+              onOpenParticipant={(sessionId) => {
+                setSelectedSessionId(sessionId);
+                setActiveTab('chat');
+                setOpenPlanCouncilId(undefined);
+              }}
+            />
+          </div>
+        ) : null}
         {isWorkflowLibraryOpen ? (
           <div
             className="app-region-no-drag absolute bottom-0 right-0 top-14 z-50 flex max-w-full shadow-2xl"
@@ -388,7 +417,7 @@ function App() {
               runtimeApi={runtimeApi}
               runtimeState={runtimeState}
               onClose={() => setIsWorkflowLibraryOpen(false)}
-              onStateChange={setRuntimeState}
+              onStateChange={acceptRuntimeState}
               onError={setRuntimeError}
               autoFocusClose
               defaultCwd={newCwd}
@@ -397,6 +426,14 @@ function App() {
                 setActiveTab('chat');
                 setOpenLoopId(loopId);
                 setWorkflowNotice(notice ?? 'Coder started · Reviewer waiting');
+              }}
+              onPlanCouncilStarted={(result) => {
+                const coordinatorSessionId = result.council.coordinatorSessionId ?? result.synthesizerSessionId;
+                setSelectedSessionId(coordinatorSessionId);
+                setActiveTab('chat');
+                setOpenPlanCouncilId(result.workflowId);
+                setGraphCollapsed(false);
+                setWorkflowNotice('Plan Council started · independent plans are running');
               }}
               requestCloseRef={workflowCloseRequestRef}
             />

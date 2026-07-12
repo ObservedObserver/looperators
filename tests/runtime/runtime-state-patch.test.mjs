@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createEmptyGraphState } from '../../dist-electron/shared/graph-state.js';
-import { applyLightweightRuntimeEvent, applyProviderRuntimeEventToState } from '../../dist-electron/shared/runtime-state-patch.js';
+import { applyLightweightRuntimeEvent, applyProviderRuntimeEventToState, preferRuntimeSnapshot } from '../../dist-electron/shared/runtime-state-patch.js';
 
 function stateWithSessions() {
   const state = createEmptyGraphState();
@@ -124,4 +124,12 @@ test('provider runtime events carry normalized provider events without a state s
   assert.equal(next.sessions.alpha.chunks.length, 1);
   assert.equal(next.sessions.alpha.runtimeEvents.length, 1);
   assert.equal(next.sessions.alpha.messages[0].content, 'hello');
+});
+
+test('stale POST snapshots cannot overwrite newer SSE workflow state', () => {
+  const current = { controlVersion: 4, updatedAt: '2026-07-12T14:00:02.000Z', marker: 'barrier released' };
+  const stalePost = { controlVersion: 4, updatedAt: '2026-07-12T14:00:01.000Z', marker: 'drafting' };
+  assert.equal(preferRuntimeSnapshot(current, stalePost), current);
+  const newerControl = { controlVersion: 5, updatedAt: '2026-07-12T13:59:00.000Z', marker: 'human command' };
+  assert.equal(preferRuntimeSnapshot(current, newerControl), newerControl);
 });

@@ -296,7 +296,9 @@ export function evaluate(state: KernelState, event: GraphEvent): SchedulerDecisi
 
     const slotKey = pendingSlotKey(subscription.id, target)
     const existingSlot = state.pending[slotKey]
-    const busy = targetBusy(state, target)
+    // A create target is an inheritance/governance anchor, not the session
+    // that will run. Its busy state must not serialize independent children.
+    const busy = subscription.action.kind === 'create' ? false : targetBusy(state, target)
 
     if (subscription.concurrency === 'drop' && (busy || existingSlot)) {
       decisions.push({

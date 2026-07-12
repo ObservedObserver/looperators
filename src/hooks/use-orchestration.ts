@@ -51,7 +51,7 @@ export function useOrchestration({
   const [clusterLabel, setClusterLabel] = useState('Review loop');
   const [maxIterations, setMaxIterations] = useState('6');
   const [masterPrompt, setMasterPrompt] = useState(
-    'You are the Orrery master for this cluster. Help author and later run a review loop: create or resume worker sessions through the Orrery membrane, read verdict reports, and stop when verdict=clean then freeze.',
+    'You are the Orrery Master for this project Scope. Translate workflow requests into reviewable Workflow Proposals with inspect_scope and propose_workflow; govern active workflows through inspect_workflow_wakeups and propose_workflow_patch, or acknowledge when no patch is needed. Explain Graph Diff, impact, rollback, and safety policy, wait for human approval, then commit exactly once. Never bypass Proposal/Commit with raw graph mutations or forward ordinary turns yourself.',
   );
   const [isUpdatingCluster, setIsUpdatingCluster] = useState(false);
   const [isCreatingMaster, setIsCreatingMaster] = useState(false);
@@ -78,6 +78,13 @@ export function useOrchestration({
   }, [runtimeState.sessions, selectedCanvasNodeIds, selectedSession]);
   const clusters = Object.values(runtimeState.clusters).sort((left, right) => left.label.localeCompare(right.label));
   const activeCluster = activeClusterId ? runtimeState.clusters[activeClusterId] : undefined;
+  const selectedSessionCluster = selectedSessionId
+    ? Object.values(runtimeState.clusters).find((cluster) => cluster.nodeIds.includes(selectedSessionId))
+    : undefined;
+  // Cluster freeze also projects frozen=true onto every member node, so the
+  // node bit cannot distinguish direct from inherited freeze. A frozen owner
+  // cluster must always be lifted as the authoritative target.
+  const selectedSessionInheritedFreeze = selectedSessionCluster?.frozen === true;
   const workflowManagedNodeIds = useMemo(() => {
     if (selectedManagedNodeIds.length > 0 && selectedCanvasNodeIds.length > 0) {
       return selectedManagedNodeIds;
@@ -402,6 +409,44 @@ export function useOrchestration({
     }
   }, [activeCluster, activeClusterId, activeMasterSession, runtimeApi, setRuntimeError, setRuntimeState]);
 
+  const unfreezeSelectedSession = useCallback(async () => {
+    if (!runtimeApi || !selectedSessionId || !selectedSession) return;
+    setIsFreezingSelected(true);
+    setRuntimeError(undefined);
+    try {
+      const result = await runtimeApi.unfreeze({
+        target: selectedSessionInheritedFreeze
+          ? selectedSessionCluster?.clusterId
+          : selectedSessionId,
+        reason: selectedSessionInheritedFreeze
+          ? `Unfrozen from Workflows panel through ${selectedSessionCluster?.label ?? 'its cluster'}`
+          : `Unfrozen from Workflows panel: ${selectedSession.label}`,
+      });
+      setRuntimeState(result.state);
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsFreezingSelected(false);
+    }
+  }, [runtimeApi, selectedSession, selectedSessionCluster, selectedSessionId, selectedSessionInheritedFreeze, setRuntimeError, setRuntimeState]);
+
+  const unfreezeActiveCluster = useCallback(async () => {
+    if (!runtimeApi || !activeClusterId || !activeCluster) return;
+    setIsFreezingCluster(true);
+    setRuntimeError(undefined);
+    try {
+      const result = await runtimeApi.unfreeze({
+        target: activeClusterId,
+        reason: `Unfrozen from Workflows panel: ${activeCluster.label}`,
+      });
+      setRuntimeState(result.state);
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsFreezingCluster(false);
+    }
+  }, [activeCluster, activeClusterId, runtimeApi, setRuntimeError, setRuntimeState]);
+
   return {
     clusterLabel,
     setClusterLabel,
@@ -431,6 +476,7 @@ export function useOrchestration({
     canStartLoop,
     canStopLoop,
     canFreezeSelectedSession,
+    selectedSessionInheritedFreeze,
     canFreezeActiveCluster,
     hasWorkerSelection,
     setupSteps,
@@ -443,6 +489,8 @@ export function useOrchestration({
     stopMasterLoop,
     freezeSelectedSession,
     freezeActiveCluster,
+    unfreezeSelectedSession,
+    unfreezeActiveCluster,
   };
 }
 

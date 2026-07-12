@@ -46,6 +46,9 @@ Commands:
   sub stop <id前缀> [--reason <text>]   Stop a subscription
   activation approve <slotKey> [--note <text>]
   activation deny <slotKey> [--reason <text>]
+  freeze <session-or-cluster> [--reason <text>]
+  unfreeze <session-or-cluster> [--reason <text>]
+  channels cleanup [session] [--max-age-days <n>] [--max-read-entries <n>]
   graph [--json]                        Topology: clusters, nodes, edges
   state [--json]                        Runtime state (summary unless --json)
 
@@ -709,6 +712,51 @@ async function commandEdgeRemove(client, values, idOrPrefix) {
   process.stdout.write(`removed ${edgeId}\n`)
 }
 
+async function resolveControlTarget(client, idOrPrefix) {
+  if (!idOrPrefix) fail('A session or cluster id is required')
+  const graph = await client.graph()
+  const candidates = [
+    ...(graph.nodes ?? []).map((node) => ({ id: node.sessionId, label: node.label, kind: 'session' })),
+    ...Object.values(graph.clusters ?? {}).map((cluster) => ({ id: cluster.clusterId, label: cluster.label, kind: 'cluster' })),
+  ]
+  const exact = candidates.find((candidate) => candidate.id === idOrPrefix)
+  if (exact) return exact
+  const matches = candidates.filter((candidate) => candidate.id.startsWith(idOrPrefix))
+  if (matches.length === 1) return matches[0]
+  if (matches.length === 0) fail(`No session or cluster matches "${idOrPrefix}"`)
+  fail(`Ambiguous target prefix "${idOrPrefix}":\n${matches.map((item) => `  ${item.id} (${item.kind} ${item.label ?? ''})`).join('\n')}`)
+}
+
+async function commandFreeze(client, values, idOrPrefix, lift = false) {
+  assertWritable(values, lift ? 'unfreeze' : 'freeze')
+  const target = await resolveControlTarget(client, idOrPrefix)
+  const result = lift
+    ? await client.unfreeze({ target: target.id, reason: values.reason })
+    : await client.freeze({ target: target.id, reason: values.reason })
+  process.stdout.write(`${lift ? 'unfrozen' : 'frozen'} ${target.kind} ${target.id}\n`)
+  return result
+}
+
+async function commandChannelCleanup(client, values, idOrPrefix) {
+  assertWritable(values, 'channels cleanup')
+  const sessionId = idOrPrefix
+    ? await resolveSessionId(client, idOrPrefix)
+    : undefined
+  const result = await client.cleanupChannels({
+    sessionId,
+    maxReadAgeDays: values['max-age-days'] === undefined
+      ? undefined
+      : Number(values['max-age-days']),
+    maxReadEntries: values['max-read-entries'] === undefined
+      ? undefined
+      : Number(values['max-read-entries']),
+    reason: values.reason,
+  })
+  process.stdout.write(
+    `removed ${result.removedDeliveries} deliveries (${result.removedBytes} bytes)\n`,
+  )
+}
+
 async function commandGraph(client, values) {
   const graph = await client.graph()
   if (values.json) {
@@ -830,6 +878,8 @@ async function main() {
       filename: { type: 'string' },
       from: { type: 'string' },
       'max-events': { type: 'string' },
+      'max-age-days': { type: 'string' },
+      'max-read-entries': { type: 'string' },
       help: { type: 'boolean' },
     },
   })
@@ -864,6 +914,18 @@ async function main() {
   }
   if (command === 'subs') {
     return commandSubs(client, values)
+  }
+  if (command === 'freeze') {
+    return commandFreeze(client, values, subcommand, false)
+  }
+  if (command === 'unfreeze') {
+    return commandFreeze(client, values, subcommand, true)
+  }
+  if (command === 'channels') {
+    if (subcommand !== 'cleanup') {
+      fail(`Unknown channels subcommand: ${subcommand ?? ''}\n\n${usage}`, 2)
+    }
+    return commandChannelCleanup(client, values, target)
   }
   if (command === 'sub') {
     switch (subcommand) {

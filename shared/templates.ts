@@ -154,6 +154,14 @@ const sessionSlot = (key: string, label: string, overrides: Partial<TemplateSlot
 
 export const builtinTemplates: TemplateDescriptor[] = [
   {
+    id: 'plan-council',
+    name: 'Compare plans',
+    tagline: '多个独立 Agent 先规划、互审，再综合成一份方案',
+    handsOff: '2–4 个只读 Planner、一轮交叉评审和最终综合',
+    builtin: true,
+    slots: [],
+  },
+  {
     id: 'handoff',
     name: 'Handoff',
     tagline: '把工作交给下一个 agent',

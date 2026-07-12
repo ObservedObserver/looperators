@@ -4,6 +4,7 @@ export type ReviewBlockingMode = (typeof reviewBlockingModes)[number];
 
 export type ReviewRuntimeSettings = {
   runtimeMode: 'approval-required' | 'auto-accept-edits' | 'full-access';
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
 };

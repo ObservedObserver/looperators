@@ -24,6 +24,8 @@ import { type SessionActionsState } from '@/hooks/use-session-actions';
 import { type InteractionsState } from '@/hooks/use-interactions';
 import { type DiffPanelState } from '@/hooks/use-diff-panel';
 import { providerSetupProfileFingerprint, selectProviderSetupProfile } from '@shared/provider-setup';
+import { PlanCouncilCard } from '@/components/plan-council-card';
+import { WorkflowProposalCard } from '@/components/workflow-proposal-card';
 
 const isMacPlatform = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
@@ -44,6 +46,7 @@ type ChatDetailProps = {
   setProviderSetupSessionId: Dispatch<SetStateAction<string | undefined>>;
   isWorkspacePanelOpen: boolean;
   setIsWorkspacePanelOpen: Dispatch<SetStateAction<boolean>>;
+  onOpenPlanCouncil: (workflowId: string) => void;
 };
 
 export function ChatDetail({
@@ -61,6 +64,7 @@ export function ChatDetail({
   setProviderSetupSessionId,
   isWorkspacePanelOpen,
   setIsWorkspacePanelOpen,
+  onOpenPlanCouncil,
 }: ChatDetailProps) {
   const {
     runtimeClient,
@@ -71,6 +75,9 @@ export function ChatDetail({
     runtimeStatusText,
     runtimeUnavailableText,
     runtimeError,
+    runtimeState,
+    setRuntimeState,
+    setRuntimeError,
     selectedSession,
     selectedSessionProjection,
     openRuntimeRequests,
@@ -81,6 +88,18 @@ export function ChatDetail({
     canKill,
     canActOnPlan,
   } = core;
+  const selectedPlanCouncil = selectedSession
+    ? Object.values(runtimeState.planCouncils ?? {}).find(
+        (council) =>
+          council.coordinatorSessionId === selectedSession.sessionId ||
+          Boolean(council.participants[selectedSession.sessionId]),
+      )
+    : undefined;
+  const selectedWorkflowProposals = selectedSession?.role === 'master'
+    ? Object.values(runtimeState.workflowProposals ?? {})
+        .filter((proposal) => proposal.proposedPlan.masterSessionId === selectedSession.sessionId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    : [];
   const { openWorkspaceTarget, setOpenWorkspaceTarget } = layout;
   const {
     setMessage,
@@ -404,6 +423,26 @@ export function ChatDetail({
         ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-ink">
+          {selectedWorkflowProposals.map((proposal) => (
+            <WorkflowProposalCard
+              key={proposal.proposalId}
+              proposal={proposal}
+              runtimeState={runtimeState}
+              runtimeApi={runtimeApi}
+              onStateChange={setRuntimeState}
+              onError={setRuntimeError}
+              onOpenLive={onOpenPlanCouncil}
+            />
+          ))}
+          {selectedPlanCouncil ? (
+            <PlanCouncilCard
+              council={selectedPlanCouncil}
+              runtimeApi={runtimeApi}
+              onStateChange={setRuntimeState}
+              onError={setRuntimeError}
+              onOpen={() => onOpenPlanCouncil(selectedPlanCouncil.workflowId)}
+            />
+          ) : null}
           <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">
             <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-term-dim2">Timeline</span>
             <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">{selectedSessionProjection?.timeline.length ?? 0} entries</span>

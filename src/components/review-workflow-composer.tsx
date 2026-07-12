@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, CheckCircle2, FolderOpen, GitPullRequestArrow, Loader2, Play, Save } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import type { AgentSession, GraphState, ProjectContext, SavedWorkflowSpec, StartReviewWorkflowInput } from '@/shared/graph-state';
+import type { AgentSession, GraphState, ProjectContext, SavedWorkflowSpec, StartReviewWorkflowInput, StartReviewWorkflowResult } from '@/shared/graph-state';
 import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { cn } from '@/lib/utils';
 import { providerInstanceForKind } from '@/lib/provider-catalog';
 import { blockingCriteriaText, validateReviewWorkflowStart, type ReviewBlockingMode } from '@shared/review-workflow';
 import { AgentRuntimeFields, ReviewPolicyFields } from '@/components/workflow-form-fields';
+import { authorAndCommitWorkflow } from '@/lib/workflow-authoring';
 
 type EndpointMode = 'new' | 'existing';
 
@@ -300,8 +301,14 @@ export function ReviewWorkflowComposer({
     if (!runtimeApi || !validation.ok || setupMessages.length > 0 || preflightPending || isStarting) return;
     setIsStarting(true);
     try {
-      const result = await runtimeApi.startReviewWorkflow(payload);
-      onStateChange(result.state);
+      const committed = await authorAndCommitWorkflow<StartReviewWorkflowResult>(runtimeApi, {
+        recipe: 'review',
+        objective: payload.coder.prompt,
+        recipeInput: payload as unknown as Record<string, unknown>,
+        reason: 'The human configured and explicitly ran Review until clean from the standalone composer.',
+      });
+      const result = committed.result;
+      onStateChange(committed.state);
       onDirtyChange(false);
       onStarted({ coderSessionId: result.coderSessionId, loopId: result.loop?.loopId });
     } catch (error: unknown) {

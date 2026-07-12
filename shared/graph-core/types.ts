@@ -67,11 +67,12 @@ export type EventPattern =
   // payload fields (same shape as report match, but source-declared keys).
   | { on: 'external'; topic?: string; match?: Record<string, string> }
 
+import type { DynamicCreateAction } from '../dynamic-topology.js'
+
 export type SubscriptionAction =
   | { kind: 'deliver'; topic?: string }
   | { kind: 'deliver+activate'; topic?: string; note?: string }
-  // Reserved for a later version; v1 create runs as a one-shot command.
-  | { kind: 'create'; agent: string; promptTemplate: string }
+  | DynamicCreateAction
 
 export type SubscriptionGate = 'auto' | 'master' | 'human'
 export type SubscriptionConcurrency = 'coalesce' | 'queue' | 'drop' | 'interrupt'
@@ -106,6 +107,12 @@ export type Subscription = {
   on: EventPattern
   target: NodeRef
   action: SubscriptionAction
+  executionRef?: {
+    workflowId: string
+    workflowVersion: number
+    runId: string
+    phaseId: string
+  }
   gate: SubscriptionGate
   concurrency: SubscriptionConcurrency
   stop?: SubscriptionStop

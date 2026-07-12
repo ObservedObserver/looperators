@@ -77,6 +77,7 @@ test('the built-ins are listed as data and handoff is an IMMEDIATE one-shot — 
     assert.deepEqual(
       templates.map((template) => template.id),
       [
+        'plan-council',
         'handoff',
         'watch-and-summarize',
         'review-until-clean',

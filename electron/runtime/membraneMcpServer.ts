@@ -183,6 +183,173 @@ const tools = [
     },
   },
   {
+    name: 'inspect_scope',
+    description:
+      'Master-only, read-only. Inspect the governed Scope capability, summary, paged session refs, and workflow refs before proposing work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cursor: { type: 'string', description: 'Opaque pagination cursor from the previous response.' },
+        pageSize: { type: 'number', minimum: 1, maximum: 50 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'inspect_workflow_wakeups',
+    description:
+      'Master-only, read-only. List durable Governor wakeups for the governed Scope, including coalesced failure, cap, missing-report, human-change, permission, and milestone facts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        statuses: {
+          type: 'array',
+          items: { type: 'string', enum: ['pending', 'notified', 'acknowledged', 'superseded'] },
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'acknowledge_workflow_wakeup',
+    description:
+      'Master-only. Mark a durable Governor wakeup handled when no Workflow Patch is needed. Include a concise reason.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        wakeupId: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['wakeupId', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'advance_plan_council',
+    description:
+      'Master-only. Advance a Plan Council phase that is explicitly delegated to the governing Master after inspecting the ready milestone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+        wakeupId: { type: 'string' },
+        reason: { type: 'string' },
+        idempotencyKey: { type: 'string' },
+      },
+      required: ['workflowId', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_workflow',
+    description:
+      'Master-only. Create a durable, reviewable Workflow Proposal without creating sessions, relationships, or provider turns. ' +
+      'Recipes: review input={coder,reviewer,blocking,maxLaps}; goal input={worker,goal,maxLaps,judgeProviderInstanceId?,judgeModel?}; ' +
+      'handoff input={source,target,note}; plan-council input={objective,cwd,reviewFocus?,planners[2..8],synthesizer,reviewTopology?,coordinatorSessionId?}. ' +
+      'Councils above 4 planners must set reviewTopology="hub-and-spoke".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recipe: { type: 'string', enum: ['review', 'goal', 'handoff', 'plan-council'] },
+        objective: { type: 'string', description: 'User-facing outcome this workflow should achieve.' },
+        input: {
+          type: 'object',
+          description: 'The selected recipe input. New participants may omit provider/model/cwd/runtime settings to inherit safe Master defaults; always include their role-specific prompt or instruction.',
+        },
+        reason: { type: 'string', description: 'Why this recipe and topology fit the user intent.' },
+        expiresAt: { type: 'string', description: 'Optional ISO-8601 expiration time.' },
+        idempotencyKey: { type: 'string', description: 'Stable key for retrying the same proposal.' },
+      },
+      required: ['recipe', 'objective', 'input', 'reason', 'idempotencyKey'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'propose_workflow_patch',
+    description:
+      'Master-only. Propose a versioned, reviewable incremental patch to an active Workflow. ' +
+      'Supported operations: replace-participant, add-verifier, add-dynamic-triage, stop-branch, change-relationship-policy, and Plan Council resynthesize. ' +
+      'add-dynamic-triage installs a bounded typed-issues create action from a fixed validated template; it never accepts prompt interpolation or raw graph authoring. ' +
+      'The proposal records impact and rollback information and does not mutate the running graph.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+        baseVersion: { type: 'number' },
+        wakeupIds: { type: 'array', items: { type: 'string' } },
+        reason: { type: 'string' },
+        operations: {
+          type: 'array',
+          items: {
+            type: 'object',
+            description: 'A constrained patch operation. Participant specs may select a new provider or an existing in-Scope session.',
+          },
+          minItems: 1,
+        },
+        idempotencyKey: { type: 'string' },
+      },
+      required: ['workflowId', 'baseVersion', 'reason', 'operations', 'idempotencyKey'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'revise_workflow',
+    description:
+      'Master-only. Revise an existing uncommitted Proposal after feedback. Human-locked participants and relationships cannot be changed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string' },
+        recipe: { type: 'string', enum: ['review', 'goal', 'handoff', 'plan-council'] },
+        objective: { type: 'string' },
+        input: { type: 'object', description: 'Complete replacement input for the recipe.' },
+        reason: { type: 'string' },
+      },
+      required: ['proposalId', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'explain_workflow',
+    description:
+      'Master-only, read-only. Return a Proposal explanation including participants, relationships, safety policy, Graph Diff, warnings, and errors.',
+    inputSchema: {
+      type: 'object',
+      properties: { proposalId: { type: 'string' } },
+      required: ['proposalId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'commit_workflow',
+    description:
+      'Master-only. Commit an already human-approved Proposal through the unified command executor. Never call this before approval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string' },
+        expectedBaseVersion: { type: 'number', minimum: 0 },
+        idempotencyKey: { type: 'string', description: 'Required stable retry key for this exact commit.' },
+        reason: { type: 'string' },
+      },
+      required: ['proposalId', 'expectedBaseVersion', 'idempotencyKey'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'abort_workflow',
+    description: 'Master-only. Abort an uncommitted Workflow Proposal in the governed Scope.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proposalId: { type: 'string' },
+        reason: { type: 'string' },
+      },
+      required: ['proposalId', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'link_sessions',
     description:
       'Declare a visible relationship edge from the current session to another Orrery session/node.',

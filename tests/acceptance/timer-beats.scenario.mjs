@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 export const name = 'timer-beats'
 export const description =
-  'L1 acceptance (proposal §L1 验收): a real agent on an every-15s schedule is woken repeatedly — three external.timer facts land with complete causal chains into real activations; freezing the target keeps the beats flowing into the log while the activation is parked as a dirty slot (unfreeze-side verification awaits an unfreeze verb).'
+  'M0B/L1 acceptance: a real agent on an every-15s schedule is woken repeatedly; freeze parks the latest approved beat as a coalesced dirty slot, and durable unfreeze drains that exact slot into a real activation.'
 export const timeoutMs = 480_000
 
 export async function run({ orrery, provider, workDir, log }) {
@@ -121,6 +121,45 @@ export async function run({ orrery, provider, workDir, log }) {
   assert.ok(parked, 'the frozen beat parks as a dirty slot (fires on a later drain)')
   log(`beat parked as dirty slot ${parked.slotKey} while frozen`)
 
+  const activationCountBeforeUnfreeze = (
+    await orrery.kernelEvents({ limit: 5000 })
+  ).events.filter(
+    (event) => event.type === 'activated' && event.payload.subscriptionId === sub.id
+  ).length
+  await orrery.unfreeze({
+    target: target.sessionId,
+    reason: 'Acceptance release of parked scheduled work',
+    commandId: 'timer-beats-unfreeze',
+    idempotencyKey: 'timer-beats-unfreeze-once',
+  })
+  await orrery.waitFor(
+    'parked dirty slot to activate after unfreeze',
+    async () => {
+      const state = await orrery.state()
+      const { events: currentEvents } = await orrery.kernelEvents({ limit: 5000 })
+      const lifted = currentEvents.some(
+        (event) =>
+          event.type === 'freeze.lifted' &&
+          event.payload.targetId === target.sessionId
+      )
+      const activations = currentEvents.filter(
+        (event) =>
+          event.type === 'activated' && event.payload.subscriptionId === sub.id
+      )
+      const slotGone = !Object.values(state.pendingActivations ?? {}).some(
+        (slot) => slot.slotKey === parked.slotKey
+      )
+      return lifted && activations.length > activationCountBeforeUnfreeze && slotGone
+        ? { done: true, value: activations.at(-1) }
+        : {
+            detail: `lifted=${lifted} activations=${activations.length}/${activationCountBeforeUnfreeze} slotGone=${slotGone}`,
+          }
+    },
+    { timeoutMs: 90_000 }
+  )
+  await orrery.waitForIdle(target.sessionId)
+  log('unfreeze lifted the durable gate and drained the parked beat into a real Agent turn')
+
   await orrery.stopSubscription(sub.id, { reason: 'scenario cleanup' })
   const state = await orrery.state()
   for (const session of Object.values(state.sessions)) {
@@ -130,5 +169,5 @@ export async function run({ orrery, provider, workDir, log }) {
       `session ${session.label} must be settled before the scenario passes`
     )
   }
-  log('timer beats verified: 3 ticks, causal chains, real replies, freeze parks the beat')
+  log('timer beats verified: causal ticks, real replies, freeze parks, unfreeze drains')
 }

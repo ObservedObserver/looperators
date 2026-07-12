@@ -128,6 +128,28 @@ test('debug CLI covers the session/graph/state surface', async () => {
     assert.match(activateRes.stdout, /activated /)
     assert.match(activateRes.stdout, /status: idle/)
 
+    const frozen = await runCli(base, ['freeze', shortPrefix, '--reason', 'cli freeze smoke'])
+    assert.match(frozen.stdout, new RegExp(`frozen session ${sessionId}`))
+    const frozenGraph = await runCli(base, ['graph'])
+    assert.match(frozenGraph.stdout, /CliSmoke.*\[frozen\]/)
+    const unfrozen = await runCli(base, ['unfreeze', shortPrefix, '--reason', 'cli unfreeze smoke'])
+    assert.match(unfrozen.stdout, new RegExp(`unfrozen session ${sessionId}`))
+    const unfrozenGraph = await runCli(base, ['graph'])
+    assert.doesNotMatch(unfrozenGraph.stdout, /CliSmoke.*\[frozen\]/)
+
+    await runCli(base, ['session', 'deliver', sessionId, '--content', 'old topicless payload'])
+    await runCli(base, ['session', 'activate', sessionId, '--wait', '--timeout', '10000'])
+    const cleanup = await runCli(base, [
+      'channels',
+      'cleanup',
+      shortPrefix,
+      '--max-age-days',
+      '0',
+      '--max-read-entries',
+      '0',
+    ])
+    assert.match(cleanup.stdout, /removed [1-9][0-9]* deliveries/)
+
     const missing = await runCli(base, ['session', 'show', 'zzz'], {
       expectFailure: true,
     })

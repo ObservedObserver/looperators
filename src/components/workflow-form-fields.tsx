@@ -77,6 +77,7 @@ export function AgentRuntimeFields({
           <input
             className={fieldClass}
             list={`${idPrefix}-models`}
+            aria-label={`Model for ${idPrefix}: ${value.model.trim() || 'Provider default'}`}
             value={value.model}
             placeholder="Provider default"
             onChange={(event) => onChange({ ...value, model: event.target.value })}

@@ -3,6 +3,20 @@ const streamChunkLimit = 1000;
 
 type RuntimeRecord = Record<string, any>;
 
+export function preferRuntimeSnapshot(current: RuntimeRecord, incoming: RuntimeRecord) {
+  const currentVersion = Number(current?.controlVersion ?? 0);
+  const incomingVersion = Number(incoming?.controlVersion ?? 0);
+  if (incomingVersion !== currentVersion) {
+    return incomingVersion > currentVersion ? incoming : current;
+  }
+  const currentAt = Date.parse(String(current?.updatedAt ?? ''));
+  const incomingAt = Date.parse(String(incoming?.updatedAt ?? ''));
+  if (!Number.isNaN(currentAt) && !Number.isNaN(incomingAt) && incomingAt < currentAt) {
+    return current;
+  }
+  return incoming;
+}
+
 function trimTail(items: any[], limit: number) {
   return items.length > limit ? items.slice(items.length - limit) : items;
 }

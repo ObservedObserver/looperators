@@ -14,6 +14,13 @@ export type WorkflowEntry = {
 
 export const primaryWorkflowCatalog = [
   {
+    id: 'plan-council',
+    name: 'Compare plans',
+    summary: 'Ask several independent Agents to plan, cross-review each other, and synthesize one final proposal.',
+    needs: 'A planning task, one workspace, 2–4 Planner models, and a Synthesizer.',
+    result: 'Comparable plans, peer reviews, and one traceable final implementation plan.',
+  },
+  {
     id: 'review-until-clean',
     name: 'Review until clean',
     summary: 'One Agent writes code. Another reviews it and sends blocking issues back until the work is clean.',

@@ -207,7 +207,7 @@ test('parallel workflow submissions lock shared existing endpoints', async () =>
     }
     const results = await Promise.allSettled([runtime.startHandoffWorkflow(input), runtime.startHandoffWorkflow(input)])
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1)
-    assert.match(results.find((result) => result.status === 'rejected').reason.message, /already being changed/)
+    assert.match(results.find((result) => result.status === 'rejected').reason.message, /already being changed|running/)
   } finally { cleanup() }
 })
 
@@ -265,3 +265,51 @@ test('Save this workflow round-trips typed Goal and Review user fields, includin
     assert.deepEqual(runtime.saveTemplate({ name: 'existing worker', workflowSpec: existingSpec }).template.workflowSpec, existingSpec)
   } finally { cleanup() }
 })
+
+for (const workflow of ['handoff', 'goal']) {
+  for (const stage of ['prepared', 'resources-created', 'graph-committed', 'roots-started']) {
+    test(`${workflow} restart reconciliation fully aborts an automatic deployment interrupted after ${stage}`, async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `orrery-${workflow}-deployment-${stage}-`))
+      const storageFile = path.join(root, 'state.json')
+      const first = new RuntimeSessionManager({
+        storageFile,
+        workflowDeploymentCrashAfterStage: stage,
+      })
+      try {
+        const commandId = `${workflow}-crash-${stage}`
+        await assert.rejects(
+          workflow === 'handoff'
+            ? first.startHandoffWorkflow({
+                commandId,
+                source: fresh('Crash Source', 'Start.'),
+                target: fresh('Crash Receiver', 'Wait.'),
+                note: 'Continue.',
+              })
+            : first.startGoalWorkflow({
+                commandId,
+                worker: fresh('Crash Worker', 'Start.'),
+                goal: 'Finish.',
+                maxLaps: 3,
+              }),
+          /Injected workflow deployment crash/,
+        )
+        const recovered = new RuntimeSessionManager({ storageFile })
+        try {
+          const state = recovered.getState()
+          assert.equal(Object.keys(state.sessions).length, 0)
+          assert.equal(Object.keys(state.subscriptions).length, 0)
+          const deployment = recovered.getWorkflowDeployments().deployments.find(
+            (candidate) => candidate.commandId === commandId,
+          )
+          assert.equal(deployment?.status, 'aborted')
+          assert.equal(deployment?.stage, 'aborted')
+        } finally {
+          recovered.killAll()
+        }
+      } finally {
+        first.killAll()
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    })
+  }
+}

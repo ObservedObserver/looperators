@@ -19,6 +19,24 @@ import type { DraftGraph, DraftInstantiationMap } from '@shared/draft-graph';
 import type { ConnectAgentsInput } from '@shared/agent-connection';
 import type { GoalWorkflowStartInput, HandoffWorkflowStartInput } from '@shared/classic-workflow';
 import type { ProviderModel, ProviderModelCatalog } from '@shared/provider-model-catalog';
+import type { PlanCouncil, StartPlanCouncilInput as PlanCouncilStartInput } from '@shared/plan-council';
+import type { DynamicCreateAction, DynamicSpawnGroup } from '@shared/dynamic-topology';
+import type {
+  ScopeWorkflowCapability,
+  WorkflowPlan,
+  WorkflowProposal,
+} from '@shared/workflow-authoring';
+import type { WorkflowMasterWakeup } from '@shared/workflow-governance';
+import type { WorkflowBarrier } from '@shared/barrier';
+import type { ExecutionEnvelope } from '@shared/execution-envelope';
+import type {
+  QueuedProviderRun,
+  RuntimeResourcePolicy,
+  RuntimeUsageFact,
+  RuntimeUsageProjection,
+  SchedulerBackpressureMetrics,
+  WorkspaceLease,
+} from '@shared/resource-governance';
 
 export const graphStateVersion = 8;
 
@@ -60,6 +78,13 @@ export const graphStateSchema = {
     reports: 'Report[]',
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations: 'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
+    planCouncils: 'Record<workflowId, PlanCouncil>; durable product projection for manual-gated multi-agent planning runs',
+    workflowPlans: 'Record<workflowId, Record<version, WorkflowPlan>>; authoring-plane versions, never read by the scheduler',
+    workflowProposals: 'Record<proposalId, WorkflowProposal>; review/approval/commit state',
+    workflowCapabilities: 'Record<scopeId, ScopeWorkflowCapability>; scope-owned authorization, never prompt-derived',
+    workflowWakeups: 'Record<wakeupId, WorkflowMasterWakeup>; durable coalesced Governor judgment requests',
+    barriers: 'Record<barrierId, WorkflowBarrier>; durable correlation-scoped joins',
+    dynamicSpawnGroups: 'Record<groupId, DynamicSpawnGroup>; durable bounded dynamic participant generations',
     loops: 'LoopView[]?; derived on read, never stored — exact compiled Review/Goal instances plus generic cyclic SCCs',
     sources: 'Record<sourceId, ExternalSource>?; L2 registered external event sources (removed ones stay as tombstones)',
     templates: 'Record<templateId, SavedTemplate>?; L6 user-saved relation templates — runtime-plane config, snapshot-persisted, never kernel facts',
@@ -111,6 +136,46 @@ export const graphStateSchema = {
         reason: 'string?',
       },
       output: { ok: 'boolean', edgeId: 'string' },
+    },
+    inspect_scope: {
+      input: '{ cursor?, pageSize? }; Master-only, read-only',
+      output: '{ scope, capability, summary, sessionRefs, providerRefs, workflowRefs, nextCursor? }',
+    },
+    inspect_workflow_wakeups: {
+      input: '{ statuses? }; Master-only, read-only',
+      output: '{ wakeups: WorkflowMasterWakeup[] }',
+    },
+    acknowledge_workflow_wakeup: {
+      input: '{ wakeupId, reason }; governing Master only',
+      output: '{ wakeup: WorkflowMasterWakeup }',
+    },
+    advance_plan_council: {
+      input: '{ workflowId, wakeupId?, reason, idempotencyKey? }; governing Master only; Council gate must be master',
+      output: '{ council: PlanCouncil, wakeup? }',
+    },
+    propose_workflow: {
+      input: '{ recipe, objective, input, reason, idempotencyKey }; Master-only',
+      output: 'compact WorkflowProposal summary; no execution mutation and no GraphState payload',
+    },
+    propose_workflow_patch: {
+      input: '{ workflowId, baseVersion, wakeupIds?, reason, operations, idempotencyKey }; Master-only',
+      output: 'compact versioned patch Proposal with impact and rollback; no execution mutation',
+    },
+    revise_workflow: {
+      input: '{ proposalId, recipe?, objective?, input?, reason }; human locks are immutable to Master',
+      output: 'compact revised WorkflowProposal summary',
+    },
+    explain_workflow: {
+      input: '{ proposalId }; Master-only, read-only',
+      output: 'compact participants, relationships, Graph Diff, policy, validation',
+    },
+    commit_workflow: {
+      input: '{ proposalId, expectedBaseVersion, idempotencyKey, reason? }; approved proposals only',
+      output: 'compact committed proposal with stable execution mapping',
+    },
+    abort_workflow: {
+      input: '{ proposalId, reason }; uncommitted proposals only',
+      output: 'compact aborted proposal summary',
     },
   },
   publicRuntimeApi: {
@@ -292,6 +357,8 @@ export const graphStateSchema = {
     'edge.removed',
     'loop.started',
     'loop.stopped',
+    'workflow.proposal.updated',
+    'workflow.wakeup.updated',
     // Kernel event-log fact (G0): { type: 'kernel.event', event: KernelEvent }.
     // Deliberately carries no state payload; it mirrors the SQLite events row
     // { seq, id, ts, type, actor{kind,ref}, causeId?, reason?, payload }.
@@ -349,6 +416,11 @@ export type SessionProject = {
   workMode: WorkMode;
   baseBranch?: string;
   branch?: string;
+  forkPoint?: string;
+  mergedAt?: string;
+  mergedTurnId?: string;
+  cleanupStatus?: 'ready' | 'cleaned';
+  cleanedAt?: string;
 };
 
 export type SkillCallEnvelope = {
@@ -511,6 +583,15 @@ export type AgentSession = {
   // until their first relationship activation. The UI renders these as
   // waiting Agents; ordinary createSession never exposes this transient.
   prepared?: boolean;
+  dynamicTopology?: {
+    groupId: string;
+    templateId: string;
+    parentSessionId: SessionId;
+    scopeId: string;
+    masterSessionId?: SessionId;
+    generationDepth: number;
+    retention: 'keep' | 'archive-on-stop';
+  };
 };
 
 export type RuntimeTerminalChunk = {
@@ -759,7 +840,13 @@ export type Subscription = {
   source: SubscriptionSourceRef;
   on: SubscriptionPattern;
   target: { kind: 'session'; sessionId: SessionId };
-  action: { kind: 'deliver' | 'deliver+activate'; topic?: string; note?: string };
+  action: { kind: 'deliver' | 'deliver+activate'; topic?: string; note?: string } | DynamicCreateAction;
+  executionRef?: {
+    workflowId: string;
+    workflowVersion: number;
+    runId: string;
+    phaseId: string;
+  };
   gate: SubscriptionGate;
   concurrency: SubscriptionConcurrency;
   stop?: { whenReport?: { verdict: string }; maxFirings?: number; deadline?: string };
@@ -781,6 +868,7 @@ export type PendingActivation = {
   masterSessionId?: SessionId;
   status: 'pending' | 'approved';
   createdAt: string;
+  execution?: ExecutionEnvelope;
 };
 
 // --- L4 loop view: the ring as a readable whole (thin projection; the
@@ -880,8 +968,20 @@ export type StartGoalWorkflowResult = {
   state: GraphState;
 };
 
+export type StartPlanCouncilResult = {
+  workflowId: string;
+  runId: string;
+  participantSessionIds: Record<string, SessionId>;
+  synthesizerSessionId: SessionId;
+  council: PlanCouncil;
+  state: GraphState;
+};
+
+export type StartPlanCouncilInput = PlanCouncilStartInput;
+
 export type GraphState = {
   version: number;
+  controlVersion?: number;
   updatedAt: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -892,6 +992,19 @@ export type GraphState = {
   reports: Report[];
   subscriptions?: Record<string, Subscription>;
   pendingActivations?: Record<string, PendingActivation>;
+  planCouncils?: Record<string, PlanCouncil>;
+  workflowPlans?: Record<string, Record<string, WorkflowPlan>>;
+  workflowProposals?: Record<string, WorkflowProposal>;
+  workflowCapabilities?: Record<string, ScopeWorkflowCapability>;
+  workflowWakeups?: Record<string, WorkflowMasterWakeup>;
+  barriers?: Record<string, WorkflowBarrier>;
+  dynamicSpawnGroups?: Record<string, DynamicSpawnGroup>;
+  workspaceLeases?: WorkspaceLease[];
+  runQueue?: QueuedProviderRun[];
+  usageFacts?: RuntimeUsageFact[];
+  resourcePolicies?: Record<string, RuntimeResourcePolicy>;
+  schedulerMetrics?: SchedulerBackpressureMetrics;
+  usage?: RuntimeUsageProjection;
   loops?: LoopView[];
   sources?: Record<string, ExternalSource>;
   templates?: Record<string, SavedTemplate>;
@@ -1048,6 +1161,14 @@ export type FreezeInput = {
   reason?: string;
   source?: SessionId;
   masterReason?: string;
+};
+
+export type UnfreezeInput = {
+  target: SessionId | ClusterId;
+  reason?: string;
+  commandId?: string;
+  idempotencyKey?: string;
+  expectedVersion?: number;
 };
 
 export type DiffRange =
@@ -1231,6 +1352,9 @@ export type RuntimeEvent =
   | { type: 'edge.created'; edgeId: string; state: GraphState }
   | { type: 'edge.removed'; edgeId: string; state: GraphState }
   | { type: 'loop.started'; clusterId: ClusterId; state: GraphState }
+  | { type: 'plan-council.updated'; workflowId: string; state: GraphState }
+  | { type: 'workflow.proposal.updated'; proposalId: string; state: GraphState }
+  | { type: 'workflow.wakeup.updated'; wakeupId: string; state: GraphState }
   | {
       type: 'loop.stopped';
       clusterId: ClusterId;
@@ -1275,6 +1399,7 @@ export type RuntimeEvent =
 export function createEmptyGraphState(): GraphState {
   return {
     version: graphStateVersion,
+    controlVersion: 0,
     updatedAt: new Date().toISOString(),
     nodes: [],
     edges: [],
@@ -1287,5 +1412,12 @@ export function createEmptyGraphState(): GraphState {
     reports: [],
     subscriptions: {},
     pendingActivations: {},
+    planCouncils: {},
+    workflowPlans: {},
+    workflowProposals: {},
+    workflowCapabilities: {},
+    workflowWakeups: {},
+    barriers: {},
+    dynamicSpawnGroups: {},
   };
 }

@@ -124,7 +124,7 @@ try {
   )
   const cwdChild = await cwdRuntime.handleMembraneRequest({
     tool: 'create_session',
-    source: cwdMaster.sessionId,
+    source: cwdWorker.sessionId,
     input: {
       prompt: 'cwd propagation child',
       label: 'Cwd Child',

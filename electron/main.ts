@@ -49,54 +49,85 @@ app.whenReady().then(() => {
       path.join(app.getPath('userData'), 'orrery-runtime-state.json'),
     broadcastRuntimeEvent,
   })
+  const humanCommand = (kind: string, input: Record<string, any> = {}) =>
+    runtime.dispatchCommand({
+      kind,
+      actor: { kind: 'human' },
+      commandId: input?.commandId,
+      idempotencyKey: input?.idempotencyKey,
+      expectedVersion: input?.expectedVersion,
+      reason: input?.reason,
+      input,
+    })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())
   ipcMain.handle('orrery:kernel-events', (_event, input) =>
     runtime.getKernelEvents(input),
   )
+  ipcMain.handle('orrery:dispatch-command', (_event, command) =>
+    runtime.dispatchCommand({ ...command, actor: { kind: 'human' } }),
+  )
   ipcMain.handle('orrery:loop-timeline', (_event, input) =>
     runtime.getLoopTimeline(input),
   )
-  ipcMain.handle('orrery:stop-loop', (_event, input) => runtime.stopLoop(input))
+  ipcMain.handle('orrery:stop-loop', (_event, input) => humanCommand('stop_loop', input))
   ipcMain.handle('orrery:create-goal-loop', (_event, input) =>
-    runtime.createGoalLoop(input),
+    humanCommand('create_goal_loop', input),
   )
   ipcMain.handle('orrery:start-review-workflow', (_event, input) =>
-    runtime.startReviewWorkflow(input),
+    humanCommand('start_review_workflow', input),
+  )
+  ipcMain.handle('orrery:start-plan-council', (_event, input) =>
+    humanCommand('start_plan_council', input),
+  )
+  ipcMain.handle('orrery:get-plan-council', (_event, input) =>
+    runtime.getPlanCouncil(input),
+  )
+  ipcMain.handle('orrery:get-plan-council-artifact', (_event, input) =>
+    runtime.getPlanCouncilArtifact(input),
+  )
+  ipcMain.handle('orrery:start-plan-council-cross-review', (_event, input) =>
+    humanCommand('start_plan_council_cross_review', input),
+  )
+  ipcMain.handle('orrery:start-plan-council-synthesis', (_event, input) =>
+    humanCommand('start_plan_council_synthesis', input),
+  )
+  ipcMain.handle('orrery:stop-plan-council', (_event, input) =>
+    humanCommand('stop_plan_council', input),
   )
   ipcMain.handle('orrery:start-draft-workflow', (_event, input) =>
-    runtime.startDraftWorkflow(input),
+    humanCommand('start_draft_workflow', input),
   )
   ipcMain.handle('orrery:start-handoff-workflow', (_event, input) =>
-    runtime.startHandoffWorkflow(input),
+    humanCommand('start_handoff_workflow', input),
   )
   ipcMain.handle('orrery:start-goal-workflow', (_event, input) =>
-    runtime.startGoalWorkflow(input),
+    humanCommand('start_goal_workflow', input),
   )
   ipcMain.handle('orrery:connect-agents', (_event, input) =>
-    runtime.connectAgents(input),
+    humanCommand('connect_agents', input),
   )
   ipcMain.handle('orrery:stop-subscription', (_event, input) =>
-    runtime.stopSubscription(input),
+    humanCommand('stop_subscription', input),
   )
   ipcMain.handle('orrery:register-external-source', (_event, input) =>
-    runtime.registerExternalSource(input),
+    humanCommand('register_external_source', input),
   )
   ipcMain.handle('orrery:remove-external-source', (_event, input) =>
-    runtime.removeExternalSource(input),
+    humanCommand('remove_external_source', input),
   )
   ipcMain.handle('orrery:emit-external-event', (_event, input) =>
     runtime.emitExternalEvent(input),
   )
   ipcMain.handle('orrery:list-templates', () => runtime.listTemplates())
   ipcMain.handle('orrery:apply-template', (_event, input) =>
-    runtime.applyTemplate(input),
+    humanCommand('apply_template', input),
   )
   ipcMain.handle('orrery:save-template', (_event, input) =>
-    runtime.saveTemplate(input),
+    humanCommand('save_template', input),
   )
   ipcMain.handle('orrery:remove-template', (_event, input) =>
-    runtime.removeTemplate(input),
+    humanCommand('remove_template', input),
   )
   ipcMain.handle('orrery:get-project-context', (_event, input) =>
     runtime.getProjectContext(input),
@@ -105,7 +136,7 @@ app.whenReady().then(() => {
     runtime.getProviderSetupStatus(input),
   )
   ipcMain.handle('orrery:upsert-provider-instance', (_event, input) =>
-    runtime.upsertProviderInstance(input),
+    humanCommand('upsert_provider_instance', input),
   )
   ipcMain.handle('orrery:choose-project-folder', async () => {
     const result = await dialog.showOpenDialog({
@@ -118,45 +149,49 @@ app.whenReady().then(() => {
     }
   })
   ipcMain.handle('orrery:create-session', (_event, input) =>
-    runtime.createSession(input),
+    humanCommand('create_session', input),
   )
   ipcMain.handle('orrery:resume-session', (_event, input) =>
-    runtime.resumeSession(input),
+    humanCommand('resume_session', input),
   )
   ipcMain.handle('orrery:archive-session', (_event, input) =>
-    runtime.archiveSession(input),
+    humanCommand('archive_session', input),
   )
   ipcMain.handle('orrery:kill-session', (_event, sessionId) =>
-    runtime.killSession(sessionId),
+    humanCommand('kill_session', { sessionId }),
   )
   ipcMain.handle('orrery:respond-runtime-request', (_event, input) =>
-    runtime.respondRuntimeRequest(input),
+    humanCommand('respond_runtime_request', input),
   )
   ipcMain.handle('orrery:answer-user-input', (_event, input) =>
-    runtime.answerUserInput(input),
+    humanCommand('answer_user_input', input),
   )
   ipcMain.handle('orrery:upsert-cluster', (_event, input) =>
-    runtime.upsertCluster(input),
+    humanCommand('upsert_scope', input),
   )
   ipcMain.handle('orrery:create-master-for-cluster', (_event, input) =>
-    runtime.createMasterForCluster(input),
+    humanCommand('create_master', input),
   )
   ipcMain.handle('orrery:assign-master-to-cluster', (_event, input) =>
-    runtime.assignMasterToCluster(input),
+    humanCommand('assign_master', input),
   )
   ipcMain.handle('orrery:set-cluster-loop-policy', (_event, input) =>
-    runtime.setClusterLoopPolicy(input),
+    humanCommand('set_loop_policy', input),
   )
   ipcMain.handle('orrery:update-node-positions', (_event, input) =>
-    runtime.updateNodePositions(input),
+    humanCommand('update_node_positions', input),
   )
   ipcMain.handle('orrery:start-master-loop', (_event, input) =>
-    runtime.startMasterLoop(input),
+    humanCommand('start_loop', input),
   )
   ipcMain.handle('orrery:stop-master-loop', (_event, input) =>
-    runtime.stopMasterLoop(input),
+    humanCommand('stop_loop', input),
   )
-  ipcMain.handle('orrery:freeze', (_event, input) => runtime.freeze(input))
+  ipcMain.handle('orrery:freeze', (_event, input) => humanCommand('freeze', input))
+  ipcMain.handle('orrery:unfreeze', (_event, input) => runtime.unfreeze(input))
+  ipcMain.handle('orrery:cleanup-channels', (_event, input) =>
+    runtime.cleanupChannels(input),
+  )
   ipcMain.handle('orrery:get-working-tree-diff', (_event, input) =>
     runtime.getWorkingTreeDiff(input),
   )

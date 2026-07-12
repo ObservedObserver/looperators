@@ -29,11 +29,12 @@ function kernelEvents(runtime) {
   return runtime.getKernelEvents({ limit: 2000 }).events
 }
 
-async function createIdleSession(runtime, label, prompt = `bootstrap ${label}`) {
+async function createIdleSession(runtime, label, prompt = `bootstrap ${label}`, runtimeSettings = undefined) {
   const created = await runtime.createSession({
     prompt,
     label,
     cwd: process.cwd(),
+    ...(runtimeSettings ? { runtimeSettings } : {}),
   })
   await waitFor(
     `${label} idle`,
@@ -243,8 +244,9 @@ test('coalesce: triggers while the target is busy supersede the slot and fire on
   const { manager, cleanup } = harness('orrery-subs-coalesce-')
   try {
     const runtime = manager()
-    const coder = await createIdleSession(runtime, 'Coder')
-    const acceptor = await createIdleSession(runtime, 'Acceptor')
+    const readOnly = { sandbox: 'read-only', interactionMode: 'plan' }
+    const coder = await createIdleSession(runtime, 'Coder', 'bootstrap Coder', readOnly)
+    const acceptor = await createIdleSession(runtime, 'Acceptor', 'bootstrap Acceptor', readOnly)
 
     const authored = runtime.authorSubscription({
       label: 'S3',
@@ -297,8 +299,9 @@ test('queue: triggers while the target is busy build an ordered backlog and fire
   const { manager, cleanup } = harness('orrery-subs-queue-')
   try {
     const runtime = manager()
-    const coder = await createIdleSession(runtime, 'Coder')
-    const acceptor = await createIdleSession(runtime, 'Acceptor')
+    const readOnly = { sandbox: 'read-only', interactionMode: 'plan' }
+    const coder = await createIdleSession(runtime, 'Coder', 'bootstrap Coder', readOnly)
+    const acceptor = await createIdleSession(runtime, 'Acceptor', 'bootstrap Acceptor', readOnly)
 
     const authored = runtime.authorSubscription({
       label: 'S4',

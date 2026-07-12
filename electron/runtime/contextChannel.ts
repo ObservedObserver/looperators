@@ -14,6 +14,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import type { ExecutionEnvelope } from '../../shared/execution-envelope.js'
 
 export type ChannelDeliveryEntry = {
   seq: number
@@ -24,6 +25,7 @@ export type ChannelDeliveryEntry = {
   files: string[]
   deliveredAt: string
   readAt?: string
+  execution?: ExecutionEnvelope
 }
 
 export type ChannelDeliveryInput = {
@@ -34,6 +36,14 @@ export type ChannelDeliveryInput = {
   note?: string
   // Named payload files written into the immutable delivery directory.
   entries?: Array<{ name: string; content: string }>
+  execution?: ExecutionEnvelope
+}
+
+export type ChannelRetentionPolicy = {
+  maxReadAgeDays?: number
+  maxReadEntries?: number
+  keepLatestReadPerTopic?: boolean
+  dryRun?: boolean
 }
 
 function nowIso() {
@@ -103,6 +113,40 @@ export class ContextChannelStore {
     } catch {
       return dir
     }
+  }
+
+  writeArtifact(workflowId: string, artifactId: string, content: string) {
+    const file = this.artifactRef(workflowId, artifactId)
+    const directory = path.dirname(file)
+    fs.mkdirSync(directory, { recursive: true })
+    const tempFile = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tempFile, content)
+    fs.renameSync(tempFile, file)
+    return file
+  }
+
+  artifactRef(workflowId: string, artifactId: string) {
+    const safeWorkflow = slug(workflowId, 64)
+    const safeArtifact = slug(artifactId, 64)
+    const directory = path.join(this.#root, '_artifacts', safeWorkflow)
+    return path.join(directory, `${safeArtifact}.md`)
+  }
+
+  readArtifact(contentRef: string) {
+    const artifactsRoot = path.resolve(this.#root, '_artifacts')
+    const file = path.resolve(contentRef)
+    const relative = path.relative(artifactsRoot, file)
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Artifact reference is outside the Orrery artifact store.')
+    }
+    return fs.readFileSync(file, 'utf8')
+  }
+
+  removeArtifacts(workflowId: string) {
+    fs.rmSync(path.join(this.#root, '_artifacts', slug(workflowId, 64)), {
+      recursive: true,
+      force: true,
+    })
   }
 
   #manifestFile(sessionId: string) {
@@ -215,6 +259,7 @@ export class ContextChannelStore {
       note: input.note,
       files,
       deliveredAt: nowIso(),
+      ...(input.execution ? { execution: structuredClone(input.execution) } : {}),
     }
     this.#writeManifest(input.target, [...entries, entry])
     return entry
@@ -279,6 +324,78 @@ export class ContextChannelStore {
     }
     if (changed) {
       this.#writeManifest(sessionId, entries)
+    }
+  }
+
+  cleanup(
+    sessionId: string,
+    {
+      maxReadAgeDays = 30,
+      maxReadEntries = 200,
+      keepLatestReadPerTopic = true,
+      dryRun = false,
+    }: ChannelRetentionPolicy = {},
+  ) {
+    const entries = this.manifest(sessionId)
+    const now = Date.now()
+    const cutoff = now - Math.max(0, maxReadAgeDays) * 24 * 60 * 60 * 1000
+    const readEntries = entries.filter((entry) => entry.readAt)
+    const newestReadByTopic = new Map<string, number>()
+    if (keepLatestReadPerTopic) {
+      for (const entry of readEntries) {
+        if (entry.topic) newestReadByTopic.set(entry.topic, entry.seq)
+      }
+    }
+    const retainedReadCount = Math.max(0, maxReadEntries)
+    const newestReadSeqs = new Set(
+      (retainedReadCount > 0 ? readEntries.slice(-retainedReadCount) : []).map(
+        (entry) => entry.seq,
+      ),
+    )
+    const removable = entries.filter((entry) => {
+      if (!entry.readAt) return false
+      if (newestReadSeqs.has(entry.seq)) return false
+      if (entry.topic && newestReadByTopic.get(entry.topic) === entry.seq) return false
+      const readAt = Date.parse(entry.readAt)
+      return Number.isFinite(readAt) && readAt < cutoff
+    })
+    const removableSeqs = new Set(removable.map((entry) => entry.seq))
+    let removedBytes = 0
+    for (const entry of removable) {
+      for (const file of entry.files) {
+        try {
+          removedBytes += fs.statSync(file).size
+        } catch {
+          // Missing payload files are already reclaimed.
+        }
+      }
+      if (dryRun) continue
+      const prefix = `${String(entry.seq).padStart(4, '0')}-`
+      try {
+        for (const name of fs.readdirSync(this.channelDir(sessionId))) {
+          if (name.startsWith(prefix)) {
+            fs.rmSync(path.join(this.channelDir(sessionId), name), {
+              recursive: true,
+              force: true,
+            })
+          }
+        }
+      } catch {
+        // Missing channel directory is equivalent to an empty cleanup.
+      }
+    }
+    if (!dryRun && removable.length > 0) {
+      this.#writeManifest(
+        sessionId,
+        entries.filter((entry) => !removableSeqs.has(entry.seq)),
+      )
+    }
+    return {
+      sessionId,
+      removedDeliveries: removable.length,
+      removedBytes,
+      retainedDeliveries: entries.length - removable.length,
+      policy: { maxReadAgeDays, maxReadEntries, keepLatestReadPerTopic },
     }
   }
 }

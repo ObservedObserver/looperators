@@ -2,7 +2,7 @@ import { type Dispatch, type SetStateAction, useEffect } from 'react';
 
 import type { GraphState, KernelEvent, RuntimeTerminal } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
-import { applyLightweightRuntimeEvent } from '../../shared/runtime-state-patch';
+import { applyLightweightRuntimeEvent, preferRuntimeSnapshot } from '../../shared/runtime-state-patch';
 
 const streamRenderBatchMs = 50;
 
@@ -58,7 +58,7 @@ export function useRuntimeSubscription({
       .getState()
       .then((state) => {
         if (isMounted) {
-          setRuntimeState(state);
+          setRuntimeState((current) => preferRuntimeSnapshot(current, state) as GraphState);
           setSelectedSessionId((current) => (current === undefined ? null : current));
           restoreCwdFallback(state);
         }
@@ -87,7 +87,7 @@ export function useRuntimeSubscription({
         // A boundary snapshot already contains every earlier delta. Dropping
         // the queued patches preserves event order without replaying them.
         discardPendingStreamEvents();
-        setRuntimeState(event.state);
+        setRuntimeState((current) => preferRuntimeSnapshot(current, event.state) as GraphState);
       } else if (event.type === 'provider.runtime' || event.type === 'session.stream') {
         enqueueStreamEvent(event);
       }

@@ -38,6 +38,11 @@ export function RelationshipInspectorPanel({
 }) {
   const subscription = data.subscriptionId ? runtimeState.subscriptions?.[data.subscriptionId] : undefined;
   const history = data.edgeId ? runtimeState.edges.find((edge) => edge.edgeId === data.edgeId) : undefined;
+  const dynamicGroups = subscription?.action.kind === 'create'
+    ? Object.values(runtimeState.dynamicSpawnGroups ?? {})
+        .filter((group) => group.subscriptionId === subscription.id)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    : [];
 
   const stop = async () => {
     if (!runtimeApi || !subscription || subscription.state !== 'active') return;
@@ -78,7 +83,7 @@ export function RelationshipInspectorPanel({
                 {subscription.action.kind.replaceAll('-', ' ')} → {runtimeState.sessions[subscription.target.sessionId]?.label ?? subscription.target.sessionId}
               </span>
               <span className="text-muted-foreground">Delivery</span>
-              <span>{subscription.action.topic ?? 'none'}</span>
+              <span>{subscription.action.kind === 'create' ? `template ${subscription.action.template.templateId}` : (subscription.action.topic ?? 'none')}</span>
               <span className="text-muted-foreground">Gate</span>
               <span>
                 {subscription.gate} · {subscription.concurrency}
@@ -95,10 +100,32 @@ export function RelationshipInspectorPanel({
                 {subscription.stop?.maxFirings ? `${subscription.stop.maxFirings} firings` : 'manually stopped'}
               </span>
             </div>
-            {subscription.action.note ? (
+            {subscription.action.kind !== 'create' && subscription.action.note ? (
               <div className="rounded-lg border border-border bg-muted/35 p-2.5">
                 <div className="mb-1 text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Instruction</div>
                 <p className="whitespace-pre-wrap leading-5">{subscription.action.note}</p>
+              </div>
+            ) : null}
+            {subscription.action.kind === 'create' ? (
+              <div className="space-y-2 rounded-lg border border-border bg-muted/35 p-2.5">
+                <div className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Dynamic topology</div>
+                <p className="leading-5">
+                  Fixed template <span className="font-mono">{subscription.action.template.templateId}</span>
+                  {' · '}fan-out ≤ {subscription.action.limits.maxFanOut}
+                  {' · '}depth ≤ {subscription.action.limits.maxGenerationDepth}
+                </p>
+                {dynamicGroups.length === 0 ? (
+                  <p className="text-muted-foreground">No issue report has created participants yet.</p>
+                ) : dynamicGroups.map((group) => (
+                  <div key={group.groupId} className="rounded-md border border-border/70 bg-background/70 p-2 leading-5">
+                    <div>{group.status} · {group.createdCount}/{group.requestedCount} created</div>
+                    <div className="text-muted-foreground">
+                      {group.skippedCount > 0 ? `${group.skippedCount} skipped · ` : ''}
+                      Scope {group.scopeId} · generation {group.generationDepth}
+                    </div>
+                    {group.reason ? <p className="mt-1 text-amber-700 dark:text-amber-300">{group.reason}</p> : null}
+                  </div>
+                ))}
               </div>
             ) : null}
             <Button className="w-full" variant="destructive" disabled={!runtimeApi || subscription.state !== 'active'} onClick={() => void stop()}>

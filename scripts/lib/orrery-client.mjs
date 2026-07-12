@@ -136,6 +136,10 @@ export class OrreryClient {
     return this.#request('GET', '/api/runtime/state')
   }
 
+  dispatchCommand(input = {}) {
+    return this.#request('POST', '/api/runtime/commands', input)
+  }
+
   graph() {
     return this.#request('GET', '/api/runtime/graph')
   }
@@ -224,6 +228,58 @@ export class OrreryClient {
       coder,
       reviewer,
     })
+  }
+
+  async startPlanCouncil(input = {}) {
+    const planners = await Promise.all(
+      (input.planners ?? []).map((planner) => this.#withModelPreset(planner)),
+    )
+    const synthesizer = input.synthesizer
+      ? await this.#withModelPreset(input.synthesizer)
+      : input.synthesizer
+    return this.#request('POST', '/api/runtime/plan-councils', {
+      ...input,
+      planners,
+      synthesizer,
+    })
+  }
+
+  getPlanCouncil(workflowId) {
+    return this.#request(
+      'GET',
+      `/api/runtime/plan-councils/${encodeURIComponent(workflowId)}`,
+    )
+  }
+
+  getPlanCouncilArtifact(workflowId, artifactId) {
+    return this.#request(
+      'GET',
+      `/api/runtime/plan-councils/${encodeURIComponent(workflowId)}/artifacts/${encodeURIComponent(artifactId)}`,
+    )
+  }
+
+  startPlanCouncilCrossReview(workflowId) {
+    return this.#request(
+      'POST',
+      `/api/runtime/plan-councils/${encodeURIComponent(workflowId)}/cross-review`,
+      {},
+    )
+  }
+
+  startPlanCouncilSynthesis(workflowId) {
+    return this.#request(
+      'POST',
+      `/api/runtime/plan-councils/${encodeURIComponent(workflowId)}/synthesis`,
+      {},
+    )
+  }
+
+  stopPlanCouncil(workflowId, input = {}) {
+    return this.#request(
+      'POST',
+      `/api/runtime/plan-councils/${encodeURIComponent(workflowId)}/stop`,
+      input,
+    )
   }
 
   async startDraftWorkflow(input = {}) {
@@ -486,6 +542,14 @@ export class OrreryClient {
 
   freeze(input = {}) {
     return this.#request('POST', '/api/runtime/freeze', input)
+  }
+
+  unfreeze(input = {}) {
+    return this.#request('POST', '/api/runtime/unfreeze', input)
+  }
+
+  cleanupChannels(input = {}) {
+    return this.#request('POST', '/api/runtime/channels/cleanup', input)
   }
 
   async waitFor(label, probe, options = {}) {

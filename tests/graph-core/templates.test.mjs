@@ -15,10 +15,11 @@ import {
 
 // ---- registry shape ----
 
-test('the six proposal templates are registered, in the proposal order', () => {
+test('the workflow launchers and six relationship templates are registered in product order', () => {
   assert.deepEqual(
     builtinTemplates.map((template) => template.id),
     [
+      'plan-council',
       'handoff',
       'watch-and-summarize',
       'review-until-clean',
@@ -32,7 +33,9 @@ test('the six proposal templates are registered, in the proposal order', () => {
     assert.ok(template.name.length > 0)
     assert.ok(template.tagline.length > 0)
     assert.ok(template.handsOff.length > 0)
-    assert.ok(template.slots.length > 0, `${template.id} declares slots`)
+    if (template.id !== 'plan-council') {
+      assert.ok(template.slots.length > 0, `${template.id} declares slots`)
+    }
   }
 })
 

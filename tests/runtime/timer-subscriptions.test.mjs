@@ -243,6 +243,60 @@ test('freeze gates scheduled activation; the coalesced slot is the dirty flag', 
       ),
       'later ticks supersede the parked slot instead of queueing'
     )
+
+    const lifted = await runtime.unfreeze({
+      target,
+      reason: 'Release the latest scheduled work.',
+      commandId: 'unfreeze-frozen-target',
+      idempotencyKey: 'unfreeze-frozen-target-once',
+      expectedVersion: runtime.getState().controlVersion,
+    })
+    assert.equal(lifted.ok, true)
+    await waitFor(
+      'dirty slot activates after unfreeze',
+      () =>
+        eventsOfType(runtime, 'activated').some(
+          (event) => event.payload.subscriptionId === authored.subscription.id
+        ) &&
+        !Object.values(runtime.getState().pendingActivations ?? {}).some(
+          (slot) => slot.subscriptionId === authored.subscription.id
+        ),
+      10000,
+    )
+    runtime.stopSubscription({ subscriptionId: authored.subscription.id, reason: 'Unfreeze verified.' })
+    assert.equal(runtime.getState().nodes.find((node) => node.sessionId === target)?.frozen, false)
+    assert.ok(
+      eventsOfType(runtime, 'freeze.lifted').some(
+        (event) => event.payload.targetId === target
+      ),
+      'unfreeze is a durable control fact',
+    )
+  } finally {
+    cleanup()
+  }
+})
+
+test('session unfreeze rejects an inherited cluster freeze and cluster unfreeze lifts it', async () => {
+  const { manager, cleanup } = harness('orrery-cluster-unfreeze-')
+  try {
+    const runtime = manager()
+    const target = await createIdleSession(runtime, 'Cluster Frozen Target')
+    runtime.upsertCluster({
+      clusterId: 'frozen-cluster',
+      label: 'Frozen cluster',
+      nodeIds: [target],
+    })
+    runtime.freeze({ target: 'frozen-cluster', reason: 'Hold the cluster.' })
+    await assert.rejects(
+      runtime.unfreeze({ target, reason: 'Wrong level.' }),
+      /inherits freeze from cluster frozen-cluster/i,
+    )
+    const lifted = await runtime.unfreeze({
+      target: 'frozen-cluster',
+      reason: 'Release the cluster.',
+    })
+    assert.equal(lifted.ok, true)
+    assert.equal(runtime.getState().clusters['frozen-cluster'].frozen, false)
   } finally {
     cleanup()
   }

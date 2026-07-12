@@ -56,6 +56,7 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
     canStartLoop,
     canStopLoop,
     canFreezeSelectedSession,
+    selectedSessionInheritedFreeze,
     canFreezeActiveCluster,
     setupSteps,
     currentLoopPolicy,
@@ -67,6 +68,8 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
     stopMasterLoop,
     freezeSelectedSession,
     freezeActiveCluster,
+    unfreezeSelectedSession,
+    unfreezeActiveCluster,
   } = orchestration;
 
   return (
@@ -328,11 +331,19 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
             <Button
               className={cn(termActionBtnCls, 'mt-2 w-full')}
               variant="outline"
-              disabled={!isRuntimeAvailable || isFreezingSelected || !canFreezeSelectedSession}
-              onClick={freezeSelectedSession}
+              disabled={!isRuntimeAvailable || isFreezingSelected || (!selectedSessionFrozen && !canFreezeSelectedSession)}
+              onClick={selectedSessionFrozen ? unfreezeSelectedSession : freezeSelectedSession}
             >
               <Snowflake className="size-4 shrink-0" />
-              <span className="truncate">{isFreezingSelected ? 'Freezing...' : 'Freeze chat'}</span>
+              <span className="truncate">
+                {isFreezingSelected
+                  ? 'Updating...'
+                  : selectedSessionInheritedFreeze
+                    ? 'Unfreeze cluster'
+                    : selectedSessionFrozen
+                      ? 'Unfreeze chat'
+                      : 'Freeze chat'}
+              </span>
             </Button>
           </div>
 
@@ -346,11 +357,11 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
             <Button
               className={cn(termActionBtnCls, 'mt-2 w-full')}
               variant="outline"
-              disabled={!isRuntimeAvailable || isFreezingCluster || !canFreezeActiveCluster}
-              onClick={freezeActiveCluster}
+              disabled={!isRuntimeAvailable || isFreezingCluster || (!activeCluster?.frozen && !canFreezeActiveCluster)}
+              onClick={activeCluster?.frozen ? unfreezeActiveCluster : freezeActiveCluster}
             >
               <Snowflake className="size-4 shrink-0" />
-              <span className="truncate">{isFreezingCluster ? 'Freezing...' : 'Freeze cluster'}</span>
+              <span className="truncate">{isFreezingCluster ? 'Updating...' : activeCluster?.frozen ? 'Unfreeze cluster' : 'Freeze cluster'}</span>
             </Button>
           </div>
         </div>

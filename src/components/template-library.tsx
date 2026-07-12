@@ -7,6 +7,8 @@ import type { RuntimeApi } from '@/runtime-client';
 import { partitionWorkflowIds, primaryWorkflowCatalog, type WorkflowEntry } from '@shared/workflow-catalog';
 import { ReviewWorkflowComposer } from '@/components/review-workflow-composer';
 import { ClassicWorkflowComposer } from '@/components/classic-workflow-composer';
+import { PlanCouncilComposer } from '@/components/plan-council-composer';
+import type { StartPlanCouncilResult } from '@/shared/graph-state';
 
 // Product-facing New Workflow entry. Templates remain the compile mechanism,
 // but the first-run UI is organized around outcomes rather than operators.
@@ -19,6 +21,7 @@ export function TemplateLibraryPanel({
   autoFocusClose = false,
   defaultCwd,
   onWorkflowStarted,
+  onPlanCouncilStarted,
   requestCloseRef,
 }: {
   runtimeApi: RuntimeApi | undefined;
@@ -29,6 +32,7 @@ export function TemplateLibraryPanel({
   autoFocusClose?: boolean;
   defaultCwd: string;
   onWorkflowStarted: (result: { coderSessionId: string; loopId?: string; notice?: string }) => void;
+  onPlanCouncilStarted: (result: StartPlanCouncilResult) => void;
   requestCloseRef?: MutableRefObject<(() => void) | undefined>;
 }) {
   const [templates, setTemplates] = useState<TemplateDescriptor[]>([]);
@@ -65,7 +69,7 @@ export function TemplateLibraryPanel({
   const primaryTemplates = partitioned.primary.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
   const moreTemplates = partitioned.more.map((id) => templateById.get(id)).filter((template): template is TemplateDescriptor => Boolean(template));
   const selectedUsesComposer =
-    selectedId === 'review-until-clean' || selectedId === 'handoff' || selectedId === 'goal-loop' || Boolean(selected?.workflowSpec);
+    selectedId === 'plan-council' || selectedId === 'review-until-clean' || selectedId === 'handoff' || selectedId === 'goal-loop' || Boolean(selected?.workflowSpec);
 
   const loadTemplates = async () => {
     if (!runtimeApi) {
@@ -306,7 +310,21 @@ export function TemplateLibraryPanel({
           )}
         </button>
 
-        {isSelected && (template.id === 'review-until-clean' || template.workflowSpec?.kind === 'review-until-clean') ? (
+        {isSelected && template.id === 'plan-council' ? (
+          <PlanCouncilComposer
+            runtimeApi={runtimeApi}
+            runtimeState={runtimeState}
+            defaultCwd={defaultCwd}
+            onStateChange={onStateChange}
+            onError={onError}
+            onDirtyChange={setComposerDirty}
+            onStarted={(result) => {
+              setComposerDirty(false);
+              onPlanCouncilStarted(result);
+              onClose();
+            }}
+          />
+        ) : isSelected && (template.id === 'review-until-clean' || template.workflowSpec?.kind === 'review-until-clean') ? (
           <ReviewWorkflowComposer
             key={template.id}
             runtimeApi={runtimeApi}

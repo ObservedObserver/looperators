@@ -5,14 +5,14 @@ import test from 'node:test';
 import { partitionWorkflowIds, primaryWorkflowCatalog, primaryWorkflowIds, workflowEmptyState } from '../../dist-electron/shared/workflow-catalog.js';
 import { builtinTemplates } from '../../dist-electron/shared/templates.js';
 
-test('the first-run workflow catalog exposes the three golden entries in product order', () => {
+test('the first-run workflow catalog exposes four golden entries in product order', () => {
   assert.deepEqual(
     primaryWorkflowCatalog.map((entry) => entry.id),
     [...primaryWorkflowIds],
   );
   assert.deepEqual(
     primaryWorkflowCatalog.map((entry) => entry.name),
-    ['Review until clean', 'Handoff', 'Run until goal'],
+    ['Compare plans', 'Review until clean', 'Handoff', 'Run until goal'],
   );
 });
 
@@ -32,8 +32,8 @@ test('primary workflow copy explains outcomes without kernel vocabulary', () => 
 });
 
 test('catalog routing keeps golden entries first and moves the rest to More workflows', () => {
-  assert.deepEqual(partitionWorkflowIds(['scheduled-routine', 'goal-loop', 'tpl-team', 'handoff', 'review-until-clean', 'watch-and-summarize']), {
-    primary: ['review-until-clean', 'handoff', 'goal-loop'],
+  assert.deepEqual(partitionWorkflowIds(['scheduled-routine', 'goal-loop', 'tpl-team', 'handoff', 'plan-council', 'review-until-clean', 'watch-and-summarize']), {
+    primary: ['plan-council', 'review-until-clean', 'handoff', 'goal-loop'],
     more: ['scheduled-routine', 'tpl-team', 'watch-and-summarize'],
   });
 });
@@ -47,7 +47,7 @@ test('empty graph decisions always offer Chat before Workflow', () => {
   assert.equal(workflowEmptyState(8).show, false);
 });
 
-test('legacy shortcuts do not compete with the three golden workflow composers', () => {
+test('legacy shortcuts do not compete with the four golden workflow composers', () => {
   const chat = fs.readFileSync(new URL('../../src/components/chat-detail.tsx', import.meta.url), 'utf8');
   const catalog = fs.readFileSync(new URL('../../src/components/template-library.tsx', import.meta.url), 'utf8');
   const advanced = fs.readFileSync(new URL('../../src/components/orchestrate-panel.tsx', import.meta.url), 'utf8');

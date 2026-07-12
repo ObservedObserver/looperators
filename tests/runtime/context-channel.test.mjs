@@ -90,6 +90,51 @@ test('channel store: immutable seq-numbered deliveries with topic supersession',
   }
 })
 
+test('channel retention removes only old read deliveries and preserves unread/latest-topic material', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-retention-'))
+  const store = new ContextChannelStore({ root: tempRoot })
+  try {
+    const first = store.deliver({
+      target: 'target',
+      from: 'a',
+      topic: 'plan',
+      entries: [{ name: 'plan.md', content: 'old plan' }],
+    })
+    store.deliver({
+      target: 'target',
+      from: 'a',
+      topic: 'plan',
+      entries: [{ name: 'plan.md', content: 'new plan' }],
+    })
+    store.deliver({
+      target: 'target',
+      from: 'b',
+      topic: 'review',
+      entries: [{ name: 'review.md', content: 'latest review' }],
+    })
+    store.deliver({ target: 'target', from: 'human', note: 'recent read note' })
+    store.markRead('target', 4)
+    const unread = store.deliver({ target: 'target', from: 'human', note: 'must stay unread' })
+    await delay(5)
+
+    const cleaned = store.cleanup('target', {
+      maxReadAgeDays: 0,
+      maxReadEntries: 1,
+      keepLatestReadPerTopic: true,
+    })
+    assert.equal(cleaned.removedDeliveries, 1)
+    assert.ok(cleaned.removedBytes > 0)
+    assert.equal(fs.existsSync(first.files[0]), false)
+    assert.equal(fs.existsSync(unread.files[0]), true)
+    assert.deepEqual(
+      store.manifest('target').map((entry) => entry.seq),
+      [2, 3, 4, 5],
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('deliver + activate: data plane facts, deterministic preamble, read tracking', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-kernel-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
@@ -356,6 +401,106 @@ test('a spawn failure does not swallow unread deliveries', async () => {
       'the delivery the agent never saw must be re-listed'
     )
   } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('a failed control commit kills the spawned run and restores channel read state', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-commit-failure-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const runtime = new RuntimeSessionManager({
+    storageFile,
+    controlCommandCommitDelayMs: 150,
+  })
+  let recovered
+  try {
+    const target = await runtime.createSession({
+      prompt: 'commit failure target',
+      label: 'Commit failure target',
+      cwd: process.cwd(),
+    })
+    await waitForIdle(runtime, target.sessionId)
+    await runtime.deliverToSession({
+      sessionId: target.sessionId,
+      topic: 'notes',
+      content: 'must remain unread if the control commit loses ownership',
+    })
+
+    const committing = runtime.dispatchCommand({
+      commandId: 'activation-owner-loss',
+      kind: 'activate',
+      actor: { kind: 'human' },
+      input: { sessionId: target.sessionId, note: 'start then lose the commit' },
+    })
+    await delay(30)
+    recovered = new RuntimeSessionManager({ storageFile })
+    await assert.rejects(committing, /newer runtime owns/i)
+
+    const manifest = new ContextChannelStore({
+      root: path.join(tempRoot, 'channels'),
+    }).manifest(target.sessionId)
+    assert.equal(manifest.length, 1)
+    assert.equal(manifest[0].readAt, undefined)
+    assert.equal(recovered.getState().sessions[target.sessionId]?.status, 'idle')
+    assert.equal(
+      recovered.getWorkflowDeployments().deployments.find(
+        (deployment) => deployment.commandId === 'activation-owner-loss',
+      )?.status,
+      'aborted',
+    )
+  } finally {
+    recovered?.killAll()
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('durable cleanup outbox replays a commit-before-effect crash on restart', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-cleanup-outbox-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const runtime = new RuntimeSessionManager({
+    storageFile,
+    controlCommandCrashBeforeEffectDrain: true,
+  })
+  let recovered
+  try {
+    const target = await runtime.createSession({
+      prompt: 'cleanup outbox target',
+      label: 'Cleanup outbox target',
+      cwd: process.cwd(),
+    })
+    await waitForIdle(runtime, target.sessionId)
+    const store = new ContextChannelStore({ root: path.join(tempRoot, 'channels') })
+    const delivery = store.deliver({
+      target: target.sessionId,
+      from: 'human',
+      entries: [{ name: 'old.md', content: 'old read payload' }],
+    })
+    store.markRead(target.sessionId, delivery.seq)
+
+    await assert.rejects(
+      runtime.cleanupChannels({
+        commandId: 'cleanup-outbox-crash',
+        sessionId: target.sessionId,
+        maxReadAgeDays: 0,
+        maxReadEntries: 0,
+        keepLatestReadPerTopic: false,
+      }),
+      /crash before durable effect drain/i,
+    )
+    assert.equal(fs.existsSync(delivery.files[0]), true)
+
+    recovered = new RuntimeSessionManager({ storageFile })
+    assert.equal(fs.existsSync(delivery.files[0]), false)
+    assert.equal(store.manifest(target.sessionId).length, 0)
+    assert.ok(
+      recovered.getKernelEvents({ type: 'channel.cleanup.completed' }).events.some(
+        (event) => event.payload.commandId === 'cleanup-outbox-crash',
+      ),
+    )
+  } finally {
+    recovered?.killAll()
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }

@@ -75,10 +75,16 @@ test('cold start installs the full ring before Coder runs and Reviewer has no re
       kind: 'claude-code',
       label: 'Review SDK',
     });
-    const started = await runtime.startReviewWorkflow(input(process.cwd()));
+    const reviewInput = input(process.cwd(), { idempotencyKey: 'primary-review-once' });
+    const started = await runtime.startReviewWorkflow(reviewInput);
     assert.equal(started.createdSessionIds.length, 2);
     assert.equal(started.subscriptionIds.length, 2);
     assert.ok(started.loop);
+    const replayed = await runtime.startReviewWorkflow(reviewInput);
+    assert.equal(replayed.coderSessionId, started.coderSessionId);
+    assert.equal(replayed.reviewerSessionId, started.reviewerSessionId);
+    assert.equal(Object.keys(runtime.getState().sessions).length, 2);
+    assert.equal(Object.keys(runtime.getState().subscriptions).length, 2);
 
     const initial = runtime.getState();
     assert.equal(initial.sessions[started.coderSessionId].runtimeSettings.model, 'coder-model');
@@ -123,6 +129,50 @@ test('cold start installs the full ring before Coder runs and Reviewer has no re
   }
 });
 
+for (const stage of ['prepared', 'resources-created', 'graph-committed', 'roots-started']) {
+  test(`Review Workflow restart reconciliation fully aborts a deployment interrupted after ${stage}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `orrery-review-deployment-${stage}-`));
+    const storageFile = path.join(root, 'state.json');
+    const first = new BaseRuntimeSessionManager({
+      storageFile,
+      providerAdapters: deterministicProviderAdapters(),
+      workflowDeploymentCrashAfterStage: stage,
+    });
+    let recovered;
+    try {
+      first.upsertProviderInstance({
+        providerInstanceId: 'review-sdk',
+        kind: 'claude-code',
+        label: 'Review SDK',
+      });
+      const reviewInput = input(process.cwd());
+      reviewInput.coder.prompt += ' ORRERY_SLEEP';
+      await assert.rejects(
+        first.startReviewWorkflow(reviewInput),
+        new RegExp(`Injected workflow deployment crash after ${stage}`),
+      );
+      assert.equal(first.getWorkflowDeployments({ status: 'in_progress' }).deployments[0].stage, stage);
+
+      recovered = new BaseRuntimeSessionManager({
+        storageFile,
+        providerAdapters: deterministicProviderAdapters(),
+      });
+      const state = recovered.getState();
+      assert.equal(Object.keys(state.sessions).length, 0);
+      assert.equal(Object.keys(state.subscriptions ?? {}).length, 0);
+      assert.equal(state.nodes.length, 0);
+      assert.equal(state.edges.length, 0);
+      const deployment = recovered.getWorkflowDeployments().deployments[0];
+      assert.equal(deployment.status, 'aborted');
+      assert.equal(deployment.stage, 'aborted');
+    } finally {
+      recovered?.killAll();
+      first.killAll();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test('a start failure after the first participant exists unwinds the live graph', async () => {
   const { runtime, cleanup } = harness('orrery-review-workflow-unwind-');
   try {
@@ -164,7 +214,7 @@ test('parallel Review starts lock shared existing Agents before creating a secon
       runtime.startReviewWorkflow(reviewInput),
     ]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
-    assert.match(results.find((result) => result.status === 'rejected').reason.message, /already being changed/);
+    assert.match(results.find((result) => result.status === 'rejected').reason.message, /already being changed|running/);
     assert.equal(runtime.getState().loops.filter((loop) => loop.kind === 'review').length, 1);
   } finally {
     cleanup();

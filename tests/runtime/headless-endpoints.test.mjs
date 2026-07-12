@@ -124,6 +124,103 @@ test('headless read endpoints expose sessions, graph, and event cursors', async 
     ).json()
     assert.equal(resetFetch.reset, true)
     assert.equal(resetFetch.events.length, events.events.length)
+
+    const commandEnvelope = {
+      commandId: 'http-freeze-command',
+      idempotencyKey: 'http-freeze-once',
+      expectedVersion: 0,
+      kind: 'freeze',
+      input: { target: created.sessionId, reason: 'HTTP command envelope test' },
+    }
+    const commandResponse = await fetch(`${base}/api/runtime/commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(commandEnvelope),
+    })
+    assert.equal(commandResponse.status, 200)
+    assert.equal(runtime.getState().controlVersion, 1)
+    const repeatedCommand = await fetch(`${base}/api/runtime/commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...commandEnvelope, commandId: 'http-freeze-retry' }),
+    })
+    assert.equal(repeatedCommand.status, 200)
+    assert.equal(runtime.getState().controlVersion, 1)
+    assert.equal(
+      runtime.getKernelEvents({ type: 'freeze.applied' }).events.filter(
+        (event) => event.payload.targetId === created.sessionId,
+      ).length,
+      1,
+    )
+    const unfreezeResponse = await fetch(`${base}/api/runtime/unfreeze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target: created.sessionId,
+        commandId: 'http-unfreeze-command',
+        idempotencyKey: 'http-unfreeze-once',
+        expectedVersion: 1,
+      }),
+    })
+    assert.equal(unfreezeResponse.status, 200)
+    assert.equal(runtime.getState().controlVersion, 2)
+
+    const councilAgent = (key) => ({
+      key,
+      label: key,
+      providerKind: 'claude-code',
+      providerInstanceId: 'default-claude-sdk',
+      runtimeSettings: {
+        runtimeMode: 'approval-required',
+        sandbox: 'read-only',
+        model: `${key}-model`,
+      },
+    })
+    const councilResponse = await fetch(`${base}/api/runtime/plan-councils`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        objective: 'Compare two deterministic plans.',
+        cwd: process.cwd(),
+        planners: [councilAgent('planner-a'), councilAgent('planner-b')],
+        synthesizer: councilAgent('synthesizer'),
+      }),
+    })
+    assert.equal(councilResponse.status, 200)
+    const councilStarted = await councilResponse.json()
+    await waitFor(
+      'HTTP Council proposals',
+      () => runtime.getState().planCouncils[councilStarted.workflowId]?.phase === 'ready-for-cross-review',
+    )
+    const councilView = await (
+      await fetch(`${base}/api/runtime/plan-councils/${councilStarted.workflowId}`)
+    ).json()
+    assert.equal(councilView.council.artifacts.length, 2)
+    const firstArtifact = councilView.council.artifacts[0]
+    const artifactView = await (
+      await fetch(
+        `${base}/api/runtime/plan-councils/${councilStarted.workflowId}/artifacts/${firstArtifact.artifactId}`,
+      )
+    ).json()
+    assert.match(artifactView.content, /independent Planner/i)
+    const crossReviewResponse = await fetch(
+      `${base}/api/runtime/plan-councils/${councilStarted.workflowId}/cross-review`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    )
+    assert.equal(crossReviewResponse.status, 200)
+    await waitFor(
+      'HTTP Council reviews',
+      () => runtime.getState().planCouncils[councilStarted.workflowId]?.phase === 'ready-for-synthesis',
+    )
+    const synthesisResponse = await fetch(
+      `${base}/api/runtime/plan-councils/${councilStarted.workflowId}/synthesis`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    )
+    assert.equal(synthesisResponse.status, 200)
+    await waitFor(
+      'HTTP Council synthesis',
+      () => runtime.getState().planCouncils[councilStarted.workflowId]?.phase === 'completed',
+    )
   } finally {
     await runtimeServer.close()
     fs.rmSync(tempRoot, { recursive: true, force: true })

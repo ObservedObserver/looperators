@@ -11,6 +11,7 @@ import type {
   CreateRuntimeSessionInput,
   CreateRuntimeSessionResult,
   FreezeInput,
+  UnfreezeInput,
   GetTerminalInput,
   CreateGoalLoopInput,
   CreateGoalLoopResult,
@@ -43,6 +44,8 @@ import type {
   StartMasterLoopInput,
   StartReviewWorkflowInput,
   StartReviewWorkflowResult,
+  StartPlanCouncilInput,
+  StartPlanCouncilResult,
   StartDraftWorkflowInput,
   StartDraftWorkflowResult,
   StartHandoffWorkflowInput,
@@ -64,6 +67,7 @@ import type {
   WorkingTreeDiffInput,
   WorkingTreeDiffResult,
 } from '@/shared/graph-state';
+import type { PlanCouncil } from '@shared/plan-council';
 import type { ProviderInstance } from '@/shared/provider-runtime';
 
 const defaultRuntimeUrl = 'http://127.0.0.1:48274';
@@ -83,9 +87,16 @@ export type KernelEventsResult = { events: KernelEvent[]; latestSeq: number };
 export type RuntimeApi = {
   getState: () => Promise<GraphState>;
   getKernelEvents: (input?: KernelEventsInput) => Promise<KernelEventsResult>;
+  dispatchCommand: (input: { commandId?: string; idempotencyKey?: string; expectedVersion?: number; kind: string; reason?: string; input?: Record<string, unknown> }) => Promise<Record<string, unknown>>;
   getLoopTimeline: (input: { loopId: string }) => Promise<LoopTimelineResult>;
   createGoalLoop: (input: CreateGoalLoopInput) => Promise<CreateGoalLoopResult>;
   startReviewWorkflow: (input: StartReviewWorkflowInput) => Promise<StartReviewWorkflowResult>;
+  startPlanCouncil: (input: StartPlanCouncilInput) => Promise<StartPlanCouncilResult>;
+  getPlanCouncil: (input: { workflowId: string }) => Promise<{ council: PlanCouncil }>;
+  getPlanCouncilArtifact: (input: { workflowId: string; artifactId: string }) => Promise<{ artifact: PlanCouncil['artifacts'][number]; content: string }>;
+  startPlanCouncilCrossReview: (input: { workflowId: string }) => Promise<{ council: PlanCouncil; state: GraphState }>;
+  startPlanCouncilSynthesis: (input: { workflowId: string }) => Promise<{ council: PlanCouncil; state: GraphState }>;
+  stopPlanCouncil: (input: { workflowId: string; reason?: string }) => Promise<{ council: PlanCouncil; state: GraphState }>;
   startDraftWorkflow: (input: StartDraftWorkflowInput) => Promise<StartDraftWorkflowResult>;
   startHandoffWorkflow: (input: StartHandoffWorkflowInput) => Promise<StartHandoffWorkflowResult>;
   startGoalWorkflow: (input: StartGoalWorkflowInput) => Promise<StartGoalWorkflowResult>;
@@ -117,6 +128,8 @@ export type RuntimeApi = {
   stopLoop: (input: StopLoopInput) => Promise<{ state: GraphState }>;
   stopSubscription: (input: { subscriptionId: string; reason?: string }) => Promise<{ ok: boolean; state: GraphState }>;
   freeze: (input: FreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
+  unfreeze: (input: UnfreezeInput) => Promise<{ ok: boolean; state: GraphState }>;
+  cleanupChannels: (input: { sessionId?: string; maxReadAgeDays?: number; maxReadEntries?: number; keepLatestReadPerTopic?: boolean; reason?: string }) => Promise<{ ok: boolean; removedDeliveries: number; removedBytes: number; state: GraphState }>;
   getWorkingTreeDiff: (input: WorkingTreeDiffInput) => Promise<WorkingTreeDiffResult>;
   getWorkspaceFiles: (input: WorkspaceFilesInput) => Promise<WorkspaceFilesResult>;
   getWorkspaceFileContent: (input: WorkspaceFileContentInput) => Promise<WorkspaceFileContentResult>;
@@ -202,6 +215,9 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'edge.removed',
   'loop.started',
   'loop.stopped',
+  'plan-council.updated',
+  'workflow.proposal.updated',
+  'workflow.wakeup.updated',
   'kernel.event',
   'terminal.created',
   'terminal.output',
@@ -383,6 +399,14 @@ class HttpRuntimeApi implements RuntimeApi {
     return this.#post<{ ok: boolean; state: GraphState }>('freeze', input);
   }
 
+  unfreeze(input: UnfreezeInput) {
+    return this.#post<{ ok: boolean; state: GraphState }>('unfreeze', input);
+  }
+
+  cleanupChannels(input: { sessionId?: string; maxReadAgeDays?: number; maxReadEntries?: number; keepLatestReadPerTopic?: boolean; reason?: string }) {
+    return this.#post<{ ok: boolean; removedDeliveries: number; removedBytes: number; state: GraphState }>('channels/cleanup', input);
+  }
+
   getWorkingTreeDiff(input: WorkingTreeDiffInput) {
     return this.#post<WorkingTreeDiffResult>('working-tree-diff', input);
   }
@@ -422,6 +446,10 @@ class HttpRuntimeApi implements RuntimeApi {
     return this.#get<KernelEventsResult>(`kernel-events${query}`);
   }
 
+  dispatchCommand(input: { commandId?: string; idempotencyKey?: string; expectedVersion?: number; kind: string; reason?: string; input?: Record<string, unknown> }) {
+    return this.#post<Record<string, unknown>>('commands', input);
+  }
+
   getLoopTimeline(input: { loopId: string }) {
     return this.#get<LoopTimelineResult>(`loops/${encodeURIComponent(input.loopId)}/timeline`);
   }
@@ -432,6 +460,41 @@ class HttpRuntimeApi implements RuntimeApi {
 
   startReviewWorkflow(input: StartReviewWorkflowInput) {
     return this.#post<StartReviewWorkflowResult>('review-workflows', input);
+  }
+
+  startPlanCouncil(input: StartPlanCouncilInput) {
+    return this.#post<StartPlanCouncilResult>('plan-councils', input);
+  }
+
+  getPlanCouncil(input: { workflowId: string }) {
+    return this.#get<{ council: PlanCouncil }>(`plan-councils/${encodeURIComponent(input.workflowId)}`);
+  }
+
+  getPlanCouncilArtifact(input: { workflowId: string; artifactId: string }) {
+    return this.#get<{ artifact: PlanCouncil['artifacts'][number]; content: string }>(
+      `plan-councils/${encodeURIComponent(input.workflowId)}/artifacts/${encodeURIComponent(input.artifactId)}`,
+    );
+  }
+
+  startPlanCouncilCrossReview(input: { workflowId: string }) {
+    return this.#post<{ council: PlanCouncil; state: GraphState }>(
+      `plan-councils/${encodeURIComponent(input.workflowId)}/cross-review`,
+      {},
+    );
+  }
+
+  startPlanCouncilSynthesis(input: { workflowId: string }) {
+    return this.#post<{ council: PlanCouncil; state: GraphState }>(
+      `plan-councils/${encodeURIComponent(input.workflowId)}/synthesis`,
+      {},
+    );
+  }
+
+  stopPlanCouncil(input: { workflowId: string; reason?: string }) {
+    return this.#post<{ council: PlanCouncil; state: GraphState }>(
+      `plan-councils/${encodeURIComponent(input.workflowId)}/stop`,
+      { reason: input.reason },
+    );
   }
 
   startDraftWorkflow(input: StartDraftWorkflowInput) {

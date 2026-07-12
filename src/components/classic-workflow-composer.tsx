@@ -6,10 +6,11 @@ import { AgentRuntimeFields } from '@/components/workflow-form-fields';
 import { cn } from '@/lib/utils';
 import { modelOptionsForInstance, providerInstanceForKind } from '@/lib/provider-catalog';
 import { providerSetupProfileFingerprint } from '@shared/provider-setup';
-import type { GraphState } from '@/shared/graph-state';
+import type { GraphState, StartGoalWorkflowResult, StartHandoffWorkflowResult } from '@/shared/graph-state';
 import type { SavedWorkflowSpec } from '@/shared/graph-state';
 import type { ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
+import { authorAndCommitWorkflow } from '@/lib/workflow-authoring';
 import {
   validateGoalWorkflowStart,
   validateHandoffWorkflowStart,
@@ -402,16 +403,28 @@ export function ClassicWorkflowComposer({
     setStartError('');
     try {
       if (kind === 'handoff') {
-        const result = await runtimeApi.startHandoffWorkflow(payload as HandoffWorkflowStartInput);
-        onStateChange(result.state);
+        const committed = await authorAndCommitWorkflow<StartHandoffWorkflowResult>(runtimeApi, {
+          recipe: 'handoff',
+          objective: (payload as HandoffWorkflowStartInput).note,
+          recipeInput: payload as unknown as Record<string, unknown>,
+          reason: 'The human configured and explicitly ran Handoff from the standalone composer.',
+        });
+        const result = committed.result;
+        onStateChange(committed.state);
         onDirtyChange(false);
         onStarted({
           primarySessionId: result.sourceSessionId,
           notice: result.deliveredTo.length ? 'Handoff delivered · Receiver started' : 'Source started · Handoff armed once',
         });
       } else {
-        const result = await runtimeApi.startGoalWorkflow(payload as GoalWorkflowStartInput);
-        onStateChange(result.state);
+        const committed = await authorAndCommitWorkflow<StartGoalWorkflowResult>(runtimeApi, {
+          recipe: 'goal',
+          objective: (payload as GoalWorkflowStartInput).goal,
+          recipeInput: payload as unknown as Record<string, unknown>,
+          reason: 'The human configured and explicitly ran Goal loop from the standalone composer.',
+        });
+        const result = committed.result;
+        onStateChange(committed.state);
         onDirtyChange(false);
         onStarted({ primarySessionId: result.workerSessionId, loopId: result.loop?.loopId, notice: 'Worker started · Judge ready' });
       }

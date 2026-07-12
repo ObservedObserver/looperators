@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { type Dispatch, type SetStateAction, useCallback, useMemo, useState } from 'react';
 
 import { createEmptyGraphState, type GraphState, type KernelEvent } from '@/shared/graph-state';
 import { projectSession } from '@/shared/session-projection';
@@ -8,9 +8,18 @@ import { demoMode } from '@/lib/workspace';
 import { invalidCwdsFromDiagnostics, sessionRecoveryState } from '@/lib/diagnostics';
 import { sessionSort } from '@/lib/session-display';
 import { activityEvents } from '@/lib/graph-view';
+import { preferRuntimeSnapshot } from '../../shared/runtime-state-patch';
 
 export function useRuntimeCore() {
-  const [runtimeState, setRuntimeState] = useState<GraphState>(demoMode ? createDemoGraphState : createEmptyGraphState);
+  const [runtimeState, setRuntimeStateRaw] = useState<GraphState>(demoMode ? createDemoGraphState : createEmptyGraphState);
+  const setRuntimeState = useCallback<Dispatch<SetStateAction<GraphState>>>((update) => {
+    setRuntimeStateRaw((current) => {
+      const incoming = typeof update === 'function'
+        ? update(current)
+        : update;
+      return preferRuntimeSnapshot(current, incoming) as GraphState;
+    });
+  }, []);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(demoMode ? 'sess-p1-accept' : undefined);
   const [runtimeError, setRuntimeError] = useState<string>();
   const runtimeClient = useRuntimeClient({ disabled: demoMode });

@@ -134,6 +134,12 @@ test('membrane tools are auto-allowed in every runtime mode (sanctioned control 
     'mcp__orrery_membrane__deliver',
     'mcp__orrery_membrane__activate',
     'mcp__orrery_membrane__link_sessions',
+    'mcp__orrery_membrane__inspect_scope',
+    'mcp__orrery_membrane__propose_workflow',
+    'mcp__orrery_membrane__revise_workflow',
+    'mcp__orrery_membrane__explain_workflow',
+    'mcp__orrery_membrane__commit_workflow',
+    'mcp__orrery_membrane__abort_workflow',
   ]) {
     assert.deepEqual(
       automaticClaudePermissionResult(

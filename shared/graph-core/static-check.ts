@@ -52,7 +52,7 @@ export function intentEdges(
     if (subscription.state !== 'active' && !options?.includeStopped) {
       continue
     }
-    if (subscription.action.kind === 'deliver') {
+    if (subscription.action.kind === 'deliver' || subscription.action.kind === 'create') {
       continue
     }
     if (subscription.source.kind === 'timer' || subscription.source.kind === 'external') {

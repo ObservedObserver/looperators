@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('orrery', {
     getState: () => ipcRenderer.invoke('orrery:runtime-state'),
     getKernelEvents: (input) =>
       ipcRenderer.invoke('orrery:kernel-events', input),
+    dispatchCommand: (input) =>
+      ipcRenderer.invoke('orrery:dispatch-command', input),
     getLoopTimeline: (input) =>
       ipcRenderer.invoke('orrery:loop-timeline', input),
     stopLoop: (input) => ipcRenderer.invoke('orrery:stop-loop', input),
@@ -16,6 +18,18 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:create-goal-loop', input),
     startReviewWorkflow: (input) =>
       ipcRenderer.invoke('orrery:start-review-workflow', input),
+    startPlanCouncil: (input) =>
+      ipcRenderer.invoke('orrery:start-plan-council', input),
+    getPlanCouncil: (input) =>
+      ipcRenderer.invoke('orrery:get-plan-council', input),
+    getPlanCouncilArtifact: (input) =>
+      ipcRenderer.invoke('orrery:get-plan-council-artifact', input),
+    startPlanCouncilCrossReview: (input) =>
+      ipcRenderer.invoke('orrery:start-plan-council-cross-review', input),
+    startPlanCouncilSynthesis: (input) =>
+      ipcRenderer.invoke('orrery:start-plan-council-synthesis', input),
+    stopPlanCouncil: (input) =>
+      ipcRenderer.invoke('orrery:stop-plan-council', input),
     startDraftWorkflow: (input) =>
       ipcRenderer.invoke('orrery:start-draft-workflow', input),
     startHandoffWorkflow: (input) =>
@@ -73,6 +87,8 @@ contextBridge.exposeInMainWorld('orrery', {
     stopMasterLoop: (input) =>
       ipcRenderer.invoke('orrery:stop-master-loop', input),
     freeze: (input) => ipcRenderer.invoke('orrery:freeze', input),
+    unfreeze: (input) => ipcRenderer.invoke('orrery:unfreeze', input),
+    cleanupChannels: (input) => ipcRenderer.invoke('orrery:cleanup-channels', input),
     getWorkingTreeDiff: (input) =>
       ipcRenderer.invoke('orrery:get-working-tree-diff', input),
     getWorkspaceFiles: (input) =>

@@ -75,6 +75,85 @@ function graph(relationKind) {
   }
 }
 
+for (const stage of ['prepared', 'resources-created', 'graph-committed', 'roots-started']) {
+  test(`Draft restart reconciliation fully aborts an automatic deployment interrupted after ${stage}`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `orrery-draft-deployment-${stage}-`))
+    const storageFile = path.join(root, 'state.json')
+    const first = new RuntimeSessionManager({
+      storageFile,
+      workflowDeploymentCrashAfterStage: stage,
+    })
+    try {
+      const commandId = `draft-crash-${stage}`
+      await assert.rejects(
+        first.startDraftWorkflow({ commandId, graph: graph('handoff-once') }),
+        /Injected workflow deployment crash/,
+      )
+      const recovered = new RuntimeSessionManager({ storageFile })
+      try {
+        const state = recovered.getState()
+        assert.equal(Object.keys(state.sessions).length, 0)
+        assert.equal(Object.keys(state.subscriptions).length, 0)
+        const deployment = recovered.getWorkflowDeployments().deployments.find(
+          (candidate) => candidate.commandId === commandId,
+        )
+        assert.equal(deployment?.status, 'aborted')
+      } finally {
+        recovered.killAll()
+      }
+    } finally {
+      first.killAll()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('worktree resource intent is durable before creation and restart removes the orphan', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-worktree-intent-crash-'))
+  const repo = path.join(root, 'project')
+  fs.mkdirSync(repo)
+  execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+  execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repo })
+  execFileSync('git', ['config', 'user.name', 'Orrery Test'], { cwd: repo })
+  fs.writeFileSync(path.join(repo, 'README.md'), 'fixture\n')
+  execFileSync('git', ['add', 'README.md'], { cwd: repo })
+  execFileSync('git', ['commit', '-m', 'fixture'], { cwd: repo, stdio: 'ignore' })
+  const storageFile = path.join(root, 'state.json')
+  const first = new RuntimeSessionManager({
+    storageFile,
+    workflowDeploymentCrashAfterResourceCreate: true,
+  })
+  try {
+    const draft = graph('handoff-once')
+    draft.nodes.coder.endpoint.cwd = repo
+    draft.nodes.coder.endpoint.workMode = 'worktree'
+    draft.nodes.reviewer.endpoint.cwd = repo
+    await assert.rejects(
+      first.startDraftWorkflow({ commandId: 'worktree-intent-crash', graph: draft }),
+      /crash after worktree resource creation/i,
+    )
+    const deployment = first.getWorkflowDeployments().deployments.find(
+      (candidate) => candidate.commandId === 'worktree-intent-crash',
+    )
+    const descriptor = deployment?.journal.createdSessionResources?.[0]
+    assert.ok(descriptor?.cwd)
+    assert.equal(fs.existsSync(descriptor.cwd), true)
+
+    const recovered = new RuntimeSessionManager({ storageFile })
+    try {
+      assert.equal(fs.existsSync(descriptor.cwd), false)
+      assert.equal(recovered.getWorkflowDeployments().deployments.find(
+        (candidate) => candidate.commandId === 'worktree-intent-crash',
+      )?.status, 'aborted')
+    } finally {
+      recovered.killAll()
+    }
+  } finally {
+    first.killAll()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('static handoff Draft installs one-shot relation before root starts and preserves positions', async () => {
   const { runtime, cleanup } = harness('orrery-draft-handoff-')
   try {

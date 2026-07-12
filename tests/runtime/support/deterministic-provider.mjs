@@ -6,7 +6,7 @@ class DeterministicRun extends EventEmitter {
   #closed = false
   #timer
 
-  constructor(input, { killOnStart = false } = {}) {
+  constructor(input, { killOnStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false } = {}) {
     super()
     setImmediate(() => {
       if (!this.#closed) {
@@ -15,18 +15,20 @@ class DeterministicRun extends EventEmitter {
         })
       }
     })
-    const delay = input.prompt?.includes('ORRERY_SLEEP')
+    const delay = input.prompt?.includes('ORRERY_ZERO')
+      ? 0
+      : input.prompt?.includes('ORRERY_SLEEP')
       ? 1200
       : input.prompt?.includes('ORRERY_DELAY')
         ? 500
         : 50
-    this.#timer = setTimeout(() => this.#complete(input), delay)
+    this.#timer = setTimeout(() => this.#complete(input, { noOutput, oversizedOutput, permissionRequest }), delay)
     if (killOnStart) {
       setImmediate(() => this.kill())
     }
   }
 
-  #complete(input) {
+  #complete(input, { noOutput = false, oversizedOutput = false, permissionRequest = false } = {}) {
     if (this.#closed) return
     const providerSessionId = input.backendSessionId ?? input.sessionId
     const turnDiffFixture = path.join(input.cwd, 'README.md')
@@ -37,6 +39,23 @@ class DeterministicRun extends EventEmitter {
       fs.appendFileSync(path.join(input.cwd, 'p1-turn-diff.txt'), 'changed by deterministic provider\n')
     }
     const ts = new Date().toISOString()
+    if (permissionRequest) {
+      this.emit('providerEvent', {
+        id: `permission-${input.turnId}`,
+        ts,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        type: 'request.opened',
+        request: {
+          id: `permission-${input.turnId}`,
+          kind: 'permission',
+          title: 'Expand workspace write permission',
+          body: 'The deterministic participant requests write access.',
+          status: 'open',
+          createdAt: ts,
+        },
+      })
+    }
     if (input.prompt?.includes('ORRERY_TOOL_ACTIVITY')) {
       const itemId = `tool-${input.turnId}`
       this.emit('providerEvent', {
@@ -70,16 +89,26 @@ class DeterministicRun extends EventEmitter {
         },
       })
     }
-    this.emit('providerEvent', {
-      id: `content-${input.turnId}`,
-      ts,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      type: 'content.delta',
-      streamKind: 'assistant_text',
-      text: `handled: ${input.prompt ?? ''}`,
-    })
-    this.emit('result', { session_id: providerSessionId, result: 'done' })
+    if (!noOutput) {
+      this.emit('providerEvent', {
+        id: `content-${input.turnId}`,
+        ts,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        type: 'content.delta',
+        streamKind: 'assistant_text',
+        text: oversizedOutput ? 'x'.repeat(129 * 1024) : `handled: ${input.prompt ?? ''}`,
+      })
+      this.emit('result', {
+        session_id: providerSessionId,
+        result: 'done',
+        usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 3 },
+        duration_ms: delayForUsage(input.prompt),
+        num_turns: 1,
+      })
+    } else {
+      this.emit('result', { session_id: providerSessionId, result: '' })
+    }
     this.#closed = true
     this.emit('close', { code: 0, signal: null, killed: false })
   }
@@ -93,15 +122,25 @@ class DeterministicRun extends EventEmitter {
   }
 }
 
+function delayForUsage(prompt) {
+  return prompt?.includes('ORRERY_SLEEP') ? 1200 : prompt?.includes('ORRERY_DELAY') ? 500 : 50
+}
+
 export class DeterministicProviderAdapter {
   kind
   startedTurns = []
   #failWhen
   #killWhen
+  #noOutputWhen
+  #oversizedOutputWhen
+  #permissionWhen
 
-  constructor({ failWhen, killWhen, kind = 'claude-code' } = {}) {
+  constructor({ failWhen, killWhen, noOutputWhen, oversizedOutputWhen, permissionWhen, kind = 'claude-code' } = {}) {
     this.#failWhen = failWhen
     this.#killWhen = killWhen
+    this.#noOutputWhen = noOutputWhen
+    this.#oversizedOutputWhen = oversizedOutputWhen
+    this.#permissionWhen = permissionWhen
     this.kind = kind
   }
 
@@ -122,6 +161,9 @@ export class DeterministicProviderAdapter {
     }
     return new DeterministicRun(input, {
       killOnStart: this.#killWhen?.(input) === true,
+      noOutput: this.#noOutputWhen?.(input) === true,
+      oversizedOutput: this.#oversizedOutputWhen?.(input) === true,
+      permissionRequest: this.#permissionWhen?.(input) === true,
     })
   }
 

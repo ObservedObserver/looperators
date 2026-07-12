@@ -63,6 +63,8 @@ export const graphStateSchema = {
     ts: 'ISO-8601 string',
   },
   graphState: {
+    controlVersion:
+      'number; optimistic version of transactionally committed control commands',
     nodes: 'GraphNode[]',
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
@@ -74,6 +76,30 @@ export const graphStateSchema = {
       'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
     pendingActivations:
       'Record<slotKey, PendingActivation>; one live slot per (subscription, target) (v7)',
+    planCouncils:
+      'Record<workflowId, PlanCouncil>; durable product projection for manual-gated multi-agent planning runs',
+    workflowPlans:
+      'Record<workflowId, Record<version, WorkflowPlan>>; authoring-plane versions, never read by the scheduler',
+    workflowProposals:
+      'Record<proposalId, WorkflowProposal>; review/approval/commit state for Master and standalone authoring',
+    workflowCapabilities:
+      'Record<scopeId, ScopeWorkflowCapability>; scope-owned authorization, never inferred from prompts',
+    workflowWakeups:
+      'Record<wakeupId, WorkflowMasterWakeup>; durable coalesced Governor judgment requests',
+    barriers:
+      'Record<barrierId, WorkflowBarrier>; durable correlation-scoped all/any/quorum joins',
+    dynamicSpawnGroups:
+      'Record<groupId, DynamicSpawnGroup>; durable bounded dynamic-topology deployments',
+    workspaceLeases:
+      'WorkspaceLease[]; durable reader/writer ownership facts for provider turns',
+    runQueue:
+      'QueuedProviderRun[]; durable fair-admission queue (queued work never owns a lease)',
+    usageFacts:
+      'RuntimeUsageFact[]; immutable provider usage facts, independent from pricing',
+    resourcePolicies:
+      'Record<scopeId, RuntimeResourcePolicy>; explicit concurrency and autonomous-run ceilings',
+    schedulerMetrics:
+      'SchedulerBackpressureMetrics; runtime admission/backpressure projection',
     loops:
       'LoopView[]?; derived on read, never stored — exact compiled Review/Goal instances plus generic cyclic SCCs',
     sources:
@@ -102,7 +128,8 @@ export const graphStateSchema = {
     source: '{kind:"session",sessionId} | {kind:"cluster",clusterId} | {kind:"timer"} | {kind:"external",sourceId}',
     on: '{on:"finished"|"failed"} | {on:"report",match?:{type?,verdict?}} | {on:"delivered",topic?} | {on:"schedule",everySeconds?|dailyAt?} (timer source only; exactly one form, dailyAt="HH:MM" host-local) | {on:"external",topic?,match?:Record<string,string>} (external source only; match is strict string equality on payload fields)',
     target: '{kind:"session",sessionId}',
-    action: '{kind:"deliver"|"deliver+activate", topic?, note?}',
+    action: '{kind:"deliver"|"deliver+activate", topic?, note?} | validated bounded DynamicCreateAction',
+    executionRef: '{workflowId,workflowVersion,runId,phaseId}?; governing seed for events whose source turn has no envelope',
     gate: subscriptionGates,
     concurrency: subscriptionConcurrencies,
     stop: '{whenReport?:{verdict}, maxFirings?, deadline?}?',
@@ -181,6 +208,46 @@ export const graphStateSchema = {
         reason: 'string?',
       },
       output: { ok: 'boolean', edgeId: 'string' },
+    },
+    inspect_scope: {
+      input: '{ cursor?, pageSize? }; Master-only, read-only',
+      output: '{ scope, capability, summary, sessionRefs, providerRefs, workflowRefs, nextCursor? }',
+    },
+    inspect_workflow_wakeups: {
+      input: '{ statuses? }; Master-only, read-only',
+      output: '{ wakeups: WorkflowMasterWakeup[] }',
+    },
+    acknowledge_workflow_wakeup: {
+      input: '{ wakeupId, reason }; governing Master only',
+      output: '{ wakeup: WorkflowMasterWakeup }',
+    },
+    advance_plan_council: {
+      input: '{ workflowId, wakeupId?, reason, idempotencyKey? }; governing Master only; Council gate must be master',
+      output: '{ council: PlanCouncil, wakeup? }',
+    },
+    propose_workflow: {
+      input: '{ recipe, objective, input, reason, idempotencyKey }; Master-only',
+      output: 'compact WorkflowProposal summary; no execution mutation and no GraphState payload',
+    },
+    propose_workflow_patch: {
+      input: '{ workflowId, baseVersion, wakeupIds?, reason, operations, idempotencyKey }; Master-only; operations include bounded add-dynamic-triage',
+      output: 'compact versioned patch Proposal with impact and rollback; no execution mutation',
+    },
+    revise_workflow: {
+      input: '{ proposalId, recipe?, objective?, input?, reason }; human locks are immutable to Master',
+      output: 'compact revised WorkflowProposal summary',
+    },
+    explain_workflow: {
+      input: '{ proposalId }; Master-only, read-only',
+      output: 'compact participants, relationships, Graph Diff, policy, validation',
+    },
+    commit_workflow: {
+      input: '{ proposalId, expectedBaseVersion, idempotencyKey, reason? }; approved proposals only',
+      output: 'compact committed proposal with stable execution mapping',
+    },
+    abort_workflow: {
+      input: '{ proposalId, reason }; uncommitted proposals only',
+      output: 'compact aborted proposal summary',
     },
   },
   publicRuntimeApi: {
@@ -468,6 +535,8 @@ export const graphStateSchema = {
     'edge.removed',
     'loop.started',
     'loop.stopped',
+    'workflow.proposal.updated',
+    'workflow.wakeup.updated',
     // Kernel event-log fact (G0): { type: 'kernel.event', event: KernelEvent }.
     // Deliberately carries no state payload; it mirrors the SQLite events row
     // { seq, id, ts, type, actor{kind,ref}, causeId?, reason?, payload }.
@@ -517,6 +586,7 @@ export const graphStateSchema = {
 export function createEmptyGraphState() {
   return {
     version: graphStateVersion,
+    controlVersion: 0,
     updatedAt: new Date().toISOString(),
     nodes: [],
     edges: [],
@@ -529,6 +599,24 @@ export function createEmptyGraphState() {
     reports: [],
     subscriptions: {},
     pendingActivations: {},
+    planCouncils: {},
+    workflowPlans: {},
+    workflowProposals: {},
+    workflowCapabilities: {},
+    workflowWakeups: {},
+    barriers: {},
+    dynamicSpawnGroups: {},
+    workspaceLeases: [],
+    runQueue: [],
+    usageFacts: [],
+    resourcePolicies: {},
+    schedulerMetrics: {
+      queuedTotal: 0,
+      admittedTotal: 0,
+      rejectedTotal: 0,
+      maxQueueDepth: 0,
+      byReason: {},
+    },
     sources: {},
     // L6 saved relation templates — runtime-plane config, snapshot-persisted.
     templates: {},
