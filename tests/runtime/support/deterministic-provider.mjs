@@ -6,7 +6,7 @@ class DeterministicRun extends EventEmitter {
   #closed = false
   #timer
 
-  constructor(input, { killOnStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false } = {}) {
+  constructor(input, { killOnStart = false, failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0 } = {}) {
     super()
     setImmediate(() => {
       if (!this.#closed) {
@@ -22,14 +22,20 @@ class DeterministicRun extends EventEmitter {
       : input.prompt?.includes('ORRERY_DELAY')
         ? 500
         : 50
-    this.#timer = setTimeout(() => this.#complete(input, { noOutput, oversizedOutput, permissionRequest }), delay)
+    this.#timer = setTimeout(() => this.#complete(input, { failAfterStart, noOutput, oversizedOutput, permissionRequest, toolActivityCount }), delay)
     if (killOnStart) {
       setImmediate(() => this.kill())
     }
   }
 
-  #complete(input, { noOutput = false, oversizedOutput = false, permissionRequest = false } = {}) {
+  #complete(input, { failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0 } = {}) {
     if (this.#closed) return
+    if (failAfterStart) {
+      this.emit('error', new Error('Deterministic provider failed after start.'))
+      this.#closed = true
+      this.emit('close', { code: 1, signal: null, killed: false })
+      return
+    }
     const providerSessionId = input.backendSessionId ?? input.sessionId
     const turnDiffFixture = path.join(input.cwd, 'README.md')
     if (
@@ -56,10 +62,11 @@ class DeterministicRun extends EventEmitter {
         },
       })
     }
-    if (input.prompt?.includes('ORRERY_TOOL_ACTIVITY')) {
-      const itemId = `tool-${input.turnId}`
+    const activityCount = toolActivityCount || (input.prompt?.includes('ORRERY_TOOL_ACTIVITY') ? 1 : 0)
+    for (let index = 0; index < activityCount; index += 1) {
+      const itemId = `tool-${input.turnId}-${index}`
       this.emit('providerEvent', {
-        id: `tool-start-${input.turnId}`,
+        id: `tool-start-${input.turnId}-${index}`,
         ts,
         sessionId: input.sessionId,
         turnId: input.turnId,
@@ -72,8 +79,9 @@ class DeterministicRun extends EventEmitter {
           startedAt: ts,
         },
       })
+      if (this.#closed) return
       this.emit('providerEvent', {
-        id: `tool-complete-${input.turnId}`,
+        id: `tool-complete-${input.turnId}-${index}`,
         ts,
         sessionId: input.sessionId,
         turnId: input.turnId,
@@ -134,13 +142,17 @@ export class DeterministicProviderAdapter {
   #noOutputWhen
   #oversizedOutputWhen
   #permissionWhen
+  #toolActivityCount
+  #failAfterStartWhen
 
-  constructor({ failWhen, killWhen, noOutputWhen, oversizedOutputWhen, permissionWhen, kind = 'claude-code' } = {}) {
+  constructor({ failWhen, failAfterStartWhen, killWhen, noOutputWhen, oversizedOutputWhen, permissionWhen, toolActivityCount, kind = 'claude-code' } = {}) {
     this.#failWhen = failWhen
     this.#killWhen = killWhen
     this.#noOutputWhen = noOutputWhen
     this.#oversizedOutputWhen = oversizedOutputWhen
     this.#permissionWhen = permissionWhen
+    this.#toolActivityCount = toolActivityCount
+    this.#failAfterStartWhen = failAfterStartWhen
     this.kind = kind
   }
 
@@ -161,9 +173,11 @@ export class DeterministicProviderAdapter {
     }
     return new DeterministicRun(input, {
       killOnStart: this.#killWhen?.(input) === true,
+      failAfterStart: this.#failAfterStartWhen?.(input) === true,
       noOutput: this.#noOutputWhen?.(input) === true,
       oversizedOutput: this.#oversizedOutputWhen?.(input) === true,
       permissionRequest: this.#permissionWhen?.(input) === true,
+      toolActivityCount: Number(this.#toolActivityCount?.(input) ?? 0),
     })
   }
 

@@ -46,11 +46,17 @@ export function PlanCouncilWorkbench({
   const queuedRuns = (runtimeState.runQueue ?? []).filter((run) => participantIds.has(run.sessionId));
   const scopeIds = [...new Set(council.participantOrder.map((sessionId) => runtimeState.nodes.find((node) => node.sessionId === sessionId)?.clusterId ?? 'global'))];
 
-  const act = async (kind: 'cross-review' | 'synthesis' | 'stop') => {
+  const act = async (kind: 'cross-review' | 'synthesis' | 'retry' | 'stop') => {
     if (!runtimeApi || pending) return;
     setPending(kind);
     try {
-      const result = kind === 'cross-review'
+      const result = kind === 'retry'
+        ? await runtimeApi.dispatchCommand({
+            kind: 'retry_plan_council_participant',
+            reason: 'The human disabled consumption enforcement and retried the blocked Council participant.',
+            input: { workflowId: council.workflowId, disableConsumptionBudget: true },
+          }) as { state: GraphState }
+        : kind === 'cross-review'
         ? await runtimeApi.startPlanCouncilCrossReview({ workflowId: council.workflowId })
         : kind === 'synthesis'
           ? await runtimeApi.startPlanCouncilSynthesis({ workflowId: council.workflowId })
@@ -128,6 +134,11 @@ export function PlanCouncilWorkbench({
             <Play className="size-3" /> Synthesize final plan
           </Button>
         ) : null}
+        {view.canRetryBlockedParticipant ? (
+          <Button size="sm" className="h-7 text-[10px]" disabled={Boolean(pending)} onClick={() => void act('retry')}>
+            <Play className="size-3" /> Disable scope budget & retry
+          </Button>
+        ) : null}
         {view.canStop ? (
           <Button variant="ghost" size="sm" className="h-7 text-[10px]" disabled={Boolean(pending)} onClick={() => void act('stop')}>
             <Square className="size-3" /> Stop
@@ -152,7 +163,13 @@ export function PlanCouncilWorkbench({
         <span>Admission: {activeLeases.length} active · {queuedRuns.length} queued</span>
         {scopeIds.map((scopeId) => {
           const policy = runtimeState.resourcePolicies?.[scopeId];
-          return <span key={scopeId}>Cap {scopeId}: {policy?.maxConcurrentSessions ?? 4} concurrent · {policy?.maxTurns ?? 100} turns · {(policy?.maxTokens ?? 2_000_000).toLocaleString()} tokens</span>;
+          return (
+            <span key={scopeId}>
+              Cap {scopeId}: {policy?.maxConcurrentSessions ?? 4} concurrent · consumption {policy?.consumptionEnforcement ?? 'off'}
+              {policy?.maxTurns !== undefined ? ` · ${policy.maxTurns} turns` : ''}
+              {policy?.maxTokens !== undefined ? ` · ${policy.maxTokens.toLocaleString()} tokens` : ''}
+            </span>
+          );
         })}
         {phaseBarriers.map((barrier) => (
           <span key={barrier!.barrierId} className="rounded border border-border px-1.5 py-0.5">

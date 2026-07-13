@@ -83,6 +83,7 @@ export async function run({ orrery, provider, workDir, log }) {
   assert.ok(usageFacts.every((fact) => fact.source === 'provider' || fact.source === 'unavailable'));
   assert.equal(usageFacts.some((fact) => 'cost' in fact || 'totalCostUsd' in fact), false, 'pricing remains separate from objective usage');
   assert.equal(state.resourcePolicies.global.maxConcurrentSessions, 4);
+  assert.equal(state.resourcePolicies.global.consumptionEnforcement, 'off');
   assert.equal(state.runQueue.length, 0);
   assert.equal(state.workspaceLeases.filter((lease) => lease.status === 'active').length, 0);
   const { events } = await orrery.kernelEvents({ limit: 3000 });

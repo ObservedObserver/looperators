@@ -5,6 +5,7 @@ export const planCouncilPhases = [
   'reviewing-peers',
   'ready-for-synthesis',
   'synthesizing',
+  'blocked',
   'completed',
   'stopped',
   'failed',
@@ -73,7 +74,7 @@ export type PlanCouncilArtifact = {
 
 export type PlanCouncilHistoryEntry = {
   id: string
-  type: 'started' | 'phase-changed' | 'artifact-created' | 'stopped' | 'failed'
+  type: 'started' | 'phase-changed' | 'artifact-created' | 'blocked' | 'retried' | 'stopped' | 'failed'
   ts: string
   phase: PlanCouncilPhase
   summary: string
@@ -98,6 +99,12 @@ export type PlanCouncil = {
   updatedAt: string
   stoppedAt?: string
   failure?: string
+  blockedAt?: string
+  blockedFromPhase?: Exclude<PlanCouncilPhase, 'blocked'>
+  blockedParticipantId?: string
+  blockedParticipantIds?: string[]
+  blockReason?: string
+  blockKind?: 'resource-budget'
   advancement: {
     crossReview: 'human' | 'master' | 'auto'
     synthesis: 'human' | 'master' | 'auto'
@@ -133,6 +140,7 @@ export function planCouncilProductView(council: PlanCouncil) {
     canStartCrossReview: council.phase === 'ready-for-cross-review' && waitingGate?.policy === 'human',
     canStartSynthesis: council.phase === 'ready-for-synthesis' && waitingGate?.policy === 'human',
     waitingGate,
+    canRetryBlockedParticipant: council.phase === 'blocked' && Boolean(council.blockedParticipantId),
     canStop: !['completed', 'stopped', 'failed'].includes(council.phase),
     terminal: ['completed', 'stopped', 'failed'].includes(council.phase),
   }

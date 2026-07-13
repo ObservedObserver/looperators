@@ -6,7 +6,8 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
-import { DeterministicProviderAdapter } from './support/deterministic-provider.mjs'
+import { createEmptyGraphState } from '../../dist-electron/shared/graph-state.js'
+import { DeterministicProviderAdapter, deterministicProviderAdapters } from './support/deterministic-provider.mjs'
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor(label, predicate, timeoutMs = 10000) {
@@ -28,6 +29,136 @@ function harness(prefix) {
   })
   return { root, adapter, runtime, cleanup: () => { runtime.killAll(); fs.rmSync(root, { recursive: true, force: true }) } }
 }
+
+test('consumption budgets are disabled by default while capacity governance remains active', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-default-off-')
+  try {
+    const created = await runtime.createSession({
+      prompt: 'ORRERY_TOOL_ACTIVITY default-off turn',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'read-only' },
+    })
+    await waitFor('default-off turn complete', () => runtime.getState().sessions[created.sessionId]?.status === 'idle')
+    const policy = runtime.getState().resourcePolicies.global
+    assert.equal(policy.consumptionEnforcement, 'off')
+    assert.equal(policy.maxToolCallsPerTurn, undefined)
+    assert.equal(policy.maxDurationPerTurnMs, undefined)
+    assert.equal(policy.maxTokensPerTurn, undefined)
+    assert.equal(policy.maxConcurrentSessions, 4)
+    assert.equal(runtime.getKernelEvents({ type: 'resource.budget-exhausted' }).events.length, 0)
+  } finally { cleanup() }
+})
+
+test('legacy policies without explicit enforcement migrate off regardless of who last edited capacity', () => {
+  for (const [updatedBy, expectedEnforcement, expectedToolLimit] of [
+    ['runtime', 'off', undefined],
+    ['human', 'off', undefined],
+  ]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `orrery-budget-migration-${updatedBy}-`))
+    const storageFile = path.join(root, 'state.json')
+    const state = createEmptyGraphState()
+    state.resourcePolicies.global = {
+      scopeId: 'global', maxConcurrentSessions: 4, maxConcurrentPerProvider: 4, maxQueuedRuns: 100,
+      maxTurns: 100, maxTokens: 2_000_000, maxDurationMs: 14_400_000, maxToolCalls: 500,
+      maxFanout: 8, maxTokensPerTurn: 200_000, maxDurationPerTurnMs: 900_000, maxToolCallsPerTurn: 10,
+      updatedAt: state.updatedAt, updatedBy, budgetStartedAt: state.updatedAt,
+    }
+    fs.writeFileSync(storageFile, JSON.stringify(state))
+    const runtime = new RuntimeSessionManager({ storageFile, providerAdapters: deterministicProviderAdapters() })
+    try {
+      const policy = runtime.getState().resourcePolicies.global
+      assert.equal(policy.consumptionEnforcement, expectedEnforcement)
+      assert.equal(policy.maxToolCallsPerTurn, expectedToolLimit)
+    } finally {
+      runtime.killAll()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('warning budgets report usage without freezing or terminating the turn', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-warning-')
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'warning-policy', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxTokensPerTurn: 10, consumptionEnforcement: 'warn' },
+    })
+    const created = await runtime.createSession({ prompt: 'warn but continue', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await waitFor('warned turn complete', () => runtime.getState().sessions[created.sessionId]?.status === 'idle')
+    assert.notEqual(runtime.getState().nodes.find((node) => node.sessionId === created.sessionId).frozen, true)
+    assert.equal(runtime.getKernelEvents({ type: 'resource.budget-warning' }).events.length, 1)
+    assert.equal(runtime.getKernelEvents({ type: 'resource.budget-exhausted' }).events.length, 0)
+  } finally { cleanup() }
+})
+
+test('aggregate-only hard budgets derive conservative reservations before concurrent admission', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-aggregate-reservation-')
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'aggregate-only-policy', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxTokens: 20, consumptionEnforcement: 'hard' },
+    })
+    await runtime.createSession({ prompt: 'ORRERY_SLEEP reserve aggregate', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await assert.rejects(
+      runtime.createSession({ prompt: 'must not oversubscribe aggregate', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } }),
+      /Resource budget exhausted/,
+    )
+    assert.equal(runtime.getState().workspaceLeases.filter((lease) => lease.status === 'active').length, 1)
+  } finally { cleanup() }
+})
+
+test('aggregate-only hard budgets constrain the admitted turn itself', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-aggregate-turn-')
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'aggregate-turn-policy', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxTokens: 10, consumptionEnforcement: 'hard' },
+    })
+    const created = await runtime.createSession({ prompt: 'provider reports eighteen tokens', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await waitFor('aggregate-only violating turn fails', () => runtime.getState().sessions[created.sessionId]?.status === 'failed')
+    assert.match(runtime.getState().sessions[created.sessionId].error, /tokens 18\/10/)
+  } finally { cleanup() }
+})
+
+test('off to hard refreshes active reservations before admitting another turn', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-live-reservation-')
+  try {
+    await runtime.createSession({ prompt: 'ORRERY_SLEEP active before hard policy', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await runtime.dispatchCommand({
+      commandId: 'live-aggregate-hard', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxTokens: 20, consumptionEnforcement: 'hard' },
+    })
+    await assert.rejects(
+      runtime.createSession({ prompt: 'must wait behind refreshed reservation', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } }),
+      /Resource budget exhausted/,
+    )
+    assert.equal(runtime.getState().workspaceLeases.find((lease) => lease.status === 'active')?.reservedTokens, 20)
+  } finally { cleanup() }
+})
+
+test('duration enforcement is re-armed when a human changes policy during an active turn', async () => {
+  const { runtime, cleanup } = harness('orrery-budget-live-duration-')
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'duration-hard', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxDurationPerTurnMs: 800, consumptionEnforcement: 'hard' },
+    })
+    const spared = await runtime.createSession({ prompt: 'ORRERY_SLEEP disable before deadline', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await runtime.dispatchCommand({
+      commandId: 'duration-off', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', consumptionEnforcement: 'off' },
+    })
+    await waitFor('active turn survives hard to off', () => runtime.getState().sessions[spared.sessionId]?.status === 'idle')
+
+    const stopped = await runtime.createSession({ prompt: 'ORRERY_SLEEP enable during turn', cwd: process.cwd(), runtimeSettings: { sandbox: 'read-only' } })
+    await runtime.dispatchCommand({
+      commandId: 'duration-hard-again', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxDurationPerTurnMs: 80, consumptionEnforcement: 'hard' },
+    })
+    await waitFor('active turn stops after off to hard', () => runtime.getState().sessions[stopped.sessionId]?.status === 'failed')
+    assert.match(runtime.getState().sessions[stopped.sessionId].error, /durationMs/)
+  } finally { cleanup() }
+})
 
 test('same-workspace writers serialize while readers run concurrently and usage is durable', async () => {
   const { runtime, adapter, cleanup } = harness('orrery-resource-')

@@ -214,6 +214,7 @@ test('committed Proposal status follows the mapped execution instead of staying 
     status: 'committed', idempotencyKey: 'status', createdAt: at, createdBy: { kind: 'human' }, updatedAt: at,
   }
   assert.equal(workflowExecutionStatus(proposal, { planCouncils: { 'council-1': { phase: 'drafting-plans' } } }), 'running')
+  assert.equal(workflowExecutionStatus(proposal, { sessions: { a: { status: 'failed' } }, planCouncils: { 'council-1': { phase: 'blocked' } } }), 'running')
   assert.equal(workflowExecutionStatus(proposal, { planCouncils: { 'council-1': { phase: 'completed' } } }), 'completed')
   assert.equal(workflowExecutionStatus(proposal, { planCouncils: { 'council-1': { phase: 'failed' } } }), 'failed')
   assert.equal(workflowExecutionStatus(proposal, { planCouncils: { 'council-1': { phase: 'stopped' } } }), 'stopped')

@@ -1059,10 +1059,6 @@ export function workflowExecutionStatus(
   const mapping = plan.executionMapping
   if (!mapping) return 'failed'
 
-  const participantIds = Object.values(mapping.participantSessionIds)
-  const participantStatuses = participantIds.map((sessionId) => state.sessions?.[sessionId]?.status)
-  if (participantStatuses.some((status) => status === 'failed')) return 'failed'
-
   if (plan.recipe === 'plan-council' && mapping.productWorkflowId) {
     const phase = state.planCouncils?.[mapping.productWorkflowId]?.phase
     if (phase === 'completed') return 'completed'
@@ -1070,6 +1066,10 @@ export function workflowExecutionStatus(
     if (phase === 'stopped') return 'stopped'
     return phase ? 'running' : 'failed'
   }
+
+  const participantIds = Object.values(mapping.participantSessionIds)
+  const participantStatuses = participantIds.map((sessionId) => state.sessions?.[sessionId]?.status)
+  if (participantStatuses.some((status) => status === 'failed')) return 'failed'
 
   if (plan.recipe === 'review' || plan.recipe === 'goal') {
     const subscriptionIds = new Set(Object.values(mapping.relationshipSubscriptionIds))

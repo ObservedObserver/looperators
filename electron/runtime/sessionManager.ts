@@ -108,10 +108,11 @@ import {
 } from '../../shared/dynamic-topology.js'
 import {
   budgetExceeded,
-  defaultRuntimeBudget,
+  defaultRuntimeResourcePolicy,
   leaseCompatible,
   normalizeProviderUsage,
   projectRuntimeUsage,
+  runtimeConsumptionBudgetKeys,
   selectFairQueuedRun,
 } from '../../shared/resource-governance.js'
 
@@ -178,6 +179,7 @@ const kernelCommandKinds = new Set([
   'start_plan_council',
   'start_plan_council_cross_review',
   'start_plan_council_synthesis',
+  'retry_plan_council_participant',
   'stop_plan_council',
   'start_draft_workflow',
   'start_handoff_workflow',
@@ -1957,6 +1959,7 @@ export class RuntimeSessionManager {
       'commit_workflow',
       'start_plan_council_cross_review',
       'start_plan_council_synthesis',
+      'retry_plan_council_participant',
     ].includes(kind)
     let automaticDeploymentId
     if (automaticallyJournaledWorkflow) {
@@ -2333,6 +2336,8 @@ export class RuntimeSessionManager {
         return this.startPlanCouncilCrossReview(input)
       case 'start_plan_council_synthesis':
         return this.startPlanCouncilSynthesis(input)
+      case 'retry_plan_council_participant':
+        return this.#cmdRetryPlanCouncilParticipant(input, ctx)
       case 'stop_plan_council':
         return this.stopPlanCouncil(input)
       case 'start_draft_workflow':
@@ -8072,7 +8077,8 @@ export class RuntimeSessionManager {
     }
     if (
       kind === 'start_plan_council_cross_review' ||
-      kind === 'start_plan_council_synthesis'
+      kind === 'start_plan_council_synthesis' ||
+      kind === 'retry_plan_council_participant'
     ) {
       const workflowId = optionalTrimmedString(input.workflowId ?? input.runId)
       const council = workflowId
@@ -8403,6 +8409,16 @@ export class RuntimeSessionManager {
     if (!council || ['completed', 'stopped', 'failed'].includes(council.phase)) {
       return
     }
+    if (council.phase === 'blocked' && /Resource budget exhausted:/i.test(String(message ?? ''))) return
+    if (council.phase === 'blocked') {
+      council.phase = council.blockedFromPhase ?? council.phase
+      delete council.blockedAt
+      delete council.blockedFromPhase
+      delete council.blockedParticipantId
+      delete council.blockedParticipantIds
+      delete council.blockReason
+      delete council.blockKind
+    }
     council.failure = String(message ?? 'Plan Council failed.')
     this.#cancelPendingCouncilBarriers(council, council.failure, causeId)
     this.#setPlanCouncilPhase(council, 'failed', council.failure)
@@ -8691,7 +8707,108 @@ export class RuntimeSessionManager {
     }
     const participant = council.participants[sessionId]
     if (!participant?.expectedTurnId) return
+    if (/Resource budget exhausted:/i.test(error)) {
+      const firstBlock = council.phase !== 'blocked'
+      if (firstBlock) {
+        council.blockedAt = now()
+        council.blockedFromPhase = council.phase
+        council.blockedParticipantIds = []
+      }
+      council.blockedParticipantIds ??= council.blockedParticipantId ? [council.blockedParticipantId] : []
+      if (!council.blockedParticipantIds.includes(sessionId)) council.blockedParticipantIds.push(sessionId)
+      council.blockedParticipantId = council.blockedParticipantIds[0]
+      const blockedLabels = council.blockedParticipantIds.map((id) => council.participants[id]?.label ?? id)
+      council.blockReason = `${blockedLabels.join(', ')} reached a configured resource budget. Adjust or disable the budget, then retry.`
+      council.blockKind = 'resource-budget'
+      council.failure = council.blockReason
+      if (firstBlock) this.#setPlanCouncilPhase(council, 'blocked', council.blockReason)
+      else this.#planCouncilHistory(council, 'blocked', council.blockReason)
+      this.#appendKernelEvent(
+        'council.blocked',
+        {
+          workflowId: council.workflowId,
+          runId: council.runId,
+          participantSessionId: sessionId,
+          reason: truncateForLog(council.blockReason, 400),
+          kind: council.blockKind,
+        },
+        { actor: { kind: 'runtime' } },
+      )
+      this.#touch()
+      this.#broadcast({ type: 'plan-council.updated', workflowId: council.workflowId, state: this.getState() })
+      return
+    }
     this.#failPlanCouncil(council, `${participant.label} failed: ${error}`)
+  }
+
+  async #cmdRetryPlanCouncilParticipant(input: JsonRecord = {}, ctx: JsonRecord) {
+    if (ctx.actor?.kind !== 'human') throw new Error('Only a human can retry a blocked Plan Council participant.')
+    const workflowId = optionalTrimmedString(input.workflowId)
+    const council = workflowId ? this.#state.planCouncils?.[workflowId] : undefined
+    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
+    if (council.phase !== 'blocked' || !council.blockedParticipantId || !council.blockedFromPhase) {
+      throw new Error(`Plan Council ${workflowId} is not blocked on a retryable participant.`)
+    }
+    const sessionId = council.blockedParticipantId
+    const participant = council.participants?.[sessionId]
+    const session = this.#state.sessions[sessionId]
+    if (!participant || !session || !participant.expectedArtifactKind || !participant.expectedExecutionEnvelope) {
+      throw new Error('Blocked Plan Council participant is missing retry provenance.')
+    }
+    const scopeId = this.#resourceScopeId(sessionId)
+    if (input.disableConsumptionBudget === true) {
+      this.#cmdSetResourcePolicy({ scopeId, consumptionEnforcement: 'off' }, ctx)
+    }
+    const policy = this.#resourcePolicy(scopeId)
+    if (policy.consumptionEnforcement === 'hard') {
+      throw new Error('The consumption budget is still enforced. Disable it or raise its limits before retrying.')
+    }
+    if (this.#isSessionFrozen(sessionId)) {
+      this.#cmdUnfreeze({ target: sessionId, reason: 'Retrying the blocked Plan Council participant.' }, ctx)
+    }
+    const previousExecution = clone(participant.expectedExecutionEnvelope)
+    const attempt = Number(previousExecution.attempt) + 1
+    const execution = {
+      ...previousExecution,
+      activationId: `${council.workflowId}:${previousExecution.phaseId}:retry-pending:${attempt}`,
+      attempt,
+    }
+    const note = participant.expectedArtifactKind === 'proposal'
+      ? plannerPrompt(council.objective, council.reviewFocus, participant.label)
+      : participant.expectedArtifactKind === 'peer-review'
+        ? crossReviewPrompt(council.reviewFocus)
+        : synthesizerPrompt(council.objective, council.reviewFocus)
+    const restoredPhase = council.blockedFromPhase
+    delete participant.expectedTurnId
+    const activated = await this.#cmdActivate({ sessionId, note }, { ...ctx, execution })
+    participant.expectedTurnId = activated.runId
+    participant.expectedExecutionEnvelope = { ...execution, activationId: activated.runId }
+    const remainingBlocked = (council.blockedParticipantIds ?? [sessionId]).filter((id) => id !== sessionId)
+    if (remainingBlocked.length > 0) {
+      council.blockedParticipantIds = remainingBlocked
+      council.blockedParticipantId = remainingBlocked[0]
+      const blockedLabels = remainingBlocked.map((id) => council.participants[id]?.label ?? id)
+      council.blockReason = `${blockedLabels.join(', ')} still require a resource-budget retry.`
+      council.failure = council.blockReason
+    } else {
+      council.phase = restoredPhase
+      delete council.blockedAt
+      delete council.blockedFromPhase
+      delete council.blockedParticipantId
+      delete council.blockedParticipantIds
+      delete council.blockReason
+      delete council.blockKind
+      delete council.failure
+    }
+    this.#planCouncilHistory(council, 'retried', `${participant.label} was retried as attempt ${attempt}.`)
+    this.#appendKernelEvent(
+      'council.participant-retried',
+      { workflowId: council.workflowId, runId: council.runId, participantSessionId: sessionId, attempt },
+      { ...ctx, execution: clone(participant.expectedExecutionEnvelope) },
+    )
+    this.#touch()
+    this.#broadcast({ type: 'plan-council.updated', workflowId: council.workflowId, state: this.getState() })
+    return { council: clone(council), state: this.getState() }
   }
 
   getPlanCouncil(input: JsonRecord | string = {}) {
@@ -13172,12 +13289,33 @@ export class RuntimeSessionManager {
     this.#state.resourcePolicies ??= {}
     if (!this.#state.resourcePolicies[scopeId]) this.#state.resourcePolicies[scopeId] = {
       scopeId,
-      ...defaultRuntimeBudget,
+      ...defaultRuntimeResourcePolicy,
       updatedAt: this.#state.updatedAt,
       updatedBy: 'runtime',
       budgetStartedAt: this.#state.updatedAt,
     }
     return this.#state.resourcePolicies[scopeId]
+  }
+
+  #resourceReservations(policy) {
+    if (policy.consumptionEnforcement !== 'hard') return {}
+    const minimum = (...values) => {
+      const limits = values.filter((value) => Number.isSafeInteger(value) && value > 0)
+      return limits.length > 0 ? Math.min(...limits) : undefined
+    }
+    return {
+      reservedTokens: minimum(policy.maxTokensPerTurn, policy.maxTokens),
+      reservedDurationMs: minimum(policy.maxDurationPerTurnMs, policy.maxDurationMs),
+      reservedToolCalls: minimum(policy.maxToolCallsPerTurn, policy.maxToolCalls),
+    }
+  }
+
+  #applyResourceReservations(target, policy) {
+    const reservations = this.#resourceReservations(policy)
+    for (const key of ['reservedTokens', 'reservedDurationMs', 'reservedToolCalls']) {
+      if (reservations[key] === undefined) delete target[key]
+      else target[key] = reservations[key]
+    }
   }
 
   #runResource(sessionId, turnId) {
@@ -13186,6 +13324,7 @@ export class RuntimeSessionManager {
     let workspaceKey = path.resolve(session?.cwd ?? process.cwd())
     try { workspaceKey = fs.realpathSync(workspaceKey) } catch { /* validated at provider launch */ }
     const policy = this.#resourcePolicy(scopeId)
+    const reservations = this.#resourceReservations(policy)
     return {
       turnId,
       sessionId,
@@ -13195,9 +13334,7 @@ export class RuntimeSessionManager {
         ? 'reader'
         : 'writer',
       providerInstanceId: session?.providerInstanceId,
-      reservedTokens: policy.maxTokensPerTurn,
-      reservedDurationMs: policy.maxDurationPerTurnMs,
-      reservedToolCalls: policy.maxToolCallsPerTurn,
+      ...Object.fromEntries(Object.entries(reservations).filter(([, value]) => value !== undefined)),
     }
   }
 
@@ -13214,6 +13351,7 @@ export class RuntimeSessionManager {
 
   #budgetExceededFor(resource, excludeTurnId = undefined) {
     const policy = this.#resourcePolicy(resource.scopeId)
+    if (policy.consumptionEnforcement !== 'hard') return undefined
     const budgetStartedAt = Date.parse(policy.budgetStartedAt ?? '')
     const facts = (this.#state.usageFacts ?? []).filter((fact) =>
       fact.scopeId === resource.scopeId && (!Number.isFinite(budgetStartedAt) || Date.parse(fact.completedAt) >= budgetStartedAt),
@@ -13231,9 +13369,9 @@ export class RuntimeSessionManager {
     }))
     for (const reservation of reservations) {
       const source = [...(this.#state.workspaceLeases ?? []), ...(this.#state.runQueue ?? [])].find((item) => item.turnId === reservation.turnId)
-      reservation.totalTokens = Number(source?.reservedTokens ?? policy.maxTokensPerTurn)
-      reservation.durationMs = Number(source?.reservedDurationMs ?? policy.maxDurationPerTurnMs)
-      reservation.toolCalls = Number(source?.reservedToolCalls ?? policy.maxToolCallsPerTurn)
+      reservation.totalTokens = Number(source?.reservedTokens ?? 0)
+      reservation.durationMs = Number(source?.reservedDurationMs ?? 0)
+      reservation.toolCalls = Number(source?.reservedToolCalls ?? 0)
     }
     const existing = [...facts, ...reservations] as any[]
     const exceeded = budgetExceeded(policy, existing as any)
@@ -13246,14 +13384,14 @@ export class RuntimeSessionManager {
     }), { turns: 0, tokens: 0, durationMs: 0, toolCalls: 0 })
     const projected = {
       turns: totals.turns + 1,
-      tokens: totals.tokens + Number(resource.reservedTokens ?? policy.maxTokensPerTurn),
-      durationMs: totals.durationMs + Number(resource.reservedDurationMs ?? policy.maxDurationPerTurnMs),
-      toolCalls: totals.toolCalls + Number(resource.reservedToolCalls ?? policy.maxToolCallsPerTurn),
+      tokens: totals.tokens + Number(resource.reservedTokens ?? 0),
+      durationMs: totals.durationMs + Number(resource.reservedDurationMs ?? 0),
+      toolCalls: totals.toolCalls + Number(resource.reservedToolCalls ?? 0),
     }
-    if (projected.turns > policy.maxTurns) return { dimension: 'turns', used: projected.turns, limit: policy.maxTurns }
-    if (projected.tokens > policy.maxTokens) return { dimension: 'tokens', used: projected.tokens, limit: policy.maxTokens }
-    if (projected.durationMs > policy.maxDurationMs) return { dimension: 'durationMs', used: projected.durationMs, limit: policy.maxDurationMs }
-    if (projected.toolCalls > policy.maxToolCalls) return { dimension: 'toolCalls', used: projected.toolCalls, limit: policy.maxToolCalls }
+    if (policy.maxTurns !== undefined && projected.turns > policy.maxTurns) return { dimension: 'turns', used: projected.turns, limit: policy.maxTurns }
+    if (policy.maxTokens !== undefined && projected.tokens > policy.maxTokens) return { dimension: 'tokens', used: projected.tokens, limit: policy.maxTokens }
+    if (policy.maxDurationMs !== undefined && projected.durationMs > policy.maxDurationMs) return { dimension: 'durationMs', used: projected.durationMs, limit: policy.maxDurationMs }
+    if (policy.maxToolCalls !== undefined && projected.toolCalls > policy.maxToolCalls) return { dimension: 'toolCalls', used: projected.toolCalls, limit: policy.maxToolCalls }
     return undefined
   }
 
@@ -13504,16 +13642,7 @@ export class RuntimeSessionManager {
     }
 
     this.#runs.set(sessionId, run)
-    const runPolicy = this.#resourcePolicy(resource.scopeId)
-    const budgetTimer = setTimeout(() => {
-      this.#markRunBudgetViolation(sessionId, {
-        dimension: 'durationMs',
-        used: runPolicy.maxDurationPerTurnMs,
-        limit: runPolicy.maxDurationPerTurnMs,
-      })
-    }, runPolicy.maxDurationPerTurnMs)
-    budgetTimer.unref?.()
-    this.#runBudgetTimers.set(sessionId, budgetTimer)
+    this.#scheduleRunDurationBudgetTimer(sessionId)
 
     run.on('native', (event) =>
       this.#appendNativeProviderEnvelope(sessionId, event),
@@ -13700,8 +13829,13 @@ export class RuntimeSessionManager {
       const context = this.#runContext.get(sessionId)
       const policy = context?.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
       const toolCalls = (session.runtimeActivities ?? []).filter((activity) => activity.kind === 'tool_call' && Date.parse(activity.startedAt ?? session.startedAt) >= Date.parse(context?.resource?.startedAt ?? session.startedAt)).length
-      if (policy && toolCalls > policy.maxToolCallsPerTurn) {
-        this.#markRunBudgetViolation(sessionId, { dimension: 'toolCalls', used: toolCalls, limit: policy.maxToolCallsPerTurn })
+      const toolCallLimit = policy?.consumptionEnforcement === 'hard'
+        ? context?.resource?.reservedToolCalls
+        : policy?.maxToolCallsPerTurn
+      if (toolCallLimit !== undefined && toolCalls > toolCallLimit) {
+        const exceeded = { dimension: 'toolCalls', used: toolCalls, limit: toolCallLimit }
+        if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
+        else if (policy.consumptionEnforcement === 'warn') this.#markRunBudgetWarning(sessionId, exceeded)
       }
     }
   }
@@ -14021,8 +14155,13 @@ export class RuntimeSessionManager {
       context.providerTurns = Number.isFinite(event.num_turns) ? Number(event.num_turns) : 0
       context.providerDurationMs = Number.isFinite(event.duration_ms) ? Number(event.duration_ms) : undefined
       const policy = context.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
-      if (policy && context.providerUsage.totalTokens > policy.maxTokensPerTurn) {
-        this.#markRunBudgetViolation(sessionId, { dimension: 'tokens', used: context.providerUsage.totalTokens, limit: policy.maxTokensPerTurn })
+      const tokenLimit = policy?.consumptionEnforcement === 'hard'
+        ? context.resource?.reservedTokens
+        : policy?.maxTokensPerTurn
+      if (tokenLimit !== undefined && context.providerUsage.totalTokens > tokenLimit) {
+        const exceeded = { dimension: 'tokens', used: context.providerUsage.totalTokens, limit: tokenLimit }
+        if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
+        else if (policy.consumptionEnforcement === 'warn') this.#markRunBudgetWarning(sessionId, exceeded)
       }
     }
     session.result = typeof event.result === 'string' ? event.result : undefined
@@ -14053,6 +14192,48 @@ export class RuntimeSessionManager {
     try { this.#runs.get(sessionId)?.kill() } catch { /* close/error path remains authoritative */ }
   }
 
+  #scheduleRunDurationBudgetTimer(sessionId) {
+    const existing = this.#runBudgetTimers.get(sessionId)
+    if (existing) clearTimeout(existing)
+    this.#runBudgetTimers.delete(sessionId)
+    const context = this.#runContext.get(sessionId)
+    const policy = context?.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
+    const durationLimit = policy?.consumptionEnforcement === 'hard'
+      ? context?.resource?.reservedDurationMs
+      : policy?.maxDurationPerTurnMs
+    if (!context || !policy || policy.consumptionEnforcement === 'off' || durationLimit === undefined) return
+    const startedAtMs = Date.parse(context.resource?.startedAt ?? '')
+    const elapsedMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : 0
+    const remainingMs = durationLimit - elapsedMs
+    if (remainingMs <= 0) {
+      const exceeded = { dimension: 'durationMs', used: elapsedMs, limit: durationLimit }
+      if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
+      else this.#markRunBudgetWarning(sessionId, exceeded)
+      return
+    }
+    const timer = setTimeout(() => this.#scheduleRunDurationBudgetTimer(sessionId), remainingMs)
+    timer.unref?.()
+    this.#runBudgetTimers.set(sessionId, timer)
+  }
+
+  #markRunBudgetWarning(sessionId, exceeded) {
+    const context = this.#runContext.get(sessionId)
+    if (!context) return
+    context.resourceWarnings ??= {}
+    if (context.resourceWarnings[exceeded.dimension]) return
+    context.resourceWarnings[exceeded.dimension] = clone(exceeded)
+    this.#appendKernelEvent(
+      'resource.budget-warning',
+      { sessionId, turnId: context.runId, ...exceeded },
+      {
+        actor: { kind: 'runtime' },
+        ...(context.execution ? { execution: clone(context.execution) } : {}),
+      },
+      { reason: `Resource budget warning: ${exceeded.dimension} ${exceeded.used}/${exceeded.limit}` },
+    )
+    this.#touch()
+  }
+
   #recordUsageFact(sessionId, completedAt) {
     const session = this.#state.sessions[sessionId]
     const context = this.#runContext.get(sessionId)
@@ -14081,6 +14262,15 @@ export class RuntimeSessionManager {
     }
     this.#state.usageFacts.push(fact)
     this.#appendKernelEvent('usage.recorded', fact, { actor: { kind: 'runtime' }, ...(context.execution ? { execution: clone(context.execution) } : {}) })
+    const policy = this.#resourcePolicy(fact.scopeId)
+    if (policy.consumptionEnforcement === 'warn') {
+      const budgetStartedAt = Date.parse(policy.budgetStartedAt ?? '')
+      const scopedFacts = this.#state.usageFacts.filter((candidate) =>
+        candidate.scopeId === fact.scopeId && (!Number.isFinite(budgetStartedAt) || Date.parse(candidate.completedAt) >= budgetStartedAt),
+      )
+      const exceeded = budgetExceeded(policy, scopedFacts)
+      if (exceeded) this.#markRunBudgetWarning(sessionId, exceeded)
+    }
   }
 
   #recordInterruptedUsageFact(sessionId) {
@@ -14132,15 +14322,45 @@ export class RuntimeSessionManager {
     const current = this.#resourcePolicy(scopeId)
     const next = { ...current, scopeId, updatedAt: now(), updatedBy: 'human' }
     if (input.resetUsage === true) next.budgetStartedAt = next.updatedAt
-    for (const key of Object.keys(defaultRuntimeBudget)) {
+    if (input.consumptionEnforcement !== undefined) {
+      if (!['off', 'warn', 'hard'].includes(input.consumptionEnforcement)) {
+        throw new Error('consumptionEnforcement must be off, warn, or hard.')
+      }
+      next.consumptionEnforcement = input.consumptionEnforcement
+    } else if (runtimeConsumptionBudgetKeys.some((key) => input[key] !== undefined && input[key] !== null)) {
+      next.consumptionEnforcement = 'hard'
+    }
+    for (const key of ['maxConcurrentSessions', 'maxConcurrentPerProvider', 'maxQueuedRuns', 'maxFanout']) {
       if (input[key] === undefined) continue
       const value = Number(input[key])
       if (!Number.isFinite(value) || value < 1 || !Number.isInteger(value)) throw new Error(`${key} must be a positive integer.`)
       next[key] = value
     }
+    for (const key of runtimeConsumptionBudgetKeys) {
+      if (input[key] === undefined) continue
+      if (input[key] === null) {
+        delete next[key]
+        continue
+      }
+      const value = Number(input[key])
+      if (!Number.isFinite(value) || value < 1 || !Number.isInteger(value)) throw new Error(`${key} must be a positive integer or null.`)
+      next[key] = value
+    }
     this.#state.resourcePolicies[scopeId] = next
+    for (const lease of this.#state.workspaceLeases ?? []) {
+      if (lease.status === 'active' && lease.scopeId === scopeId) this.#applyResourceReservations(lease, next)
+    }
+    for (const queued of this.#state.runQueue ?? []) {
+      if (queued.scopeId === scopeId) this.#applyResourceReservations(queued, next)
+    }
+    for (const context of this.#runContext.values()) {
+      if (context.resource?.scopeId === scopeId) this.#applyResourceReservations(context.resource, next)
+    }
     this.#appendKernelEvent('resource.policy.updated', { scopeId, policy: clone(next) }, ctx)
     this.#touch()
+    for (const [sessionId, context] of this.#runContext) {
+      if (context.resource?.scopeId === scopeId && this.#runs.has(sessionId)) this.#scheduleRunDurationBudgetTimer(sessionId)
+    }
     queueMicrotask(() => void this.#drainRunQueue())
     return { policy: clone(next), state: this.getState() }
   }
@@ -16145,6 +16365,41 @@ export class RuntimeSessionManager {
     }
   }
 
+  #normalizeResourcePolicies(value, diagnostics: JsonRecord[] = []) {
+    if (!isObject(value)) return {}
+    const normalized = {}
+    for (const [scopeId, candidate] of Object.entries(value)) {
+      if (!isObject(candidate)) {
+        diagnostics.push(diagnostic('storage.resource_policy_skipped', 'Skipped an invalid resource policy.', { scopeId }))
+        continue
+      }
+      const hadExplicitEnforcement = ['off', 'warn', 'hard'].includes(candidate.consumptionEnforcement)
+      const consumptionEnforcement = hadExplicitEnforcement
+        ? candidate.consumptionEnforcement
+        : 'off'
+      const policy: JsonRecord = {
+        scopeId,
+        ...defaultRuntimeResourcePolicy,
+        consumptionEnforcement,
+        updatedAt: nonEmptyString(candidate.updatedAt) ? candidate.updatedAt : now(),
+        updatedBy: candidate.updatedBy === 'human' ? 'human' : 'runtime',
+        ...(nonEmptyString(candidate.budgetStartedAt) ? { budgetStartedAt: candidate.budgetStartedAt } : {}),
+      }
+      for (const key of ['maxConcurrentSessions', 'maxConcurrentPerProvider', 'maxQueuedRuns', 'maxFanout']) {
+        const numeric = Number(candidate[key])
+        if (Number.isSafeInteger(numeric) && numeric > 0) policy[key] = numeric
+      }
+      if (hadExplicitEnforcement) {
+        for (const key of runtimeConsumptionBudgetKeys) {
+          const numeric = Number(candidate[key])
+          if (Number.isSafeInteger(numeric) && numeric > 0) policy[key] = numeric
+        }
+      }
+      normalized[scopeId] = policy
+    }
+    return normalized
+  }
+
   #normalizeState(value, diagnostics: JsonRecord[] = []) {
     const fallback = createEmptyGraphState()
     const source = isObject(value) ? value : {}
@@ -16214,9 +16469,7 @@ export class RuntimeSessionManager {
       usageFacts: Array.isArray(source.usageFacts)
         ? source.usageFacts.filter(isObject).map(clone)
         : [],
-      resourcePolicies: isObject(source.resourcePolicies)
-        ? clone(source.resourcePolicies)
-        : {},
+      resourcePolicies: this.#normalizeResourcePolicies(source.resourcePolicies, diagnostics),
       schedulerMetrics: isObject(source.schedulerMetrics)
         ? { ...fallback.schedulerMetrics, ...clone(source.schedulerMetrics) }
         : clone(fallback.schedulerMetrics),

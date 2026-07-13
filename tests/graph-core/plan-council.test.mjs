@@ -77,6 +77,7 @@ test('Plan Council product view derives human gate actions from durable phase', 
     canStartCrossReview: true,
     canStartSynthesis: false,
     waitingGate: { phase: 'cross-review', policy: 'human' },
+    canRetryBlockedParticipant: false,
     canStop: true,
     terminal: false,
   });
@@ -85,6 +86,9 @@ test('Plan Council product view derives human gate actions from durable phase', 
   assert.equal(planCouncilProductView(council).waitingGate.policy, 'master');
   council.phase = 'stopped';
   assert.equal(planCouncilProductView(council).canStop, false);
+  council.phase = 'blocked';
+  council.blockedParticipantId = 'b';
+  assert.equal(planCouncilProductView(council).canRetryBlockedParticipant, true);
 });
 
 test('Councils above four planners require and project hub-and-spoke review', () => {

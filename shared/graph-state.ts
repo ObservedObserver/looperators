@@ -97,7 +97,7 @@ export const graphStateSchema = {
     usageFacts:
       'RuntimeUsageFact[]; immutable provider usage facts, independent from pricing',
     resourcePolicies:
-      'Record<scopeId, RuntimeResourcePolicy>; explicit concurrency and autonomous-run ceilings',
+      'Record<scopeId, RuntimeResourcePolicy>; always-on capacity controls plus optional off/warn/hard consumption budgets',
     schedulerMetrics:
       'SchedulerBackpressureMetrics; runtime admission/backpressure projection',
     loops:

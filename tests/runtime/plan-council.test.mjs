@@ -183,6 +183,67 @@ test('Plan Council obeys the global resource fan-out policy before creating part
   } finally { cleanup(); }
 });
 
+test('a hard budget blocks Council without discarding peers and human retry resumes the same Barrier', async () => {
+  const { runtime, cleanup } = harness('orrery-plan-council-budget-retry-', {
+    toolActivityCount: (turn) => turn.runtimeSettings?.model === 'Planner C-model' ? 2 : 0,
+  });
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'council-hard-budget', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxToolCallsPerTurn: 1, consumptionEnforcement: 'hard' },
+    });
+    const started = await runtime.startPlanCouncil(input(process.cwd()));
+    const blocked = await waitFor('budget-blocked Council', () => {
+      const council = runtime.getState().planCouncils[started.workflowId];
+      return council?.phase === 'blocked' ? council : undefined;
+    });
+    const proposalBarrierId = blocked.barrierIds.proposal;
+    assert.equal(runtime.getState().barriers[proposalBarrierId].status, 'pending');
+    assert.match(blocked.blockReason, /configured resource budget/i);
+    await waitFor('successful peer artifacts survive', () =>
+      runtime.getState().planCouncils[started.workflowId].artifacts.filter((artifact) => artifact.kind === 'proposal').length === 2,
+    );
+    assert.equal(runtime.getState().planCouncils[started.workflowId].phase, 'blocked');
+
+    await runtime.dispatchCommand({
+      commandId: 'retry-budget-participant', kind: 'retry_plan_council_participant', actor: { kind: 'human' },
+      input: { workflowId: started.workflowId, disableConsumptionBudget: true },
+    });
+    const recovered = await waitFor('retried proposal Barrier release', () => {
+      const council = runtime.getState().planCouncils[started.workflowId];
+      return council?.phase === 'ready-for-cross-review' ? council : undefined;
+    });
+    assert.equal(recovered.artifacts.filter((artifact) => artifact.kind === 'proposal').length, 3);
+    assert.equal(runtime.getState().barriers[proposalBarrierId].status, 'released', 'retry continues the original generation');
+    assert.equal(runtime.getState().resourcePolicies.global.consumptionEnforcement, 'off');
+    assert.equal(runtime.getKernelEvents({ type: 'council.participant-retried' }).events.length, 1);
+  } finally { cleanup(); }
+});
+
+test('an ordinary provider failure while Council is budget-blocked remains terminal and cancels the Barrier', async () => {
+  const { runtime, cleanup } = harness('orrery-plan-council-mixed-failure-', {
+    toolActivityCount: (turn) => turn.prompt?.includes('Cross-review') && turn.runtimeSettings?.model === 'Planner A-model' ? 2 : 0,
+    failAfterStartWhen: (turn) => turn.prompt?.includes('Cross-review') && turn.runtimeSettings?.model === 'Planner C-model',
+  });
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'mixed-hard-budget', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', maxToolCallsPerTurn: 1, consumptionEnforcement: 'hard' },
+    });
+    const started = await runtime.startPlanCouncil(input(process.cwd()));
+    await waitFor('proposals before mixed cross-review failure', () =>
+      runtime.getState().planCouncils[started.workflowId]?.phase === 'ready-for-cross-review');
+    await assert.rejects(runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId }), /Resource budget exhausted|failed after start/i);
+    const failed = await waitFor('mixed failure Council terminal state', () => {
+      const council = runtime.getState().planCouncils[started.workflowId];
+      return council?.phase === 'failed' ? council : undefined;
+    });
+    assert.match(failed.failure, /Planner C.*failed|configured failure/i);
+    assert.equal(runtime.getState().barriers[failed.barrierIds['peer-review']].status, 'cancelled');
+    assert.equal(runtime.getKernelEvents({ type: 'council.failed' }).events.length, 1);
+  } finally { cleanup(); }
+});
+
 test('large Council uses one synthesizer review hub instead of planner full mesh', async () => {
   const { runtime, cleanup } = harness('orrery-plan-council-hub-');
   try {

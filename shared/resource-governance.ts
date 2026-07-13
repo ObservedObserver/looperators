@@ -61,17 +61,18 @@ export type RuntimeUsageFact = {
 
 export type RuntimeResourcePolicy = {
   scopeId: string
+  consumptionEnforcement: 'off' | 'warn' | 'hard'
   maxConcurrentSessions: number
   maxConcurrentPerProvider: number
   maxQueuedRuns: number
-  maxTurns: number
-  maxTokens: number
-  maxDurationMs: number
-  maxToolCalls: number
   maxFanout: number
-  maxTokensPerTurn: number
-  maxDurationPerTurnMs: number
-  maxToolCallsPerTurn: number
+  maxTurns?: number
+  maxTokens?: number
+  maxDurationMs?: number
+  maxToolCalls?: number
+  maxTokensPerTurn?: number
+  maxDurationPerTurnMs?: number
+  maxToolCallsPerTurn?: number
   updatedAt: string
   updatedBy: 'runtime' | 'human'
   budgetStartedAt?: string
@@ -87,19 +88,23 @@ export type SchedulerBackpressureMetrics = {
   byReason: Record<string, number>
 }
 
-export const defaultRuntimeBudget = {
+export const defaultRuntimeResourcePolicy = {
+  consumptionEnforcement: 'off' as const,
   maxConcurrentSessions: 4,
   maxConcurrentPerProvider: 4,
   maxQueuedRuns: 100,
-  maxTurns: 100,
-  maxTokens: 2_000_000,
-  maxDurationMs: 4 * 60 * 60 * 1000,
-  maxToolCalls: 500,
   maxFanout: 8,
-  maxTokensPerTurn: 200_000,
-  maxDurationPerTurnMs: 15 * 60 * 1000,
-  maxToolCallsPerTurn: 10,
 }
+
+export const runtimeConsumptionBudgetKeys = [
+  'maxTurns',
+  'maxTokens',
+  'maxDurationMs',
+  'maxToolCalls',
+  'maxTokensPerTurn',
+  'maxDurationPerTurnMs',
+  'maxToolCallsPerTurn',
+] as const
 
 export function leaseCompatible(
   leases: WorkspaceLease[],
@@ -124,10 +129,10 @@ export function usageTotals(facts: RuntimeUsageFact[]) {
 
 export function budgetExceeded(policy: RuntimeResourcePolicy, facts: RuntimeUsageFact[], live: { fanout?: number } = {}) {
   const totals = usageTotals(facts)
-  if (totals.turns >= policy.maxTurns) return { dimension: 'turns', used: totals.turns, limit: policy.maxTurns }
-  if (totals.tokens >= policy.maxTokens) return { dimension: 'tokens', used: totals.tokens, limit: policy.maxTokens }
-  if (totals.durationMs >= policy.maxDurationMs) return { dimension: 'durationMs', used: totals.durationMs, limit: policy.maxDurationMs }
-  if (totals.toolCalls >= policy.maxToolCalls) return { dimension: 'toolCalls', used: totals.toolCalls, limit: policy.maxToolCalls }
+  if (policy.maxTurns !== undefined && totals.turns >= policy.maxTurns) return { dimension: 'turns', used: totals.turns, limit: policy.maxTurns }
+  if (policy.maxTokens !== undefined && totals.tokens >= policy.maxTokens) return { dimension: 'tokens', used: totals.tokens, limit: policy.maxTokens }
+  if (policy.maxDurationMs !== undefined && totals.durationMs >= policy.maxDurationMs) return { dimension: 'durationMs', used: totals.durationMs, limit: policy.maxDurationMs }
+  if (policy.maxToolCalls !== undefined && totals.toolCalls >= policy.maxToolCalls) return { dimension: 'toolCalls', used: totals.toolCalls, limit: policy.maxToolCalls }
   if ((live.fanout ?? 0) >= policy.maxFanout) return { dimension: 'fanout', used: live.fanout ?? 0, limit: policy.maxFanout }
   return undefined
 }
