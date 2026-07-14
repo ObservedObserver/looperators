@@ -22,6 +22,7 @@ import type { DraftEdgeData } from '@/lib/draft-graph-view';
 import { useAgentConnection } from '@/hooks/use-agent-connection';
 import { AgentConnectionPanel } from '@/components/agent-connection-panel';
 import { RelationshipInspectorPanel } from '@/components/relationship-inspector-panel';
+import { ThemePicker } from '@/components/theme-picker';
 
 type SessionGraphPanelProps = {
   core: RuntimeCoreState;
@@ -73,7 +74,7 @@ export function SessionGraphPanel({
   const [selectedRelationship, setSelectedRelationship] = useState<GraphEdgeData>();
   const connectionSourceRef = useRef<string | undefined>(undefined);
   const connectionHandledRef = useRef(false);
-  const { setGraphCollapsed, colorScheme, setColorScheme } = layout;
+  const { setGraphCollapsed, colorScheme, setColorScheme, theme, setTheme } = layout;
   const { setPendingLinkedSourceId, startNewChat } = actions;
   const {
     isDiffPanelOpen,
@@ -282,6 +283,8 @@ export function SessionGraphPanel({
             </TooltipTrigger>
             <TooltipContent>{colorScheme === 'dark' ? 'Light mode' : 'Dark mode'}</TooltipContent>
           </Tooltip>
+
+          <ThemePicker theme={theme} setTheme={setTheme} colorScheme={colorScheme} />
         </div>
       </header>
 

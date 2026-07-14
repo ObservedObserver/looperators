@@ -25,7 +25,7 @@ function ToolRow({ run }: { run: ToolRun }) {
       <div className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5">
         <span className={cn('text-center text-[11px] leading-6', gutter.cls)}>{gutter.char}</span>
         <span className="min-w-0 text-[12px] leading-6">
-          <span className="font-medium text-lime">{run.command}</span>
+          <span className="font-medium text-term-accent">{run.command}</span>
           {run.args ? <span className="ml-2 break-words text-term-dim">{run.args}</span> : null}
         </span>
         <span className="whitespace-nowrap text-[11px] leading-6">
@@ -70,7 +70,9 @@ export function ToolRunFeed({ turn, agent = 'claude-code' }: { turn: ToolTurn; a
     <div className="my-1 font-mono">
       <div className="flex items-center gap-2.5 pb-2">
         <span className="text-[11px] text-term-faint">ran</span>
-        <span className="rounded-full border border-lime/25 bg-lime/[0.07] px-2 py-0.5 text-[10px] tracking-[0.04em] text-lime">{agent}</span>
+        <span className="rounded-full border border-term-accent/25 bg-term-accent/[0.07] px-2 py-0.5 text-[10px] tracking-[0.04em] text-term-accent">
+          {agent}
+        </span>
         {elapsed ? <span className="ml-auto text-[10.5px] tabular-nums text-term-faint">{elapsed}</span> : null}
       </div>
 

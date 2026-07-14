@@ -91,7 +91,7 @@ export const ChatMessage = memo(
         {isUser ? (
           <>
             <div className="flex gap-2 text-[13px] leading-6">
-              <span className="shrink-0 text-lime-hi">❯</span>
+              <span className="shrink-0 text-term-accent-hi">❯</span>
               <span className="whitespace-pre-wrap break-words text-term-name">{message.content}</span>
             </div>
             <MessageAttachmentStrip attachments={message.attachments} />
@@ -155,7 +155,7 @@ export function ActivityTimelineRow({ activity }: { activity: RuntimeActivity })
       <div className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5">
         <span className={cn('text-center text-[11px] leading-6', statusMarker.cls)}>{statusMarker.char}</span>
         <span className="min-w-0 text-[12px] leading-6">
-          <span className="font-medium text-lime">{command}</span>
+          <span className="font-medium text-term-accent">{command}</span>
           {activity.args ? <span className="ml-2 break-words text-term-dim">{activity.args}</span> : null}
           <span className="ml-2 text-[11px] text-term-dim2">{activity.kind}</span>
         </span>
@@ -302,7 +302,7 @@ export function TurnDiffTimelineRow({ diff, onOpen }: { diff: TurnDiffSummary; o
                 <button
                   key={`${file.changeType}:${file.path}`}
                   type="button"
-                  className="grid grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5 text-left text-[11.5px] leading-5 transition hover:text-lime"
+                  className="grid grid-cols-[16px_minmax(0,1fr)_auto_auto] items-center gap-2.5 text-left text-[11.5px] leading-5 transition hover:text-term-accent"
                   onClick={() => onOpen(diff.turnId)}
                 >
                   <span className="text-term-faint">{index === Math.min(diff.files.length, 6) - 1 ? '└' : '├'}</span>

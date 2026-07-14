@@ -53,7 +53,7 @@ function WorkspaceEntryRow({
   const rowClassName = cn(
     'grid min-h-7 w-full grid-cols-[1fr_auto] items-center gap-2 border-b border-ink-line-2 px-2 text-left text-[12px] last:border-b-0',
     isSelectableFile ? 'hover:bg-ink-soft' : 'cursor-default',
-    isSelected && 'bg-lime/[0.08] text-term-name',
+    isSelected && 'bg-term-accent/[0.08] text-term-name',
   );
   const content = (
     <>

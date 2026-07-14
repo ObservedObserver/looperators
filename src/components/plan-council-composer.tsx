@@ -9,8 +9,8 @@ import { providerInstanceForKind } from '@/lib/provider-catalog';
 import { validatePlanCouncilStart } from '@shared/plan-council';
 import { authorAndCommitWorkflow } from '@/lib/workflow-authoring';
 
-const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
-const textAreaClass = 'min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-5 outline-none focus:border-lime-hi/60';
+const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-term-accent-hi/60';
+const textAreaClass = 'min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-5 outline-none focus:border-term-accent-hi/60';
 
 type AgentDraft = AgentRuntimeConfigValue & { key: string; label: string };
 

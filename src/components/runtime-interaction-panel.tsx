@@ -154,7 +154,7 @@ export function RuntimeInteractionPanel({
                                   className="flex cursor-pointer items-start gap-2 rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] leading-4 text-term-dim"
                                 >
                                   <input
-                                    className="mt-0.5 accent-lime-hi"
+                                    className="mt-0.5 accent-term-accent-hi"
                                     type={question.multiSelect ? 'checkbox' : 'radio'}
                                     name={`${request.id}:${question.id}`}
                                     disabled={isPending}
@@ -178,7 +178,7 @@ export function RuntimeInteractionPanel({
                             <label className="block rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] leading-4 text-term-dim">
                               <span className="block text-term-name">Other</span>
                               <textarea
-                                className="mt-1.5 max-h-20 min-h-10 w-full resize-y rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                className="mt-1.5 max-h-20 min-h-10 w-full resize-y rounded border border-ink-line bg-ink px-2 py-1.5 text-[11.5px] text-term-name outline-none placeholder:text-term-faint focus:border-term-accent-hi/55"
                                 value={customValue}
                                 placeholder="Type another answer"
                                 disabled={isPending}
@@ -198,7 +198,7 @@ export function RuntimeInteractionPanel({
                           <>
                             {question.isSecret ? (
                               <input
-                                className="mt-2 h-9 w-full rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                className="mt-2 h-9 w-full rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-term-accent-hi/55"
                                 type="password"
                                 value={answerValueAsString(questionDraft)}
                                 placeholder={question.placeholder ?? request.placeholder ?? 'Type an answer'}
@@ -207,7 +207,7 @@ export function RuntimeInteractionPanel({
                               />
                             ) : (
                               <textarea
-                                className="mt-2 max-h-24 min-h-12 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                                className="mt-2 max-h-24 min-h-12 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-term-accent-hi/55"
                                 value={answerValueAsString(questionDraft)}
                                 placeholder={question.placeholder ?? request.placeholder ?? 'Type an answer'}
                                 disabled={isPending}
@@ -222,7 +222,7 @@ export function RuntimeInteractionPanel({
                 </div>
               ) : (
                 <textarea
-                  className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-lime-hi/55"
+                  className="mt-2 max-h-28 min-h-16 w-full resize-y rounded-md border border-ink-line bg-ink px-2.5 py-2 text-[12px] leading-5 text-term-name outline-none placeholder:text-term-faint focus:border-term-accent-hi/55"
                   value={draft}
                   placeholder={request.placeholder ?? 'Type an answer'}
                   disabled={isPending}

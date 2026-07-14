@@ -230,6 +230,13 @@ app.whenReady().then(() => {
       createMainWindow()
     }
   })
+}).catch((error: unknown) => {
+  // Without this handler a startup failure (e.g. the persisted-state version
+  // guard) is an unhandled rejection: the process exits with no window and no
+  // message. Surface it, then quit.
+  const message = error instanceof Error ? error.message : String(error)
+  dialog.showErrorBox('Orrery failed to start', message)
+  app.quit()
 })
 
 app.on('window-all-closed', () => {

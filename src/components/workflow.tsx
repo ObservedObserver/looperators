@@ -9,7 +9,7 @@ export function workflowStepClassName(status: WorkflowStepStatus) {
     case 'done':
       return 'border-term-green/35 bg-term-green/10 text-term-green';
     case 'active':
-      return 'border-lime-hi/35 bg-lime/[0.08] text-lime-hi';
+      return 'border-term-accent-hi/35 bg-term-accent/[0.08] text-term-accent-hi';
     default:
       return 'border-ink-line bg-foreground/[0.04] text-term-dim2';
   }

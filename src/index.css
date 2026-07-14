@@ -42,7 +42,7 @@
   --color-foreground: var(--foreground);
   --color-background: var(--background);
 
-  /* accent-ink: lime accent for text on chrome (flips per theme) */
+  /* accent-ink: brand accent tuned for text on chrome (flips per mode) */
   --color-accent-ink: var(--accent-ink);
 
   /* terminal "stage" palette — theme-aware (dark console / light console).
@@ -56,8 +56,8 @@
   --color-term-dim: var(--term-dim);
   --color-term-dim2: var(--term-dim2);
   --color-term-faint: var(--term-faint);
-  --color-lime: var(--term-lime);
-  --color-lime-hi: var(--term-lime-hi);
+  --color-term-accent: var(--term-accent);
+  --color-term-accent-hi: var(--term-accent-hi);
   --color-term-emerald: var(--term-emerald);
   --color-term-green: var(--term-green);
   --color-term-cyan: var(--term-cyan);
@@ -73,7 +73,19 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* ===== LIGHT: neutral chrome, lime identity ===== */
+/* ============================================================
+   Theme system
+   ------------------------------------------------------------
+   Two independent axes on <html>:
+     - mode:  the `.dark` class (light is the default)
+     - theme: the `data-theme` attribute (absent = default "lime")
+   Every theme defines the full token set for both modes.
+   INVARIANT: theme blocks ([data-theme='…']) must stay AFTER the
+   default :root/.dark blocks — equal-specificity overrides rely
+   on source order.
+   ============================================================ */
+
+/* ===== Theme "lime" (default) — LIGHT: neutral chrome, lime identity ===== */
 :root {
   color-scheme: light;
   --background: #f8fafc;
@@ -119,8 +131,8 @@
   --term-dim: #5d6470;
   --term-dim2: #7b838e;
   --term-faint: #a5acb5;
-  --term-lime: #4d7c0f;
-  --term-lime-hi: #4d7c0f;
+  --term-accent: #4d7c0f;
+  --term-accent-hi: #4d7c0f;
   --term-emerald: #047857;
   --term-green: #15803d;
   --term-cyan: #0e7490;
@@ -128,7 +140,7 @@
   --term-rose: #e11d48;
 }
 
-/* ===== DARK: ink terminal everywhere, lime identity ===== */
+/* ===== Theme "lime" (default) — DARK: ink terminal everywhere, lime identity ===== */
 .dark {
   color-scheme: dark;
   --background: #07090a;
@@ -173,13 +185,315 @@
   --term-dim: #9ca3af;
   --term-dim2: #6b7280;
   --term-faint: #4b5563;
-  --term-lime: #bef264;
-  --term-lime-hi: #a3e635;
+  --term-accent: #bef264;
+  --term-accent-hi: #a3e635;
   --term-emerald: #6ee7b7;
   --term-green: #5fd394;
   --term-cyan: #67e8f9;
   --term-amber: #fcd34d;
   --term-rose: #fb7185;
+}
+
+/* ============================================================
+   Additional themes. Selected via data-theme on <html>.
+   Registry: src/lib/themes.ts. Contrast targets (both modes):
+   body text 9-12:1, secondary 4.5-6:1, decorative <= 3.5:1.
+   ============================================================ */
+
+/* ===== Theme "inkstone" — LIGHT: porcelain ground, deep pine accent ===== */
+[data-theme='inkstone'] {
+  color-scheme: light;
+  --background: #eef0ec;
+  --foreground: #2c3134;
+  --card: #f8f9f6;
+  --card-foreground: #2c3134;
+  --popover: #ffffff;
+  --popover-foreground: #2c3134;
+  --primary: #37725f;
+  --primary-foreground: #f2f7f4;
+  --secondary: #e4e8e1;
+  --secondary-foreground: #333a36;
+  --muted: #e9ece6;
+  --muted-foreground: #5c646b;
+  --accent: #e3ebe6;
+  --accent-foreground: #27453a;
+  --destructive: #bc5260;
+  --border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 17%, transparent);
+  --ring: #37725f;
+  --accent-ink: #2e6653;
+  --chart-1: #37725f;
+  --sidebar: #f4f5f1;
+  --sidebar-foreground: #2c3134;
+  --sidebar-primary: #37725f;
+  --sidebar-primary-foreground: #f2f7f4;
+  --sidebar-accent: #e3ebe6;
+  --sidebar-accent-foreground: #27453a;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --sidebar-ring: #37725f;
+
+  --ink: #ffffff;
+  --ink-soft: #f0f2ee;
+  --ink-line: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 7%, transparent);
+  --term-name: #2c3134;
+  --term-dim: #5c646b;
+  --term-dim2: #7d848b;
+  --term-faint: #9aa1a7;
+  --term-accent: #2e6653;
+  --term-accent-hi: #37725f;
+  --term-emerald: #1e7a5e;
+  --term-green: #2e7d4f;
+  --term-cyan: #33688e;
+  --term-amber: #a8681c;
+  --term-rose: #bc5260;
+}
+
+/* ===== Theme "inkstone" — DARK: warm graphite, moss accent ===== */
+[data-theme='inkstone'].dark {
+  color-scheme: dark;
+  --background: #171a17;
+  --foreground: #d6dbd2;
+  --card: #1d201d;
+  --card-foreground: #d6dbd2;
+  --popover: #1d201d;
+  --popover-foreground: #d6dbd2;
+  --primary: #a4bf7d;
+  --primary-foreground: #1a2112;
+  --secondary: #212721;
+  --secondary-foreground: #d6dbd2;
+  --muted: #1c201c;
+  --muted-foreground: #a0a89b;
+  --accent: #232a22;
+  --accent-foreground: #d9e6c4;
+  --destructive: #d38f8a;
+  --border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --ring: #a4bf7d;
+  --accent-ink: #b8cf95;
+  --chart-1: #a4bf7d;
+  --sidebar: #191c19;
+  --sidebar-foreground: #d6dbd2;
+  --sidebar-primary: #a4bf7d;
+  --sidebar-primary-foreground: #1a2112;
+  --sidebar-accent: #232a22;
+  --sidebar-accent-foreground: #d9e6c4;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --sidebar-ring: #a4bf7d;
+
+  --ink: #141714;
+  --ink-soft: #1a1e1a;
+  --ink-line: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --term-name: #d6dbd2;
+  --term-dim: #a0a89b;
+  --term-dim2: #7c8477;
+  --term-faint: #5f665b;
+  --term-accent: #b8cf95;
+  --term-accent-hi: #a4bf7d;
+  --term-emerald: #8fc7a8;
+  --term-green: #90bd8e;
+  --term-cyan: #8fb9c9;
+  --term-amber: #d3b06e;
+  --term-rose: #d38f8a;
+}
+
+/* ===== Theme "harbor" — LIGHT: cool paper, steel-blue accent ===== */
+[data-theme='harbor'] {
+  color-scheme: light;
+  --background: #eff1f4;
+  --foreground: #2b3138;
+  --card: #f8f9fb;
+  --card-foreground: #2b3138;
+  --popover: #ffffff;
+  --popover-foreground: #2b3138;
+  --primary: #3e6e96;
+  --primary-foreground: #f3f7fa;
+  --secondary: #e5e8ec;
+  --secondary-foreground: #333a42;
+  --muted: #e9ecf0;
+  --muted-foreground: #5b6472;
+  --accent: #e3e9ef;
+  --accent-foreground: #2a4763;
+  --destructive: #bc5260;
+  --border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 17%, transparent);
+  --ring: #3e6e96;
+  --accent-ink: #325d84;
+  --chart-1: #3e6e96;
+  --sidebar: #f3f5f8;
+  --sidebar-foreground: #2b3138;
+  --sidebar-primary: #3e6e96;
+  --sidebar-primary-foreground: #f3f7fa;
+  --sidebar-accent: #e3e9ef;
+  --sidebar-accent-foreground: #2a4763;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --sidebar-ring: #3e6e96;
+
+  --ink: #ffffff;
+  --ink-soft: #f1f3f6;
+  --ink-line: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 7%, transparent);
+  --term-name: #2b3138;
+  --term-dim: #5b6472;
+  --term-dim2: #7c8593;
+  --term-faint: #99a2ae;
+  --term-accent: #325d84;
+  --term-accent-hi: #3e6e96;
+  --term-emerald: #1e7a68;
+  --term-green: #2f7d51;
+  --term-cyan: #2e7192;
+  --term-amber: #a8681c;
+  --term-rose: #bc5260;
+}
+
+/* ===== Theme "harbor" — DARK: slate blue, frost accent ===== */
+[data-theme='harbor'].dark {
+  color-scheme: dark;
+  --background: #191d23;
+  --foreground: #d3d9e2;
+  --card: #1f242c;
+  --card-foreground: #d3d9e2;
+  --popover: #1f242c;
+  --popover-foreground: #d3d9e2;
+  --primary: #8caecf;
+  --primary-foreground: #14202b;
+  --secondary: #232933;
+  --secondary-foreground: #d3d9e2;
+  --muted: #1e232b;
+  --muted-foreground: #9ba5b3;
+  --accent: #242b36;
+  --accent-foreground: #c8dcee;
+  --destructive: #d48d95;
+  --border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --ring: #8caecf;
+  --accent-ink: #a5c3de;
+  --chart-1: #8caecf;
+  --sidebar: #1b1f26;
+  --sidebar-foreground: #d3d9e2;
+  --sidebar-primary: #8caecf;
+  --sidebar-primary-foreground: #14202b;
+  --sidebar-accent: #242b36;
+  --sidebar-accent-foreground: #c8dcee;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --sidebar-ring: #8caecf;
+
+  --ink: #161a20;
+  --ink-soft: #1b2028;
+  --ink-line: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --term-name: #d3d9e2;
+  --term-dim: #9ba5b3;
+  --term-dim2: #7e8895;
+  --term-faint: #626c79;
+  --term-accent: #a5c3de;
+  --term-accent-hi: #8caecf;
+  --term-emerald: #8ac4ad;
+  --term-green: #8cc29c;
+  --term-cyan: #8fc6d8;
+  --term-amber: #d4af78;
+  --term-rose: #d48d95;
+}
+
+/* ===== Theme "ember" — LIGHT: warm paper, burnt-amber accent ===== */
+[data-theme='ember'] {
+  color-scheme: light;
+  --background: #f3f0ea;
+  --foreground: #322e28;
+  --card: #faf8f4;
+  --card-foreground: #322e28;
+  --popover: #fffdf9;
+  --popover-foreground: #322e28;
+  --primary: #9a6a23;
+  --primary-foreground: #fdf8ef;
+  --secondary: #eae6de;
+  --secondary-foreground: #3a352e;
+  --muted: #edeae3;
+  --muted-foreground: #675f54;
+  --accent: #ede5d6;
+  --accent-foreground: #5c421a;
+  --destructive: #bc5260;
+  --border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 17%, transparent);
+  --ring: #9a6a23;
+  --accent-ink: #855c1e;
+  --chart-1: #9a6a23;
+  --sidebar: #f6f3ee;
+  --sidebar-foreground: #322e28;
+  --sidebar-primary: #9a6a23;
+  --sidebar-primary-foreground: #fdf8ef;
+  --sidebar-accent: #ede5d6;
+  --sidebar-accent-foreground: #5c421a;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --sidebar-ring: #9a6a23;
+
+  --ink: #ffffff;
+  --ink-soft: #f2efe8;
+  --ink-line: color-mix(in oklch, var(--foreground) 13%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 7%, transparent);
+  --term-name: #322e28;
+  --term-dim: #675f54;
+  --term-dim2: #857d70;
+  --term-faint: #a29a8c;
+  --term-accent: #855c1e;
+  --term-accent-hi: #9a6a23;
+  --term-emerald: #2a7a5e;
+  --term-green: #3f7d4c;
+  --term-cyan: #37648c;
+  /* Warn leans orange to stay distinct from the amber accent. */
+  --term-amber: #bf5a1f;
+  --term-rose: #bc5260;
+}
+
+/* ===== Theme "ember" — DARK: warm charcoal, matte amber accent ===== */
+[data-theme='ember'].dark {
+  color-scheme: dark;
+  --background: #1b1917;
+  --foreground: #d9d4ca;
+  --card: #211e1b;
+  --card-foreground: #d9d4ca;
+  --popover: #211e1b;
+  --popover-foreground: #d9d4ca;
+  --primary: #d0a468;
+  --primary-foreground: #251c10;
+  --secondary: #262220;
+  --secondary-foreground: #d9d4ca;
+  --muted: #1f1c19;
+  --muted-foreground: #a69e91;
+  --accent: #2a2521;
+  --accent-foreground: #ecd9b8;
+  --destructive: #cf8a7c;
+  --border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --input: color-mix(in oklch, var(--foreground) 14%, transparent);
+  --ring: #d0a468;
+  --accent-ink: #dcb47e;
+  --chart-1: #d0a468;
+  --sidebar: #1d1b18;
+  --sidebar-foreground: #d9d4ca;
+  --sidebar-primary: #d0a468;
+  --sidebar-primary-foreground: #251c10;
+  --sidebar-accent: #2a2521;
+  --sidebar-accent-foreground: #ecd9b8;
+  --sidebar-border: color-mix(in oklch, var(--foreground) 11%, transparent);
+  --sidebar-ring: #d0a468;
+
+  --ink: #171512;
+  --ink-soft: #1d1a17;
+  --ink-line: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --ink-line-2: color-mix(in oklch, var(--foreground) 6%, transparent);
+  --term-name: #d9d4ca;
+  --term-dim: #a69e91;
+  --term-dim2: #877f72;
+  --term-faint: #6a6257;
+  --term-accent: #dcb47e;
+  --term-accent-hi: #d0a468;
+  --term-emerald: #96c2a4;
+  --term-green: #9dbd8a;
+  --term-cyan: #9cb0c4;
+  /* Warn sits lighter and yellower than the amber accent. */
+  --term-amber: #e3c078;
+  --term-rose: #cf8a7c;
 }
 
 @layer base {
@@ -233,7 +547,7 @@
     width: 0.46em;
     height: 1em;
     vertical-align: -0.12em;
-    background: var(--term-lime-hi);
+    background: var(--term-accent-hi);
     animation: orrery-caret-blink 1.05s steps(1) infinite;
   }
 
@@ -321,13 +635,13 @@
   .orrery-markdown input[type='checkbox'] {
     margin-right: 0.45rem;
     vertical-align: -0.1rem;
-    accent-color: var(--term-lime-hi);
+    accent-color: var(--term-accent-hi);
   }
 
   .orrery-markdown blockquote {
     margin: 0.6rem 0;
-    border-left: 2px solid color-mix(in oklch, var(--term-lime-hi) 50%, transparent);
-    background: color-mix(in oklch, var(--term-lime-hi) 7%, transparent);
+    border-left: 2px solid color-mix(in oklch, var(--term-accent-hi) 50%, transparent);
+    background: color-mix(in oklch, var(--term-accent-hi) 7%, transparent);
     padding: 0.45rem 0.75rem;
     color: var(--term-dim);
   }

@@ -13,21 +13,37 @@ import {
   openWorkspaceTargetStorageKey,
   railSidebarWidth,
 } from '@/lib/layout-prefs';
+import { defaultThemeId, initialTheme, themeStorageKey, type ThemeId } from '@/lib/themes';
 
 export type ColorScheme = 'dark' | 'light';
+
+export const colorSchemeStorageKey = 'orrery.colorScheme.v1';
+
+function initialColorScheme(): ColorScheme {
+  if (typeof window === 'undefined') {
+    return 'dark';
+  }
+
+  // An explicit user choice wins; the OS preference is only the first-launch default.
+  try {
+    const stored = window.localStorage.getItem(colorSchemeStorageKey);
+    if (stored === 'dark' || stored === 'light') {
+      return stored;
+    }
+  } catch {
+    // Fall through to the media query.
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
 
 export function useLayoutPrefs() {
   const [chatPanelWidth, setChatPanelWidth] = useState(initialChatPanelWidth);
   const [isResizingChatPanel, setIsResizingChatPanel] = useState(false);
   const [graphCollapsed, setGraphCollapsed] = useState(initialGraphCollapsed);
   const [viewportWidth, setViewportWidth] = useState(initialViewportWidth);
-  const [colorScheme, setColorScheme] = useState<ColorScheme>(() => {
-    if (typeof window === 'undefined') {
-      return 'dark';
-    }
-
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  });
+  const [colorScheme, setColorScheme] = useState<ColorScheme>(initialColorScheme);
+  const [theme, setTheme] = useState<ThemeId>(initialTheme);
   const [openWorkspaceTarget, setOpenWorkspaceTarget] = useState<OpenWorkspaceTarget>(initialOpenWorkspaceTarget);
   const splitContainerRef = useRef<HTMLElement | null>(null);
 
@@ -38,7 +54,28 @@ export function useLayoutPrefs() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', colorScheme === 'dark');
+
+    try {
+      window.localStorage.setItem(colorSchemeStorageKey, colorScheme);
+    } catch {
+      // Scheme persistence is best-effort.
+    }
   }, [colorScheme]);
+
+  useEffect(() => {
+    // The default theme keeps <html> attribute-free so plain :root/.dark apply.
+    if (theme === defaultThemeId) {
+      delete document.documentElement.dataset.theme;
+    } else {
+      document.documentElement.dataset.theme = theme;
+    }
+
+    try {
+      window.localStorage.setItem(themeStorageKey, theme);
+    } catch {
+      // Theme persistence is best-effort.
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -139,6 +176,8 @@ export function useLayoutPrefs() {
     viewportWidth,
     colorScheme,
     setColorScheme,
+    theme,
+    setTheme,
     openWorkspaceTarget,
     setOpenWorkspaceTarget,
     adjustChatPanelWidth,

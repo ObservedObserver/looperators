@@ -10,13 +10,13 @@ import { workflowExecutionStatus, type WorkflowProposal } from '@shared/workflow
 const statusStyle: Record<WorkflowProposal['status'], string> = {
   proposed: 'border-term-amber/35 bg-term-amber/10 text-term-amber',
   approved: 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan',
-  committed: 'border-lime-hi/35 bg-lime/10 text-lime-hi',
+  committed: 'border-term-accent-hi/35 bg-term-accent/10 text-term-accent-hi',
   rejected: 'border-destructive/35 bg-destructive/10 text-destructive',
   expired: 'border-ink-line bg-muted text-term-dim',
 };
 
 const executionStatusStyle = {
-  running: 'border-lime-hi/35 bg-lime/10 text-lime-hi',
+  running: 'border-term-accent-hi/35 bg-term-accent/10 text-term-accent-hi',
   completed: 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan',
   failed: 'border-destructive/35 bg-destructive/10 text-destructive',
   stopped: 'border-ink-line bg-muted text-term-dim',
@@ -89,7 +89,7 @@ export function WorkflowProposalCard({
   return (
     <section className="m-3.5 space-y-3 rounded-xl border border-ink-line bg-card/70 p-3.5 font-mono shadow-sm" data-testid={`workflow-proposal-${proposal.proposalId}`}>
       <header className="flex min-w-0 items-start gap-2.5">
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-lime-hi/25 bg-lime/[0.06] text-lime-hi">
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-term-accent-hi/25 bg-term-accent/[0.06] text-term-accent-hi">
           <GitCompareArrows className="size-3.5" />
         </div>
         <div className="min-w-0 flex-1">
@@ -265,7 +265,7 @@ export function WorkflowProposalCard({
         ) : null}
         {proposal.status === 'committed' ? (
           <>
-            <span className={cn('flex items-center gap-1 text-[10px]', executionStatus === 'failed' ? 'text-destructive' : executionStatus === 'running' ? 'text-lime-hi' : 'text-term-dim')}>
+            <span className={cn('flex items-center gap-1 text-[10px]', executionStatus === 'failed' ? 'text-destructive' : executionStatus === 'running' ? 'text-term-accent-hi' : 'text-term-dim')}>
               <Check className="size-3" /> {executionStatus ?? 'failed'} workflow
             </span>
             {liveWorkflowId && plan.recipe === 'plan-council' && onOpenLive ? (

@@ -204,7 +204,7 @@ export function TemplateLibraryPanel({
     }
   };
 
-  const slotInputCls = 'h-7 w-full rounded-lg border border-border bg-background px-2 text-[11.5px] outline-none focus:border-lime-hi/60';
+  const slotInputCls = 'h-7 w-full rounded-lg border border-border bg-background px-2 text-[11.5px] outline-none focus:border-term-accent-hi/60';
 
   const slotField = (slot: TemplateSlot) => {
     if (slot.kind === 'session') {
@@ -265,7 +265,7 @@ export function TemplateLibraryPanel({
     if (slot.kind === 'longtext') {
       return (
         <textarea
-          className="min-h-14 w-full resize-none rounded-lg border border-border bg-background px-2 py-1.5 text-[11.5px] leading-4 outline-none focus:border-lime-hi/60"
+          className="min-h-14 w-full resize-none rounded-lg border border-border bg-background px-2 py-1.5 text-[11.5px] leading-4 outline-none focus:border-term-accent-hi/60"
           placeholder={slot.placeholder}
           value={slotValues[slot.key] ?? ''}
           onChange={(event) => setSlotValues((values) => ({ ...values, [slot.key]: event.target.value }))}
@@ -288,7 +288,7 @@ export function TemplateLibraryPanel({
   const templateCard = (template: TemplateDescriptor, entry?: WorkflowEntry) => {
     const isSelected = template.id === selectedId;
     return (
-      <li key={template.id} className={cn('rounded-xl border bg-card p-3', isSelected ? 'border-lime-hi/50 ring-1 ring-lime-hi/25' : 'border-border')}>
+      <li key={template.id} className={cn('rounded-xl border bg-card p-3', isSelected ? 'border-term-accent-hi/50 ring-1 ring-term-accent-hi/25' : 'border-border')}>
         <button type="button" className="block w-full text-left" onClick={() => pick(template.id)}>
           <div className="flex items-center gap-2 text-[12px] font-medium">
             <BookMarked className={cn('size-3.5 shrink-0', entry ? 'text-sky-600 dark:text-sky-300' : 'text-term-amber')} />

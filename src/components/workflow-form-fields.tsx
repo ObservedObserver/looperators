@@ -4,7 +4,7 @@ import { modelOptionsForInstance, providerInstanceForKind, providerOptions, reas
 import type { GraphState } from '@/shared/graph-state';
 import type { ReviewBlockingMode } from '@shared/review-workflow';
 
-const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
+const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-term-accent-hi/60';
 
 export type AgentRuntimeConfigValue = {
   providerKind: ProviderKind;

@@ -21,7 +21,7 @@ export const statusDotClassNames: Record<SessionStatus, string> = {
 };
 
 export function sessionMarker(status: SessionStatus, isSelected: boolean, role: 'worker' | 'master'): { char: string; cls: string } {
-  if (isSelected) return { char: '●', cls: 'text-lime-hi' };
+  if (isSelected) return { char: '●', cls: 'text-term-accent-hi' };
   if (role === 'master') return { char: '◆', cls: 'text-term-amber' };
   switch (status) {
     case 'running':
@@ -70,7 +70,7 @@ export function nodeStatePillCls(status: SessionStatus, role: 'worker' | 'master
   }
 }
 
-// Terminal action-button class presets (lime primary / chrome outline, mono).
+// Terminal action-button class presets (accent primary / chrome outline, mono).
 
 export function sessionProviderLabel(session: AgentSession) {
   return providerOption(session.providerKind).label;

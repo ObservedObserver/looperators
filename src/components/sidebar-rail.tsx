@@ -165,7 +165,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
           'group/chat cursor-pointer rounded-lg border p-2.5 font-mono transition',
           toneBorder,
           toneBg,
-          isSel && 'ring-1 ring-lime-hi/40',
+          isSel && 'ring-1 ring-term-accent-hi/40',
           session.archived && 'opacity-60',
         )}
         onClick={() => selectSession(session.sessionId)}
@@ -179,7 +179,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         <div className="flex items-center gap-2">
           <span className={cn('size-1.5 shrink-0 rounded-full', !request && input ? 'bg-term-cyan' : 'bg-term-amber')} />
           <span
-            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-lime-hi' : 'text-term-name')}
+            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-term-accent-hi' : 'text-term-name')}
             title={sessionDisplayLabel(session)}
           >
             {sessionDisplayLabel(session)}
@@ -249,7 +249,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         tabIndex={0}
         className={cn(
           'group/chat cursor-pointer rounded-lg border border-ink-line bg-ink p-2.5 font-mono transition hover:border-foreground/20',
-          isSel && 'border-lime-hi/50 ring-1 ring-lime-hi/25',
+          isSel && 'border-term-accent-hi/50 ring-1 ring-term-accent-hi/25',
         )}
         onClick={() => selectSession(session.sessionId)}
         onKeyDown={(event) => {
@@ -262,7 +262,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         <div className="flex items-center gap-2">
           <span className={cn('size-1.5 shrink-0 animate-pulse rounded-full', isPendingStart ? 'bg-term-amber' : 'bg-term-green')} />
           <span
-            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-lime-hi' : 'text-term-name')}
+            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-term-accent-hi' : 'text-term-name')}
             title={sessionDisplayLabel(session)}
           >
             {sessionDisplayLabel(session)}
@@ -297,7 +297,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         tabIndex={0}
         className={cn(
           'group/chat flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] font-mono transition',
-          isSel ? 'bg-lime-hi/10 ring-1 ring-inset ring-lime-hi/25' : 'hover:bg-foreground/[0.045]',
+          isSel ? 'bg-term-accent-hi/10 ring-1 ring-inset ring-term-accent-hi/25' : 'hover:bg-foreground/[0.045]',
           session.archived && 'opacity-60',
         )}
         onClick={() => selectSession(session.sessionId)}
@@ -313,7 +313,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         ) : (
           <span className={cn('size-1.5 shrink-0 rounded-full', statusDotClassNames[session.status])} />
         )}
-        <span className={cn('min-w-0 flex-1 truncate text-[12px]', isSel ? 'text-lime-hi' : 'text-term-dim')} title={sessionDisplayLabel(session)}>
+        <span className={cn('min-w-0 flex-1 truncate text-[12px]', isSel ? 'text-term-accent-hi' : 'text-term-dim')} title={sessionDisplayLabel(session)}>
           {sessionDisplayLabel(session)}
         </span>
         {session.archived ? <span className="shrink-0 text-[9px] uppercase tracking-[0.1em] text-term-faint">hidden</span> : null}
@@ -388,7 +388,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="shrink-0 px-4 pb-2.5 pt-3 font-mono">
             <div className="flex items-center gap-2 text-[12px]">
-              <span className="text-lime-hi">❯</span>
+              <span className="text-term-accent-hi">❯</span>
               <span className="text-foreground">Chats</span>
               <span className="ml-auto text-[11px] text-muted-foreground">
                 {runningSessions.length} running · {sessions.length} total

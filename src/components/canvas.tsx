@@ -27,10 +27,10 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
       className={cn(
         'w-[300px] rounded-xl border bg-card font-mono shadow-sm transition',
         data.frozen ? 'border-border bg-muted/50 opacity-75' : isMaster ? 'border-term-amber/50' : data.isManaged ? 'border-term-cyan/45' : 'border-border',
-        selected && '!border-lime-hi/60 ring-2 ring-lime-hi/50',
+        selected && '!border-term-accent-hi/60 ring-2 ring-term-accent-hi/50',
       )}
     >
-      <Handle type="target" position={Position.Left} className="!size-3 !border-2 !border-card !bg-lime-hi" aria-label={`Connect into ${data.label}`} />
+      <Handle type="target" position={Position.Left} className="!size-3 !border-2 !border-card !bg-term-accent-hi" aria-label={`Connect into ${data.label}`} />
       <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-3">
         <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', marker.cls)}>{marker.char}</span>
         <div className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground" title={data.label}>
@@ -61,7 +61,9 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
             <div
               className={cn(
                 'flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[10.5px] font-semibold tracking-[0.04em]',
-                data.latestVerdict === 'clean' ? 'border-lime/30 bg-lime/10 text-lime' : 'border-term-amber/40 bg-term-amber/10 text-term-amber',
+                data.latestVerdict === 'clean'
+                  ? 'border-term-accent/30 bg-term-accent/10 text-term-accent'
+                  : 'border-term-amber/40 bg-term-amber/10 text-term-amber',
               )}
             >
               <span>{data.latestVerdict === 'clean' ? '✓' : '!'}</span>
@@ -103,7 +105,7 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
           </span>
         ) : null}
       </div>
-      <Handle type="source" position={Position.Right} className="!size-3 !border-2 !border-card !bg-lime-hi" aria-label={`Connect from ${data.label}`} />
+      <Handle type="source" position={Position.Right} className="!size-3 !border-2 !border-card !bg-term-accent-hi" aria-label={`Connect from ${data.label}`} />
     </div>
   );
 });
@@ -160,7 +162,7 @@ export const ClockNode = memo(function ClockNode({ data }: NodeProps<Node<TimerN
       <div className="mt-0.5 text-[10px] tabular-nums text-muted-foreground">
         {data.lastTickAt ? `last tick ${formatClock(data.lastTickAt)}` : 'no ticks yet'}
       </div>
-      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-lime-hi" />
+      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-term-accent-hi" />
     </div>
   );
 });
@@ -230,7 +232,7 @@ export const LoopBadgeNode = memo(function LoopBadgeNode({ data }: NodeProps<Nod
         }
       }}
       className={cn(
-        'w-[220px] cursor-pointer rounded-xl border px-3 py-2 font-mono shadow-sm transition hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-hi/60',
+        'w-[220px] cursor-pointer rounded-xl border px-3 py-2 font-mono shadow-sm transition hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-term-accent-hi/60',
         loopBadgeStatusCls[product.tone] ?? loopBadgeStatusCls.neutral,
       )}
       title="Open the loop timeline"

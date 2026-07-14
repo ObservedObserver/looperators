@@ -214,7 +214,7 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <TermChip tone="lime">Governed loop policy</TermChip>
+          <TermChip tone="accent">Governed loop policy</TermChip>
           <TermChip>Freeze on stop</TermChip>
           <TermChip>Max {currentLoopPolicy().maxIterations}</TermChip>
         </div>
@@ -385,7 +385,7 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
                   type="button"
                   className={cn(
                     'w-full rounded-lg border bg-ink px-3 py-2 text-left font-mono transition',
-                    isActive ? 'border-lime-hi/50 ring-1 ring-lime-hi/25' : 'border-ink-line hover:border-foreground/20',
+                    isActive ? 'border-term-accent-hi/50 ring-1 ring-term-accent-hi/25' : 'border-ink-line hover:border-foreground/20',
                   )}
                   onClick={() => {
                     setActiveClusterId(cluster.clusterId);
@@ -396,10 +396,12 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
                   }}
                 >
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', isActive ? 'text-lime-hi' : 'text-term-dim2')}>
+                    <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', isActive ? 'text-term-accent-hi' : 'text-term-dim2')}>
                       {isActive ? '●' : '○'}
                     </span>
-                    <span className={cn('min-w-0 flex-1 truncate text-[13px] font-medium', isActive ? 'text-lime-hi' : 'text-lime')}>{cluster.label}</span>
+                    <span className={cn('min-w-0 flex-1 truncate text-[13px] font-medium', isActive ? 'text-term-accent-hi' : 'text-term-accent')}>
+                      {cluster.label}
+                    </span>
                     {cluster.frozen ? <Snowflake className="size-3.5 shrink-0 text-term-amber" /> : null}
                     <span
                       className={cn(

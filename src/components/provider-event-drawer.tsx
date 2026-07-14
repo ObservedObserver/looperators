@@ -78,7 +78,9 @@ export function ProviderEventDrawer({ session }: { session: AgentSession }) {
                   <span
                     className={cn(
                       'rounded border px-1.5 py-0.5 uppercase tracking-[0.08em]',
-                      entry.channel === 'native' ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan' : 'border-lime/30 bg-lime/[0.08] text-lime',
+                      entry.channel === 'native'
+                        ? 'border-term-cyan/35 bg-term-cyan/10 text-term-cyan'
+                        : 'border-term-accent/30 bg-term-accent/[0.08] text-term-accent',
                     )}
                   >
                     {entry.channel}

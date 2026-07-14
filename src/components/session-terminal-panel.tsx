@@ -22,7 +22,7 @@ export function terminalStatusPillCls(status: RuntimeTerminalStatus) {
 export function terminalChunkClassName(chunk: RuntimeTerminalChunk) {
   switch (chunk.stream) {
     case 'stdin':
-      return 'text-lime-hi';
+      return 'text-term-accent-hi';
     case 'stderr':
       return 'text-term-rose';
     case 'system':
@@ -208,7 +208,7 @@ export function SessionTerminalPanel({
   return (
     <section className="shrink-0 border-t border-ink-line-2 bg-ink font-mono" aria-label="Session terminal">
       <div className="flex h-9 min-w-0 items-center gap-2 border-b border-ink-line-2 px-3">
-        <Terminal className="size-3.5 shrink-0 text-lime-hi" />
+        <Terminal className="size-3.5 shrink-0 text-term-accent-hi" />
         <span className="shrink-0 text-[10px] uppercase tracking-[0.16em] text-term-dim2">Terminal</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-term-dim" title={terminal.cwd}>
           {compactPath(terminal.cwd)}
@@ -244,7 +244,7 @@ export function SessionTerminalPanel({
 
       <div
         ref={terminalRef}
-        className="h-56 cursor-text overflow-y-auto overscroll-contain px-3 py-2 text-[12px] leading-5 outline-none focus:ring-1 focus:ring-inset focus:ring-lime-hi/25"
+        className="h-56 cursor-text overflow-y-auto overscroll-contain px-3 py-2 text-[12px] leading-5 outline-none focus:ring-1 focus:ring-inset focus:ring-term-accent-hi/25"
         role="textbox"
         tabIndex={0}
         aria-label="Terminal"

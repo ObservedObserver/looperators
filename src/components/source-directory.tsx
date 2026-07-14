@@ -179,7 +179,7 @@ export function SourceDirectoryPanel({
           </div>
           <div className="mt-2 space-y-2 text-[11.5px]">
             <select
-              className="h-7 w-full rounded-lg border border-border bg-background px-2 text-[11.5px] outline-none focus:border-lime-hi/60"
+              className="h-7 w-full rounded-lg border border-border bg-background px-2 text-[11.5px] outline-none focus:border-term-accent-hi/60"
               value={kind}
               onChange={(event) => setKind(event.target.value as ExternalSourceKind)}
               aria-label="Source kind"
@@ -191,20 +191,20 @@ export function SourceDirectoryPanel({
               ))}
             </select>
             <input
-              className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-lime-hi/60"
+              className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-term-accent-hi/60"
               placeholder={`topic (default: ${kind})`}
               value={topic}
               onChange={(event) => setTopic(event.target.value)}
             />
             <input
-              className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-lime-hi/60"
+              className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-term-accent-hi/60"
               placeholder="label (optional)"
               value={label}
               onChange={(event) => setLabel(event.target.value)}
             />
             {kind === 'script' ? (
               <input
-                className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-lime-hi/60"
+                className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-term-accent-hi/60"
                 placeholder="command (absolute path)"
                 value={command}
                 onChange={(event) => setCommand(event.target.value)}
@@ -212,7 +212,7 @@ export function SourceDirectoryPanel({
             ) : null}
             {kind === 'git' ? (
               <input
-                className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-lime-hi/60"
+                className="h-7 w-full rounded-lg border border-border bg-background px-2 outline-none focus:border-term-accent-hi/60"
                 placeholder="repository path"
                 value={repoPath}
                 onChange={(event) => setRepoPath(event.target.value)}

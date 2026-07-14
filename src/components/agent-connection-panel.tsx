@@ -7,9 +7,9 @@ import { cn } from '@/lib/utils';
 import type { AgentConnectionBehavior, AgentConnectionTiming } from '@shared/agent-connection';
 import { AgentRuntimeFields, ReviewPolicyFields } from '@/components/workflow-form-fields';
 
-const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
+const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-term-accent-hi/60';
 const textAreaClass =
-  'min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-5 outline-none focus:border-lime-hi/60';
+  'min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-5 outline-none focus:border-term-accent-hi/60';
 
 const behaviorChoices: Array<{ id: AgentConnectionBehavior; title: string; detail: string }> = [
   { id: 'handoff-once', title: 'Handoff once', detail: 'Continue the work once. No standing automation remains for a current result.' },
@@ -32,7 +32,7 @@ export function AgentConnectionPanel({ runtimeState, connection }: { runtimeStat
 
   return (
     <aside
-      className="absolute right-3 top-3 z-40 flex max-h-[calc(100%-1.5rem)] w-[360px] flex-col overflow-hidden rounded-xl border border-lime-hi/35 bg-background/97 shadow-xl backdrop-blur"
+      className="absolute right-3 top-3 z-40 flex max-h-[calc(100%-1.5rem)] w-[360px] flex-col overflow-hidden rounded-xl border border-term-accent-hi/35 bg-background/97 shadow-xl backdrop-blur"
       aria-label="Connect Agents"
     >
       <header className="flex items-center gap-2 border-b border-border px-3 py-2.5">
@@ -64,8 +64,8 @@ export function AgentConnectionPanel({ runtimeState, connection }: { runtimeStat
                 type="button"
                 disabled={id === 'current-result' && sourceBusy}
                 className={cn(
-                  'rounded-lg border p-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-hi/40',
-                  draft.timing === id ? 'border-lime-hi/55 bg-lime-hi/10' : 'border-border bg-card hover:border-lime-hi/35',
+                  'rounded-lg border p-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-term-accent-hi/40',
+                  draft.timing === id ? 'border-term-accent-hi/55 bg-term-accent-hi/10' : 'border-border bg-card hover:border-term-accent-hi/35',
                   id === 'current-result' && sourceBusy && 'cursor-not-allowed opacity-45',
                 )}
                 onClick={() => connection.update({ timing: id })}
@@ -87,8 +87,8 @@ export function AgentConnectionPanel({ runtimeState, connection }: { runtimeStat
                 key={choice.id}
                 type="button"
                 className={cn(
-                  'rounded-lg border px-2.5 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-lime-hi/40',
-                  draft.behavior === choice.id ? 'border-lime-hi/55 bg-lime-hi/10' : 'border-border bg-card hover:border-lime-hi/35',
+                  'rounded-lg border px-2.5 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-term-accent-hi/40',
+                  draft.behavior === choice.id ? 'border-term-accent-hi/55 bg-term-accent-hi/10' : 'border-border bg-card hover:border-term-accent-hi/35',
                 )}
                 onClick={() => connection.update({ behavior: choice.id })}
               >

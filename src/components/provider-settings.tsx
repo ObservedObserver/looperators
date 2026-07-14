@@ -90,7 +90,7 @@ export function ProviderInstanceSettingsPanel({
   return (
     <div className="rounded-lg border border-ink-line bg-background/35 px-2.5 py-2">
       <div className="mb-2 flex min-w-0 items-center gap-2">
-        <Bot className="size-3.5 shrink-0 text-lime-hi" />
+        <Bot className="size-3.5 shrink-0 text-term-accent-hi" />
         <span className="min-w-0 flex-1 truncate text-[10px] uppercase tracking-[0.12em] text-term-dim2">Provider profile</span>
         <span className="truncate text-[10.5px] text-term-faint" title={instance.providerInstanceId}>
           {instance.providerInstanceId}

@@ -533,8 +533,8 @@ export function ChatDetail({
           />
           <div
             className={cn(
-              'app-region-no-drag @container mb-2 rounded-xl border border-ink-line bg-ink transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
-              isComposerDragActive && 'border-lime-hi/60 bg-lime/[0.05] ring-1 ring-lime-hi/25',
+              'app-region-no-drag @container mb-2 rounded-xl border border-ink-line bg-ink transition focus-within:border-term-accent-hi/55 focus-within:ring-1 focus-within:ring-term-accent-hi/25',
+              isComposerDragActive && 'border-term-accent-hi/60 bg-term-accent/[0.05] ring-1 ring-term-accent-hi/25',
             )}
             onDragEnter={(event) => {
               if (event.dataTransfer.types.includes('Files')) {
@@ -563,7 +563,7 @@ export function ChatDetail({
             ) : null}
             <div className="flex cursor-text gap-2 px-3.5 pb-1 pt-3" onClick={() => composerEditorRef.current?.focus()}>
               <span
-                className={cn('select-none font-mono text-[13px] leading-6 transition-colors', composerDisabled ? 'text-term-faint' : 'text-lime-hi')}
+                className={cn('select-none font-mono text-[13px] leading-6 transition-colors', composerDisabled ? 'text-term-faint' : 'text-term-accent-hi')}
                 aria-hidden="true"
               >
                 ❯

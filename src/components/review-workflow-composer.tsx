@@ -24,7 +24,7 @@ type AgentDraft = {
   runtimeMode: ProviderRuntimeMode;
 };
 
-const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-lime-hi/60';
+const fieldClass = 'h-8 w-full rounded-lg border border-border bg-background px-2.5 text-[11.5px] outline-none focus:border-term-accent-hi/60';
 
 function runtimeSettings(agent: AgentDraft) {
   return {
@@ -420,7 +420,7 @@ export function ReviewWorkflowComposer({
         <label className="mt-2 block space-y-1">
           <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Work prompt</span>
           <textarea
-            className="min-h-24 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-4 outline-none focus:border-lime-hi/60"
+            className="min-h-24 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-4 outline-none focus:border-term-accent-hi/60"
             value={coderPrompt}
             placeholder="Describe the code change and acceptance criteria…"
             onChange={(event) => setCoderPrompt(event.target.value)}
@@ -439,7 +439,7 @@ export function ReviewWorkflowComposer({
         <label className="mt-2 block space-y-1">
           <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Review instruction</span>
           <textarea
-            className="min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-4 outline-none focus:border-lime-hi/60"
+            className="min-h-20 w-full resize-y rounded-lg border border-border bg-background px-2.5 py-2 text-[11.5px] leading-4 outline-none focus:border-term-accent-hi/60"
             value={reviewInstruction}
             onChange={(event) => setReviewInstruction(event.target.value)}
           />

@@ -53,7 +53,7 @@ export function ProviderSegmentedControl({
             disabled={disabled}
             className={cn(
               'truncate rounded-md px-2 py-1.5 text-[10.5px] uppercase tracking-[0.06em] transition disabled:cursor-not-allowed',
-              isSelected ? 'bg-lime/[0.12] text-lime ring-1 ring-lime/30' : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name',
+              isSelected ? 'bg-term-accent/[0.12] text-term-accent ring-1 ring-term-accent/30' : 'text-term-dim hover:bg-foreground/[0.06] hover:text-term-name',
             )}
             onClick={() => onChange(option.id)}
           >
@@ -79,13 +79,13 @@ export function ProjectCwdField({
   return (
     <label
       className={cn(
-        'flex h-8 min-w-0 items-center gap-2 rounded-md border border-ink-line bg-ink px-2.5 font-mono transition focus-within:border-lime-hi/55 focus-within:ring-1 focus-within:ring-lime-hi/25',
+        'flex h-8 min-w-0 items-center gap-2 rounded-md border border-ink-line bg-ink px-2.5 font-mono transition focus-within:border-term-accent-hi/55 focus-within:ring-1 focus-within:ring-term-accent-hi/25',
         !validation.ok && 'border-term-rose/45 focus-within:border-term-rose/70',
         disabled && 'opacity-55',
       )}
       title="Project folder"
     >
-      <FolderOpen className="size-3.5 shrink-0 text-lime-hi" />
+      <FolderOpen className="size-3.5 shrink-0 text-term-accent-hi" />
       <input
         className="min-w-0 flex-1 bg-transparent text-[12px] text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
         value={value}
@@ -119,13 +119,13 @@ export function ProjectCwdChip({
       className={cn(
         'relative flex h-7 w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md border bg-ink px-2 font-mono transition focus-within:ring-1',
         validation.ok
-          ? 'border-ink-line focus-within:border-lime-hi/60 focus-within:ring-lime-hi/25'
+          ? 'border-ink-line focus-within:border-term-accent-hi/60 focus-within:ring-term-accent-hi/25'
           : 'border-term-rose/55 focus-within:border-term-rose/70 focus-within:ring-term-rose/25',
         disabled && 'opacity-55',
       )}
       title={validation.ok ? 'Project folder' : validation.message}
     >
-      <FolderOpen className={cn('size-3.5 shrink-0', validation.ok ? 'text-lime-hi' : 'text-term-rose')} />
+      <FolderOpen className={cn('size-3.5 shrink-0', validation.ok ? 'text-term-accent-hi' : 'text-term-rose')} />
       <input
         list="orrery-project-suggestions"
         className="min-w-0 flex-1 bg-transparent text-[11.5px] text-term-name outline-none placeholder:text-term-faint disabled:cursor-not-allowed"
@@ -185,13 +185,13 @@ export function NewChatSetupPill({
         className={cn(
           'group relative flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-md font-mono outline-none transition disabled:cursor-not-allowed disabled:opacity-55',
           primary
-            ? 'border border-ink-line bg-ink pl-2 pr-1.5 hover:border-ink-line-2 data-[state=open]:border-lime-hi/60 focus-visible:border-lime-hi/60 focus-visible:ring-1 focus-visible:ring-lime-hi/25'
+            ? 'border border-ink-line bg-ink pl-2 pr-1.5 hover:border-ink-line-2 data-[state=open]:border-term-accent-hi/60 focus-visible:border-term-accent-hi/60 focus-visible:ring-1 focus-visible:ring-term-accent-hi/25'
             : 'border border-transparent px-1.5 hover:bg-white/[0.05] data-[state=open]:bg-white/[0.05] focus-visible:bg-white/[0.05]',
           invalid && 'border-term-rose/55 data-[state=open]:border-term-rose/70 focus-visible:border-term-rose/70 focus-visible:ring-term-rose/25',
           className,
         )}
       >
-        <Icon className={cn('size-3.5 shrink-0', invalid ? 'text-term-rose' : primary ? 'text-lime-hi' : 'text-term-dim2')} />
+        <Icon className={cn('size-3.5 shrink-0', invalid ? 'text-term-rose' : primary ? 'text-term-accent-hi' : 'text-term-dim2')} />
         <span className={cn('min-w-0 flex-1 truncate text-left text-[11.5px]', primary ? 'font-medium text-term-name' : 'text-term-dim')}>{display}</span>
         <SelectPrimitive.Icon asChild>
           <ChevronDown
@@ -213,11 +213,11 @@ export function NewChatSetupPill({
                 key={option.value}
                 value={option.value}
                 disabled={option.disabled}
-                className="relative flex h-7 cursor-pointer select-none items-center gap-2 rounded-md pl-2.5 pr-7 text-[11.5px] text-term-dim outline-none data-[highlighted]:bg-white/[0.06] data-[highlighted]:text-term-name data-[state=checked]:bg-lime-hi/10 data-[state=checked]:font-medium data-[state=checked]:text-term-name data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
+                className="relative flex h-7 cursor-pointer select-none items-center gap-2 rounded-md pl-2.5 pr-7 text-[11.5px] text-term-dim outline-none data-[highlighted]:bg-white/[0.06] data-[highlighted]:text-term-name data-[state=checked]:bg-term-accent-hi/10 data-[state=checked]:font-medium data-[state=checked]:text-term-name data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
               >
                 <SelectPrimitive.ItemText>{option.label}</SelectPrimitive.ItemText>
                 <SelectPrimitive.ItemIndicator className="absolute right-2 inline-flex">
-                  <Check className="size-3.5 text-lime-hi" />
+                  <Check className="size-3.5 text-term-accent-hi" />
                 </SelectPrimitive.ItemIndicator>
               </SelectPrimitive.Item>
             ))}
@@ -304,12 +304,12 @@ export function OpenWorkspaceSplitButton({
                 }}
               >
                 {pending ? (
-                  <RefreshCw className="size-4 shrink-0 animate-spin text-lime-hi" />
+                  <RefreshCw className="size-4 shrink-0 animate-spin text-term-accent-hi" />
                 ) : (
-                  <Icon className={cn('size-4 shrink-0', selected ? 'text-lime-hi' : 'text-muted-foreground')} />
+                  <Icon className={cn('size-4 shrink-0', selected ? 'text-term-accent-hi' : 'text-muted-foreground')} />
                 )}
                 <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                {selected ? <Check className="absolute right-2.5 size-3.5 text-lime-hi" /> : null}
+                {selected ? <Check className="absolute right-2.5 size-3.5 text-term-accent-hi" /> : null}
               </DropdownMenuPrimitive.Item>
             );
           })}
@@ -375,7 +375,7 @@ export function ModelPickerPill({
       />
       {showCustom ? (
         <input
-          className="h-7 w-28 shrink-0 rounded-md border border-ink-line bg-ink px-2 text-[11.5px] font-medium text-term-name outline-none transition placeholder:text-term-faint focus-visible:border-lime-hi/60 focus-visible:ring-1 focus-visible:ring-lime-hi/25 disabled:cursor-not-allowed disabled:opacity-55"
+          className="h-7 w-28 shrink-0 rounded-md border border-ink-line bg-ink px-2 text-[11.5px] font-medium text-term-name outline-none transition placeholder:text-term-faint focus-visible:border-term-accent-hi/60 focus-visible:ring-1 focus-visible:ring-term-accent-hi/25 disabled:cursor-not-allowed disabled:opacity-55"
           value={model}
           disabled={disabled}
           placeholder="model id"
