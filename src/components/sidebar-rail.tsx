@@ -4,26 +4,20 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import {
-  statusLabels,
-  sessionMarker,
-  statePillBase,
-  statePillCls,
-  sessionProviderLabel,
-  sessionDisplayLabel,
-  shortAgentName,
-  lastMessagePreview,
-} from '@/lib/session-display';
+import { statusDotClassNames, sessionDisplayLabel, firstOpenRequests, lastMessagePreview } from '@/lib/session-display';
 import { railSidebarWidth, type RailTab } from '@/lib/layout-prefs';
-import { formatTimestamp, formatRelativeTime, firstContentLine } from '@/lib/format';
+import { formatRelativeTime, formatTimestamp, firstContentLine } from '@/lib/format';
 import { sessionRecoveryState } from '@/lib/diagnostics';
 import { RecoveryNotice } from '@/components/recovery';
 import { OrreryMark } from '@/components/orrery-mark';
 import { demoMode } from '@/lib/workspace';
 import { type Dispatch, type SetStateAction } from 'react';
+import { type AgentSession } from '@/shared/graph-state';
+import { type RuntimeRequest, type UserInputRequest } from '@/shared/provider-runtime';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type SessionListState } from '@/hooks/use-session-list';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
+import { type InteractionsState } from '@/hooks/use-interactions';
 
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
@@ -34,12 +28,38 @@ type SidebarRailProps = {
   core: RuntimeCoreState;
   sessionList: SessionListState;
   actions: SessionActionsState;
+  interactions: InteractionsState;
   activeTab: RailTab;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
   onStartWorkflow: () => void;
 };
 
-export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTab, onStartWorkflow }: SidebarRailProps) {
+type SessionTier = 'attention' | 'running' | 'recent';
+
+type SessionEntry = {
+  session: AgentSession;
+  recovery: ReturnType<typeof sessionRecoveryState>;
+  openRequests: RuntimeRequest[];
+  openInputs: UserInputRequest[];
+  tier: SessionTier;
+};
+
+// "2m ago" reads fine in a card body but eats width in one-line rows.
+function compactTime(value?: string) {
+  return formatRelativeTime(value).replace(' ago', '');
+}
+
+function SectionHeader({ label, count, toneCls }: { label: string; count?: number; toneCls: string }) {
+  return (
+    <div className="flex items-center gap-2 px-1 pb-1.5 pt-3.5 font-mono text-[11px] first:pt-1">
+      <span className={toneCls}>{label}</span>
+      {count !== undefined ? <span className={cn('tabular-nums', toneCls)}>{count}</span> : null}
+      <span className="h-px min-w-0 flex-1 bg-ink-line" />
+    </div>
+  );
+}
+
+export function SidebarRail({ core, sessionList, actions, interactions, activeTab, setActiveTab, onStartWorkflow }: SidebarRailProps) {
   const {
     runtimeClient,
     isRuntimeAvailable,
@@ -63,6 +83,251 @@ export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTa
     setSessionArchived,
   } = sessionList;
   const { setPendingLinkedSourceId, startNewChat } = actions;
+  const { respondToRuntimeRequest, pendingInteractionIds } = interactions;
+
+  const selectSession = (sessionId: string) => {
+    setPendingLinkedSourceId(null);
+    setSelectedSessionId(sessionId);
+    setActiveTab('chat');
+  };
+
+  const entries: SessionEntry[] = filteredSessions.map((session) => {
+    const node = runtimeState.nodes.find((candidate) => candidate.sessionId === session.sessionId);
+    const managedCluster = Object.values(runtimeState.clusters).find((cluster) => cluster.nodeIds.includes(session.sessionId));
+    const recovery = sessionRecoveryState({
+      session,
+      diagnostics: runtimeDiagnostics,
+      frozen: node?.frozen === true || managedCluster?.frozen === true,
+    });
+    const { openRequests, openInputs } = firstOpenRequests(session);
+    // Failed/killed sessions are terminal, not actionable — they get a rose or
+    // amber dot in Recent (their recovery notice still shows in the chat pane).
+    // Only recovery states beyond plain failure (invalid cwd, frozen, recovered
+    // runtime) pin a session to the attention tier.
+    const actionableRecovery = recovery && session.status !== 'failed' && session.status !== 'killed' ? recovery : undefined;
+    const tier: SessionTier =
+      openRequests.length > 0 || openInputs.length > 0 || actionableRecovery
+        ? 'attention'
+        : session.status === 'running' || session.status === 'pending'
+          ? 'running'
+          : 'recent';
+    return { session, recovery: actionableRecovery, openRequests, openInputs, tier };
+  });
+
+  const attentionEntries = entries.filter((entry) => entry.tier === 'attention');
+  const runningEntries = entries.filter((entry) => entry.tier === 'running');
+  const recentEntries = entries.filter((entry) => entry.tier === 'recent');
+
+  const renderArchiveButton = (session: AgentSession, extraCls?: string) => {
+    const canArchive = session.status !== 'running' && session.status !== 'pending';
+    const archivePending = archivingSessionIds[session.sessionId] === true;
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              'shrink-0 rounded-md p-1 text-term-dim2 opacity-0 transition hover:bg-foreground/[0.07] hover:text-term-name focus-visible:opacity-100 disabled:cursor-not-allowed',
+              extraCls,
+            )}
+            disabled={!isRuntimeAvailable || archivePending || !canArchive}
+            aria-label={session.archived ? 'Restore chat' : 'Hide chat'}
+            onClick={(event) => {
+              event.stopPropagation();
+              void setSessionArchived(session.sessionId, !session.archived);
+            }}
+          >
+            {session.archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{session.archived ? 'Restore chat' : 'Hide chat'}</TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  const renderAttentionCard = (entry: SessionEntry) => {
+    const { session, recovery, openRequests, openInputs } = entry;
+    const request = openRequests[0];
+    const input = openInputs[0];
+    const isSel = selectedSessionId === session.sessionId;
+    const requestPending = request ? pendingInteractionIds[request.id] === true : false;
+    const extraCount = openRequests.length + openInputs.length - 1;
+
+    const toneBorder = !request && input ? 'border-term-cyan/40 hover:border-term-cyan/60' : 'border-term-amber/40 hover:border-term-amber/60';
+    const toneBg = !request && input ? 'bg-term-cyan/[0.06]' : 'bg-term-amber/[0.06]';
+
+    return (
+      <div
+        key={session.sessionId}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          'group/chat cursor-pointer rounded-lg border p-2.5 font-mono transition',
+          toneBorder,
+          toneBg,
+          isSel && 'ring-1 ring-lime-hi/40',
+          session.archived && 'opacity-60',
+        )}
+        onClick={() => selectSession(session.sessionId)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectSession(session.sessionId);
+          }
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className={cn('size-1.5 shrink-0 rounded-full', !request && input ? 'bg-term-cyan' : 'bg-term-amber')} />
+          <span
+            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-lime-hi' : 'text-term-name')}
+            title={sessionDisplayLabel(session)}
+          >
+            {sessionDisplayLabel(session)}
+          </span>
+          <span className="shrink-0 text-[10.5px] tabular-nums text-term-dim2">{compactTime(request?.createdAt ?? input?.createdAt ?? session.updatedAt)}</span>
+          {renderArchiveButton(session, 'group-hover/chat:opacity-100 -my-1 -mr-1')}
+        </div>
+
+        {request || input ? (
+          <div className="mt-1.5 flex min-w-0 items-baseline gap-1.5 text-[11.5px] leading-4">
+            {request ? (
+              <>
+                <span className="shrink-0 font-medium text-term-amber">Approve:</span>
+                <span className="min-w-0 flex-1 truncate text-term-dim" title={request.title}>
+                  {request.title}
+                </span>
+              </>
+            ) : input ? (
+              <>
+                <span className="shrink-0 font-medium text-term-cyan">Asked:</span>
+                <span className="min-w-0 flex-1 truncate text-term-dim" title={input.prompt}>
+                  {firstContentLine(input.prompt) ?? input.prompt}
+                </span>
+              </>
+            ) : null}
+            {extraCount > 0 ? <span className="shrink-0 text-[10px] text-term-faint">+{extraCount} more</span> : null}
+          </div>
+        ) : null}
+
+        {request ? (
+          <div className="mt-1 flex justify-end">
+            <button
+              type="button"
+              className="text-[11px] text-term-amber transition hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!isRuntimeAvailable || requestPending}
+              onClick={(event) => {
+                event.stopPropagation();
+                void respondToRuntimeRequest(request, 'accept');
+              }}
+            >
+              ✓ Approve
+            </button>
+          </div>
+        ) : input ? (
+          <div className="mt-1 flex justify-end">
+            <span className="text-[11px] text-term-cyan">Answer →</span>
+          </div>
+        ) : null}
+
+        {recovery ? (
+          <div className="mt-2">
+            <RecoveryNotice state={recovery} compact />
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderRunningCard = (entry: SessionEntry) => {
+    const { session } = entry;
+    const isSel = selectedSessionId === session.sessionId;
+    const isPendingStart = session.status === 'pending';
+    return (
+      <div
+        key={session.sessionId}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          'group/chat cursor-pointer rounded-lg border border-ink-line bg-ink p-2.5 font-mono transition hover:border-foreground/20',
+          isSel && 'border-lime-hi/50 ring-1 ring-lime-hi/25',
+        )}
+        onClick={() => selectSession(session.sessionId)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectSession(session.sessionId);
+          }
+        }}
+      >
+        <div className="flex items-center gap-2">
+          <span className={cn('size-1.5 shrink-0 animate-pulse rounded-full', isPendingStart ? 'bg-term-amber' : 'bg-term-green')} />
+          <span
+            className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-lime-hi' : 'text-term-name')}
+            title={sessionDisplayLabel(session)}
+          >
+            {sessionDisplayLabel(session)}
+          </span>
+          {session.role === 'master' ? <span className="shrink-0 text-[9px] uppercase tracking-[0.1em] text-term-amber">master</span> : null}
+          <span className="shrink-0 text-[10.5px] tabular-nums text-term-dim2" title={`Started ${formatTimestamp(session.startedAt ?? session.createdAt)}`}>
+            {compactTime(session.startedAt ?? session.updatedAt)}
+          </span>
+        </div>
+        <div className="mt-1.5 truncate text-[11px] leading-4 text-term-dim">
+          {isPendingStart ? 'Starting…' : (firstContentLine(lastMessagePreview(session)) ?? '…')}
+        </div>
+        <div className="mt-2 h-0.5 overflow-hidden rounded-full bg-foreground/[0.06]">
+          <div
+            className={cn(
+              'h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r to-transparent',
+              isPendingStart ? 'from-term-amber/60' : 'from-term-green/60',
+            )}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  const renderRecentRow = (entry: SessionEntry) => {
+    const { session } = entry;
+    const isSel = selectedSessionId === session.sessionId;
+    return (
+      <div
+        key={session.sessionId}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          'group/chat flex cursor-pointer items-center gap-2 rounded-md px-2 py-[5px] font-mono transition',
+          isSel ? 'bg-lime-hi/10 ring-1 ring-inset ring-lime-hi/25' : 'hover:bg-foreground/[0.045]',
+          session.archived && 'opacity-60',
+        )}
+        onClick={() => selectSession(session.sessionId)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            selectSession(session.sessionId);
+          }
+        }}
+      >
+        {session.role === 'master' ? (
+          <span className="w-1.5 shrink-0 text-center text-[7px] leading-none text-term-amber">◆</span>
+        ) : (
+          <span className={cn('size-1.5 shrink-0 rounded-full', statusDotClassNames[session.status])} />
+        )}
+        <span className={cn('min-w-0 flex-1 truncate text-[12px]', isSel ? 'text-lime-hi' : 'text-term-dim')} title={sessionDisplayLabel(session)}>
+          {sessionDisplayLabel(session)}
+        </span>
+        {session.archived ? <span className="shrink-0 text-[9px] uppercase tracking-[0.1em] text-term-faint">hidden</span> : null}
+        <span
+          className="shrink-0 text-[10.5px] tabular-nums text-term-dim2 group-hover/chat:hidden"
+          title={`Created ${formatTimestamp(session.createdAt)} · updated ${formatTimestamp(session.updatedAt)}`}
+        >
+          {compactTime(session.updatedAt)}
+        </span>
+        {renderArchiveButton(session, '-my-1 -mr-1 hidden group-hover/chat:block group-hover/chat:opacity-100')}
+      </div>
+    );
+  };
+
   return (
     <aside
       className="orrery-sidebar flex h-dvh min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar"
@@ -168,7 +433,7 @@ export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTa
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 pb-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
             {sessions.length === 0 ? (
               <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">No chats yet.</div>
             ) : null}
@@ -179,98 +444,26 @@ export function SidebarRail({ core, sessionList, actions, activeTab, setActiveTa
               </div>
             ) : null}
 
-            {filteredSessions.map((session) => {
-              const node = runtimeState.nodes.find((candidate) => candidate.sessionId === session.sessionId);
-              const managedCluster = Object.values(runtimeState.clusters).find((cluster) => cluster.nodeIds.includes(session.sessionId));
-              const recovery = sessionRecoveryState({
-                session,
-                diagnostics: runtimeDiagnostics,
-                frozen: node?.frozen === true || managedCluster?.frozen === true,
-              });
+            {attentionEntries.length > 0 ? (
+              <>
+                <SectionHeader label="Need attention" count={attentionEntries.length} toneCls="text-term-amber" />
+                <div className="space-y-1.5">{attentionEntries.map(renderAttentionCard)}</div>
+              </>
+            ) : null}
 
-              const isSel = selectedSessionId === session.sessionId;
-              const marker = sessionMarker(session.status, isSel, session.role);
-              const canArchive = session.status !== 'running' && session.status !== 'pending';
-              const archivePending = archivingSessionIds[session.sessionId] === true;
+            {runningEntries.length > 0 ? (
+              <>
+                <SectionHeader label="Working" count={runningEntries.length} toneCls="text-term-green" />
+                <div className="space-y-1.5">{runningEntries.map(renderRunningCard)}</div>
+              </>
+            ) : null}
 
-              return (
-                <div
-                  key={session.sessionId}
-                  className={cn(
-                    'group/chat relative rounded-lg border bg-ink font-mono transition',
-                    isSel ? 'border-lime-hi/50 ring-1 ring-lime-hi/25' : 'border-ink-line hover:border-foreground/20',
-                    session.archived && 'opacity-60',
-                  )}
-                >
-                  {isSel ? <span className="absolute bottom-2 left-0 top-2 w-0.5 rounded-full bg-lime-hi" /> : null}
-                  <div className="flex items-center gap-1.5 py-2 pl-3 pr-2">
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => {
-                        setPendingLinkedSourceId(null);
-                        setSelectedSessionId(session.sessionId);
-                        setActiveTab('chat');
-                      }}
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', marker.cls)}>{marker.char}</span>
-                        <span
-                          className={cn('min-w-0 flex-1 truncate text-[12.5px] font-medium', isSel ? 'text-lime-hi' : 'text-lime')}
-                          title={sessionDisplayLabel(session)}
-                        >
-                          {sessionDisplayLabel(session)}
-                        </span>
-                        {session.role === 'master' || session.status !== 'idle' ? (
-                          <span className={cn(statePillBase, statePillCls(session.status, session.role))}>
-                            {session.role === 'master' ? 'master' : statusLabels[session.status].toLowerCase()}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-1 truncate text-[11px] leading-4 text-term-dim">{firstContentLine(lastMessagePreview(session)) ?? '…'}</div>
-                      <div className="mt-1 flex items-center gap-1 text-[11px] text-term-dim2">
-                        <span className="shrink-0">{shortAgentName(sessionProviderLabel(session))}</span>
-                        <span className="shrink-0 text-term-faint">·</span>
-                        <span className="truncate" title={`Created ${formatTimestamp(session.createdAt)} · updated ${formatTimestamp(session.updatedAt)}`}>
-                          {formatRelativeTime(session.updatedAt)}
-                        </span>
-                        <span className="shrink-0 text-term-faint">·</span>
-                        <span className="shrink-0 whitespace-nowrap">
-                          <span className="tabular-nums text-term-dim">{session.messages.length}</span> msgs
-                        </span>
-                        {session.archived ? (
-                          <>
-                            <span className="shrink-0 text-term-faint">·</span>
-                            <span className="shrink-0 uppercase tracking-[0.08em]">hidden</span>
-                          </>
-                        ) : null}
-                      </div>
-                    </button>
-
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          type="button"
-                          className="shrink-0 rounded-md border border-ink-line bg-background/35 p-1.5 text-term-dim opacity-0 transition hover:border-foreground/20 hover:text-term-name focus-visible:opacity-100 group-hover/chat:opacity-100 disabled:cursor-not-allowed"
-                          disabled={!isRuntimeAvailable || archivePending || !canArchive}
-                          aria-label={session.archived ? 'Restore chat' : 'Hide chat'}
-                          onClick={() => setSessionArchived(session.sessionId, !session.archived)}
-                        >
-                          {session.archived ? <ArchiveRestore className="size-3.5" /> : <Archive className="size-3.5" />}
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>{session.archived ? 'Restore chat' : 'Hide chat'}</TooltipContent>
-                    </Tooltip>
-                  </div>
-
-                  {recovery ? (
-                    <div className="px-2.5 pb-2.5 pl-3">
-                      <RecoveryNotice state={recovery} compact />
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+            {recentEntries.length > 0 ? (
+              <>
+                <SectionHeader label="Recent" toneCls="text-term-dim2" />
+                <div className="space-y-px">{recentEntries.map(renderRecentRow)}</div>
+              </>
+            ) : null}
           </div>
         </div>
       </div>

@@ -245,6 +245,7 @@ function App() {
           core={core}
           sessionList={sessionList}
           actions={actions}
+          interactions={interactions}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onStartWorkflow={() => {

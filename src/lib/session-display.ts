@@ -100,6 +100,15 @@ export function shortAgentName(value: string) {
   return compact.length > 0 ? compact : value;
 }
 
+// The kernel keeps these arrays' statuses current as request.opened/resolved
+// events land, so the sidebar can group sessions without a full projection.
+export function firstOpenRequests(session: AgentSession) {
+  return {
+    openRequests: (session.runtimeRequests ?? []).filter((request) => request.status === 'open'),
+    openInputs: (session.runtimeUserInputRequests ?? []).filter((request) => request.status === 'open'),
+  };
+}
+
 export function lastMessagePreview(session: AgentSession | undefined) {
   const message = session?.messages.at(-1);
   if (message?.content) {
