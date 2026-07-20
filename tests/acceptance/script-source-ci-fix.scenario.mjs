@@ -4,7 +4,7 @@ import path from 'node:path'
 
 export const name = 'script-source-ci-fix'
 export const description =
-  'L2 acceptance, half 2 (proposal §L2 验收): a user-authored polling script is registered as a source; its "CI failed" line activates a real fixer whose fix flips the next poll to green — the log reads the whole ride: failed → trigger → fix → green, and the edge goes quiet.'
+  'L2 acceptance, half 2 (proposal §L2 acceptance): a user-authored polling script is registered as a source; its "CI failed" line activates a real fixer whose fix flips the next poll to green — the log reads the whole ride: failed → trigger → fix → green, and the edge goes quiet.'
 export const timeoutMs = 480_000
 
 export async function run({ orrery, provider, workDir, log }) {
@@ -137,7 +137,7 @@ export async function run({ orrery, provider, workDir, log }) {
     'exactly one firing for the whole ride'
   )
 
-  // 停: cleanup leaves the graph quiet and the watcher process gone.
+  // Stop: cleanup leaves the graph quiet and the watcher process gone.
   await orrery.stopSubscription(sub.id, { reason: 'scenario cleanup' })
   await orrery.removeExternalSource(source.id, { reason: 'scenario cleanup' })
   const state = await orrery.state()

@@ -198,12 +198,12 @@ test('the choke point drops duplicates and too-soon emits without touching the l
         }),
       /exceeds/
     )
-    // The cap is bytes, not UTF-16 units: 9K CJK chars ≈ 27KB of UTF-8.
+    // The cap is bytes, not UTF-16 units: 9K three-byte chars ≈ 27KB of UTF-8.
     assert.throws(
       () =>
         runtime.emitExternalEvent({
           sourceId: 'src-watch',
-          payload: { blob: '好'.repeat(9 * 1024) },
+          payload: { blob: '€'.repeat(9 * 1024) },
         }),
       /exceeds/
     )

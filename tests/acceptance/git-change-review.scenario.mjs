@@ -5,7 +5,7 @@ import path from 'node:path'
 
 export const name = 'git-change-review'
 export const description =
-  'L2 acceptance, half 1 (proposal §L2 验收): on a real repo, the git watcher source drives a review-on-change edge end to end — a real commit becomes an external.git fact, the fact activates a real reviewer with the event in its channel, and the reviewer reads the commit and answers with its subject.'
+  'L2 acceptance, half 1 (proposal §L2 acceptance): on a real repo, the git watcher source drives a review-on-change edge end to end — a real commit becomes an external.git fact, the fact activates a real reviewer with the event in its channel, and the reviewer reads the commit and answers with its subject.'
 export const timeoutMs = 480_000
 
 function git(cwd, ...args) {

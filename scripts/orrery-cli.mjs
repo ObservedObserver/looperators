@@ -43,7 +43,7 @@ Commands:
   edge remove <edgeId>                  Remove a link edge (other kinds are history)
   subs [--json]                         Intent layer: subscriptions + pending activations
   sub add --spec <json>                 Author a subscription (JSON per kernel doc §7.3)
-  sub stop <id前缀> [--reason <text>]   Stop a subscription
+  sub stop <id-prefix> [--reason <text>] Stop a subscription
   activation approve <slotKey> [--note <text>]
   activation deny <slotKey> [--reason <text>]
   freeze <session-or-cluster> [--reason <text>]

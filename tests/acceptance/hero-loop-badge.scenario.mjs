@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 export const name = 'hero-loop-badge'
 export const description =
-  'L4 acceptance (proposal §L4 验收): a real two-agent ring spins to its lap cap while the loop badge (state.loops) tracks lap count and status; afterwards the per-lap timeline alone — no session opened — retells every lap: who triggered it, who let it through the gate, and how it ended.'
+  'L4 acceptance (proposal §L4 acceptance): a real two-agent ring spins to its lap cap while the loop badge (state.loops) tracks lap count and status; afterwards the per-lap timeline alone — no session opened — retells every lap: who triggered it, who let it through the gate, and how it ended.'
 export const timeoutMs = 480_000
 
 export async function run({ orrery, provider, workDir, log }) {
@@ -112,7 +112,7 @@ export async function run({ orrery, provider, workDir, log }) {
     { timeoutMs: 120_000 }
   )
 
-  // The 一分钟读懂 claim: the loop timeline ALONE retells the run.
+  // The quick-read claim: the loop timeline ALONE retells the run.
   const { timeline } = await orrery.getLoopTimeline(loopId)
   assert.equal(timeline.laps.length, 2, 'one timeline lap per counted lap')
   for (const lap of timeline.laps) {

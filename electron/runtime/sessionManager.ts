@@ -3090,7 +3090,7 @@ export class RuntimeSessionManager {
         }
       } else if (slot.externalEvent) {
         // The emit payload is what the target acts on (proposal L2: "deliver
-        // 的内容是失败日志") — rendered as a channel entry like a report.
+        // the failure log") — rendered as a channel entry like a report.
         this.#deliverToChannel(
           {
             target: slot.target,

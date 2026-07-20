@@ -156,16 +156,16 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'plan-council',
     name: 'Compare plans',
-    tagline: '多个独立 Agent 先规划、互审，再综合成一份方案',
-    handsOff: '2–4 个只读 Planner、一轮交叉评审和最终综合',
+    tagline: 'Independent agents plan, cross-review, and synthesize one proposal',
+    handsOff: '2–4 read-only Planners, one cross-review round, and final synthesis',
     builtin: true,
     slots: [],
   },
   {
     id: 'handoff',
     name: 'Handoff',
-    tagline: '把工作交给下一个 agent',
-    handsOff: '上下文搬运(一次性命令)',
+    tagline: 'Pass the work to the next agent',
+    handsOff: 'One-shot context transfer',
     builtin: true,
     slots: [
       sessionSlot('source', 'From Agent'),
@@ -182,8 +182,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'watch-and-summarize',
     name: 'Watch & summarize',
-    tagline: '持续把进展喂给它,别打扰它',
-    handsOff: '注意力(deliver-only,不激活)',
+    tagline: 'Keep it informed without interrupting it',
+    handsOff: 'Deliver-only attention, no activation',
     builtin: true,
     slots: [
       sessionSlot('source', 'Watched Agent'),
@@ -200,8 +200,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'review-until-clean',
     name: 'Review until clean',
-    tagline: '改 → 审 → 再改,直到干净',
-    handsOff: '循环的发动机(reviewer 报 clean 即停)',
+    tagline: 'Change → review → revise until clean',
+    handsOff: 'The review loop stops when the reviewer reports clean',
     builtin: true,
     slots: [
       sessionSlot('coder', 'Coder Agent'),
@@ -223,8 +223,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'goal-loop',
     name: 'Goal loop',
-    tagline: '转到达标为止(自然语言定义达标)',
-    handsOff: '停止条件',
+    tagline: 'Keep going until the natural-language goal is met',
+    handsOff: 'The stopping condition',
     builtin: true,
     slots: [
       sessionSlot('worker', 'Worker Agent'),
@@ -249,8 +249,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'scheduled-routine',
     name: 'Scheduled routine',
-    tagline: '按时醒来干活',
-    handsOff: '触发时机',
+    tagline: 'Wake up and work on schedule',
+    handsOff: 'The trigger schedule',
     builtin: true,
     slots: [
       sessionSlot('target', 'Agent to wake'),
@@ -267,8 +267,8 @@ export const builtinTemplates: TemplateDescriptor[] = [
   {
     id: 'reactive-fixer',
     name: 'Reactive fixer',
-    tagline: '外部世界出事就响应',
-    handsOff: '全程(事件 → 响应,带护栏)',
+    tagline: 'Respond when the outside world changes',
+    handsOff: 'End to end: event → response, with guardrails',
     builtin: true,
     slots: [
       {

@@ -5,7 +5,7 @@ import path from 'node:path'
 
 export const name = 'review-until-clean-template'
 export const description =
-  'L6 acceptance (proposal §L6 验收): a Review-until-clean ring is built ENTIRELY through the template library — applyTemplate fills two slots (coder; reviewer left empty so the runtime creates one) and ready-made subscriptions land with the clean stop and lap cap. Then the ring truly turns on real agents: the coder ships step 1 of a two-step change, the reviewer reads the work against SPEC.md and reports issues through the membrane (earned, not scripted), the retry edge wakes the coder with exactly those issues, the fix lap ends with verdict clean and the ring stops itself. The reviewer reports via the membrane mounted by both the Claude Agent SDK and Codex providers.'
+  'L6 acceptance (proposal §L6 acceptance): a Review-until-clean ring is built ENTIRELY through the template library — applyTemplate fills two slots (coder; reviewer left empty so the runtime creates one) and ready-made subscriptions land with the clean stop and lap cap. Then the ring truly turns on real agents: the coder ships step 1 of a two-step change, the reviewer reads the work against SPEC.md and reports issues through the membrane (earned, not scripted), the retry edge wakes the coder with exactly those issues, the fix lap ends with verdict clean and the ring stops itself. The reviewer reports via the membrane mounted by both the Claude Agent SDK and Codex providers.'
 export const timeoutMs = 900_000
 
 function git(cwd, ...args) {
