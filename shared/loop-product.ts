@@ -589,7 +589,7 @@ export function deriveLoopProductView(input: LoopProductInput): LoopProductView 
       ...common,
       phase: 'waiting-blocked',
       headline: 'Reviewer did not report',
-      detail: 'The Reviewer finished without the typed verdict that controls this loop. Orrery will not guess from chat text.',
+      detail: 'The Reviewer finished without the typed verdict that controls this loop. looperators will not guess from chat text.',
       tone: 'danger',
       responsibleSessionId: reviewerSessionId,
       responsibleLabel: labelOf(input, reviewerSessionId, 'Reviewer'),

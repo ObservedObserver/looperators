@@ -19,7 +19,7 @@ function createMainWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 720,
-    title: 'Orrery',
+    title: 'looperators',
     backgroundColor: '#111111',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -235,7 +235,7 @@ app.whenReady().then(() => {
   // guard) is an unhandled rejection: the process exits with no window and no
   // message. Surface it, then quit.
   const message = error instanceof Error ? error.message : String(error)
-  dialog.showErrorBox('Orrery failed to start', message)
+  dialog.showErrorBox('looperators failed to start', message)
   app.quit()
 })
 

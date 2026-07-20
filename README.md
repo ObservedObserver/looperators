@@ -1,9 +1,13 @@
-# Orrery
+# looperators
 
-Orrery is an Electron + React control surface for code-agent chat sessions. It
+looperators is an Electron + React control surface for code-agent chat sessions. It
 uses a graph as the durable product model: every chat is a node, linked chats and
 master/worker actions are edges, and workflow state stays visible instead of
 disappearing into a flat session list.
+
+The existing `Orrery` / `orrery` identifiers remain the project's internal codename
+and technical namespace, so commands, environment variables, and storage paths keep
+their current names unless a separate compatibility migration changes them.
 
 See `design-docs/` for the product model and v1 implementation plan.
 
@@ -18,7 +22,7 @@ npm run dev
 The default entry points are `New Chat` and `New Workflow`:
 
 - `New Chat` opens an empty composer. Choose a provider, confirm the project
-  cwd, send the first message, and Orrery creates a runtime session plus an
+  cwd, send the first message, and looperators creates a runtime session plus an
   independent graph node.
 - `New Workflow` opens the three primary outcomes: Review until clean, Handoff,
   and Run until goal. Each uses the same Agent configuration, Preview, and
@@ -41,7 +45,7 @@ The default entry points are `New Chat` and `New Workflow`:
   transfers its current result immediately; a new Source runs first and hands
   off exactly once when it finishes.
 - Goal: configure a new or existing Worker, define done in one sentence, and
-  choose a lap cap. The Judge visibly inherits the Worker configuration. Orrery installs both
+  choose a lap cap. The Judge visibly inherits the Worker configuration. looperators installs both
   Goal relationships before starting the Worker.
 
 ## Runtime Model
@@ -116,14 +120,14 @@ npm run acceptance:membrane                       # live membrane create/resume/
 
 ## Grok Build setup
 
-Orrery expects a local Grok Build CLI with ACP stdio support. The integration
+looperators expects a local Grok Build CLI with ACP stdio support. The integration
 baseline was verified with `grok 0.2.93` and launches `grok agent stdio`.
 
 1. Install Grok Build and make `grok` available on `PATH`, or set
-   `ORRERY_GROK_BIN` before starting Orrery. A custom binary path and launch
+   `ORRERY_GROK_BIN` before starting looperators. A custom binary path and launch
    arguments can also be saved in Provider setup.
-2. Authenticate with `grok login`, or provide `XAI_API_KEY` to the Orrery
-   runtime process. Orrery reuses that provider-managed authentication; it does
+2. Authenticate with `grok login`, or provide `XAI_API_KEY` to the looperators
+   runtime process. looperators reuses that provider-managed authentication; it does
    not read, store, or refresh OAuth/API credentials.
 3. Select **Grok Build** in New Chat. The lazy setup check performs a real ACP
    initialize/auth/session setup and discovers the available models. Because
@@ -132,8 +136,8 @@ baseline was verified with `grok 0.2.93` and launches `grok agent stdio`.
 
 Provider setup accepts only non-sensitive `KEY=value` environment overrides.
 Credential-like names such as `TOKEN`, `KEY`, `SECRET`, `PASSWORD`, and
-`CREDENTIAL` are rejected; pass credentials to the Orrery process instead.
-Grok may still load native MCP servers from `~/.grok`. Orrery injects and cleans
+`CREDENTIAL` are rejected; pass credentials to the looperators process instead.
+Grok may still load native MCP servers from `~/.grok`. looperators injects and cleans
 up its per-turn graph membrane, but does not claim to isolate that user config.
 
 Headless debugging against a dev instance:

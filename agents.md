@@ -1,8 +1,12 @@
 # Agent Notes
 
+Branding boundary: the customer-facing product name is `looperators`. `Orrery` / `orrery`
+remains the internal codename and technical namespace; do not rename code symbols, IPC/MCP
+names, environment variables, storage paths, CLI files, or historical records solely for rebranding.
+
 For project vision and designs, please check the documentation under the `design-docs/`.
 
-- Vision / initial idea: `design-docs/reactive-agent-session-graph.md` — why Orrery manages agents as a graph instead of a session list.
+- Vision / initial idea: `design-docs/reactive-agent-session-graph.md` — why looperators manages agents as a graph instead of a session list.
 - Design (current source of truth for development): `design-docs/orrery-design.md` — the concrete control model (Skills membrane, Master Agent, scopes/clusters), UI shape, v1 scope, and the §12 Skill API.
 - v1 plan: `design-docs/v1-implementation-plan.md` — phased implementation plan (critical path P0–P3 + parallel workstreams A–C), with goals and acceptance criteria.
 - Internal implementation roadmap / current post-P4 baseline: `design-docs/internal_docs/plans/master-agent-plan-council-implementation-plan.md` — Master-as-Intent-Compiler/Governor/Replanner, Plan Council as the first high-frequency workflow, reliability convergence, correlation/barriers, dynamic topology, and concurrency/safety. Its rationale and discussion replay live in `design-docs/internal_docs/commit-log/2026-07-12-master-agent-plan-council-direction.md`. This roadmap supersedes the old priority of expanding manual canvas authoring first; existing kernel semantics remain governed by `design-docs/session-graph-kernel.md` until each migration phase lands.

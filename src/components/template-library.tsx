@@ -468,7 +468,7 @@ export function TemplateLibraryPanel({
         ) : null}
         <div className="rounded-xl border border-accent-ink/20 bg-accent-ink/[0.05] p-3 text-[10.5px] leading-4 text-muted-foreground">
           <p className="font-medium text-foreground">Chats start one Agent. Workflows connect Agents.</p>
-          <p className="mt-1">Choose the result you want. Orrery will place the relationship on the graph.</p>
+          <p className="mt-1">Choose the result you want. looperators will place the relationship on the graph.</p>
         </div>
 
         <div>

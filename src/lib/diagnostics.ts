@@ -50,7 +50,7 @@ export function diagnosticDisplay(diagnostic: RuntimeStateDiagnostic): RecoveryS
     return {
       tone: 'rose',
       title: 'Saved state needed repair',
-      detail: 'Orrery recovered from persisted state diagnostics. Open diagnostics for details if anything looks missing.',
+      detail: 'looperators recovered from persisted state diagnostics. Open diagnostics for details if anything looks missing.',
     };
   }
 

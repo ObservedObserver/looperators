@@ -166,7 +166,7 @@ export function ProviderInstanceSettingsPanel({
             placeholder={'NAME=value\none per line'}
             onChange={(event) => setEnvText(event.target.value)}
           />
-          <span className="text-[10px] leading-4 text-term-faint">Credentials and token/key/secret/password variables must be set in the Orrery runtime environment.</span>
+          <span className="text-[10px] leading-4 text-term-faint">Credentials and token/key/secret/password variables must be set in the looperators runtime environment.</span>
         </label>
 
         {envError || error ? (

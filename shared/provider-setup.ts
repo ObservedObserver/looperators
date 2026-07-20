@@ -44,7 +44,7 @@ export function parseProviderEnvText(value: string) {
       const entryValue = line.slice(separator + 1);
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
       if (providerEnvKeyIsSensitive(key)) {
-        throw new Error(`${key} looks sensitive. Set it in the Orrery runtime environment instead.`);
+        throw new Error(`${key} looks sensitive. Set it in the looperators runtime environment instead.`);
       }
       return [key, entryValue] as const;
     });

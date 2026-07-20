@@ -337,7 +337,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         <div className="flex min-w-0 items-center gap-2.5">
           <OrreryMark />
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold leading-tight">Orrery</h1>
+            <h1 className="truncate text-sm font-semibold leading-tight">looperators</h1>
             <p className="truncate font-mono text-[10.5px] uppercase tracking-[0.12em] text-muted-foreground">Agent workspace</p>
           </div>
         </div>

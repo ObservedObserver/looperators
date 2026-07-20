@@ -328,7 +328,7 @@ export function useOrchestration({
     try {
       const result = await runtimeApi.startMasterLoop({
         clusterId: activeClusterId,
-        reason: 'Loop started from Orrery controls.',
+        reason: 'Loop started from looperators controls.',
       });
       setRuntimeState(result.state);
     } catch (error) {
@@ -349,7 +349,7 @@ export function useOrchestration({
     try {
       const result = await runtimeApi.stopMasterLoop({
         clusterId: activeClusterId,
-        reason: 'Loop killed from Orrery controls.',
+        reason: 'Loop killed from looperators controls.',
         killRunning: true,
       });
       setRuntimeState(result.state);

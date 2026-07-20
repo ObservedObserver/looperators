@@ -267,7 +267,7 @@ function normalizeGraphState(value: unknown): GraphState {
 }
 
 function responseErrorMessage(method: string, path: string, status: number, body: unknown) {
-  const prefix = `Orrery runtime ${method} ${path} failed (${status})`;
+  const prefix = `looperators runtime ${method} ${path} failed (${status})`;
   if (isRecord(body)) {
     const detail = typeof body.error === 'string' ? body.error : typeof body.message === 'string' ? body.message : undefined;
     return detail ? `${prefix}: ${detail}` : prefix;
@@ -570,7 +570,7 @@ class HttpRuntimeApi implements RuntimeApi {
           listener(runtimeEvent);
         }
       } catch (error) {
-        console.error('Failed to parse Orrery runtime event.', error);
+        console.error('Failed to parse looperators runtime event.', error);
       }
     };
 
@@ -611,7 +611,7 @@ class HttpRuntimeApi implements RuntimeApi {
       response = await fetch(this.#url(path), init);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(`Could not reach Orrery runtime at ${this.#baseUrl}: ${reason}`);
+      throw new Error(`Could not reach looperators runtime at ${this.#baseUrl}: ${reason}`);
     }
 
     const parsedBody = await this.#parseBody(response);
