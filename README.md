@@ -1,150 +1,241 @@
 # looperators
 
-looperators is an Electron + React control surface for code-agent chat sessions. It
-uses a graph as the durable product model: every chat is a node, linked chats and
-master/worker actions are edges, and workflow state stays visible instead of
-disappearing into a flat session list.
+> **Design the loop, not every prompt.**
 
-The existing `Orrery` / `orrery` identifiers remain the project's internal codename
-and technical namespace, so commands, environment variables, and storage paths keep
-their current names unless a separate compatibility migration changes them.
+looperators is a **loop-native agent tool** for building, running, and
+visualizing long-running workflows between code-agent sessions.
 
-See `design-docs/` for the product model and v1 implementation plan.
+Connect Claude Code, Codex, and Grok Build so that one session can wake another,
+pass along context, request a review, return failed work for repair, or react to
+an external event. Keep the relationship alive for one handoff, for a bounded
+loop, or as a persistent watcher that responds whenever its trigger fires.
 
-## Product Path
+Start with a goal or a ready-made loop—not an empty canvas. For more complex
+work, a Master Agent can propose the sessions, roles, feedback paths, triggers,
+and stopping conditions for you. The graph becomes a live view and control
+surface for collaboration that is already happening.
 
-Run the app:
+## Agents should not be islands
+
+Most coding-agent tools treat every session as an island. You become both the
+message bus and the loop engine: read Agent A, copy its output to Agent B, carry
+the feedback back to A, and repeat.
+
+looperators changes that default. Sessions live in relationships. They can wake
+one another, exchange context, review one another, return work upstream, and
+continue until a real stopping condition is met.
+
+Two questions shape the product:
+
+> When you step away, does the workflow keep moving?
+>
+> When you return, can you quickly understand what happened and why?
+
+## Not another workflow builder
+
+Traditional workflow tools ask you to manually assemble a pipeline before work
+can begin. looperators starts with an outcome.
+
+Choose a ready-made loop or describe the goal to a Master Agent. The system can
+propose the participants, relationships, permissions, and stopping conditions.
+You inspect the proposal, approve it, and use the graph to understand or change
+the workflow—not to draw every step from scratch.
+
+| Traditional workflow builder           | looperators                                                           |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| Starts from an empty canvas            | Starts from a goal or ready-made loop                                 |
+| Nodes are stateless actions            | Nodes are long-lived agent sessions                                   |
+| Edges mainly route data forward        | Relationships carry context, reviews, evidence, retries, and triggers |
+| Optimized for a DAG and its happy path | Rejection, repair, return paths, and repeated verification are native |
+| The graph describes a planned pipeline | The graph remains live while agents work                              |
+
+Unlike systems that call a model as a disposable step, every looperators node
+remains a real session. Open it as a normal chat, inspect its messages and tool
+activity, intervene, freeze future activations, or resume it with its existing
+history.
+
+## The graph defines the loop; prompts define the work
+
+looperators does not need a built-in action for every job an agent might
+perform.
+
+Code review, testing, research, migration, triage, summarization, and security
+analysis can all be expressed through prompts. The graph supplies the reusable
+control semantics around them:
+
+- what event triggers the next session;
+- what context moves with the handoff;
+- whether a transition is automatic or requires judgment;
+- what happens when new work arrives while an agent is busy;
+- what result, goal, deadline, or limit stops the loop;
+- which relationships remain active for future events.
+
+“Review until clean” is therefore one useful loop, not a special-purpose
+boundary around what looperators can do. Change the prompts and the same shape
+becomes a security audit, test-and-fix cycle, migration checker, or verification
+workflow.
+
+## Loops you can build
+
+### Review until clean
+
+One agent implements a change. Another reviews it and returns blocking issues.
+The findings reactivate the original session, which repairs the work and sends
+it back for another pass.
+
+The loop stops only when the Reviewer reports clean or a configured guardrail
+is reached. Every lap, verdict, and return path remains visible.
+
+### Multi-model planning and debate
+
+Run several agents or models as independent planners, let them read and
+challenge one another, and then synthesize the strongest result.
+
+The built-in **Plan Council** preserves the proposals, disagreements, peer
+reviews, and route to the final decision—not only the final answer. More complex
+deliberation workflows can continue exchanging feedback until a consensus rule
+or round limit is met.
+
+### Divide, verify, and repair
+
+Give different sessions distinct responsibilities: investigate, implement,
+review, test, and verify. Independent branches can work in parallel and rejoin
+when all, any, or a quorum of results is ready.
+
+A failed verifier can route its evidence back to the responsible session; a
+passing verdict can release the next stage. Verification becomes part of the
+workflow rather than a final prompt someone must remember to run.
+
+### Run until the goal is actually done
+
+Describe “done” in one sentence and pair a Worker with an independent Judge.
+The Judge can use executable evidence—tests, lint, metrics, searches, or other
+checks—then return a structured verdict.
+
+A failed check sends the evidence back to the Worker. A passing check stops the
+loop. The Worker does not get to declare itself finished simply because it made
+progress.
+
+### Watch and react
+
+A loop does not have to begin with a person sending a message. It can wake on a
+schedule, a Git change, a script result, a webhook, or another registered
+event.
+
+Use this for recurring maintenance, CI failure response, code-change review,
+issue triage, or scheduled summaries. Leave out the stopping condition and a
+relationship can remain ready for the next event.
+
+## How it works
+
+### Long-lived sessions
+
+Each participant is a real code-agent session with its own history, context,
+model, tools, and workspace state. A loop resumes the session that already knows
+the work instead of recreating a disposable agent at every step.
+
+### Executable relationships
+
+Relationships define who reacts to whom, what wakes the next session, what
+context moves, whether approval is required, and when work returns upstream or
+stops. They are durable rules, not lines drawn after execution.
+
+### Outcome-first creation
+
+Start with **Review until clean**, **Run until goal**, **Handoff**, or **Plan
+Council**, or describe a more complex objective to a Master Agent. The Master
+acts as an intent compiler: it proposes the participants, relationships, safety
+policy, and graph changes without silently starting work.
+
+You can review and lock the proposal before approval. Once a stable workflow is
+running, the Master only needs to wake for judgment, exceptions, or replanning;
+it does not sit in the middle of every mechanical transition.
+
+### A live graph and timeline
+
+The graph brings together three views of the same work:
+
+- **Intent:** the relationships that say what should happen next.
+- **Activity:** the turns, handoffs, triggers, verdicts, and failures that
+  already happened—and why.
+- **Governance:** the approvals, locks, scopes, and Master roles that determine
+  who may change the workflow.
+
+Loops appear as readable units with their current lap, state, stop condition,
+and timeline. See whether a loop is running, waiting for a gate, blocked,
+complete, frozen, or stopped by a guardrail, then open the exact session or
+event that explains it.
+
+## Deterministic mechanics, agentic judgment
+
+Reliable agent loops need both.
+
+looperators handles the mechanical parts deterministically: event matching,
+context delivery, activation, joins, stopping rules, concurrency behavior,
+persistence, recovery, and resource limits. If new events arrive while an agent
+is busy, they can be coalesced so the agent handles the latest accumulated state
+once instead of processing a queue of stale intermediate work.
+
+Agents handle the parts that require judgment: planning, implementation,
+review, synthesis, diagnosis, and deciding whether evidence satisfies the
+goal.
+
+That separation keeps loops flexible without asking a model—or a person—to
+remember how to route every turn.
+
+## Built to be left running
+
+Autonomy is useful only when its limits are explicit. Depending on the loop,
+looperators can enforce:
+
+- maximum laps, deadlines, fan-out, concurrency, and session limits;
+- automatic, Master Agent, or human approval gates;
+- optional usage warnings or hard budgets;
+- workspace coordination so parallel writers do not silently collide;
+- durable workflow state, artifacts, decisions, and causal history;
+- freeze, stop, retry, and consistent recovery controls.
+
+The goal is not simply to start more agents. It is to make long-running agent
+collaboration visible, bounded, and safe enough to trust.
+
+## Get started
+
+looperators is under active development and currently runs from source. Install
+and authenticate at least one supported code agent—Claude Code, Codex, or Grok
+Build. From the project directory, run:
 
 ```sh
+npm install
 npm run dev
 ```
 
-The default entry points are `New Chat` and `New Workflow`:
+Start with **New Workflow** for a ready-made loop, or open a Master chat to
+describe a more complex objective. Chat and the Agent graph remain available
+throughout the run.
 
-- `New Chat` opens an empty composer. Choose a provider, confirm the project
-  cwd, send the first message, and looperators creates a runtime session plus an
-  independent graph node.
-- `New Workflow` opens the three primary outcomes: Review until clean, Handoff,
-  and Run until goal. Each uses the same Agent configuration, Preview, and
-  `Run workflow` language; nothing starts while the workflow is being configured.
-- `Create Agent from this Chat` is a one-Agent shortcut that records provenance.
-  It does not create ongoing automation.
-- The chat header shows provider, cwd, status, updated time, and id. Plans,
-  runtime activity, requests, user-input prompts, recovery notices, and optional
-  raw provider diagnostics are shown in the conversation surface.
-- The Chats tab provides history search, hidden/archived sessions, restore, and
-  recovery context.
-- `Advanced` contains Master/Cluster governed loops and uncommon trigger-based
-  workflows. It is not required for Review, Handoff, or Goal workflows.
+## Project status
 
-### Golden journeys
+looperators is an early alpha. Interfaces, storage contracts, and advanced
+controls may evolve before a stable release.
 
-- Review: configure Coder + Reviewer + blocking rule + lap cap, inspect the
-  two-way Preview, then Run.
-- Handoff: configure new or existing Source and Receiver. An existing Source
-  transfers its current result immediately; a new Source runs first and hands
-  off exactly once when it finishes.
-- Goal: configure a new or existing Worker, define done in one sentence, and
-  choose a lap cap. The Judge visibly inherits the Worker configuration. looperators installs both
-  Goal relationships before starting the Worker.
+The current build includes direct agent chats, the live Agent graph, handoffs,
+Review-until-clean loops, Goal loops, Plan Council, schedules and external
+triggers, loop timelines, Master-authored workflow proposals and replanning,
+barriers, persistent state, usage and concurrency controls.
 
-## Runtime Model
+Please report rough edges, failed setups, unclear concepts, and workflows you
+would like to run. Early feedback will directly shape the product.
 
-- Shared graph-state contract:
-  - renderer: `src/shared/graph-state.ts`
-  - Electron runtime: `shared/graph-state.ts`
-- Session manager: `electron/runtime/sessionManager.ts`
-- IPC bridge: `electron/main.ts` and `electron/preload.ts`
-- Electron build output: `dist-electron/electron/main.js`
-- Invariant: `nodeId === sessionId`
-- Providers: Claude Code SDK, Codex app-server, and Grok Build over ACP
-- Model catalogs are discovered from the configured provider instance
-  (Codex `model/list`, Claude SDK initialization, Grok ACP session state),
-  cached in runtime state, and shared by every chat/workflow model picker.
-- An empty model setting means provider default; Custom remains available when
-  discovery is stale or a private model is not advertised.
-- Runtime persistence covers session restore, corrupt-state recovery, invalid
-  cwd diagnostics, archive state, linked sessions, cluster/master state, and
-  loop policy.
+The customer-facing product name is **looperators**. `Orrery` / `orrery` remains
+the internal codename and technical namespace, so it still appears in source
+paths, commands, and environment variables.
 
-## Verification
+## Contributing
 
-The test taxonomy has three tiers (see
-`design-docs/headless-acceptance-harness.md`): kernel unit tests (fake
-provider binaries allowed — they verify graph-kernel logic and wire
-protocols), headless real-scenario acceptance (real providers on a cheap
-model preset), and final UI acceptance.
+Development conventions, architecture pointers, provider setup, and the
+verification matrix live in [`agents.md`](./agents.md). Product vision and
+design decisions live under [`design-docs/`](./design-docs/).
 
-Build and lint:
+## License
 
-```sh
-npm run build
-npm run lint
-npm run test:kernel
-npm run acceptance:electron
-```
-
-Kernel regression checks (fake provider binaries, seconds-fast):
-
-```sh
-npm run test:kernel:persistence
-npm run test:kernel:orchestration
-npm run test:kernel:master-loop
-npm run test:kernel:membrane
-npm run test:kernel:codex-interaction
-```
-
-- Create, resume, restart recovery, invalid cwd diagnostics, and recovered-run
-  resume: `npm run test:kernel:persistence`
-- Node selection model, cluster/master graph state, linked edges, freeze state,
-  and master resume after cluster freeze: `npm run test:kernel:orchestration`
-- Loop stop, max-iteration guards, kill handling, and freeze-on-stop behavior:
-  `npm run test:kernel:master-loop`
-- Provider request/response UI plumbing for approvals and user input:
-  `npm run test:kernel:codex-interaction`
-- Membrane validation and stop cleanup for the Claude SDK bridge:
-  `npm run test:kernel:membrane`
-
-Headless real-scenario acceptance (real providers, cheap model preset where a
-verified cheap model exists; Grok intentionally uses its provider default,
-minutes per scenario; artifacts land in `output/acceptance/<run-id>/`):
-
-```sh
-npm run acceptance:headless                       # all scenarios
-npm run acceptance:headless -- --filter linked    # by name
-npm run acceptance:headless -- --list             # list scenarios
-npm run acceptance:headless -- --provider grok --list
-npm run acceptance:headless -- --provider grok --filter grok-two-turn-resume
-npm run acceptance:membrane                       # live membrane create/resume/report
-```
-
-## Grok Build setup
-
-looperators expects a local Grok Build CLI with ACP stdio support. The integration
-baseline was verified with `grok 0.2.93` and launches `grok agent stdio`.
-
-1. Install Grok Build and make `grok` available on `PATH`, or set
-   `ORRERY_GROK_BIN` before starting looperators. A custom binary path and launch
-   arguments can also be saved in Provider setup.
-2. Authenticate with `grok login`, or provide `XAI_API_KEY` to the looperators
-   runtime process. looperators reuses that provider-managed authentication; it does
-   not read, store, or refresh OAuth/API credentials.
-3. Select **Grok Build** in New Chat. The lazy setup check performs a real ACP
-   initialize/auth/session setup and discovers the available models. Because
-   the current ACP exposes no verified delete-session method, this readiness
-   check creates an upstream Grok session.
-
-Provider setup accepts only non-sensitive `KEY=value` environment overrides.
-Credential-like names such as `TOKEN`, `KEY`, `SECRET`, `PASSWORD`, and
-`CREDENTIAL` are rejected; pass credentials to the looperators process instead.
-Grok may still load native MCP servers from `~/.grok`. looperators injects and cleans
-up its per-turn graph membrane, but does not claim to isolate that user config.
-
-Headless debugging against a dev instance:
-
-```sh
-npm run cli -- sessions
-npm run cli -- session show <id-prefix>
-npm run cli -- session tail <id-prefix>
-npm run cli -- graph
-```
+Licensed under the [Apache License 2.0](./LICENSE).
