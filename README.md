@@ -5,6 +5,8 @@
 looperators is a **loop-native agent tool** for building, running, and
 visualizing long-running workflows between code-agent sessions.
 
+<img width="3202" height="1518" alt="looperators-2" src="https://github.com/user-attachments/assets/cf02610e-0c44-4a1b-91cf-cb23a1a9d2b8" />
+
 Connect Claude Code, Codex, and Grok Build so that one session can wake another,
 pass along context, request a review, return failed work for repair, or react to
 an external event. Keep the relationship alive for one handoff, for a bounded
@@ -82,6 +84,9 @@ workflow.
 One agent implements a change. Another reviews it and returns blocking issues.
 The findings reactivate the original session, which repairs the work and sends
 it back for another pass.
+
+<img width="3840" height="1986" alt="looperators-review" src="https://github.com/user-attachments/assets/3af4c02e-aa7b-435c-b2e9-98997bae88d8" />
+
 
 The loop stops only when the Reviewer reports clean or a configured guardrail
 is reached. Every lap, verdict, and return path remains visible.
