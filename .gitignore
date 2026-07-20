@@ -159,6 +159,7 @@ internal_docs/
 
 # Local verification screenshots
 acceptance-screenshots/
+output/demo-screenshots/
 
 # Headless acceptance run artifacts
 output/acceptance/

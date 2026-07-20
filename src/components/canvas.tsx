@@ -30,7 +30,22 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
         selected && '!border-term-accent-hi/60 ring-2 ring-term-accent-hi/50',
       )}
     >
-      <Handle type="target" position={Position.Left} className="!size-3 !border-2 !border-card !bg-term-accent-hi" aria-label={`Connect into ${data.label}`} />
+      <Handle
+        id="target-left"
+        type="target"
+        position={Position.Left}
+        style={{ top: '62%' }}
+        className="!size-3 !border-2 !border-card !bg-term-accent-hi"
+        aria-label={`Connect into ${data.label} from the left`}
+      />
+      <Handle
+        id="source-left"
+        type="source"
+        position={Position.Left}
+        style={{ top: '38%' }}
+        className="!size-3 !border-2 !border-card !bg-term-accent-hi"
+        aria-label={`Connect from ${data.label} on the left`}
+      />
       <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-3">
         <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', marker.cls)}>{marker.char}</span>
         <div className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground" title={data.label}>
@@ -105,7 +120,22 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
           </span>
         ) : null}
       </div>
-      <Handle type="source" position={Position.Right} className="!size-3 !border-2 !border-card !bg-term-accent-hi" aria-label={`Connect from ${data.label}`} />
+      <Handle
+        id="target-right"
+        type="target"
+        position={Position.Right}
+        style={{ top: '62%' }}
+        className="!size-3 !border-2 !border-card !bg-term-accent-hi"
+        aria-label={`Connect into ${data.label} from the right`}
+      />
+      <Handle
+        id="source-right"
+        type="source"
+        position={Position.Right}
+        style={{ top: '38%' }}
+        className="!size-3 !border-2 !border-card !bg-term-accent-hi"
+        aria-label={`Connect from ${data.label} on the right`}
+      />
     </div>
   );
 });

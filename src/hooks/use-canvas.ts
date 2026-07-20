@@ -20,6 +20,7 @@ import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/r
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
 import { draftCanvasEdges, draftCanvasNodes } from '@/lib/draft-graph-view';
 import type { DraftGraphState } from '@/hooks/use-draft-graph';
+import { routeRuntimeAgentEdges } from '@shared/canvas-edge-routing';
 
 function sameStringList(left: string[], right: string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
@@ -168,8 +169,8 @@ export function useCanvas({
       };
     });
 
-    return [...historyEdges, ...intentEdges, ...draftCanvasEdges(draftGraph)];
-  }, [draftGraph, reportsById, runtimeState]);
+    return routeRuntimeAgentEdges([...historyEdges, ...intentEdges, ...draftCanvasEdges(draftGraph)], nodes);
+  }, [draftGraph, nodes, reportsById, runtimeState]);
 
   useEffect(() => {
     if (isDraggingCanvasNodeRef.current) {
