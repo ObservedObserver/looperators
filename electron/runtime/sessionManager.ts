@@ -30,6 +30,7 @@
 //   control/commandRegistry.ts             command kind + handler/policy registry
 //   control/commandExecutor.ts             serialized transaction + effect authority
 //   scheduler/schedulerRuntime.ts           fact -> gate -> activation + timer lifecycle
+//   sessions/sessionRuntimeController.ts    admission + provider turn lifecycle
 //   reports/reportFormatting.ts            report/prompt render + payload validation
 //   queries/runtimeQueries.ts               read-only state/kernel projections
 //   external/externalIngestionService.ts    source registry, adapters + ingestion
@@ -43,55 +44,14 @@
 // Growth stopline: new product workflows must not add new knowledge domains
 // to this class; register the domain here and put the implementation in its
 // own module (see design-docs/session-manager-split-plan.md).
-import { execFileSync, spawn } from 'node:child_process'
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { parsePatchFiles } from '@pierre/diffs'
-import {
-  createEmptyGraphState,
-  graphEdgeKinds,
-  graphStateVersion,
-  runtimeTerminalStreams,
-} from '../../shared/graph-state.js'
-import {
-  defaultProviderInstances,
-  providerKinds,
-  providerMetadata,
-} from '../../shared/provider-metadata.js'
+import { createEmptyGraphState } from '../../shared/graph-state.js'
+import { providerKinds, providerMetadata } from '../../shared/provider-metadata.js'
 import { providerEnvKeyIsSensitive } from '../../shared/provider-setup.js'
-import {
-  compileBuiltinTemplate,
-  compileSavedTemplate,
-  parameterizeSubscriptions,
-  templateDescriptors,
-} from '../../shared/templates.js'
-import {
-  coderActivationInstruction,
-  coderFixInstruction,
-  reviewerActivationInstruction,
-  reviewerBootstrapInstruction,
-  validateReviewWorkflowStart,
-} from '../../shared/review-workflow.js'
-import {
-  compileDraftRelation,
-  validateDraftGraph,
-} from '../../shared/draft-graph.js'
-import {
-  compileAgentConnection,
-  validateAgentConnection,
-} from '../../shared/agent-connection.js'
-import {
-  resolveGoalJudgeRuntime,
-  validateGoalWorkflowStart,
-  validateHandoffWorkflowStart,
-} from '../../shared/classic-workflow.js'
-import {
-  defaultCycleMaxFirings,
-  loopsOf,
-  normalizeDailyAt,
-} from '../../shared/graph-core/index.js'
+import { defaultCycleMaxFirings, loopsOf } from '../../shared/graph-core/index.js'
 import { ContextChannelStore, activationPreamble } from './contextChannel.js'
 import { ExternalIngestionService } from './external/externalIngestionService.js'
 import {
@@ -100,19 +60,6 @@ import {
 } from './kernelStore.js'
 import { MembraneBridge } from './membraneBridge.js'
 import { ProviderService } from './providerService.js'
-import { buildPath } from './claudeRuntimeShared.js'
-import { resultSublines } from './providers/claudeRuntimeMapper.js'
-import { probeGrokProvider } from './providers/grokAcpProbeService.js'
-import { probeCodexModelCatalog } from './providers/codexModelCatalogService.js'
-import { probeClaudeModelCatalog } from './providers/claudeModelCatalogService.js'
-import { fallbackProviderModelCatalog } from '../../shared/provider-model-catalog.js'
-import {
-  crossReviewPrompt,
-  planCouncilPhases,
-  plannerPrompt,
-  synthesizerPrompt,
-  validatePlanCouncilStart,
-} from '../../shared/plan-council.js'
 import {
   applyWorkflowPatch,
   compileWorkflowPlan,
@@ -120,26 +67,12 @@ import {
   lockedPlanConflicts,
   validateWorkflowPlan,
   workflowGraphDiff,
-  workflowPlanStatuses,
-  workflowProposalStatuses,
   workflowRecipes,
 } from '../../shared/workflow-authoring.js'
-import {
-  workflowWakeupKinds,
-  workflowWakeupPrompt,
-  workflowWakeupStatuses,
-} from '../../shared/workflow-governance.js'
-import { barrierIsSatisfied, barrierModes, barrierStatuses } from '../../shared/barrier.js'
+import { workflowWakeupPrompt } from '../../shared/workflow-governance.js'
+import { barrierIsSatisfied } from '../../shared/barrier.js'
 import { validateExecutionEnvelope } from '../../shared/execution-envelope.js'
 import { validateDynamicCreateAction } from '../../shared/dynamic-topology.js'
-import {
-  budgetExceeded,
-  defaultRuntimeResourcePolicy,
-  leaseCompatible,
-  normalizeProviderUsage,
-  runtimeConsumptionBudgetKeys,
-  selectFairQueuedRun,
-} from '../../shared/resource-governance.js'
 import {
   type JsonRecord,
   clone,
@@ -148,99 +81,36 @@ import {
   nonEmptyString,
   now,
   optionalTrimmedString,
-  planCouncilArtifactMaxBytes,
-  recoverableActiveStatuses,
-  truncateActivities,
-  truncateChunks,
-  truncateEvents,
   truncateForLog,
-  validAgentBackends,
   validBarrierModes,
-  validBarrierStatuses,
-  validGraphEdgeKinds,
-  validLoopStatuses,
-  validMessageStatuses,
-  validOpenWorkspaceTargets,
-  validProviderApprovalPolicies,
-  validProviderInteractionModes,
   validProviderKinds,
-  validProviderReasoningEfforts,
-  validProviderRuntimeModes,
-  validProviderSandboxModes,
-  validRuntimeItemStatuses,
   validRuntimeRequestDecisions,
-  validRuntimeRequestStatuses,
-  validRuntimeTerminalStreams,
-  validSessionStatuses,
-  validSubscriptionConcurrencies,
-  validSubscriptionGates,
-  validSubscriptionOnStops,
-  validSubscriptionPatterns,
-  validUserInputRequestStatuses,
-  validWorkflowPlanStatuses,
-  validWorkflowProposalStatuses,
   validWorkflowRecipes,
   validWorkflowWakeupKinds,
   validWorkflowWakeupStatuses,
-  validWorkModes,
 } from './runtimeCommon.js'
 import {
-  branchSlug,
-  checkpointGitRefRoot,
-  checkpointRef,
-  checkpointSessionRefRoot,
   createPlannedSessionWorktree,
-  currentGitBranch,
-  cwdRepairCandidate,
-  cwdStat,
-  emptyGitTree,
-  ephemeralWorktreeProjectName,
-  gitCheckpointEnv,
-  gitDiffMaxBuffer,
-  gitOutput,
-  gitRefSlug,
-  gitRepoRoot,
-  hasGitHead,
   isValidCwd,
-  localGitBranches,
   localSessionWorkspace,
-  normalizeBranchName,
-  normalizeSessionProject,
   normalizeWorkMode,
-  parseDiffFilesFromPatch,
   planSessionWorktree,
-  sessionProjectFromContext,
-  totalsForDiffFiles,
   validateRunnableCwd,
-  validCwdCandidate,
 } from './workspace/gitWorkspace.js'
 import { WorkspaceService } from './workspace/workspaceService.js'
 import {
-  commandExists,
-  commandForProviderInstance,
-  defaultCommandForProvider,
   defaultProviderInstanceForKind,
   defaultProviderRuntimeSettings,
-  normalizeEnv,
-  normalizeLaunchArgs,
-  normalizeProviderEffectiveRuntimeConfig,
   normalizeProviderInstance,
-  normalizeProviderInstances,
   normalizeProviderRuntimeSettings,
   providerConfig,
-  providerSetupErrorDiagnostic,
 } from './providers/providerConfigNormalize.js'
 import {
-  attachmentImageMaxBytes,
-  attachmentTextMaxLength,
   firstUserInputAnswer,
   normalizeChatAttachments,
   normalizeRuntimeRequestDecision,
   normalizeUserInputAnswers,
   runtimeRequestStatusForDecision,
-  runtimeRequestSupportsCancellation,
-  supportedAttachmentImageMimeTypes,
-  userInputAnswerHasContent,
   userInputQuestionsAreComplete,
 } from './sessions/sessionInteraction.js'
 import {
@@ -251,12 +121,8 @@ import {
 } from './persistence/runtimeStateRecovery.js'
 import {
   type CheckpointHost,
-  captureTurnCheckpoint,
   checkpointDiffForSession,
-  completedTurnCount,
   gitDiffForSession,
-  pruneTurnCheckpointRefs,
-  recordTurnCheckpointDiff,
 } from './workspace/sessionCheckpoints.js'
 import {
   type ProviderSetupHost,
@@ -272,6 +138,10 @@ import {
   type RecoveryControlCommand,
 } from './control/commandExecutor.js'
 import { SchedulerRuntime } from './scheduler/schedulerRuntime.js'
+import {
+  SessionRuntimeController,
+  type RuntimeRun,
+} from './sessions/sessionRuntimeController.js'
 import {
   defaultMasterPrompt,
   masterReasonFromInput,
@@ -327,12 +197,6 @@ import {
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
-
-type RuntimeRun = JsonRecord & {
-  kill: () => boolean
-  respondRuntimeRequest?: (input: JsonRecord) => JsonRecord | void
-  answerUserInput?: (input: JsonRecord) => JsonRecord | void
-}
 
 function messageContent(message, context) {
   if (typeof context === 'string' && context.trim().length > 0) {
@@ -395,6 +259,36 @@ export class RuntimeSessionManager {
     stagePostCommitEffect: (label, run) =>
       this.#commandExecutor.stagePostCommitEffect({ label, run }),
   })
+  #sessionRuntime = new SessionRuntimeController({
+    state: () => this.#state,
+    runs: () => this.#runs,
+    runContext: () => this.#runContext,
+    workflowCompensatedRuns: () => this.#workflowCompensatedRuns,
+    bridge: () => this.#bridge,
+    providerService: () => this.#providerService,
+    channelStore: () => this.#channelStore,
+    queries: () => this.#queries,
+    checkpointHost: () => this.#checkpointHost(),
+    dispatchCommand: (command) => this.dispatchCommand(command),
+    appendKernelEvent: (type, payload, ctx, options) => this.#appendKernelEvent(type, payload, ctx, options),
+    touch: () => this.#touch(),
+    touchDeferred: () => this.#touchDeferred(),
+    broadcast: (event) => this.#broadcast(event),
+    emitRuntimeEvent: (event) => this.#emitRuntimeEvent(event),
+    getState: () => this.getState(),
+    isSessionFrozen: (sessionId) => this.#isSessionFrozen(sessionId),
+    updateNodeStatus: (sessionId, status) => this.#updateNodeStatus(sessionId, status),
+    planCouncilForSession: (sessionId) => planCouncilForSession(this.#wf(), sessionId),
+    planCouncilFinished: (sessionId, runId, eventId) => planCouncilFinished(this.#wf(), sessionId, runId, eventId),
+    planCouncilFailed: (sessionId, error) => planCouncilFailed(this.#wf(), sessionId, error),
+    journalAutomaticDeploymentRunStarted: (sessionId) => journalAutomaticDeploymentRunStarted(this.#wf(), sessionId),
+    commandLifecycleEpoch: () => {
+      const transaction = this.#commandExecutor.currentTransaction()
+      return transaction?.actor.kind !== 'runtime'
+        ? transaction?.lifecycleEpochs?.runQueue
+        : undefined
+    },
+  })
   #scheduler = new SchedulerRuntime({
     state: () => this.#state,
     runs: () => this.#runs,
@@ -418,10 +312,10 @@ export class RuntimeSessionManager {
     masterClusterId: (sessionId) => this.#masterClusterId(sessionId),
     workflowCapability: (scopeId, options) =>
       this.#workflowCapability(scopeId, options),
-    resourcePolicy: (scopeId) => this.#resourcePolicy(scopeId),
+    resourcePolicy: (scopeId) => this.#sessionRuntime.resourcePolicy(scopeId),
     cmdCreateSession: (input, ctx, options) =>
       this.#cmdCreateSession(input, ctx, options),
-    startRun: (sessionId, request) => this.#startRun(sessionId, request),
+    startRun: (sessionId, request) => this.#sessionRuntime.startRun(sessionId, request),
     journalAutomaticDeploymentResources: () =>
       journalAutomaticDeploymentResources(this.#wf()),
     isGoalPairShape: (check, retry) =>
@@ -494,12 +388,12 @@ export class RuntimeSessionManager {
     cancel_barrier: (input, ctx) => this.#cmdCancelBarrier(input, ctx),
     expire_barrier: (input, ctx) => this.#cmdExpireBarrier(input, ctx),
     provider_complete_run: (input, ctx) =>
-      this.#cmdCompleteProviderRun(input, ctx),
+      this.#sessionRuntime.cmdCompleteProviderRun(input, ctx),
     set_resource_policy: (input, ctx) =>
-      this.#cmdSetResourcePolicy(input, ctx),
+      this.#sessionRuntime.cmdSetResourcePolicy(input, ctx),
     merge_worktree_changes: (input, ctx) =>
-      this.#cmdMergeWorktreeChanges(input, ctx),
-    cleanup_worktree: (input, ctx) => this.#cmdCleanupWorktree(input, ctx),
+      this.#sessionRuntime.cmdMergeWorktreeChanges(input, ctx),
+    cleanup_worktree: (input, ctx) => this.#sessionRuntime.cmdCleanupWorktree(input, ctx),
     create_goal_loop: (input) => this.createGoalLoop(input),
     start_review_workflow: (input) => this.startReviewWorkflow(input),
     start_plan_council: (input) => this.startPlanCouncil(input),
@@ -536,9 +430,6 @@ export class RuntimeSessionManager {
   #workflowDeploymentCrashAfterResourceCreate = false
   #workflowWakeupDrainEnabled = true
   #barrierTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  #runQueueDrainInFlight = false
-  #runQueueDrainEnabled = true
-  #runBudgetTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor({
     storageFile,
@@ -620,15 +511,20 @@ export class RuntimeSessionManager {
           this.#workflowDeploymentCrashAfterStage,
         reviveAutonomousDrains: () => {
           this.#workflowWakeupDrainEnabled = true
-          this.#runQueueDrainEnabled = true
-          return this.#externalIngestion.adapterLifecycleEpoch()
+          return {
+            runQueue: this.#sessionRuntime.lifecycleEpoch(),
+            externalAdapters: this.#externalIngestion.adapterLifecycleEpoch(),
+          }
         },
-        onAuthorizedCommandCommitted: (actor, lifecycleEpoch) => {
+        onAuthorizedCommandCommitted: (actor, lifecycleEpochs) => {
           if (
-            lifecycleEpoch !== undefined &&
+            lifecycleEpochs !== undefined &&
             actor.kind !== 'runtime'
           ) {
-            this.#externalIngestion.resumeAdapters(lifecycleEpoch)
+            this.#sessionRuntime.resumeQueueDrain(lifecycleEpochs.runQueue)
+            this.#externalIngestion.resumeAdapters(
+              lifecycleEpochs.externalAdapters,
+            )
           }
         },
         onControlKernelEvent: (event) => {
@@ -670,7 +566,7 @@ export class RuntimeSessionManager {
       )
     }
     for (const sessionId of this.#restartInterruptedSessionIds) {
-      this.#recordInterruptedUsageFact(sessionId)
+      this.#sessionRuntime.recordInterruptedUsageFact(sessionId)
       // Sessions that were mid-run when the previous runtime stopped are
       // flipped to failed on load; without this fact their causal chain in
       // the kernel log would simply stop dead.
@@ -704,7 +600,7 @@ export class RuntimeSessionManager {
     this.#recoverWorkflowWakeupsFromKernelLog()
     this.#recoverBarrierTimers()
     queueMicrotask(() => this.#drainWorkflowWakeups())
-    queueMicrotask(() => void this.#drainRunQueue())
+    queueMicrotask(() => void this.#sessionRuntime.drainRunQueue())
   }
 
   #readState() {
@@ -720,6 +616,12 @@ export class RuntimeSessionManager {
   // -- converge in CommandExecutor.
   async dispatchCommand(command: JsonRecord = {}): Promise<any> {
     return this.#commandExecutor.dispatch(command)
+  }
+
+  #reviveDirectProviderRuntime() {
+    if (!this.#commandExecutor.currentTransaction()) {
+      this.#sessionRuntime.resumeQueueDrain()
+    }
   }
 
   #dispatchRecoveryCommandSync(input: RecoveryControlCommand) {
@@ -925,6 +827,7 @@ export class RuntimeSessionManager {
   }
 
   async createSession(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#cmdCreateSession(input, this.#humanCtx())
   }
 
@@ -1170,7 +1073,7 @@ export class RuntimeSessionManager {
       }
     }
 
-    await this.#startRun(sessionId, {
+    await this.#sessionRuntime.startRun(sessionId, {
       prompt: providerPrompt,
       attachments,
       runKind: 'create',
@@ -1188,6 +1091,7 @@ export class RuntimeSessionManager {
   }
 
   async resumeSession(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#cmdResumeSession(input, this.#humanCtx())
   }
 
@@ -1196,6 +1100,7 @@ export class RuntimeSessionManager {
   }
 
   async activateSession(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#cmdActivate(input, this.#humanCtx())
   }
 
@@ -1343,13 +1248,12 @@ export class RuntimeSessionManager {
     if (this.#isSessionFrozen(sessionId)) {
       throw new Error(`Frozen session cannot be resumed: ${sessionId}`)
     }
-    const budgetExceeded = this.#budgetExceededFor(this.#runResource(sessionId, `preflight:${randomUUID()}`))
-    if (budgetExceeded) throw this.#freezeForBudget(sessionId, budgetExceeded, ctx)
+    this.#sessionRuntime.assertBudgetAvailable(sessionId, ctx)
     try {
       session.cwd = validateRunnableCwd(session.cwd)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      this.#failSession(sessionId, message, {
+      this.#sessionRuntime.failSession(sessionId, message, {
         actor: { kind: 'runtime' },
         causeId: ctx.causeId,
       })
@@ -1506,7 +1410,7 @@ export class RuntimeSessionManager {
     const deliveredSeqs = unread.current.map((entry) => entry.seq)
     // Everything this activation's preamble listed counts as seen. If the
     // run turns out to never start (spawn-level failure produces no output),
-    // #failSession rolls exactly these seqs back to unread — the agent
+    // failSession rolls exactly these seqs back to unread — the agent
     // never saw the listing. Marked before the run to stay deterministic
     // against the async arrival of spawn errors.
     const listedSeqs = [
@@ -1568,7 +1472,7 @@ export class RuntimeSessionManager {
     if (firstPreparedTurn) {
       delete session.prepared
     }
-    const runId = await this.#startRun(sessionId, {
+    const runId = await this.#sessionRuntime.startRun(sessionId, {
       prompt: providerPrompt,
       attachments,
       runKind: firstPreparedTurn ? 'create' : 'resume',
@@ -1644,7 +1548,7 @@ export class RuntimeSessionManager {
         this.#updateNodeStatus(sessionId, 'killed')
         const killedEvent = this.#appendKernelEvent('session.killed', { sessionId, turnId: queued.turnId, queuedTurnIds: queuedTurns, queued: true }, ctx)
         planCouncilFailed(this.#wf(), sessionId, 'Queued provider run was cancelled.')
-        this.#settleDynamicSpawnChild(sessionId, 'cancelled', 'Queued provider run was cancelled.')
+        this.#sessionRuntime.settleDynamicSpawnChild(sessionId, 'cancelled', 'Queued provider run was cancelled.')
         this.#touch()
         return { ok: true, kernelEventId: killedEvent?.id, state: this.getState() }
       }
@@ -1664,16 +1568,16 @@ export class RuntimeSessionManager {
     if (ok) {
       session.status = 'killed'
       session.updatedAt = now()
-      this.#markActiveAssistant(sessionId, 'failed')
+      this.#sessionRuntime.markActiveAssistant(sessionId, 'failed')
       this.#updateNodeStatus(sessionId, 'killed')
-      this.#appendProviderRuntimeEvent(sessionId, {
+      this.#sessionRuntime.appendProviderRuntimeEvent(sessionId, {
         id: randomUUID(),
         ts: session.updatedAt,
         type: 'session.state',
         sessionId,
         status: 'killed',
       })
-      this.#cancelOpenRuntimeInteractions(sessionId, session.updatedAt)
+      this.#sessionRuntime.cancelOpenRuntimeInteractions(sessionId, session.updatedAt)
       const killedEvent = this.#appendKernelEvent(
         'session.killed',
         { sessionId },
@@ -1684,7 +1588,7 @@ export class RuntimeSessionManager {
         // the process actually exits; point it at this kernel fact.
         context.killedEventId = killedEvent?.id
       }
-      this.#settleDynamicSpawnChild(
+      this.#sessionRuntime.settleDynamicSpawnChild(
         sessionId,
         'cancelled',
         'Dynamic participant was killed.',
@@ -1707,7 +1611,7 @@ export class RuntimeSessionManager {
     // every provider has been closed. A later command from any non-runtime
     // control plane revives draining on this reusable manager instance.
     this.#workflowWakeupDrainEnabled = false
-    this.#runQueueDrainEnabled = false
+    this.#sessionRuntime.suspendQueueDrain()
     this.#persistState()
     for (const sessionId of this.#runs.keys()) {
       this.killSession(sessionId)
@@ -1795,7 +1699,7 @@ export class RuntimeSessionManager {
       requestId,
       status: runtimeRequestStatusForDecision(appliedDecision, request),
     }
-    this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    this.#sessionRuntime.appendExternalProviderRuntimeEvent(sessionId, event)
     this.#appendKernelEvent(
       'interaction.responded',
       {
@@ -1879,7 +1783,7 @@ export class RuntimeSessionManager {
           answer: primaryAnswer,
           ...(answers ? { answers } : {}),
         }
-    this.#appendExternalProviderRuntimeEvent(sessionId, event)
+    this.#sessionRuntime.appendExternalProviderRuntimeEvent(sessionId, event)
     this.#appendKernelEvent(
       'interaction.answered',
       { sessionId, requestId, outcome: canceled ? 'cancelled' : 'answered' },
@@ -1954,6 +1858,7 @@ export class RuntimeSessionManager {
   }
 
   async createMasterForCluster(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#cmdCreateMasterForCluster(input, this.#humanCtx())
   }
 
@@ -2142,6 +2047,7 @@ export class RuntimeSessionManager {
   }
 
   startMasterLoop(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#cmdStartLoop(input, this.#humanCtx())
   }
 
@@ -2453,7 +2359,7 @@ export class RuntimeSessionManager {
         return self.#runContext
       },
       appendProviderRuntimeEvent: (sessionId, event) =>
-        this.#appendProviderRuntimeEvent(sessionId, event),
+        this.#sessionRuntime.appendProviderRuntimeEvent(sessionId, event),
     }
     return this.#checkpointHostCache
   }
@@ -2519,7 +2425,7 @@ export class RuntimeSessionManager {
       cmdCancelBarrier: (input, ctx) => this.#cmdCancelBarrier(input, ctx),
       cmdUnfreeze: (input, ctx) => this.#cmdUnfreeze(input, ctx),
       cmdSetResourcePolicy: (input, ctx) =>
-        this.#cmdSetResourcePolicy(input, ctx),
+        this.#sessionRuntime.cmdSetResourcePolicy(input, ctx),
       cmdLinkSessions: (input, ctx) => this.#cmdLinkSessions(input, ctx),
       workflowCommandCtx: () => this.#workflowCommandCtx(),
       humanCtx: () => this.#humanCtx(),
@@ -2533,9 +2439,9 @@ export class RuntimeSessionManager {
         this.#assertActivatable(sessionId, ctx),
       kernelView: (state) => this.#queries.kernelView(state),
       readState: () => this.#readState(),
-      startRun: (sessionId, request) => this.#startRun(sessionId, request),
-      resourcePolicy: (scopeId) => this.#resourcePolicy(scopeId),
-      resourceScopeId: (sessionId) => this.#resourceScopeId(sessionId),
+      startRun: (sessionId, request) => this.#sessionRuntime.startRun(sessionId, request),
+      resourcePolicy: (scopeId) => this.#sessionRuntime.resourcePolicy(scopeId),
+      resourceScopeId: (sessionId) => this.#sessionRuntime.resourceScopeId(sessionId),
       isSessionFrozen: (sessionId) => this.#isSessionFrozen(sessionId),
       drainApprovedSlots: () => this.#scheduler.drainApprovedSlots(),
       deliverToChannel: (...args: any[]) =>
@@ -2549,18 +2455,22 @@ export class RuntimeSessionManager {
   }
 
   async startDraftWorkflow(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startDraftWorkflow(this.#wf(), input)
   }
 
   async startHandoffWorkflow(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startHandoffWorkflow(this.#wf(), input)
   }
 
   async startGoalWorkflow(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startGoalWorkflow(this.#wf(), input)
   }
 
   async connectAgents(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return connectAgents(this.#wf(), input)
   }
 
@@ -2577,14 +2487,17 @@ export class RuntimeSessionManager {
   }
 
   async startPlanCouncil(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startPlanCouncil(this.#wf(), input)
   }
 
   async startPlanCouncilCrossReview(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startPlanCouncilCrossReview(this.#wf(), input)
   }
 
   async startPlanCouncilSynthesis(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startPlanCouncilSynthesis(this.#wf(), input)
   }
 
@@ -2593,10 +2506,12 @@ export class RuntimeSessionManager {
   }
 
   async startReviewWorkflow(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return startReviewWorkflow(this.#wf(), input)
   }
 
   async createGoalLoop(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return createGoalLoop(this.#wf(), input)
   }
 
@@ -2605,6 +2520,7 @@ export class RuntimeSessionManager {
   }
 
   async applyTemplate(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return applyTemplate(this.#wf(), input)
   }
 
@@ -2684,6 +2600,7 @@ export class RuntimeSessionManager {
   }
 
   async approveActivation(input: JsonRecord = {}) {
+    this.#reviveDirectProviderRuntime()
     return this.#scheduler.cmdApproveActivation(input, this.#humanCtx())
   }
 
@@ -4441,7 +4358,7 @@ export class RuntimeSessionManager {
         createdSessionIds.push(created.sessionId)
         if (replacedKeys.has(participantKey)) {
           delete this.#state.sessions[created.sessionId].prepared
-          await this.#startRun(created.sessionId, { ...created.preparedRun, runKind: 'create' })
+          await this.#sessionRuntime.startRun(created.sessionId, { ...created.preparedRun, runKind: 'create' })
         }
       }
 
@@ -5204,1373 +5121,6 @@ export class RuntimeSessionManager {
       linkLabel: label ? `create: ${label}` : 'create_session',
       masterReason: input.masterReason,
       reason: input.reason,
-    }
-  }
-
-  #resourceScopeId(sessionId) {
-    const node = this.#state.nodes.find((candidate) => candidate.sessionId === sessionId)
-    return optionalTrimmedString(node?.clusterId) ?? 'global'
-  }
-
-  #resourcePolicy(scopeId) {
-    this.#state.resourcePolicies ??= {}
-    if (!this.#state.resourcePolicies[scopeId]) this.#state.resourcePolicies[scopeId] = {
-      scopeId,
-      ...defaultRuntimeResourcePolicy,
-      updatedAt: this.#state.updatedAt,
-      updatedBy: 'runtime',
-      budgetStartedAt: this.#state.updatedAt,
-    }
-    return this.#state.resourcePolicies[scopeId]
-  }
-
-  #resourceReservations(policy) {
-    if (policy.consumptionEnforcement !== 'hard') return {}
-    const minimum = (...values) => {
-      const limits = values.filter((value) => Number.isSafeInteger(value) && value > 0)
-      return limits.length > 0 ? Math.min(...limits) : undefined
-    }
-    return {
-      reservedTokens: minimum(policy.maxTokensPerTurn, policy.maxTokens),
-      reservedDurationMs: minimum(policy.maxDurationPerTurnMs, policy.maxDurationMs),
-      reservedToolCalls: minimum(policy.maxToolCallsPerTurn, policy.maxToolCalls),
-    }
-  }
-
-  #applyResourceReservations(target, policy) {
-    const reservations = this.#resourceReservations(policy)
-    for (const key of ['reservedTokens', 'reservedDurationMs', 'reservedToolCalls']) {
-      if (reservations[key] === undefined) delete target[key]
-      else target[key] = reservations[key]
-    }
-  }
-
-  #runResource(sessionId, turnId) {
-    const session = this.#state.sessions[sessionId]
-    const scopeId = this.#resourceScopeId(sessionId)
-    let workspaceKey = path.resolve(session?.cwd ?? process.cwd())
-    try { workspaceKey = fs.realpathSync(workspaceKey) } catch { /* validated at provider launch */ }
-    const policy = this.#resourcePolicy(scopeId)
-    const reservations = this.#resourceReservations(policy)
-    return {
-      turnId,
-      sessionId,
-      scopeId,
-      workspaceKey,
-      leaseMode: session?.runtimeSettings?.sandbox === 'read-only' || session?.runtimeSettings?.interactionMode === 'plan'
-        ? 'reader'
-        : 'writer',
-      providerInstanceId: session?.providerInstanceId,
-      ...Object.fromEntries(Object.entries(reservations).filter(([, value]) => value !== undefined)),
-    }
-  }
-
-  #admissionReason(resource) {
-    const policy = this.#resourcePolicy(resource.scopeId)
-    const globalPolicy = this.#resourcePolicy('global')
-    const active = (this.#state.workspaceLeases ?? []).filter((lease) => lease.status === 'active')
-    if (active.filter((lease) => lease.scopeId === resource.scopeId).length >= policy.maxConcurrentSessions) return 'scope-cap'
-    if (active.filter((lease) => lease.providerInstanceId === resource.providerInstanceId).length >= globalPolicy.maxConcurrentPerProvider) return 'provider-cap'
-    if (active.filter((lease) => lease.scopeId === resource.scopeId && lease.providerInstanceId === resource.providerInstanceId).length >= policy.maxConcurrentPerProvider) return 'provider-cap'
-    if (!leaseCompatible(this.#state.workspaceLeases ?? [], { ...resource, mode: resource.leaseMode })) return 'workspace-lease'
-    return undefined
-  }
-
-  #budgetExceededFor(resource, excludeTurnId = undefined) {
-    const policy = this.#resourcePolicy(resource.scopeId)
-    if (policy.consumptionEnforcement !== 'hard') return undefined
-    const budgetStartedAt = Date.parse(policy.budgetStartedAt ?? '')
-    const facts = (this.#state.usageFacts ?? []).filter((fact) =>
-      fact.scopeId === resource.scopeId && (!Number.isFinite(budgetStartedAt) || Date.parse(fact.completedAt) >= budgetStartedAt),
-    )
-    const completed = new Set(facts.map((fact) => fact.turnId))
-    const reservedTurnIds = new Set([
-      ...(this.#state.workspaceLeases ?? []).filter((lease) => lease.status === 'active' && lease.scopeId === resource.scopeId).map((lease) => lease.turnId),
-      ...(this.#state.runQueue ?? []).filter((item) => item.scopeId === resource.scopeId).map((item) => item.turnId),
-    ].filter((turnId) => turnId !== excludeTurnId && !completed.has(turnId)))
-    const reservations = [...reservedTurnIds].map((turnId) => ({
-      turnId,
-      totalTokens: 0,
-      durationMs: 0,
-      toolCalls: 0,
-    }))
-    for (const reservation of reservations) {
-      const source = [...(this.#state.workspaceLeases ?? []), ...(this.#state.runQueue ?? [])].find((item) => item.turnId === reservation.turnId)
-      reservation.totalTokens = Number(source?.reservedTokens ?? 0)
-      reservation.durationMs = Number(source?.reservedDurationMs ?? 0)
-      reservation.toolCalls = Number(source?.reservedToolCalls ?? 0)
-    }
-    const existing = [...facts, ...reservations] as any[]
-    const exceeded = budgetExceeded(policy, existing as any)
-    if (exceeded) return exceeded
-    const totals = existing.reduce((sum, item) => ({
-      turns: sum.turns + 1,
-      tokens: sum.tokens + Number(item.totalTokens ?? 0),
-      durationMs: sum.durationMs + Number(item.durationMs ?? 0),
-      toolCalls: sum.toolCalls + Number(item.toolCalls ?? 0),
-    }), { turns: 0, tokens: 0, durationMs: 0, toolCalls: 0 })
-    const projected = {
-      turns: totals.turns + 1,
-      tokens: totals.tokens + Number(resource.reservedTokens ?? 0),
-      durationMs: totals.durationMs + Number(resource.reservedDurationMs ?? 0),
-      toolCalls: totals.toolCalls + Number(resource.reservedToolCalls ?? 0),
-    }
-    if (policy.maxTurns !== undefined && projected.turns > policy.maxTurns) return { dimension: 'turns', used: projected.turns, limit: policy.maxTurns }
-    if (policy.maxTokens !== undefined && projected.tokens > policy.maxTokens) return { dimension: 'tokens', used: projected.tokens, limit: policy.maxTokens }
-    if (policy.maxDurationMs !== undefined && projected.durationMs > policy.maxDurationMs) return { dimension: 'durationMs', used: projected.durationMs, limit: policy.maxDurationMs }
-    if (policy.maxToolCalls !== undefined && projected.toolCalls > policy.maxToolCalls) return { dimension: 'toolCalls', used: projected.toolCalls, limit: policy.maxToolCalls }
-    return undefined
-  }
-
-  #freezeForBudget(sessionId, exceeded, ctx: JsonRecord = { actor: { kind: 'runtime' } }) {
-    const node = this.#state.nodes.find((candidate) => candidate.sessionId === sessionId)
-    const reason = `Resource budget exhausted: ${exceeded.dimension} ${exceeded.used}/${exceeded.limit}`
-    if (node) {
-      node.frozen = true
-      node.freezeReason = reason
-    }
-    const session = this.#state.sessions[sessionId]
-    if (session && session.status === 'pending') session.status = 'idle'
-    this.#appendKernelEvent('resource.budget-exhausted', { sessionId, ...exceeded }, ctx, { reason })
-    this.#touch()
-    const error = new Error(`${reason}. Reset or raise the resource policy and unfreeze to resume.`)
-    ;(error as Error & { commitState?: boolean; code?: string }).commitState = true
-    ;(error as Error & { commitState?: boolean; code?: string }).code = 'ORRERY_RESOURCE_BUDGET_EXHAUSTED'
-    return error
-  }
-
-  async #startRun(sessionId, request) {
-    if ((this.#state.runQueue ?? []).some((item) => item.sessionId === sessionId) || this.#runs.has(sessionId)) {
-      throw new Error(`Session already has an active or queued provider turn: ${sessionId}`)
-    }
-    const runId = randomUUID()
-    const resource = this.#runResource(sessionId, runId)
-    const policy = this.#resourcePolicy(resource.scopeId)
-    const exceeded = this.#budgetExceededFor(resource)
-    if (exceeded) {
-      throw this.#freezeForBudget(sessionId, exceeded)
-    }
-    const reason = this.#admissionReason(resource)
-    if (!reason) return this.#launchRun(sessionId, request, runId, resource)
-    if ((this.#state.runQueue ?? []).filter((item) => item.scopeId === resource.scopeId).length >= policy.maxQueuedRuns) {
-      this.#state.schedulerMetrics.rejectedTotal += 1
-      throw new Error(`Run queue is full for ${resource.scopeId} (${policy.maxQueuedRuns}).`)
-    }
-    const queuedAt = now()
-    this.#state.runQueue.push({
-      queueId: randomUUID(),
-      ...resource,
-      priority: Number.isFinite(request?.priority) ? Number(request.priority) : 0,
-      order: this.#state.schedulerMetrics.queuedTotal + 1,
-      queuedAt,
-      reason,
-      request: clone(request),
-      ...(request?.execution ? { execution: clone(request.execution) } : {}),
-    })
-    this.#state.schedulerMetrics.queuedTotal += 1
-    this.#state.schedulerMetrics.maxQueueDepth = Math.max(this.#state.schedulerMetrics.maxQueueDepth, this.#state.runQueue.length)
-    this.#state.schedulerMetrics.byReason[reason] = (this.#state.schedulerMetrics.byReason[reason] ?? 0) + 1
-    const session = this.#state.sessions[sessionId]
-    if (session) {
-      session.status = 'pending'
-      session.updatedAt = queuedAt
-      this.#updateMessageRunId(session, request?.userMessageId, runId)
-      const council = planCouncilForSession(this.#wf(), sessionId)
-      const participant = council?.participants?.[sessionId]
-      if (participant?.expectedArtifactKind && !participant.expectedTurnId) participant.expectedTurnId = runId
-    }
-    this.#appendKernelEvent('run.queued', { sessionId, turnId: runId, scopeId: resource.scopeId, reason }, { actor: { kind: 'runtime' } })
-    this.#touch()
-    return runId
-  }
-
-  #releaseWorkspaceLease(turnId, reason) {
-    const lease = (this.#state.workspaceLeases ?? []).find((candidate) => candidate.turnId === turnId && candidate.status === 'active')
-    if (!lease) return
-    lease.status = reason === 'revoked' ? 'revoked' : 'released'
-    lease.releasedAt = now()
-    lease.releaseReason = reason
-    queueMicrotask(() => void this.#drainRunQueue())
-  }
-
-  async #drainRunQueue() {
-    if (this.#runQueueDrainInFlight || !this.#runQueueDrainEnabled) return
-    this.#runQueueDrainInFlight = true
-    try {
-      while (this.#state.runQueue?.length) {
-        const candidate = selectFairQueuedRun(this.#state.runQueue, Date.now(), (item) => {
-          const session = this.#state.sessions[item.sessionId]
-          return Boolean(session && session.status !== 'killed' && !this.#isSessionFrozen(item.sessionId) && !this.#runs.has(item.sessionId) && !this.#admissionReason(item))
-        })
-        if (!candidate) break
-        this.#state.runQueue = this.#state.runQueue.filter((item) => item.queueId !== candidate.queueId)
-        const exceeded = this.#budgetExceededFor(candidate, candidate.turnId)
-        if (exceeded) {
-          const error = this.#freezeForBudget(candidate.sessionId, exceeded)
-          planCouncilFailed(this.#wf(), candidate.sessionId, error.message)
-          this.#settleDynamicSpawnChild(candidate.sessionId, 'failed', error.message)
-          continue
-        }
-        this.#state.schedulerMetrics.admittedTotal += 1
-        this.#state.schedulerMetrics.lastAdmittedScopeId = candidate.scopeId
-        this.#state.schedulerMetrics.lastAdmissionAt = now()
-        try {
-          await this.#launchRun(candidate.sessionId, candidate.request as any, candidate.turnId, candidate)
-        } catch (error) {
-          this.#failSession(candidate.sessionId, error instanceof Error ? error.message : String(error))
-        }
-      }
-    } finally {
-      this.#runQueueDrainInFlight = false
-      this.#touch()
-    }
-  }
-
-  async #launchRun(
-    sessionId,
-    {
-      prompt,
-      attachments = [],
-      runKind,
-      userMessageId,
-      activationEventId,
-      channelReadSeqs = [],
-      execution = undefined,
-    },
-    runId,
-    resource,
-  ) {
-    const session = this.#state.sessions[sessionId]
-    const council = planCouncilForSession(this.#wf(), sessionId)
-    const participant = council?.participants?.[sessionId]
-    const runExecution = validateExecutionEnvelope(execution)
-      ? { ...clone(execution), activationId: runId }
-      : undefined
-    if (participant?.expectedArtifactKind && !participant.expectedTurnId) {
-      participant.expectedTurnId = runId
-      if (runExecution) participant.expectedExecutionEnvelope = clone(runExecution)
-    }
-    const lease = {
-      leaseId: randomUUID(),
-      ...resource,
-      mode: resource.leaseMode,
-      status: 'active',
-      acquiredAt: now(),
-      baseline: {},
-    }
-    try {
-      lease.baseline.head = gitOutput(session.cwd, ['rev-parse', 'HEAD'])
-      lease.baseline.statusDigest = createHash('sha256').update(gitOutput(session.cwd, ['status', '--porcelain=v1'])).digest('hex')
-    } catch { /* non-git workspaces still receive mutual exclusion */ }
-    this.#state.workspaceLeases.push(lease)
-    let bridgeUrl
-    try {
-      bridgeUrl = await this.#bridge.start()
-    } catch (error) {
-      this.#releaseWorkspaceLease(runId, 'membrane-start-failed')
-      throw error
-    }
-    const membraneToken = this.#bridge.createRunToken(sessionId)
-    const fromTurnCount = completedTurnCount(this.#checkpointHost(), session)
-    let turnCheckpoint
-    session.status = 'running'
-    session.startedAt = now()
-    session.finishedAt = undefined
-    session.updatedAt = session.startedAt
-    try {
-      turnCheckpoint = {
-        ...captureTurnCheckpoint(this.#checkpointHost(), {
-          sessionId,
-          turnId: runId,
-          turnCount: fromTurnCount,
-          stage: 'before',
-        }),
-        fromTurnCount,
-      }
-    } catch (error) {
-      turnCheckpoint = {
-        fromTurnCount,
-        error: error instanceof Error ? error.message : String(error),
-      }
-    }
-    this.#updateMessageRunId(session, userMessageId, runId)
-    this.#updateNodeStatus(sessionId, 'running')
-    this.#runContext.set(sessionId, {
-      runId,
-      runKind,
-      assistantMessageId: undefined,
-      sawTextDelta: false,
-      turnCheckpoint,
-      turnDiffRecorded: false,
-      // Kernel event id of the session.created/activated fact that started
-      // this run; provider lifecycle facts chain to it via causeId.
-      activationEventId,
-      // Channel deliveries listed in this run's activation message; rolled
-      // back to unread if the run dies without ever producing output.
-      channelReadSeqs,
-      runProducedOutput: false,
-      resource: { ...resource, admitted: true, startedAt: session.startedAt },
-      ...(runExecution ? { execution: runExecution } : {}),
-    })
-    this.#appendProviderRuntimeEvent(sessionId, {
-      id: randomUUID(),
-      ts: session.startedAt,
-      type: 'turn.started',
-      sessionId,
-      turnId: runId,
-      activationEventId,
-      ...(runExecution ? { execution: clone(runExecution) } : {}),
-    })
-    this.#appendProviderRuntimeEvent(sessionId, {
-      id: randomUUID(),
-      ts: session.startedAt,
-      type: 'session.state',
-      sessionId,
-      status: 'running',
-    })
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    journalAutomaticDeploymentRunStarted(this.#wf(), sessionId)
-
-    let run
-    try {
-      run = this.#providerService.startTurn({
-        providerKind: session.providerKind,
-        providerInstanceId: session.providerInstanceId,
-        turnId: runId,
-        prompt,
-        attachments,
-        cwd: session.cwd,
-        backendSessionId:
-          runKind === 'resume'
-            ? (session.providerSessionId ?? session.backendSessionId)
-            : undefined,
-        providerResumeCursor: session.providerResumeCursor,
-        sessionId,
-        runtimeSettings: session.runtimeSettings,
-        // The session's own inbox: providers grant read access up front so
-        // channel deliveries never stall on a permission prompt (§4.2.5).
-        // ensureChannelDir: the dir must exist (and be canonical) when the
-        // provider session controller initializes its allowlist.
-        channelDir: this.#channelStore.ensureChannelDir(sessionId),
-        membrane: {
-          bridgeUrl,
-          token: membraneToken,
-        },
-      })
-    } catch (error) {
-      this.#bridge.revokeRunToken(membraneToken)
-      this.#releaseWorkspaceLease(runId, 'provider-start-failed')
-      this.#failSession(sessionId, error.message)
-      throw error
-    }
-
-    this.#runs.set(sessionId, run)
-    this.#scheduleRunDurationBudgetTimer(sessionId)
-
-    run.on('native', (event) =>
-      this.#appendNativeProviderEnvelope(sessionId, event),
-    )
-    run.on('providerEvent', (event) =>
-      this.#appendExternalProviderRuntimeEvent(sessionId, event),
-    )
-    run.on('providerSession', (event) =>
-      this.#recordProviderSession(sessionId, event),
-    )
-    run.on('stderr', (data) => this.#appendProviderStderr(sessionId, data))
-    run.on('result', (event) => this.#recordResult(sessionId, event))
-    run.on('error', (error) => {
-      if (this.#workflowCompensatedRuns.has(sessionId)) return
-      const current = this.#state.sessions[sessionId]
-      const context = this.#runContext.get(sessionId)
-      if (current?.status === 'killed' || context?.killRequested === true) {
-        return
-      }
-      this.#failSession(sessionId, error.message)
-    })
-    run.on('close', ({ code, signal, killed }) => {
-      this.#runs.delete(sessionId)
-      const budgetTimer = this.#runBudgetTimers.get(sessionId)
-      if (budgetTimer) clearTimeout(budgetTimer)
-      this.#runBudgetTimers.delete(sessionId)
-      this.#bridge.revokeRunToken(membraneToken)
-
-      if (this.#workflowCompensatedRuns.delete(sessionId)) return
-
-      const current = this.#state.sessions[sessionId]
-      if (!current) {
-        return
-      }
-
-      const context = this.#runContext.get(sessionId)
-      if (!context && ['idle', 'failed', 'killed'].includes(current.status)) return
-      current.exitCode = code
-      current.signal = signal
-      current.finishedAt = now()
-      current.updatedAt = current.finishedAt
-      recordTurnCheckpointDiff(this.#checkpointHost(), sessionId, current.finishedAt)
-      this.#appendTurnCompletedIfMissing(sessionId, current.finishedAt)
-      this.#cancelOpenRuntimeInteractions(sessionId, current.finishedAt)
-
-      if (context?.resourceViolation) {
-        this.#failSession(sessionId, context.resourceViolation.message)
-        return
-      }
-
-      if (killed || current.status === 'killed') {
-        current.status = 'killed'
-        this.#markActiveAssistant(sessionId, 'failed')
-        this.#updateNodeStatus(sessionId, 'killed')
-        this.#appendProviderRuntimeEvent(sessionId, {
-          id: randomUUID(),
-          ts: current.updatedAt,
-          type: 'session.state',
-          sessionId,
-          status: 'killed',
-        })
-        this.#recordUsageFact(sessionId, current.finishedAt)
-        if (context?.runId) this.#releaseWorkspaceLease(context.runId, 'revoked')
-        this.#runContext.delete(sessionId)
-        this.#touch()
-        this.#emitRuntimeEvent({
-          type: 'session.killed',
-          sessionId,
-          state: this.getState(),
-          // The kernel fact was appended by the kill command; the process
-          // exit is only its completion, not a second fact.
-          kernelEventId: context?.killedEventId,
-        })
-        return
-      }
-
-      // The provider error event is the terminal authority for a failed run.
-      // It already called #failSession (and emitted exactly one kernel fact);
-      // close only supplies process metadata and must not fail the same turn a
-      // second time, because `on: failed` relationships observe those facts.
-      if (current.status === 'failed') {
-        this.#touch()
-        return
-      }
-
-      if (code === 0 && current.status !== 'failed') {
-        const runId = context?.runId
-        void this.dispatchCommand({
-          commandId: `provider-complete:${sessionId}:${runId}`,
-          idempotencyKey: `provider-complete:${sessionId}:${runId}`,
-          kind: 'provider_complete_run',
-          actor: { kind: 'provider', ref: sessionId },
-          causeId: context?.activationEventId,
-          ...(context?.execution ? { execution: clone(context.execution) } : {}),
-          input: { sessionId, runId, exitCode: code, signal },
-        }).then((result) => {
-          this.#emitRuntimeEvent({
-            type: 'session.finished',
-            sessionId,
-            state: this.getState(),
-            kernelEventId: result.kernelEventId,
-          })
-        }).catch((error) => {
-          if ((error as Error & { code?: string })?.code !== 'ORRERY_EFFECT_DRAIN_CRASH') {
-            this.#failSession(sessionId, error instanceof Error ? error.message : String(error))
-          }
-        })
-        return
-      }
-
-      this.#failSession(
-        sessionId,
-        current.error ?? `Claude exited with code ${code ?? 'null'}`,
-      )
-    })
-    return runId
-  }
-
-  #appendNativeProviderEnvelope(sessionId, event) {
-    const session = this.#state.sessions[sessionId]
-    if (!session || !event?.raw) {
-      return
-    }
-
-    this.#markRunProducedOutput(sessionId)
-    session.nativeEvents ??= []
-    const nativeEvent = {
-      id: randomUUID(),
-      ts: nonEmptyString(event.ts) ? event.ts : now(),
-      sessionId,
-      providerKind: validProviderKinds.has(event.providerKind)
-        ? event.providerKind
-        : session.providerKind,
-      turnId: nonEmptyString(event.turnId)
-        ? event.turnId
-        : this.#runContext.get(sessionId)?.runId,
-      raw: event.raw,
-    }
-    session.nativeEvents.push(nativeEvent)
-    this.#providerService.recordNativeEvent(nativeEvent)
-    truncateEvents(session.nativeEvents)
-  }
-
-  #recordProviderSession(sessionId, event) {
-    const session = this.#state.sessions[sessionId]
-    if (!session || !nonEmptyString(event?.providerSessionId)) {
-      return
-    }
-
-    session.providerSessionId = event.providerSessionId
-    session.backendSessionId = event.providerSessionId
-    if (nonEmptyString(event.resumeCursor)) {
-      session.providerResumeCursor = event.resumeCursor
-    }
-    session.updatedAt = now()
-    this.#touch()
-  }
-
-  #appendExternalProviderRuntimeEvent(sessionId, event) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    this.#markRunProducedOutput(sessionId)
-    const normalizedEvent = {
-      ...event,
-      sessionId,
-    }
-    this.#appendProviderRuntimeEvent(sessionId, normalizedEvent)
-
-    if (normalizedEvent.type === 'content.delta') {
-      this.#appendContentDeltaMessage(sessionId, normalizedEvent)
-    }
-
-    session.updatedAt = normalizedEvent.ts ?? now()
-    this.#touchDeferred()
-    this.#broadcast({
-      type: 'provider.runtime',
-      sessionId,
-      providerEvent: normalizedEvent,
-    })
-    if (normalizedEvent.type === 'item.started') {
-      const context = this.#runContext.get(sessionId)
-      const policy = context?.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
-      const toolCalls = (session.runtimeActivities ?? []).filter((activity) => activity.kind === 'tool_call' && Date.parse(activity.startedAt ?? session.startedAt) >= Date.parse(context?.resource?.startedAt ?? session.startedAt)).length
-      const toolCallLimit = policy?.consumptionEnforcement === 'hard'
-        ? context?.resource?.reservedToolCalls
-        : policy?.maxToolCallsPerTurn
-      if (toolCallLimit !== undefined && toolCalls > toolCallLimit) {
-        const exceeded = { dimension: 'toolCalls', used: toolCalls, limit: toolCallLimit }
-        if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
-        else if (policy.consumptionEnforcement === 'warn') this.#markRunBudgetWarning(sessionId, exceeded)
-      }
-    }
-  }
-
-  #appendContentDeltaMessage(sessionId, event) {
-    if (
-      event.streamKind !== 'assistant_text' ||
-      typeof event.text !== 'string'
-    ) {
-      return
-    }
-
-    const session = this.#state.sessions[sessionId]
-    const context = this.#runContext.get(sessionId)
-    if (!session || !context) {
-      return
-    }
-
-    const message = this.#ensureAssistantMessage(session, context)
-    if (event.isSnapshot) {
-      if (!context.sawTextDelta || message.content.trim().length === 0) {
-        message.content = event.text
-      }
-    } else {
-      message.content += event.text
-      context.sawTextDelta = true
-    }
-    message.status = 'streaming'
-  }
-
-  #appendProviderStderr(sessionId, data) {
-    const session = this.#state.sessions[sessionId]
-    if (!session || typeof data !== 'string' || data.length === 0) {
-      return
-    }
-
-    const chunk = {
-      id: randomUUID(),
-      sessionId,
-      ts: now(),
-      stream: 'stderr',
-      raw: data,
-      text: data,
-    }
-    session.chunks.push(chunk)
-    truncateChunks(session.chunks)
-  }
-
-  #appendProviderRuntimeEvent(sessionId, event) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    session.runtimeEvents ??= []
-    session.runtimeEvents.push(event)
-    this.#providerService.recordRuntimeEvent(sessionId, event)
-    const removedEvents = truncateEvents(session.runtimeEvents)
-    const removedDiffEvent = removedEvents.some(
-      (removedEvent) => removedEvent.type === 'turn.diff.updated',
-    )
-    if (event.type === 'turn.diff.updated' || removedDiffEvent) {
-      pruneTurnCheckpointRefs(this.#checkpointHost(), sessionId)
-    }
-
-    if (event.type === 'runtime.configured') {
-      session.effectiveRuntimeConfig = normalizeProviderEffectiveRuntimeConfig(
-        event.effectiveRuntimeConfig,
-        session.providerKind,
-        session.runtimeSettings,
-      )
-      return
-    }
-
-    if (
-      event.type === 'item.started' ||
-      event.type === 'item.updated' ||
-      event.type === 'item.completed'
-    ) {
-      this.#upsertRuntimeActivity(session, event.item)
-      return
-    }
-
-    if (event.type === 'request.opened') {
-      session.runtimeRequests ??= []
-      const existing = session.runtimeRequests.find(
-        (item) => item.id === event.request.id,
-      )
-      if (existing) {
-        Object.assign(existing, event.request)
-      } else {
-        session.runtimeRequests.push(event.request)
-        if (event.request.kind === 'permission' || event.request.kind === 'confirmation') {
-          this.#appendKernelEvent(
-            'permission.requested',
-            {
-              sessionId,
-              requestId: event.request.id,
-              requestKind: event.request.kind,
-              title: truncateForLog(String(event.request.title ?? event.request.body ?? ''), 200),
-            },
-            { actor: { kind: 'provider', ref: session.providerInstanceId } },
-          )
-        }
-      }
-      truncateActivities(session.runtimeRequests)
-      return
-    }
-
-    if (event.type === 'request.resolved') {
-      session.runtimeRequests ??= []
-      const request = session.runtimeRequests.find(
-        (item) => item.id === event.requestId,
-      )
-      if (request) {
-        request.status = event.status ?? 'resolved'
-        request.resolvedAt = event.ts
-      }
-      return
-    }
-
-    if (event.type === 'user-input.requested') {
-      session.runtimeUserInputRequests ??= []
-      const existing = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.request.id,
-      )
-      const nextRequest = {
-        status: 'open',
-        ...event.request,
-      }
-      if (existing) {
-        Object.assign(existing, nextRequest)
-      } else {
-        session.runtimeUserInputRequests.push(nextRequest)
-      }
-      truncateActivities(session.runtimeUserInputRequests)
-      return
-    }
-
-    if (event.type === 'user-input.answered') {
-      session.runtimeUserInputRequests ??= []
-      const request = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.requestId,
-      )
-      if (request) {
-        request.status = 'answered'
-        request.answeredAt = event.ts
-        request.answer = event.answer
-        request.answers = event.answers
-      }
-      return
-    }
-
-    if (event.type === 'user-input.resolved') {
-      session.runtimeUserInputRequests ??= []
-      const request = session.runtimeUserInputRequests.find(
-        (item) => item.id === event.requestId,
-      )
-      if (request) {
-        request.status = event.status ?? 'resolved'
-        request.answeredAt = event.ts
-      }
-      return
-    }
-
-    if (event.type === 'plan.updated') {
-      session.runtimePlans ??= []
-      const index = session.runtimePlans.findIndex(
-        (plan) => plan.id === event.plan.id,
-      )
-      if (index >= 0) {
-        session.runtimePlans[index] = event.plan
-      } else {
-        session.runtimePlans.push(event.plan)
-      }
-      truncateActivities(session.runtimePlans)
-    }
-  }
-
-  #cancelOpenRuntimeInteractions(sessionId, ts) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    const openRequests = (session.runtimeRequests ?? []).filter(
-      (request) => request.status === 'open',
-    )
-    for (const request of openRequests) {
-      this.#appendProviderRuntimeEvent(sessionId, {
-        id: randomUUID(),
-        ts,
-        type: 'request.resolved',
-        sessionId,
-        requestId: request.id,
-        status: 'canceled',
-      })
-    }
-
-    const openUserInputRequests = (
-      session.runtimeUserInputRequests ?? []
-    ).filter((request) => request.status === 'open')
-    for (const request of openUserInputRequests) {
-      this.#appendProviderRuntimeEvent(sessionId, {
-        id: randomUUID(),
-        ts,
-        type: 'user-input.resolved',
-        sessionId,
-        requestId: request.id,
-        status: 'canceled',
-      })
-    }
-  }
-
-  #appendTurnCompletedIfMissing(sessionId, ts) {
-    const session = this.#state.sessions[sessionId]
-    const turnId = this.#runContext.get(sessionId)?.runId
-    if (!session || !turnId) {
-      return
-    }
-
-    const alreadyCompleted = session.runtimeEvents?.some(
-      (event) => event.type === 'turn.completed' && event.turnId === turnId,
-    )
-    if (alreadyCompleted) {
-      return
-    }
-
-    this.#appendProviderRuntimeEvent(sessionId, {
-      id: randomUUID(),
-      ts,
-      type: 'turn.completed',
-      sessionId,
-      turnId,
-    })
-  }
-
-  #upsertRuntimeActivity(session, item) {
-    session.runtimeActivities ??= []
-    const existing = session.runtimeActivities.find(
-      (activity) => activity.id === item.id,
-    )
-    const next = {
-      ...(existing ?? {}),
-      ...item,
-      sessionId: session.sessionId,
-      title:
-        item.title ??
-        existing?.title ??
-        item.command ??
-        item.providerName ??
-        item.id,
-      status:
-        item.status ??
-        existing?.status ??
-        (item.completedAt ? 'completed' : 'running'),
-      startedAt: existing?.startedAt ?? item.startedAt,
-      updatedAt: item.updatedAt ?? item.completedAt ?? now(),
-    }
-
-    if (item.completedAt) {
-      next.completedAt = item.completedAt
-    }
-    if (next.startedAt && next.completedAt && next.durationMs === undefined) {
-      const start = Date.parse(next.startedAt)
-      const end = Date.parse(next.completedAt)
-      if (!Number.isNaN(start) && !Number.isNaN(end) && end >= start) {
-        next.durationMs = end - start
-      }
-    }
-    if (typeof next.output === 'string') {
-      next.sublines = resultSublines(next.output)
-    }
-
-    if (existing) {
-      Object.assign(existing, next)
-    } else {
-      session.runtimeActivities.push(next)
-      truncateActivities(session.runtimeActivities)
-    }
-  }
-
-  #ensureAssistantMessage(session, context) {
-    let message = context.assistantMessageId
-      ? session.messages.find((item) => item.id === context.assistantMessageId)
-      : undefined
-
-    if (!message) {
-      message = {
-        id: randomUUID(),
-        sessionId: session.sessionId,
-        role: 'assistant',
-        content: '',
-        ts: now(),
-        runId: context.runId,
-        status: 'streaming',
-      }
-      session.messages.push(message)
-      context.assistantMessageId = message.id
-    }
-
-    return message
-  }
-
-  #recordResult(sessionId, event) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    session.backendSessionId = event.session_id ?? session.backendSessionId
-    session.providerSessionId = event.session_id ?? session.providerSessionId
-    const context = this.#runContext.get(sessionId)
-    if (context) {
-      context.providerUsage = normalizeProviderUsage(event.usage)
-      context.providerUsageSource = isObject(event.usage) ? 'provider' : 'unavailable'
-      context.providerTurns = Number.isFinite(event.num_turns) ? Number(event.num_turns) : 0
-      context.providerDurationMs = Number.isFinite(event.duration_ms) ? Number(event.duration_ms) : undefined
-      const policy = context.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
-      const tokenLimit = policy?.consumptionEnforcement === 'hard'
-        ? context.resource?.reservedTokens
-        : policy?.maxTokensPerTurn
-      if (tokenLimit !== undefined && context.providerUsage.totalTokens > tokenLimit) {
-        const exceeded = { dimension: 'tokens', used: context.providerUsage.totalTokens, limit: tokenLimit }
-        if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
-        else if (policy.consumptionEnforcement === 'warn') this.#markRunBudgetWarning(sessionId, exceeded)
-      }
-    }
-    session.result = typeof event.result === 'string' ? event.result : undefined
-    if (session.result) {
-      if (context) {
-        const message = this.#ensureAssistantMessage(session, context)
-        if (!context.sawTextDelta || message.content.trim().length === 0) {
-          message.content = session.result
-        }
-      }
-    }
-    session.updatedAt = now()
-    this.#touch()
-  }
-
-  #markRunProducedOutput(sessionId) {
-    const context = this.#runContext.get(sessionId)
-    if (context) {
-      context.runProducedOutput = true
-    }
-  }
-
-  #markRunBudgetViolation(sessionId, exceeded) {
-    const context = this.#runContext.get(sessionId)
-    if (!context || context.resourceViolation) return
-    const error = this.#freezeForBudget(sessionId, exceeded)
-    context.resourceViolation = { ...exceeded, message: error.message }
-    try { this.#runs.get(sessionId)?.kill() } catch { /* close/error path remains authoritative */ }
-  }
-
-  #scheduleRunDurationBudgetTimer(sessionId) {
-    const existing = this.#runBudgetTimers.get(sessionId)
-    if (existing) clearTimeout(existing)
-    this.#runBudgetTimers.delete(sessionId)
-    const context = this.#runContext.get(sessionId)
-    const policy = context?.resource ? this.#resourcePolicy(context.resource.scopeId) : undefined
-    const durationLimit = policy?.consumptionEnforcement === 'hard'
-      ? context?.resource?.reservedDurationMs
-      : policy?.maxDurationPerTurnMs
-    if (!context || !policy || policy.consumptionEnforcement === 'off' || durationLimit === undefined) return
-    const startedAtMs = Date.parse(context.resource?.startedAt ?? '')
-    const elapsedMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.now() - startedAtMs) : 0
-    const remainingMs = durationLimit - elapsedMs
-    if (remainingMs <= 0) {
-      const exceeded = { dimension: 'durationMs', used: elapsedMs, limit: durationLimit }
-      if (policy.consumptionEnforcement === 'hard') this.#markRunBudgetViolation(sessionId, exceeded)
-      else this.#markRunBudgetWarning(sessionId, exceeded)
-      return
-    }
-    const timer = setTimeout(() => this.#scheduleRunDurationBudgetTimer(sessionId), remainingMs)
-    timer.unref?.()
-    this.#runBudgetTimers.set(sessionId, timer)
-  }
-
-  #markRunBudgetWarning(sessionId, exceeded) {
-    const context = this.#runContext.get(sessionId)
-    if (!context) return
-    context.resourceWarnings ??= {}
-    if (context.resourceWarnings[exceeded.dimension]) return
-    context.resourceWarnings[exceeded.dimension] = clone(exceeded)
-    this.#appendKernelEvent(
-      'resource.budget-warning',
-      { sessionId, turnId: context.runId, ...exceeded },
-      {
-        actor: { kind: 'runtime' },
-        ...(context.execution ? { execution: clone(context.execution) } : {}),
-      },
-      { reason: `Resource budget warning: ${exceeded.dimension} ${exceeded.used}/${exceeded.limit}` },
-    )
-    this.#touch()
-  }
-
-  #recordUsageFact(sessionId, completedAt) {
-    const session = this.#state.sessions[sessionId]
-    const context = this.#runContext.get(sessionId)
-    if (!session || !context?.runId || (this.#state.usageFacts ?? []).some((fact) => fact.turnId === context.runId)) return
-    const usage = context.providerUsage ?? normalizeProviderUsage(undefined)
-    const startedAt = context.resource?.startedAt ?? session.startedAt ?? completedAt
-    const measured = Math.max(0, Date.parse(completedAt) - Date.parse(startedAt))
-    const toolCalls = (session.runtimeActivities ?? []).filter((activity) => activity.turnId === context.runId || (!activity.turnId && Date.parse(activity.startedAt ?? completedAt) >= Date.parse(startedAt))).length
-    const loopIds = this.#queries
-      .loopViewsWithTerminalFacts(this.#queries.kernelView(this.#state))
-      .filter((loop) => loop.memberSessionIds?.includes(sessionId))
-      .map((loop) => loop.loopId)
-    const fact = {
-      usageId: randomUUID(),
-      sessionId,
-      turnId: context.runId,
-      providerKind: session.providerKind,
-      providerInstanceId: session.providerInstanceId,
-      scopeId: context.resource?.scopeId ?? this.#resourceScopeId(sessionId),
-      startedAt,
-      completedAt,
-      durationMs: context.providerDurationMs ?? measured,
-      ...usage,
-      toolCalls,
-      providerTurns: context.providerTurns ?? 0,
-      source: context.providerUsageSource ?? 'unavailable',
-      ...(loopIds.length ? { loopIds } : {}),
-      ...(context.execution ? { execution: clone(context.execution) } : {}),
-    }
-    this.#state.usageFacts.push(fact)
-    this.#appendKernelEvent('usage.recorded', fact, { actor: { kind: 'runtime' }, ...(context.execution ? { execution: clone(context.execution) } : {}) })
-    const policy = this.#resourcePolicy(fact.scopeId)
-    if (policy.consumptionEnforcement === 'warn') {
-      const budgetStartedAt = Date.parse(policy.budgetStartedAt ?? '')
-      const scopedFacts = this.#state.usageFacts.filter((candidate) =>
-        candidate.scopeId === fact.scopeId && (!Number.isFinite(budgetStartedAt) || Date.parse(candidate.completedAt) >= budgetStartedAt),
-      )
-      const exceeded = budgetExceeded(policy, scopedFacts)
-      if (exceeded) this.#markRunBudgetWarning(sessionId, exceeded)
-    }
-  }
-
-  #recordInterruptedUsageFact(sessionId) {
-    const session = this.#state.sessions[sessionId]
-    const started = [...(session?.runtimeEvents ?? [])].reverse().find((event) => event.type === 'turn.started' && event.turnId)
-    if (!session || !started?.turnId || (this.#state.usageFacts ?? []).some((fact) => fact.turnId === started.turnId)) return
-    const completedAt = now()
-    const startedAt = started.ts ?? session.startedAt ?? completedAt
-    const council = planCouncilForSession(this.#wf(), sessionId)
-    const participant = council?.participants?.[sessionId]
-    const terminalCause = started.activationEventId
-      ? this.#queries
-          .allKernelEvents()
-          .find((event) => event.id === started.activationEventId)
-      : undefined
-    const execution = participant?.expectedTurnId === started.turnId && validateExecutionEnvelope(participant.expectedExecutionEnvelope)
-      ? participant.expectedExecutionEnvelope
-      : validateExecutionEnvelope(session.dynamicTopology?.execution) ? session.dynamicTopology.execution
-        : validateExecutionEnvelope(started.execution) ? started.execution
-          : terminalCause && validateExecutionEnvelope(terminalCause.execution ?? terminalCause.payload?.execution)
-            ? (terminalCause.execution ?? terminalCause.payload.execution)
-            : undefined
-    const loopIds = this.#queries
-      .loopViewsWithTerminalFacts(this.#queries.kernelView(this.#state))
-      .filter((loop) => loop.memberSessionIds?.includes(sessionId))
-      .map((loop) => loop.loopId)
-    const fact = {
-      usageId: randomUUID(),
-      sessionId,
-      turnId: started.turnId,
-      providerKind: session.providerKind,
-      providerInstanceId: session.providerInstanceId,
-      scopeId: this.#resourceScopeId(sessionId),
-      startedAt,
-      completedAt,
-      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(startedAt)),
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
-      totalTokens: 0,
-      toolCalls: (session.runtimeActivities ?? []).filter((activity) => activity.turnId === started.turnId).length,
-      providerTurns: 0,
-      source: 'unavailable',
-      ...(execution ? { execution: clone(execution) } : {}),
-      ...(loopIds.length ? { loopIds } : {}),
-    }
-    this.#state.usageFacts.push(fact)
-    this.#appendKernelEvent('usage.recorded', fact, { actor: { kind: 'runtime' } }, { reason: 'Provider turn was interrupted by runtime restart; token counters are unavailable.' })
-  }
-
-  #cmdSetResourcePolicy(input: JsonRecord = {}, ctx: JsonRecord) {
-    if (ctx.actor?.kind !== 'human') throw new Error('Only a human can change resource policy.')
-    const scopeId = optionalTrimmedString(input.scopeId) ?? 'global'
-    const current = this.#resourcePolicy(scopeId)
-    const next = { ...current, scopeId, updatedAt: now(), updatedBy: 'human' }
-    if (input.resetUsage === true) next.budgetStartedAt = next.updatedAt
-    if (input.consumptionEnforcement !== undefined) {
-      if (!['off', 'warn', 'hard'].includes(input.consumptionEnforcement)) {
-        throw new Error('consumptionEnforcement must be off, warn, or hard.')
-      }
-      next.consumptionEnforcement = input.consumptionEnforcement
-    } else if (runtimeConsumptionBudgetKeys.some((key) => input[key] !== undefined && input[key] !== null)) {
-      next.consumptionEnforcement = 'hard'
-    }
-    for (const key of ['maxConcurrentSessions', 'maxConcurrentPerProvider', 'maxQueuedRuns', 'maxFanout']) {
-      if (input[key] === undefined) continue
-      const value = Number(input[key])
-      if (!Number.isFinite(value) || value < 1 || !Number.isInteger(value)) throw new Error(`${key} must be a positive integer.`)
-      next[key] = value
-    }
-    for (const key of runtimeConsumptionBudgetKeys) {
-      if (input[key] === undefined) continue
-      if (input[key] === null) {
-        delete next[key]
-        continue
-      }
-      const value = Number(input[key])
-      if (!Number.isFinite(value) || value < 1 || !Number.isInteger(value)) throw new Error(`${key} must be a positive integer or null.`)
-      next[key] = value
-    }
-    this.#state.resourcePolicies[scopeId] = next
-    for (const lease of this.#state.workspaceLeases ?? []) {
-      if (lease.status === 'active' && lease.scopeId === scopeId) this.#applyResourceReservations(lease, next)
-    }
-    for (const queued of this.#state.runQueue ?? []) {
-      if (queued.scopeId === scopeId) this.#applyResourceReservations(queued, next)
-    }
-    for (const context of this.#runContext.values()) {
-      if (context.resource?.scopeId === scopeId) this.#applyResourceReservations(context.resource, next)
-    }
-    this.#appendKernelEvent('resource.policy.updated', { scopeId, policy: clone(next) }, ctx)
-    this.#touch()
-    for (const [sessionId, context] of this.#runContext) {
-      if (context.resource?.scopeId === scopeId && this.#runs.has(sessionId)) this.#scheduleRunDurationBudgetTimer(sessionId)
-    }
-    queueMicrotask(() => void this.#drainRunQueue())
-    return { policy: clone(next), state: this.getState() }
-  }
-
-  #cmdMergeWorktreeChanges(input: JsonRecord = {}, ctx: JsonRecord) {
-    if (ctx.actor?.kind !== 'human') throw new Error('Only a human can merge worktree changes.')
-    const sessionId = optionalTrimmedString(input.sessionId)
-    const session = sessionId ? this.#state.sessions[sessionId] : undefined
-    if (!session || session.project?.workMode !== 'worktree' || !session.project.repoRoot) {
-      throw new Error(`Session is not backed by a managed worktree: ${sessionId ?? ''}`)
-    }
-    if (this.#runs.has(sessionId) || (this.#state.runQueue ?? []).some((item) => item.sessionId === sessionId)) {
-      throw new Error('Cannot merge changes while the worktree session is running or queued.')
-    }
-    const lastAssistant = [...(session.messages ?? [])].reverse().find((message) => message.role === 'assistant' && message.status === 'complete' && message.runId)
-    if (!lastAssistant) throw new Error('No completed worktree turn is available to merge.')
-    if (session.project.mergedTurnId === lastAssistant.runId) {
-      return { ok: true, applied: false, alreadyApplied: true, state: this.getState() }
-    }
-    let changeset
-    try {
-      changeset = checkpointDiffForSession(this.#checkpointHost(), sessionId, { turnId: lastAssistant.runId, unbounded: true })
-    } catch (error) {
-      const detail = String(error instanceof Error ? error.message : error)
-      const conflict = { kind: 'workflow-conflict', code: /maxBuffer|ENOBUFS|buffer/i.test(detail) ? 'changeset-too-large' : 'changeset-unavailable', sessionId, detail: truncateForLog(detail, 1200) }
-      this.#appendKernelEvent('worktree.merge-conflicted', conflict, ctx)
-      return { ok: false, conflict, state: this.getState() }
-    }
-    if (!changeset.patch?.trim()) return { ok: true, applied: false, changeset, state: this.getState() }
-    if (changeset.truncated) {
-      const conflict = { kind: 'workflow-conflict', code: 'changeset-truncated', sessionId, detail: 'The stable changeset exceeds the merge-safe patch limit; no files were applied.' }
-      this.#appendKernelEvent('worktree.merge-conflicted', conflict, ctx)
-      return { ok: false, conflict, changeset, state: this.getState() }
-    }
-    let workspaceKey = path.resolve(session.project.repoRoot)
-    try { workspaceKey = fs.realpathSync(workspaceKey) } catch { /* git validation below remains authoritative */ }
-    const mergeTurnId = `merge:${sessionId}:${lastAssistant.runId}`
-    const resource = { sessionId, turnId: mergeTurnId, scopeId: this.#resourceScopeId(sessionId), providerInstanceId: 'runtime:worktree-merge', workspaceKey, leaseMode: 'writer' }
-    if (!leaseCompatible(this.#state.workspaceLeases ?? [], { ...resource, mode: 'writer' })) {
-      const conflict = { kind: 'workflow-conflict', code: 'workspace-busy', sessionId, workspaceKey, detail: 'The target workspace currently has an active reader or writer lease.' }
-      this.#appendKernelEvent('worktree.merge-conflicted', conflict, ctx)
-      return { ok: false, conflict, changeset, state: this.getState() }
-    }
-    this.#state.workspaceLeases.push({ leaseId: randomUUID(), ...resource, mode: 'writer', status: 'active', acquiredAt: now(), baseline: {} })
-    const patchFile = path.join(os.tmpdir(), `orrery-merge-${sessionId}-${randomUUID()}.patch`)
-    try {
-      fs.writeFileSync(patchFile, `${changeset.patch.replace(/\n?$/, '')}\n`)
-      try {
-        execFileSync('git', ['-C', session.project.repoRoot, 'apply', '--check', '--whitespace=nowarn', patchFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-      } catch (error) {
-        const detail = String(error?.stderr ?? error?.message ?? error)
-        const files = [...detail.matchAll(/patch failed: ([^:]+):/g)].map((match) => match[1])
-        const conflict = {
-          kind: 'workflow-conflict',
-          code: 'changeset-conflict',
-          sessionId,
-          forkPoint: session.project.forkPoint,
-          targetHead: (() => { try { return gitOutput(session.project.repoRoot, ['rev-parse', 'HEAD']) } catch { return undefined } })(),
-          files: [...new Set(files)],
-          detail: truncateForLog(detail, 1200),
-        }
-        this.#appendKernelEvent('worktree.merge-conflicted', conflict, ctx)
-        return { ok: false, conflict, changeset, state: this.getState() }
-      }
-      execFileSync('git', ['-C', session.project.repoRoot, 'apply', '--whitespace=nowarn', patchFile], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-      session.project.mergedAt = now()
-      session.project.mergedTurnId = lastAssistant.runId
-      session.project.cleanupStatus = 'ready'
-      this.#appendKernelEvent('worktree.changeset-applied', {
-        sessionId,
-        turnId: lastAssistant.runId,
-        forkPoint: session.project.forkPoint,
-        targetHead: gitOutput(session.project.repoRoot, ['rev-parse', 'HEAD']),
-        files: changeset.files?.map((file) => file.path) ?? [],
-      }, ctx)
-      this.#touch()
-      return { ok: true, applied: true, changeset, state: this.getState() }
-    } finally {
-      fs.rmSync(patchFile, { force: true })
-      this.#releaseWorkspaceLease(mergeTurnId, 'merge-finished')
-    }
-  }
-
-  #cmdCleanupWorktree(input: JsonRecord = {}, ctx: JsonRecord) {
-    if (ctx.actor?.kind !== 'human') throw new Error('Only a human can clean up a managed worktree.')
-    const sessionId = optionalTrimmedString(input.sessionId)
-    const session = sessionId ? this.#state.sessions[sessionId] : undefined
-    if (!session || session.project?.workMode !== 'worktree' || !session.project.repoRoot) {
-      throw new Error(`Session is not backed by a managed worktree: ${sessionId ?? ''}`)
-    }
-    if (session.project.cleanupStatus === 'cleaned') return { ok: true, alreadyCleaned: true, state: this.getState() }
-    if (this.#runs.has(sessionId) || (this.#state.runQueue ?? []).some((item) => item.sessionId === sessionId)) {
-      throw new Error('Cannot clean up a running or queued worktree session.')
-    }
-    if (!session.project.mergedTurnId && input.discardUnmerged !== true) {
-      const conflict = { kind: 'workflow-conflict', code: 'unmerged-worktree', sessionId, detail: 'This worktree has not been merged. Set discardUnmerged=true to explicitly discard it.' }
-      this.#appendKernelEvent('worktree.cleanup-conflicted', conflict, ctx)
-      return { ok: false, conflict, state: this.getState() }
-    }
-    try {
-      if (fs.existsSync(session.cwd)) {
-        execFileSync('git', ['-C', session.project.repoRoot, 'worktree', 'remove', '--force', session.cwd], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-      }
-      if (session.project.branch?.startsWith('orrery/')) {
-        let branchExists = false
-        try { gitOutput(session.project.repoRoot, ['show-ref', '--verify', `refs/heads/${session.project.branch}`]); branchExists = true } catch { /* already removed is idempotent */ }
-        if (branchExists) {
-          execFileSync('git', ['-C', session.project.repoRoot, 'branch', '-D', session.project.branch], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-        }
-      }
-    } catch (error) {
-      const conflict = { kind: 'workflow-conflict', code: 'cleanup-failed', sessionId, detail: truncateForLog(String(error?.stderr ?? error?.message ?? error), 1200) }
-      this.#appendKernelEvent('worktree.cleanup-conflicted', conflict, ctx)
-      return { ok: false, conflict, state: this.getState() }
-    }
-    try { fs.rmSync(this.#channelStore.channelDir(sessionId), { recursive: true, force: true }) } catch { /* non-critical channel cleanup */ }
-    session.project.cleanupStatus = 'cleaned'
-    session.project.cleanedAt = now()
-    session.archived = true
-    this.#appendKernelEvent('worktree.cleaned', { sessionId, branch: session.project.branch, mergedTurnId: session.project.mergedTurnId }, ctx)
-    this.#touch()
-    return { ok: true, state: this.getState() }
-  }
-
-  #cmdCompleteProviderRun(input: JsonRecord = {}, ctx: JsonRecord) {
-    if (ctx.actor?.kind !== 'provider') {
-      throw new Error('Only a provider can complete a provider run.')
-    }
-    const sessionId = optionalTrimmedString(input.sessionId)
-    const runId = optionalTrimmedString(input.runId)
-    const session = sessionId ? this.#state.sessions[sessionId] : undefined
-    const context = sessionId ? this.#runContext.get(sessionId) : undefined
-    if (!session || !runId || context?.runId !== runId) {
-      throw new Error(`Provider completion does not match the active run: ${sessionId ?? ''}:${runId ?? ''}`)
-    }
-    session.exitCode = input.exitCode ?? null
-    session.signal = input.signal ?? null
-    session.status = 'idle'
-    session.finishedAt = session.finishedAt ?? now()
-    session.updatedAt = session.finishedAt
-    this.#markActiveAssistant(sessionId, 'complete')
-    this.#updateNodeStatus(sessionId, 'idle')
-    this.#appendProviderRuntimeEvent(sessionId, {
-      id: randomUUID(),
-      ts: session.updatedAt,
-      type: 'session.state',
-      sessionId,
-      status: 'idle',
-    })
-    const finishedEvent = this.#appendKernelEvent(
-      'session.finished',
-      { sessionId, exitCode: session.exitCode, turnId: runId },
-      {
-        ...ctx,
-        causeId: context.activationEventId ?? ctx.causeId,
-        ...(context.execution ? { execution: clone(context.execution) } : {}),
-      },
-    )
-    planCouncilFinished(this.#wf(), sessionId, runId, finishedEvent?.id)
-    this.#settleDynamicSpawnChild(sessionId, 'completed')
-    this.#recordUsageFact(sessionId, session.finishedAt)
-    this.#releaseWorkspaceLease(runId, 'completed')
-    this.#runContext.delete(sessionId)
-    this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-    return { ok: true, sessionId, kernelEventId: finishedEvent?.id, state: this.getState() }
-  }
-
-  #failSession(sessionId, error, ctx: JsonRecord = undefined) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    const context = this.#runContext.get(sessionId)
-    if (
-      context &&
-      context.runProducedOutput === false &&
-      Array.isArray(context.channelReadSeqs) &&
-      context.channelReadSeqs.length > 0
-    ) {
-      // The run died before producing any output: the agent never saw the
-      // activation message, so its listed deliveries become unread again.
-      this.#channelStore.unmarkRead(sessionId, context.channelReadSeqs)
-    }
-    session.status = 'failed'
-    session.error = error
-    session.finishedAt = now()
-    session.updatedAt = session.finishedAt
-    this.#markActiveAssistant(sessionId, 'failed')
-    this.#updateNodeStatus(sessionId, 'failed')
-    recordTurnCheckpointDiff(this.#checkpointHost(), sessionId, session.finishedAt)
-    this.#appendTurnCompletedIfMissing(sessionId, session.finishedAt)
-    this.#cancelOpenRuntimeInteractions(sessionId, session.finishedAt)
-    this.#appendProviderRuntimeEvent(sessionId, {
-      id: randomUUID(),
-      ts: session.finishedAt,
-      type: 'session.state',
-      sessionId,
-      status: 'failed',
-    })
-    this.#recordUsageFact(sessionId, session.finishedAt)
-    if (context?.runId) this.#releaseWorkspaceLease(context.runId, 'failed')
-    this.#runContext.delete(sessionId)
-    const failedEvent = this.#appendKernelEvent(
-      'session.failed',
-      {
-        sessionId,
-        error: truncateForLog(String(error ?? ''), 400),
-        turnId: context?.runId,
-      },
-      ctx ?? {
-        actor: { kind: 'provider' },
-        causeId: context?.activationEventId,
-        ...(context?.execution ? { execution: clone(context.execution) } : {}),
-      },
-    )
-    planCouncilFailed(this.#wf(), sessionId, String(error ?? 'Unknown provider error'))
-    this.#settleDynamicSpawnChild(sessionId, 'failed', String(error ?? 'Unknown provider error'))
-    this.#touch()
-    this.#emitRuntimeEvent({
-      type: 'session.failed',
-      sessionId,
-      error,
-      state: this.getState(),
-      kernelEventId: failedEvent?.id,
-    })
-  }
-
-  #settleDynamicSpawnChild(
-    sessionId: string,
-    status: 'completed' | 'failed' | 'cancelled',
-    error?: string,
-  ) {
-    const metadata = this.#state.sessions[sessionId]?.dynamicTopology
-    const group = metadata ? this.#state.dynamicSpawnGroups?.[metadata.groupId] : undefined
-    if (!group) return
-    const child = group.children?.find((candidate) => candidate.sessionId === sessionId)
-    if (!child || ['completed', 'failed', 'cancelled', 'recycled'].includes(child.status)) return
-    child.status = status
-    if (error) child.error = error
-    const terminal = group.children.every((candidate) =>
-      ['completed', 'failed', 'cancelled', 'recycled'].includes(candidate.status),
-    )
-    if (terminal) {
-      group.status = group.children.some((candidate) => candidate.status === 'failed')
-        ? 'failed'
-        : group.children.some((candidate) => candidate.status === 'cancelled')
-          ? 'cancelled'
-          : group.status === 'capped'
-            ? 'capped'
-            : 'completed'
-    }
-    group.updatedAt = now()
-  }
-
-  #markActiveAssistant(sessionId, status) {
-    const session = this.#state.sessions[sessionId]
-    const context = this.#runContext.get(sessionId)
-    if (!session || !context?.assistantMessageId) {
-      return
-    }
-
-    const message = session.messages.find(
-      (item) => item.id === context.assistantMessageId,
-    )
-    if (message) {
-      message.status = status
-    }
-  }
-
-  #updateMessageRunId(session, messageId, runId) {
-    const message = session.messages.find((item) => item.id === messageId)
-    if (message) {
-      message.runId = runId
     }
   }
 

@@ -23,6 +23,7 @@ import {
   type KernelCommandRegistry,
 } from './commandRegistry.js'
 import type {
+  AutonomousLifecycleEpochs,
   ControlTransaction,
   PostCommitEffect,
 } from './controlTransaction.js'
@@ -50,10 +51,10 @@ export type CommandExecutorHost = {
   captureWorkflowSession: (sessionId: string) => JsonRecord
   discardWorkflowSession: (sessionId: string) => void
   workflowDeploymentCrashAfterStage: () => string | undefined
-  reviveAutonomousDrains: () => number
+  reviveAutonomousDrains: () => AutonomousLifecycleEpochs
   onAuthorizedCommandCommitted: (
     actor: KernelActor,
-    lifecycleEpoch: number | undefined,
+    lifecycleEpochs: AutonomousLifecycleEpochs | undefined,
   ) => void
   onControlKernelEvent: (event: JsonRecord) => void
   onEffectKernelEvent: (event: JsonRecord) => void
@@ -130,11 +131,11 @@ export class CommandExecutor {
     // plane (human, master, agent, and rule). The captured lifecycle epoch
     // still prevents work submitted before killAll from reviving controllers
     // after that shutdown boundary.
-    const lifecycleEpoch =
+    const lifecycleEpochs =
       actorKind && actorKind !== 'runtime'
         ? this.#host.reviveAutonomousDrains()
         : undefined
-    const run = this.#chain.then(() => this.#dispatch(command, lifecycleEpoch))
+    const run = this.#chain.then(() => this.#dispatch(command, lifecycleEpochs))
     this.#chain = run.then(
       () => undefined,
       () => undefined,
@@ -144,7 +145,7 @@ export class CommandExecutor {
 
   async #dispatch(
     command: JsonRecord = {},
-    lifecycleEpoch?: number,
+    lifecycleEpochs?: AutonomousLifecycleEpochs,
   ): Promise<any> {
     const kind = optionalTrimmedString(command.kind)
     const commandEntry = commandRegistryEntry(this.#registry, kind)
@@ -209,7 +210,7 @@ export class CommandExecutor {
         )
       }
       this.drainDurableEffects()
-      this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpoch)
+      this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpochs)
       return clone(duplicate.result)
     }
     const currentVersion = this.#kernelStore.getControlVersion()
@@ -281,6 +282,7 @@ export class CommandExecutor {
       actor: ctx.actor,
       expectedVersion,
       automaticDeploymentId,
+      lifecycleEpochs,
     })
 
     try {
@@ -332,7 +334,7 @@ export class CommandExecutor {
         throw error
       }
       this.drainDurableEffects()
-      this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpoch)
+      this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpochs)
       queueMicrotask(() => this.#host.drainWorkflowWakeups())
       if (commandEntry.drainApprovedSlotsAfterCommit === true) {
         queueMicrotask(() => {
@@ -386,7 +388,7 @@ export class CommandExecutor {
         this.#publishCommittedEvents(committed.events)
         this.#runPostCommitEffects(transaction.postCommitEffects)
         this.#publishDeferredBroadcasts(transaction.broadcasts)
-        this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpoch)
+        this.#runAuthorizedCommandCommitEffect(ctx.actor, lifecycleEpochs)
         queueMicrotask(() => this.#host.drainWorkflowWakeups())
         throw error
       }
@@ -485,6 +487,7 @@ export class CommandExecutor {
     actor,
     expectedVersion,
     automaticDeploymentId,
+    lifecycleEpochs,
   }: {
     commandId: string
     idempotencyKey?: string
@@ -492,6 +495,7 @@ export class CommandExecutor {
     actor: KernelActor
     expectedVersion?: number
     automaticDeploymentId?: string
+    lifecycleEpochs?: AutonomousLifecycleEpochs
   }): ControlTransaction {
     return {
       commandId,
@@ -499,6 +503,7 @@ export class CommandExecutor {
       kind,
       actor,
       expectedVersion,
+      lifecycleEpochs,
       events: [],
       broadcasts: [],
       channelCheckpoints: new Map(),
@@ -539,10 +544,10 @@ export class CommandExecutor {
 
   #runAuthorizedCommandCommitEffect(
     actor: KernelActor,
-    lifecycleEpoch: number | undefined,
+    lifecycleEpochs: AutonomousLifecycleEpochs | undefined,
   ) {
     try {
-      this.#host.onAuthorizedCommandCommitted(actor, lifecycleEpoch)
+      this.#host.onAuthorizedCommandCommitted(actor, lifecycleEpochs)
     } catch (error) {
       // This process-local reconciliation happens after the durable command
       // commit. It must never turn a committed result into a false rollback.

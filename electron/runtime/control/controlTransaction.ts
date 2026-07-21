@@ -8,6 +8,11 @@ export type PostCommitEffect = {
   run: () => void
 }
 
+export type AutonomousLifecycleEpochs = {
+  runQueue: number
+  externalAdapters: number
+}
+
 // The in-memory unit of work surrounding one durable KernelStore commit.
 // Domain handlers may append facts, broadcasts, durable outbox effects, and
 // process-local post-commit effects, but only CommandExecutor closes the unit.
@@ -18,6 +23,7 @@ export type ControlTransaction = {
   actor: KernelActor
   causeId?: string
   expectedVersion?: number
+  lifecycleEpochs?: AutonomousLifecycleEpochs
   events: KernelEventInput[]
   broadcasts: JsonRecord[]
   channelCheckpoints: Map<string, ChannelDeliveryEntry[]>
