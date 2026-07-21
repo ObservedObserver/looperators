@@ -28,6 +28,7 @@
 //   workspace/sessionCheckpoints.ts       per-turn git checkpoints + diffs
 //   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
 //   control/commandRegistry.ts             command kind + handler/policy registry
+//   control/commandExecutor.ts             serialized transaction + effect authority
 //   reports/reportFormatting.ts            report/prompt render + payload validation
 //   queries/runtimeQueries.ts               read-only state/kernel projections
 //   external/externalIngestionService.ts    source registry, adapters + ingestion
@@ -43,7 +44,6 @@
 // own module (see design-docs/session-manager-split-plan.md).
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -100,9 +100,7 @@ import {
 import { ContextChannelStore, activationPreamble } from './contextChannel.js'
 import { ExternalIngestionService } from './external/externalIngestionService.js'
 import {
-  ControlVersionConflictError,
   KernelStore,
-  kernelActorKinds,
   kernelDatabaseFileFor,
 } from './kernelStore.js'
 import { MembraneBridge } from './membraneBridge.js'
@@ -152,7 +150,6 @@ import {
 } from '../../shared/resource-governance.js'
 import {
   type JsonRecord,
-  type RuntimeEventEmitter,
   clone,
   diagnostic,
   isObject,
@@ -279,10 +276,10 @@ import {
 } from './providers/providerSetupStatus.js'
 import { TerminalService } from './terminal/terminalService.js'
 import {
-  commandRegistryEntry,
   createKernelCommandRegistry,
   type KernelCommandHandlers,
 } from './control/commandRegistry.js'
+import { CommandExecutor } from './control/commandExecutor.js'
 import {
   defaultMasterPrompt,
   masterReasonFromInput,
@@ -388,18 +385,14 @@ export class RuntimeSessionManager {
   #timers = new Map<string, ReturnType<typeof setTimeout>>()
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
-  #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
   #bridge: MembraneBridge
   #providerService: ProviderService
-  #snapshotPersistTimer: ReturnType<typeof setTimeout> | undefined
-  #snapshotPersistDelayMs = 750
   #planCouncilInFlight = new Set<string>()
   // Concurrent-compile guards for workflow composers (see workflows/).
   #goalLoopInFlight = new Set<string>()
   #classicWorkflowInFlight = new Set<string>()
   #workflowCompensatedRuns = new Set<string>()
-  #commandChain: Promise<void> = Promise.resolve()
-  #controlCommandContext = new AsyncLocalStorage<JsonRecord>()
+  #commandExecutor: CommandExecutor
   #queries = new RuntimeQueries({
     liveState: () => this.#state,
     readState: () => this.#readState(),
@@ -425,6 +418,8 @@ export class RuntimeSessionManager {
     touch: () => this.#touch(),
     broadcastState: () =>
       this.#broadcast({ type: 'runtime.state', state: this.getState() }),
+    stagePostCommitEffect: (label, run) =>
+      this.#commandExecutor.stagePostCommitEffect({ label, run }),
   })
   #commandRegistry = createKernelCommandRegistry({
     create_session: (input, ctx) => this.#cmdCreateSession(input, ctx),
@@ -526,9 +521,6 @@ export class RuntimeSessionManager {
   } satisfies KernelCommandHandlers)
   #workflowDeploymentCrashAfterStage: string | undefined
   #workflowDeploymentCrashAfterResourceCreate = false
-  #controlCommandCrashBeforeEffectDrain = false
-  #committedStateDuringCommand: JsonRecord | undefined
-  #controlCommandCommitDelayMs = 0
   #workflowWakeupDrainEnabled = true
   #barrierTimers = new Map<string, ReturnType<typeof setTimeout>>()
   #runQueueDrainInFlight = false
@@ -552,7 +544,7 @@ export class RuntimeSessionManager {
       typeof storageFile === 'string' && storageFile.length > 0
         ? storageFile
         : undefined
-    this.#emitRuntimeEventToHost =
+    const emitRuntimeEventToHost =
       typeof broadcastRuntimeEvent === 'function'
         ? broadcastRuntimeEvent
         : typeof emitRuntimeEvent === 'function'
@@ -562,25 +554,21 @@ export class RuntimeSessionManager {
             : typeof emit === 'function'
               ? emit
               : undefined
-    if (
+    const resolvedSnapshotPersistDelayMs =
       Number.isFinite(snapshotPersistDelayMs) &&
       snapshotPersistDelayMs >= 0
-    ) {
-      this.#snapshotPersistDelayMs = snapshotPersistDelayMs
-    }
+        ? Number(snapshotPersistDelayMs)
+        : 750
     this.#workflowDeploymentCrashAfterStage = optionalTrimmedString(
       workflowDeploymentCrashAfterStage,
     )
     this.#workflowDeploymentCrashAfterResourceCreate =
       workflowDeploymentCrashAfterResourceCreate === true
-    this.#controlCommandCrashBeforeEffectDrain =
-      controlCommandCrashBeforeEffectDrain === true
-    if (
+    const resolvedControlCommandCommitDelayMs =
       Number.isFinite(controlCommandCommitDelayMs) &&
       controlCommandCommitDelayMs > 0
-    ) {
-      this.#controlCommandCommitDelayMs = Number(controlCommandCommitDelayMs)
-    }
+        ? Number(controlCommandCommitDelayMs)
+        : 0
     this.#kernelStore = new KernelStore({
       databaseFile: this.#storageFile
         ? kernelDatabaseFileFor(this.#storageFile)
@@ -592,6 +580,53 @@ export class RuntimeSessionManager {
       root: this.#storageFile
         ? path.join(path.dirname(this.#storageFile), 'channels')
         : fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channels-')),
+    })
+    this.#commandExecutor = new CommandExecutor({
+      kernelStore: this.#kernelStore,
+      channelStore: this.#channelStore,
+      registry: this.#commandRegistry,
+      snapshotPersistDelayMs: resolvedSnapshotPersistDelayMs,
+      crashBeforeEffectDrain: controlCommandCrashBeforeEffectDrain === true,
+      commitDelayMs: resolvedControlCommandCommitDelayMs,
+      host: {
+        getState: () => this.#state,
+        setState: (state) => {
+          this.#state = state
+        },
+        getPublicState: () => this.getState(),
+        getRuns: () => this.#runs,
+        getRunContext: () => this.#runContext,
+        getWorkflowCompensatedRuns: () => this.#workflowCompensatedRuns,
+        automaticDeploymentExistingSessionIds: (kind, input) =>
+          automaticDeploymentExistingSessionIds(this.#wf(), kind, input),
+        captureWorkflowSession: (sessionId) =>
+          captureWorkflowSession(this.#wf(), sessionId),
+        discardWorkflowSession: (sessionId) =>
+          discardWorkflowSession(this.#wf(), sessionId),
+        workflowDeploymentCrashAfterStage: () =>
+          this.#workflowDeploymentCrashAfterStage,
+        reviveAutonomousDrains: () => {
+          this.#workflowWakeupDrainEnabled = true
+          this.#runQueueDrainEnabled = true
+          return this.#externalIngestion.adapterLifecycleEpoch()
+        },
+        onAuthorizedCommandCommitted: (actor, lifecycleEpoch) => {
+          if (
+            lifecycleEpoch !== undefined &&
+            actor.kind !== 'runtime'
+          ) {
+            this.#externalIngestion.resumeAdapters(lifecycleEpoch)
+          }
+        },
+        onControlKernelEvent: (event) => {
+          this.#enqueueSchedulerEvent(event)
+          this.#queueWorkflowWakeupsForKernelEvent(event)
+        },
+        onEffectKernelEvent: (event) => this.#enqueueSchedulerEvent(event),
+        drainWorkflowWakeups: () => this.#drainWorkflowWakeups(),
+        drainApprovedSlots: () => this.#drainApprovedSlots(),
+        emitRuntimeEvent: emitRuntimeEventToHost,
+      },
     })
     this.#state = this.#loadState()
     for (const lease of this.#state.workspaceLeases ?? []) {
@@ -646,7 +681,7 @@ export class RuntimeSessionManager {
     })
     recoverWorkflowDeployments(this.#wf())
     reconcileDynamicTopology(this.#wf())
-    this.#drainDurableEffects()
+    this.#commandExecutor.drainDurableEffects()
     this.#persistState()
     this.#sweepKilledParticipantSubscriptions()
     this.#sweepExhaustedSubscriptions()
@@ -660,12 +695,7 @@ export class RuntimeSessionManager {
   }
 
   #readState() {
-    const transaction = this.#controlCommandContext.getStore()
-    return (
-      transaction && transaction.closed !== true
-        ? this.#state
-        : (this.#committedStateDuringCommand ?? this.#state)
-    )
+    return this.#commandExecutor.readState()
   }
 
   getState() {
@@ -674,352 +704,18 @@ export class RuntimeSessionManager {
 
   // Unified command channel (kernel doc §7.5). All mutating entry points --
   // human (IPC/HTTP wrappers), master/agent (membrane), rule (loop automation)
-  // -- converge here: validate → execute → append kernel event(s).
+  // -- converge in CommandExecutor.
   async dispatchCommand(command: JsonRecord = {}): Promise<any> {
-    if (command?.actor?.kind && command.actor.kind !== 'runtime') {
-      this.#workflowWakeupDrainEnabled = true
-      this.#runQueueDrainEnabled = true
-    }
-    const run = this.#commandChain.then(() =>
-      this.#dispatchControlCommand(command),
-    )
-    this.#commandChain = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    return run
+    return this.#commandExecutor.dispatch(command)
   }
 
-  async #dispatchControlCommand(command: JsonRecord = {}): Promise<any> {
-    const kind = optionalTrimmedString(command.kind)
-    const commandEntry = commandRegistryEntry(this.#commandRegistry, kind)
-    if (!kind || !commandEntry) {
-      throw new Error(`Unknown kernel command: ${kind ?? ''}`)
-    }
-
-    const actor = isObject(command.actor) ? command.actor : undefined
-    if (!actor || !kernelActorKinds.has(actor.kind)) {
-      throw new Error(
-        `Kernel command requires a valid actor: ${JSON.stringify(command.actor)}`,
-      )
-    }
-    if (
-      (actor.kind === 'master' || actor.kind === 'agent') &&
-      !this.#state.sessions[optionalTrimmedString(actor.ref) ?? '']
-    ) {
-      throw new Error(
-        `Kernel command actor session is unknown: ${actor.ref ?? ''}`,
-      )
-    }
-
-    if (command.execution !== undefined && !validateExecutionEnvelope(command.execution)) {
-      throw new Error('Kernel command execution must be a valid ExecutionEnvelope.')
-    }
-    const ctx = {
-      actor: {
-        kind: actor.kind,
-        ref: optionalTrimmedString(actor.ref),
-      },
-      causeId: optionalTrimmedString(command.causeId),
-      reason: optionalTrimmedString(command.reason),
-      ...(validateExecutionEnvelope(command.execution) ? { execution: clone(command.execution) } : {}),
-    }
-    const input = isObject(command.input) ? command.input : {}
-    const commandId = optionalTrimmedString(command.commandId) ?? randomUUID()
-    const idempotencyKey = optionalTrimmedString(command.idempotencyKey)
-    const expectedVersion = Number.isInteger(command.expectedVersion)
-      ? Number(command.expectedVersion)
-      : undefined
-    const duplicate = this.#kernelStore.getCommandRecord({
-      commandId,
-      idempotencyKey,
-    })
-    if (duplicate) {
-      const sameActor = duplicate.actor?.kind === ctx.actor.kind &&
-        (duplicate.actor?.ref ?? undefined) === (ctx.actor.ref ?? undefined)
-      const sameExecution = JSON.stringify(duplicate.execution ?? null) ===
-        JSON.stringify(ctx.execution ?? null)
-      if (duplicate.kind !== kind || !sameActor || !sameExecution) {
-        throw new Error(
-          `Command replay identity mismatch: ${duplicate.commandId} belongs to ${duplicate.actor?.kind}${duplicate.actor?.ref ? `:${duplicate.actor.ref}` : ''} ${duplicate.kind} with its original execution correlation.`,
-        )
-      }
-      this.#drainDurableEffects()
-      return clone(duplicate.result)
-    }
-    const currentVersion = this.#kernelStore.getControlVersion()
-    if (expectedVersion !== undefined && expectedVersion !== currentVersion) {
-      throw new ControlVersionConflictError(expectedVersion, currentVersion)
-    }
-
-    let automaticDeploymentId
-    if (commandEntry.automaticallyJournaledWorkflow === true) {
-      const previous = this.#kernelStore.getWorkflowDeploymentByCommandId(commandId)
-      if (previous && previous.status !== 'aborted') {
-        throw new Error(
-          `Workflow command ${commandId} previously ${previous.status} at ${previous.stage}.`,
-        )
-      }
-      automaticDeploymentId = previous?.deploymentId ?? `deployment-${commandId}`
-      const existingSessionCheckpoints = Object.fromEntries(
-        automaticDeploymentExistingSessionIds(this.#wf(), kind, input)
-          .filter((sessionId) => this.#state.sessions[sessionId])
-          .map((sessionId) => [sessionId, captureWorkflowSession(this.#wf(), sessionId)]),
-      )
-      if (previous) {
-        this.#kernelStore.updateWorkflowDeployment(automaticDeploymentId, {
-          stage: 'prepared',
-          status: 'in_progress',
-          journal: { kind, existingSessionCheckpoints, retriedAt: now() },
-        })
-      } else {
-        this.#kernelStore.createWorkflowDeployment({
-          deploymentId: automaticDeploymentId,
-          workflowId: `workflow-${commandId}`,
-          commandId,
-          stage: 'prepared',
-          journal: { kind, existingSessionCheckpoints },
-        })
-      }
-      if (this.#workflowDeploymentCrashAfterStage === 'prepared') {
-        const error = new Error('Injected workflow deployment crash after prepared.')
-        ;(error as Error & { code?: string }).code = 'ORRERY_DEPLOYMENT_CRASH'
-        throw error
-      }
-    }
-
-    const checkpoint = clone(this.#state)
-    this.#committedStateDuringCommand = checkpoint
-    const transaction = {
-      commandId,
-      idempotencyKey,
-      kind,
-      actor: ctx.actor,
-      expectedVersion,
-      events: [],
-      broadcasts: [],
-      channelCheckpoints: new Map(),
-      runSessionIdsBefore: new Set(this.#runs.keys()),
-      deploymentFinalizations: [],
-      outboxEffects: [],
-      workflowDeploymentIds: new Set(),
-      automaticDeploymentId,
-      baseEventSeq: this.#kernelStore.latestSeq(),
-      closed: false,
-    }
-
-    try {
-      const result = await this.#controlCommandContext.run(transaction, () =>
-        commandEntry.handler(input, ctx),
-      )
-      if (automaticDeploymentId) {
-        const durableResult = isObject(result)
-          ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'state'))
-          : {}
-        transaction.deploymentFinalizations.push({
-          deploymentId: automaticDeploymentId,
-          stage: 'active',
-          status: 'completed',
-          journal: { activatedAt: now(), result: durableResult },
-        })
-      }
-      if (this.#controlCommandCommitDelayMs > 0) {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, this.#controlCommandCommitDelayMs),
-        )
-      }
-      const committed = this.#kernelStore.commitControlCommand({
-        state: this.#state,
-        events: transaction.events,
-        command: {
-          commandId, idempotencyKey, kind, actor: ctx.actor, expectedVersion,
-          ...(ctx.execution ? { execution: clone(ctx.execution) } : {}),
-          ...(commandEntry.affectsControlVersion === false
-            ? { affectsControlVersion: false }
-            : {}),
-        },
-        result: isObject(result) ? result : { value: result },
-        deploymentFinalizations: transaction.deploymentFinalizations,
-        outboxEffects: transaction.outboxEffects,
-      })
-      transaction.closed = true
-      this.#state.controlVersion = committed.record.committedVersion
-      this.#committedStateDuringCommand = undefined
-      for (const event of committed.events) {
-        this.#broadcast({ type: 'kernel.event', event })
-        this.#enqueueSchedulerEvent(event)
-        this.#queueWorkflowWakeupsForKernelEvent(event)
-      }
-      for (const deferred of transaction.broadcasts) {
-        this.#broadcast(
-          isObject(deferred) && 'state' in deferred
-            ? { ...deferred, state: this.getState() }
-            : deferred,
-        )
-      }
-      if (
-        transaction.outboxEffects.length > 0 &&
-        this.#controlCommandCrashBeforeEffectDrain
-      ) {
-        const error = new Error('Injected control crash before durable effect drain.')
-        ;(error as Error & { code?: string }).code = 'ORRERY_EFFECT_DRAIN_CRASH'
-        throw error
-      }
-      this.#drainDurableEffects()
-      queueMicrotask(() => this.#drainWorkflowWakeups())
-      if (commandEntry.drainApprovedSlotsAfterCommit === true) {
-        queueMicrotask(() => {
-          void this.#drainApprovedSlots()
-        })
-      }
-      return clone(committed.record.result)
-    } catch (error) {
-      transaction.closed = true
-      if ((error as Error & { code?: string })?.code === 'ORRERY_EFFECT_DRAIN_CRASH') {
-        throw error
-      }
-      if ((error as Error & { code?: string })?.code === 'ORRERY_DEPLOYMENT_CRASH') {
-        this.#committedStateDuringCommand = undefined
-        throw error
-      }
-      if ((error as Error & { commitState?: boolean })?.commitState === true) {
-        const failureFinalizations = automaticDeploymentId
-          ? [{
-              deploymentId: automaticDeploymentId,
-              stage: 'failed',
-              status: 'completed',
-              journal: {
-                failedAt: now(),
-                reason: error instanceof Error ? error.message : String(error),
-              },
-            }]
-          : []
-        const committed = this.#kernelStore.commitControlCommand({
-          state: this.#state,
-          events: transaction.events,
-          command: {
-            commandId, idempotencyKey, kind, actor: ctx.actor, expectedVersion,
-            ...(ctx.execution ? { execution: clone(ctx.execution) } : {}),
-            ...(commandEntry.affectsControlVersion === false
-              ? { affectsControlVersion: false }
-              : {}),
-          },
-          result: {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          deploymentFinalizations: failureFinalizations,
-        })
-        this.#state.controlVersion = committed.record.committedVersion
-        this.#committedStateDuringCommand = undefined
-        for (const event of committed.events) {
-          this.#broadcast({ type: 'kernel.event', event })
-          this.#enqueueSchedulerEvent(event)
-          this.#queueWorkflowWakeupsForKernelEvent(event)
-        }
-        for (const deferred of transaction.broadcasts) {
-          this.#broadcast(
-            isObject(deferred) && 'state' in deferred
-              ? { ...deferred, state: this.getState() }
-              : deferred,
-          )
-        }
-        queueMicrotask(() => this.#drainWorkflowWakeups())
-        throw error
-      }
-      this.#compensateFailedControlCommand(transaction, checkpoint)
-      if (automaticDeploymentId) {
-        try {
-          this.#kernelStore.updateWorkflowDeployment(automaticDeploymentId, {
-            stage: 'aborted',
-            status: 'aborted',
-            journal: {
-              abortedAt: now(),
-              reason: error instanceof Error ? error.message : String(error),
-            },
-          })
-        } catch {
-          // A new owner will reconcile the still-in-progress journal.
-        }
-      }
-      for (const finalization of transaction.deploymentFinalizations) {
-        if (finalization.deploymentId === automaticDeploymentId) continue
-        try {
-          this.#kernelStore.updateWorkflowDeployment(finalization.deploymentId, {
-            stage: 'aborted',
-            status: 'aborted',
-            journal: {
-              abortedAt: now(),
-              reason: error instanceof Error ? error.message : String(error),
-            },
-          })
-        } catch {
-          // A new owner will reconcile an in-progress deployment.
-        }
-      }
-      this.#state = checkpoint
-      this.#committedStateDuringCommand = undefined
-      throw error
-    }
-  }
-
-  #dispatchRecoveryCommandSync({
-    commandId,
-    idempotencyKey,
-    kind,
-    execute,
-  }: {
+  #dispatchRecoveryCommandSync(input: {
     commandId: string
     idempotencyKey: string
     kind: string
     execute: (ctx: JsonRecord) => JsonRecord | undefined
   }) {
-    const duplicate = this.#kernelStore.getCommandRecord({ commandId, idempotencyKey })
-    if (duplicate) return clone(duplicate.result)
-    const checkpoint = clone(this.#state)
-    this.#committedStateDuringCommand = checkpoint
-    const actor = { kind: 'runtime' as const }
-    const ctx = { actor }
-    const transaction = {
-      commandId,
-      idempotencyKey,
-      kind,
-      actor,
-      events: [],
-      broadcasts: [],
-      channelCheckpoints: new Map(),
-      runSessionIdsBefore: new Set(this.#runs.keys()),
-      deploymentFinalizations: [],
-      outboxEffects: [],
-      workflowDeploymentIds: new Set(),
-      baseEventSeq: this.#kernelStore.latestSeq(),
-      closed: false,
-    }
-    try {
-      const result = this.#controlCommandContext.run(transaction, () => execute(ctx)) ?? {}
-      const committed = this.#kernelStore.commitControlCommand({
-        state: this.#state,
-        events: transaction.events,
-        command: { commandId, idempotencyKey, kind, actor },
-        result,
-      })
-      transaction.closed = true
-      this.#state.controlVersion = committed.record.committedVersion
-      this.#committedStateDuringCommand = undefined
-      for (const event of committed.events) {
-        this.#broadcast({ type: 'kernel.event', event })
-        this.#enqueueSchedulerEvent(event)
-        this.#queueWorkflowWakeupsForKernelEvent(event)
-      }
-      queueMicrotask(() => this.#drainWorkflowWakeups())
-      return clone(committed.record.result)
-    } catch (error) {
-      transaction.closed = true
-      this.#compensateFailedControlCommand(transaction, checkpoint)
-      this.#state = checkpoint
-      this.#committedStateDuringCommand = undefined
-      throw error
-    }
+    return this.#commandExecutor.dispatchRecoveryCommandSync(input)
   }
 
   async #cmdRuleExecuteActivation(input: JsonRecord) {
@@ -1061,8 +757,8 @@ export class RuntimeSessionManager {
   }
 
   #workflowCommandCtx() {
-    const transaction = this.#controlCommandContext.getStore()
-    return transaction && transaction.closed !== true
+    const transaction = this.#commandExecutor.currentTransaction()
+    return transaction
       ? {
           actor: clone(transaction.actor),
           ...(transaction.causeId ? { causeId: transaction.causeId } : {}),
@@ -2426,45 +2122,18 @@ export class RuntimeSessionManager {
     }
   }
 
-  #appendKernelEvent(type, payload, ctx, { reason }: JsonRecord = {}) {
-    const eventPayload = ctx?.execution && !payload?.execution
-      ? { ...payload, execution: clone(ctx.execution) }
-      : payload
-    const transaction = this.#controlCommandContext.getStore()
-    if (transaction && transaction.closed !== true) {
-      const event = {
-        id: randomUUID(),
-        ts: now(),
-        type,
-        actor: ctx?.actor ?? { kind: 'runtime' },
-        causeId: ctx?.causeId,
-        reason: reason ?? ctx?.reason,
-        payload: eventPayload,
-      }
-      transaction.events.push(event)
-      return {
-        seq: transaction.baseEventSeq + transaction.events.length,
-        ...event,
-      }
-    }
-    const event = this.#kernelStore.appendEvent({
+  #appendKernelEvent(
+    type,
+    payload,
+    ctx,
+    options: JsonRecord = {},
+  ) {
+    return this.#commandExecutor.appendKernelEvent(
       type,
-      actor: ctx?.actor ?? { kind: 'runtime' },
-      causeId: ctx?.causeId,
-      reason: reason ?? ctx?.reason,
-      payload: eventPayload,
-    })
-    if (event) {
-      // Lightweight broadcast (no state payload); the canvas timeline and
-      // acceptance scenarios can follow the kernel log live.
-      this.#broadcast({ type: 'kernel.event', event })
-      // Every kernel fact flows through the subscription scheduler (§2.4):
-      // Log → fold → State → match → Pending → gate → Commands.
-      this.#enqueueSchedulerEvent(event)
-      this.#queueWorkflowWakeupsForKernelEvent(event)
-      queueMicrotask(() => this.#drainWorkflowWakeups())
-    }
-    return event
+      payload,
+      ctx,
+      options,
+    )
   }
 
   listSessionSummaries() {
@@ -3379,8 +3048,8 @@ export class RuntimeSessionManager {
   killAll() {
     // Commands already queued before shutdown may still finish recording
     // durable facts, but they must not launch a fresh Governor turn after
-    // every provider has been closed. A later human/master command revives
-    // draining on this reusable manager instance.
+    // every provider has been closed. A later command from any non-runtime
+    // control plane revives draining on this reusable manager instance.
     this.#workflowWakeupDrainEnabled = false
     this.#runQueueDrainEnabled = false
     this.#persistState()
@@ -3397,7 +3066,7 @@ export class RuntimeSessionManager {
     this.#barrierTimers.clear()
     // Source adapters likewise: construction restarts them from the
     // persisted registry (ExternalIngestionService.recoverSourceAnchors).
-    this.#externalIngestion.stopAllAdapters()
+    this.#externalIngestion.suspendAdapters()
     this.#providerService?.closeAll?.()
     this.#bridge?.close()
     // The kernel store intentionally stays open: killAll is revivable (the
@@ -4150,7 +3819,7 @@ export class RuntimeSessionManager {
         return self.#channelStore
       },
       get controlCommandContext() {
-        return self.#controlCommandContext
+        return self.#commandExecutor.context
       },
       get classicWorkflowInFlight() {
         return self.#classicWorkflowInFlight
@@ -4174,7 +3843,7 @@ export class RuntimeSessionManager {
         return self.#workflowDeploymentCrashAfterStage
       },
       get committedStateDuringCommand() {
-        return self.#committedStateDuringCommand
+        return self.#commandExecutor.committedStateDuringCommand
       },
       getState: () => this.getState(),
       dispatchCommand: (command) => this.dispatchCommand(command),
@@ -4207,10 +3876,7 @@ export class RuntimeSessionManager {
         this.#appendKernelEvent(type, payload, ctx, opts),
       assertActivatable: (sessionId, ctx) =>
         this.#assertActivatable(sessionId, ctx),
-      kernelView: (state) =>
-        state === undefined
-          ? this.#queries.kernelView()
-          : this.#queries.kernelView(state),
+      kernelView: (state) => this.#queries.kernelView(state),
       readState: () => this.#readState(),
       startRun: (sessionId, request) => this.#startRun(sessionId, request),
       resourcePolicy: (scopeId) => this.#resourcePolicy(scopeId),
@@ -4322,14 +3988,14 @@ export class RuntimeSessionManager {
           : undefined,
         keepLatestReadPerTopic: input.keepLatestReadPerTopic !== false,
       }
-    const transaction = this.#controlCommandContext.getStore()
+    const transaction = this.#commandExecutor.currentTransaction()
     const results = sessionIds.map((sessionId) =>
       this.#channelStore.cleanup(sessionId, {
         ...policy,
-        dryRun: Boolean(transaction && transaction.closed !== true),
+        dryRun: Boolean(transaction),
       }),
     )
-    if (transaction && transaction.closed !== true) {
+    if (transaction) {
       transaction.outboxEffects.push({
         effectId: `channel-cleanup:${transaction.commandId}`,
         kind: 'channel-cleanup',
@@ -4872,6 +4538,14 @@ export class RuntimeSessionManager {
     const wakeup = wakeupId ? this.#state.workflowWakeups?.[wakeupId] : undefined
     if (!wakeup) throw new Error(`Unknown Workflow wakeup: ${wakeupId ?? ''}`)
     if (wakeup.status !== 'pending') return { wakeup: clone(wakeup), state: this.getState() }
+    // A runtime notification may already be serialized behind another
+    // command when killAll disables autonomous work. Preserve the durable
+    // pending fact, but never launch a fresh Governor after shutdown. Reject
+    // instead of committing a no-op command so the deterministic notify key
+    // remains retryable when autonomous draining is revived.
+    if (!this.#workflowWakeupDrainEnabled) {
+      throw new Error('Workflow wakeup draining is disabled; wakeup remains pending.')
+    }
     const master = this.#state.sessions[wakeup.masterSessionId]
     if (!master || master.role !== 'master' || this.#masterClusterId(master.sessionId) !== wakeup.scopeId) {
       throw new Error('Workflow wakeup Master no longer governs its Scope.')
@@ -5414,7 +5088,7 @@ export class RuntimeSessionManager {
   }
 
   #workflowIdempotencyKey(input: JsonRecord, operation: string) {
-    const transaction = this.#controlCommandContext.getStore()
+    const transaction = this.#commandExecutor.currentTransaction()
     const idempotencyKey = optionalTrimmedString(transaction?.idempotencyKey) ??
       optionalTrimmedString(input.idempotencyKey)
     if (!idempotencyKey) {
@@ -8679,172 +8353,23 @@ export class RuntimeSessionManager {
   }
 
   #checkpointChannelMutation(sessionId: string) {
-    const transaction = this.#controlCommandContext.getStore()
-    if (!transaction || transaction.closed === true) return
-    if (!transaction.channelCheckpoints.has(sessionId)) {
-      const checkpoint = this.#channelStore.checkpoint(sessionId)
-      transaction.channelCheckpoints.set(sessionId, checkpoint)
-      if (transaction.automaticDeploymentId) {
-        const deployment = this.#kernelStore.getWorkflowDeployment(transaction.automaticDeploymentId)
-        if (deployment?.status === 'in_progress') {
-          this.#kernelStore.updateWorkflowDeployment(transaction.automaticDeploymentId, {
-            journal: {
-              channelCheckpoints: {
-                ...(deployment.journal?.channelCheckpoints ?? {}),
-                [sessionId]: checkpoint,
-              },
-            },
-          })
-        }
-      }
-    }
-  }
-
-  #drainDurableEffects() {
-    for (const effect of this.#kernelStore.listPendingEffects()) {
-      if (effect.kind === 'council-artifact-write') {
-        try {
-          this.#channelStore.writeArtifact(
-            effect.payload.workflowId,
-            effect.payload.artifactId,
-            effect.payload.content,
-          )
-          const completedEvent = this.#kernelStore.completeEffectWithEvent(
-            effect.effectId,
-            {
-              type: 'council.artifact.materialized',
-              actor: { kind: 'runtime' },
-              payload: {
-                effectId: effect.effectId,
-                commandId: effect.commandId,
-                workflowId: effect.payload.workflowId,
-                artifactId: effect.payload.artifactId,
-                ...(validateExecutionEnvelope(effect.payload.execution)
-                  ? { execution: clone(effect.payload.execution) }
-                  : {}),
-              },
-            },
-          )
-          if (completedEvent) {
-            this.#broadcast({ type: 'kernel.event', event: completedEvent })
-            this.#enqueueSchedulerEvent(completedEvent)
-          }
-        } catch (error) {
-          console.error(
-            `Durable Council artifact ${effect.effectId} remains replayable: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        }
-        continue
-      }
-      if (effect.kind !== 'channel-cleanup') {
-        console.error(`Unknown durable effect kind: ${effect.kind}`)
-        continue
-      }
-      const sessionIds = Array.isArray(effect.payload.sessionIds)
-        ? effect.payload.sessionIds
-        : []
-      const policy = isObject(effect.payload.policy) ? effect.payload.policy : {}
-      try {
-        const results = sessionIds.map((sessionId) =>
-          this.#channelStore.cleanup(sessionId, policy),
-        )
-        const completedEvent = this.#kernelStore.completeEffectWithEvent(
-          effect.effectId,
-          {
-            type: 'channel.cleanup.completed',
-            actor: { kind: 'runtime' },
-            payload: {
-            effectId: effect.effectId,
-            commandId: effect.commandId,
-            sessionIds,
-            removedDeliveries: results.reduce(
-              (sum, result) => sum + result.removedDeliveries,
-              0,
-            ),
-            },
-          },
-        )
-        if (completedEvent) {
-          this.#broadcast({ type: 'kernel.event', event: completedEvent })
-          this.#enqueueSchedulerEvent(completedEvent)
-        }
-      } catch (error) {
-        console.error(
-          `Durable effect ${effect.effectId} could not commit completion and remains replayable: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
-  }
-
-  #compensateFailedControlCommand(transaction, checkpoint) {
-    for (const [sessionId, run] of this.#runs) {
-      if (transaction.runSessionIdsBefore.has(sessionId)) continue
-      this.#workflowCompensatedRuns.add(sessionId)
-      this.#runs.delete(sessionId)
-      this.#runContext.delete(sessionId)
-      try {
-        run.kill()
-      } catch {
-        // Best-effort Saga compensation; state/channel restoration continues.
-      }
-    }
-
-    const checkpointSessionIds = new Set(Object.keys(checkpoint.sessions ?? {}))
-    for (const sessionId of Object.keys(this.#state.sessions ?? {})) {
-      if (!checkpointSessionIds.has(sessionId)) {
-        discardWorkflowSession(this.#wf(), sessionId)
-      }
-    }
-    for (const [sessionId, channelCheckpoint] of transaction.channelCheckpoints) {
-      this.#channelStore.restore(sessionId, channelCheckpoint)
-    }
+    this.#commandExecutor.checkpointChannelMutation(sessionId)
   }
 
   #touch() {
-    this.#state.updatedAt = now()
-    const transaction = this.#controlCommandContext.getStore()
-    if (transaction && transaction.closed !== true) return
-    this.#persistState()
+    this.#commandExecutor.touch()
   }
 
   #touchDeferred() {
-    this.#state.updatedAt = now()
-    const transaction = this.#controlCommandContext.getStore()
-    if (transaction && transaction.closed !== true) return
-    if (this.#snapshotPersistTimer) {
-      return
-    }
-    this.#snapshotPersistTimer = setTimeout(() => {
-      this.#snapshotPersistTimer = undefined
-      this.#persistState()
-    }, this.#snapshotPersistDelayMs)
-    this.#snapshotPersistTimer.unref?.()
+    this.#commandExecutor.touchDeferred()
   }
 
   #broadcast(event) {
-    const transaction = this.#controlCommandContext.getStore()
-    if (transaction && transaction.closed !== true) {
-      transaction.broadcasts.push(event)
-      return
-    }
-    try {
-      this.#emitRuntimeEventToHost?.(event)
-    } catch (error) {
-      // Host observers are outside the command transaction. A renderer/SSE
-      // notification failure must never turn a committed mutation into a
-      // thrown command (or strand resources before compensation can see ids).
-      console.error(
-        `Runtime event broadcast failed (${event?.type ?? 'unknown'}): ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
+    this.#commandExecutor.broadcast(event)
   }
 
   #persistState() {
-    if (this.#snapshotPersistTimer) {
-      clearTimeout(this.#snapshotPersistTimer)
-      this.#snapshotPersistTimer = undefined
-    }
-    this.#kernelStore.saveSnapshot(this.#state)
+    this.#commandExecutor.persistState()
   }
 
   #kernelStoreDiagnostics() {

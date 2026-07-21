@@ -376,6 +376,77 @@ test('pending Governor state survives restart and remains Scope-authorized', asy
   }
 })
 
+test('a Governor notification queued before shutdown cannot start a fresh turn after killAll', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-governor-shutdown-'))
+  const runtime = new RuntimeSessionManager({
+    storageFile: path.join(root, 'state.json'),
+    controlCommandCommitDelayMs: 50,
+  })
+  try {
+    const fixture = await activeCouncil(runtime)
+    await runtime.dispatchCommand({
+      commandId: 'freeze-shutdown-governor',
+      idempotencyKey: 'freeze-shutdown-governor',
+      kind: 'freeze',
+      actor: { kind: 'human' },
+      input: { target: fixture.masterSessionId, reason: 'Hold the wakeup pending.' },
+    })
+    const recorded = await recordWakeup(runtime, fixture, 'shutdown')
+
+    const unfreezing = runtime.unfreeze({
+      commandId: 'unfreeze-shutdown-governor',
+      idempotencyKey: 'unfreeze-shutdown-governor',
+      target: fixture.masterSessionId,
+    })
+    const deterministicNotifyCommandId =
+      `notify-${recorded.wakeup.wakeupId}-${recorded.wakeup.occurrenceCount}`
+    const deterministicNotifyKey =
+      `notify:${recorded.wakeup.wakeupId}:${recorded.wakeup.occurrenceCount}`
+    const notifying = runtime.dispatchCommand({
+      commandId: deterministicNotifyCommandId,
+      idempotencyKey: deterministicNotifyKey,
+      kind: 'notify_workflow_wakeup',
+      actor: { kind: 'runtime' },
+      input: { wakeupId: recorded.wakeup.wakeupId },
+    })
+    runtime.killAll()
+    await unfreezing
+    await assert.rejects(notifying, /draining is disabled/)
+    await delay(150)
+
+    const wakeup = runtime.getState().workflowWakeups[recorded.wakeup.wakeupId]
+    assert.equal(wakeup.status, 'pending')
+    assert.equal(wakeup.notificationAttempts, undefined)
+    assert.equal(
+      runtime.getKernelEvents({ type: 'workflow.master-wakeup.notified' }).events
+        .filter((event) => event.payload.wakeupId === wakeup.wakeupId).length,
+      0,
+    )
+    assert.ok(
+      !['pending', 'running'].includes(runtime.getState().sessions[fixture.masterSessionId].status),
+      'shutdown does not leave a fresh Governor provider turn live',
+    )
+
+    await runtime.unfreeze({
+      commandId: 'revive-shutdown-governor',
+      idempotencyKey: 'revive-shutdown-governor',
+      target: fixture.masterSessionId,
+    })
+    await waitFor('shutdown wakeup retries after revival', () =>
+      runtime.getState().workflowWakeups[wakeup.wakeupId]?.notificationAttempts === 1)
+    assert.equal(runtime.getState().workflowWakeups[wakeup.wakeupId].status, 'notified')
+    assert.equal(
+      runtime.getKernelEvents({ type: 'workflow.master-wakeup.notified' }).events
+        .filter((event) => event.payload.wakeupId === wakeup.wakeupId).length,
+      1,
+      'the same deterministic notify identity remains usable after shutdown',
+    )
+  } finally {
+    runtime.killAll()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a notified Governor turn interrupted by restart returns to pending and can notify again', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-governor-notified-restart-'))
   const storageFile = path.join(root, 'state.json')

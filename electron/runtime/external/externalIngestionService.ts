@@ -36,11 +36,15 @@ export type ExternalIngestionHost = {
   ) => JsonRecord | undefined
   touch: () => void
   broadcastState: () => void
+  stagePostCommitEffect: (label: string, run: () => void) => void
 }
 
 export class ExternalIngestionService {
   #host: ExternalIngestionHost
   #adapters = new Map<string, { start: () => void; stop: () => void }>()
+  #adaptersEnabled = true
+  #adapterLifecycleEpoch = 0
+  #adapterReconciliationNeeded = false
 
   constructor(host: ExternalIngestionHost) {
     this.#host = host
@@ -146,7 +150,11 @@ export class ExternalIngestionService {
       { actor: { kind: 'human' } },
       { reason: optionalTrimmedString(request.reason) },
     )
-    this.#syncAdapterForSource(source)
+    // Production IPC/HTTP callers enter through dispatchCommand, so adapter
+    // startup is staged until that durable transaction commits. The direct
+    // manager facade remains synchronous for legacy/tests and intentionally
+    // applies this process-local effect immediately when no transaction exists.
+    this.#stageAdapterSync(id)
     this.#host.touch()
     this.#host.broadcastState()
     return {
@@ -191,7 +199,7 @@ export class ExternalIngestionService {
         )
       }
     }
-    this.#syncAdapterForSource(source)
+    this.#stageAdapterSync(sourceId)
     if (state.sourceTokens) {
       delete state.sourceTokens[sourceId]
     }
@@ -295,7 +303,27 @@ export class ExternalIngestionService {
   // runtime; webhook and manual sources are pure ingestion-endpoint
   // consumers. Adapter failures land on source.lastError (runtime-plane
   // operational status, never a kernel fact).
+  #stageAdapterSync(sourceId: string) {
+    this.#host.stagePostCommitEffect(`external-source:${sourceId}:sync`, () => {
+      const committedSource = this.#host.liveState().sources?.[sourceId]
+      if (!committedSource) return
+      try {
+        this.#syncAdapterForSource(committedSource)
+      } catch (error) {
+        this.#recordSourceError(
+          sourceId,
+          error instanceof Error ? error.message : String(error),
+        )
+        throw error
+      }
+    })
+  }
+
   #syncAdapterForSource(source) {
+    if (!this.#adaptersEnabled) {
+      this.#adapterReconciliationNeeded = true
+      return
+    }
     const existing = this.#adapters.get(source.id)
     if (existing) {
       existing.stop()
@@ -346,6 +374,38 @@ export class ExternalIngestionService {
     this.#adapters.clear()
   }
 
+  adapterLifecycleEpoch() {
+    return this.#adapterLifecycleEpoch
+  }
+
+  suspendAdapters() {
+    this.#adapterLifecycleEpoch += 1
+    this.#adaptersEnabled = false
+    this.#adapterReconciliationNeeded =
+      this.#adapterReconciliationNeeded ||
+      Object.values(this.#host.liveState().sources ?? {}).some(
+        (source: JsonRecord) => source.state === 'active',
+      )
+    this.stopAllAdapters()
+  }
+
+  resumeAdapters(expectedLifecycleEpoch: number) {
+    if (expectedLifecycleEpoch !== this.#adapterLifecycleEpoch) return
+    this.#adaptersEnabled = true
+    if (!this.#adapterReconciliationNeeded) return
+    this.#adapterReconciliationNeeded = false
+    try {
+      for (const source of Object.values(
+        (this.#host.liveState().sources ?? {}) as JsonRecord,
+      )) {
+        this.#syncAdapterForSource(source)
+      }
+    } catch (error) {
+      this.#adapterReconciliationNeeded = true
+      throw error
+    }
+  }
+
   // Reconcile ingestion anchors from the event log before adapters start:
   // the snapshot may be older than the last appended fact (events are
   // truth). Exact per-source lookup, mirroring timer recovery.
@@ -374,5 +434,6 @@ export class ExternalIngestionService {
         this.#syncAdapterForSource(source)
       }
     }
+    this.#adapterReconciliationNeeded = false
   }
 }

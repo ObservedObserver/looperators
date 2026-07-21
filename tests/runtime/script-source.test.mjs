@@ -270,6 +270,147 @@ test('an adapter with no accepted events still restarts after a runtime restart'
   }
 })
 
+test('a command-scoped adapter starts only after its source commit is visible', async () => {
+  const { manager, fixture, tempRoot, storageFile, cleanup } = harness(
+    'orrery-script-post-commit-',
+  )
+  try {
+    const startedFile = path.join(tempRoot, 'adapter-started.txt')
+    const script = fixture(
+      'mark-started.mjs',
+      [
+        `import fs from 'node:fs'`,
+        `fs.writeFileSync(${JSON.stringify(startedFile)}, 'started')`,
+        `setTimeout(() => {}, 1000)`,
+      ].join('\n'),
+    )
+    const runtime = manager({
+      storageFile,
+      controlCommandCommitDelayMs: 150,
+    })
+    const committing = runtime.dispatchCommand({
+      commandId: 'register-post-commit-source',
+      kind: 'register_external_source',
+      actor: { kind: 'human' },
+      input: {
+        id: 'src-post-commit',
+        kind: 'script',
+        topic: 'post_commit',
+        config: { command: process.execPath, args: [script] },
+      },
+    })
+
+    await delay(30)
+    assert.equal(fs.existsSync(startedFile), false)
+    assert.equal(runtime.getState().sources['src-post-commit'], undefined)
+
+    await committing
+    await waitFor('post-commit adapter start', () => fs.existsSync(startedFile))
+    assert.equal(runtime.getState().sources['src-post-commit'].state, 'active')
+  } finally {
+    cleanup()
+  }
+})
+
+test('a source command that loses commit ownership never starts its adapter', async () => {
+  const { manager, fixture, tempRoot, storageFile, cleanup } = harness(
+    'orrery-script-failed-commit-',
+  )
+  try {
+    const startedFile = path.join(tempRoot, 'adapter-started.txt')
+    const script = fixture(
+      'must-not-start.mjs',
+      [
+        `import fs from 'node:fs'`,
+        `fs.writeFileSync(${JSON.stringify(startedFile)}, 'started')`,
+        `setTimeout(() => {}, 1000)`,
+      ].join('\n'),
+    )
+    const stale = manager({
+      storageFile,
+      controlCommandCommitDelayMs: 150,
+    })
+    const committing = stale.dispatchCommand({
+      commandId: 'register-owner-loss-source',
+      kind: 'register_external_source',
+      actor: { kind: 'human' },
+      input: {
+        id: 'src-owner-loss',
+        kind: 'script',
+        topic: 'owner_loss',
+        config: { command: process.execPath, args: [script] },
+      },
+    })
+
+    await delay(30)
+    const successor = manager({ storageFile })
+    await assert.rejects(committing, /newer runtime owns/i)
+    await delay(100)
+
+    assert.equal(fs.existsSync(startedFile), false)
+    assert.equal(successor.getState().sources['src-owner-loss'], undefined)
+  } finally {
+    cleanup()
+  }
+})
+
+test('a source command queued before killAll stays stopped until a later authorized command revives adapters', async () => {
+  const { manager, fixture, tempRoot, storageFile, cleanup } = harness(
+    'orrery-script-shutdown-commit-',
+  )
+  try {
+    const startedFile = path.join(tempRoot, 'adapter-started.txt')
+    const script = fixture(
+      'must-wait-for-revival.mjs',
+      [
+        `import fs from 'node:fs'`,
+        `fs.writeFileSync(${JSON.stringify(startedFile)}, 'started')`,
+        `setTimeout(() => {}, 1000)`,
+      ].join('\n'),
+    )
+    const runtime = manager({
+      storageFile,
+      controlCommandCommitDelayMs: 150,
+    })
+    const committing = runtime.dispatchCommand({
+      commandId: 'register-before-shutdown',
+      idempotencyKey: 'register-before-shutdown',
+      kind: 'register_external_source',
+      actor: { kind: 'human' },
+      input: {
+        id: 'src-before-shutdown',
+        kind: 'script',
+        topic: 'before_shutdown',
+        config: { command: process.execPath, args: [script] },
+      },
+    })
+
+    await delay(30)
+    runtime.killAll()
+    await committing
+    await delay(100)
+
+    assert.equal(fs.existsSync(startedFile), false)
+    assert.equal(runtime.getState().sources['src-before-shutdown'].state, 'active')
+
+    await runtime.dispatchCommand({
+      commandId: 'revive-source-adapters',
+      idempotencyKey: 'revive-source-adapters',
+      kind: 'register_external_source',
+      actor: { kind: 'human' },
+      input: {
+        id: 'src-revival-marker',
+        kind: 'manual',
+        topic: 'revival_marker',
+      },
+    })
+    await waitFor('adapter revival after an authorized commit', () =>
+      fs.existsSync(startedFile))
+  } finally {
+    cleanup()
+  }
+})
+
 test('removing a source terminates an in-flight exit-mode poll process', async () => {
   const { manager, fixture, tempRoot, cleanup } = harness('orrery-script-kill-poll-')
   try {
@@ -301,6 +442,63 @@ test('removing a source terminates an in-flight exit-mode poll process', async (
         return true
       }
     })
+  } finally {
+    cleanup()
+  }
+})
+
+test('a command-scoped removal stops its adapter only after tombstone commit', async () => {
+  const { manager, fixture, tempRoot, storageFile, cleanup } = harness(
+    'orrery-script-remove-post-commit-',
+  )
+  try {
+    const pidFile = path.join(tempRoot, 'poll.pid')
+    const script = fixture(
+      'staged-stop.mjs',
+      [
+        `import fs from 'node:fs'`,
+        `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+        `setTimeout(() => {}, 30000)`,
+      ].join('\n'),
+    )
+    const runtime = manager({
+      storageFile,
+      controlCommandCommitDelayMs: 150,
+    })
+    runtime.registerExternalSource({
+      id: 'src-staged-stop',
+      kind: 'script',
+      topic: 'staged_stop',
+      config: {
+        command: process.execPath,
+        args: [script],
+        mode: 'exit',
+        everySeconds: 5,
+      },
+    })
+    await waitFor('staged-stop poll started', () => fs.existsSync(pidFile))
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+
+    const committing = runtime.dispatchCommand({
+      commandId: 'remove-post-commit-source',
+      kind: 'remove_external_source',
+      actor: { kind: 'human' },
+      input: { sourceId: 'src-staged-stop' },
+    })
+    await delay(30)
+    process.kill(pid, 0)
+    assert.equal(runtime.getState().sources['src-staged-stop'].state, 'active')
+
+    await committing
+    await waitFor('staged-stop poll terminated', () => {
+      try {
+        process.kill(pid, 0)
+        return false
+      } catch {
+        return true
+      }
+    })
+    assert.equal(runtime.getState().sources['src-staged-stop'].state, 'removed')
   } finally {
     cleanup()
   }
