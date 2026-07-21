@@ -19,6 +19,7 @@
 //   runtimeCommon.ts                      shared value helpers + validation sets
 //   workspace/gitWorkspace.ts             git/worktree/branch/checkpoint-ref/diff
 //   workspace/workspaceFiles.ts           workspace file tree + open-in-app
+//   workspace/workspaceService.ts         public workspace reads + open facade
 //   providers/providerConfigNormalize.ts  provider instance/runtime config
 //   sessions/sessionInteraction.ts        attachments + request/input normalization
 //   persistence/runtimeStateRecovery.ts   state load/normalize/migrate/repair
@@ -27,6 +28,9 @@
 //   workspace/sessionCheckpoints.ts       per-turn git checkpoints + diffs
 //   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
 //   control/commandRegistry.ts             command kind + handler/policy registry
+//   reports/reportFormatting.ts            report/prompt render + payload validation
+//   queries/runtimeQueries.ts               read-only state/kernel projections
+//   external/externalIngestionService.ts    source registry, adapters + ingestion
 //   workflows/workflowKernel.ts           the explicit kernel surface below
 //   workflows/classicWorkflows.ts         draft/handoff/goal/connect + deployments
 //   workflows/planCouncil.ts              plan council orchestration
@@ -48,7 +52,6 @@ import {
   createEmptyGraphState,
   graphEdgeKinds,
   graphStateVersion,
-  openWorkspaceTargetIds,
   runtimeTerminalStreams,
 } from '../../shared/graph-state.js'
 import {
@@ -57,7 +60,6 @@ import {
   providerMetadata,
 } from '../../shared/provider-metadata.js'
 import { providerEnvKeyIsSensitive } from '../../shared/provider-setup.js'
-import { projectSession } from '../../shared/session-projection.js'
 import {
   compileBuiltinTemplate,
   compileSavedTemplate,
@@ -88,20 +90,15 @@ import {
   defaultCycleMaxFirings,
   evaluate as evaluateSubscriptions,
   eventSourceSession,
-  externalIngestionDecision,
-  externalSourceKinds,
-  externalSourceSummary,
   governingMaster,
-  isValidExternalTopic,
   loopsOf,
-  loopTimelineOf,
   normalizeDailyAt,
   scheduleDelayMs,
   scheduleSummary,
   staticCheck,
 } from '../../shared/graph-core/index.js'
 import { ContextChannelStore, activationPreamble } from './contextChannel.js'
-import { createExternalSourceAdapter } from './externalSourceAdapters.js'
+import { ExternalIngestionService } from './external/externalIngestionService.js'
 import {
   ControlVersionConflictError,
   KernelStore,
@@ -150,14 +147,12 @@ import {
   defaultRuntimeResourcePolicy,
   leaseCompatible,
   normalizeProviderUsage,
-  projectRuntimeUsage,
   runtimeConsumptionBudgetKeys,
   selectFairQueuedRun,
 } from '../../shared/resource-governance.js'
 import {
   type JsonRecord,
   type RuntimeEventEmitter,
-  boundedText,
   clone,
   diagnostic,
   isObject,
@@ -214,7 +209,6 @@ import {
   gitCheckpointEnv,
   gitDiffMaxBuffer,
   gitOutput,
-  gitProjectContext,
   gitRefSlug,
   gitRepoRoot,
   hasGitHead,
@@ -226,26 +220,12 @@ import {
   normalizeWorkMode,
   parseDiffFilesFromPatch,
   planSessionWorktree,
-  projectNameFromCwd,
-  safeCwd,
   sessionProjectFromContext,
   totalsForDiffFiles,
   validateRunnableCwd,
   validCwdCandidate,
 } from './workspace/gitWorkspace.js'
-import {
-  buildWorkspaceFileTree,
-  countWorkspaceFiles,
-  normalizeOpenWorkspaceTarget,
-  normalizeWorkspaceFilesLimit,
-  resolveWorkspaceFilePath,
-  runWorkspaceOpenCommand,
-  workspaceFileContentMaxBytes,
-  workspaceFilesIgnoredDirectories,
-  workspaceFilesMaxDepth,
-  workspaceFilesMaxEntries,
-  workspaceOpenCommand,
-} from './workspace/workspaceFiles.js'
+import { WorkspaceService } from './workspace/workspaceService.js'
 import {
   commandExists,
   commandForProviderInstance,
@@ -292,7 +272,6 @@ import {
   gitDiffForSession,
   pruneTurnCheckpointRefs,
   recordTurnCheckpointDiff,
-  workingTreeDiffForSession,
 } from './workspace/sessionCheckpoints.js'
 import {
   type ProviderSetupHost,
@@ -304,6 +283,16 @@ import {
   createKernelCommandRegistry,
   type KernelCommandHandlers,
 } from './control/commandRegistry.js'
+import {
+  defaultMasterPrompt,
+  masterReasonFromInput,
+  normalizeReportPayload,
+  pendingRequestText,
+  renderExternalEventMarkdown,
+  renderReportMarkdown,
+  reportSummary,
+} from './reports/reportFormatting.js'
+import { RuntimeQueries } from './queries/runtimeQueries.js'
 import type { WorkflowKernel } from './workflows/workflowKernel.js'
 import {
   activeReviewPairRole,
@@ -353,9 +342,6 @@ import {
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
 
-// The emit payload rides the kernel log and the target's channel; cap it so
-// a chatty adapter cannot bloat either (the log is forever).
-const externalPayloadMaxBytes = 16 * 1024
 // Kernel facts the subscription scheduler evaluates (§6.1 event patterns).
 // session.killed is not a trigger pattern; it sweeps subscriptions whose
 // participants died (kill parity with the old hero loop).
@@ -394,14 +380,12 @@ export class RuntimeSessionManager {
     broadcast: (event) => this.#broadcast(event),
     resolveSession: (sessionId) => this.#state.sessions[sessionId],
   })
-  #loopTerminalFacts = new Map<string, JsonRecord>()
   #storageFile: string | undefined
   #kernelStore: KernelStore
   #channelStore: ContextChannelStore
   #schedulerChain: Promise<void> = Promise.resolve()
   // L1 timer source: one armed timeout per active schedule subscription.
   #timers = new Map<string, ReturnType<typeof setTimeout>>()
-  #externalAdapters = new Map<string, { start: () => void; stop: () => void }>()
   #legacyImportKind: 'migration' | 'fossil-rollback' | undefined
   #restartInterruptedSessionIds: string[] = []
   #emitRuntimeEventToHost: RuntimeEventEmitter | undefined
@@ -416,6 +400,32 @@ export class RuntimeSessionManager {
   #workflowCompensatedRuns = new Set<string>()
   #commandChain: Promise<void> = Promise.resolve()
   #controlCommandContext = new AsyncLocalStorage<JsonRecord>()
+  #queries = new RuntimeQueries({
+    liveState: () => this.#state,
+    readState: () => this.#readState(),
+    listKernelEvents: (input) => this.#kernelStore.listEvents(input),
+    latestKernelSeq: () => this.#kernelStore.latestSeq(),
+  })
+  #workspaceService = new WorkspaceService({
+    readState: () => this.#readState(),
+    checkpointHost: () => this.#checkpointHost(),
+  })
+  #externalIngestion = new ExternalIngestionService({
+    liveState: () => this.#state,
+    appendKernelEvent: (type, payload, ctx, options) =>
+      this.#appendKernelEvent(type, payload, ctx, options),
+    stopSubscription: (input, ctx) =>
+      this.#cmdStopSubscription(input, ctx),
+    latestEventWithPayloadValue: (type, payloadKey, payloadValue) =>
+      this.#kernelStore.latestEventWithPayloadValue(
+        type,
+        payloadKey,
+        payloadValue,
+      ),
+    touch: () => this.#touch(),
+    broadcastState: () =>
+      this.#broadcast({ type: 'runtime.state', state: this.getState() }),
+  })
   #commandRegistry = createKernelCommandRegistry({
     create_session: (input, ctx) => this.#cmdCreateSession(input, ctx),
     resume_session: (input, ctx) => this.#cmdResumeSession(input, ctx),
@@ -642,7 +652,7 @@ export class RuntimeSessionManager {
     this.#sweepExhaustedSubscriptions()
     this.#recoverSchedulerState()
     this.#recoverTimers()
-    this.#recoverExternalSourceAnchors()
+    this.#externalIngestion.recoverSourceAnchors()
     this.#recoverWorkflowWakeupsFromKernelLog()
     this.#recoverBarrierTimers()
     queueMicrotask(() => this.#drainWorkflowWakeups())
@@ -659,21 +669,7 @@ export class RuntimeSessionManager {
   }
 
   getState() {
-    const source = this.#readState()
-    const state = clone(source)
-    // Transport secrets stay runtime-plane: they persist with the snapshot
-    // but never leave through the read API (IPC, HTTP state, broadcasts).
-    delete state.sourceTokens
-    // L4 thin projection: rings are derived from the intent graph on every
-    // read, never stored — the loop is a reading of subscriptions, not an
-    // object (proposal L4 "no new storage objects").
-    state.loops = this.#loopViewsWithTerminalFacts(this.#kernelView(source))
-    const sessionToLoopIds = Object.fromEntries(Object.keys(state.sessions).map((sessionId) => [
-      sessionId,
-      state.loops.filter((loop) => loop.memberSessionIds?.includes(sessionId)).map((loop) => loop.loopId),
-    ]))
-    state.usage = projectRuntimeUsage(state.usageFacts ?? [], { sessionToLoopIds })
-    return state
+    return this.#queries.getState()
   }
 
   // Unified command channel (kernel doc §7.5). All mutating entry points --
@@ -1053,86 +1049,11 @@ export class RuntimeSessionManager {
   }
 
   getKernelEvents(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const events = this.#kernelStore.listEvents({
-      sinceSeq: Number(request.since ?? request.sinceSeq ?? 0) || 0,
-      limit: Number(request.limit ?? 0) || undefined,
-      type: optionalTrimmedString(request.type),
-      tail: request.tail === true || request.tail === 'true',
-    })
-    return {
-      events,
-      latestSeq: this.#kernelStore.latestSeq(),
-    }
+    return this.#queries.getKernelEvents(input)
   }
 
-  // The whole log in ascending seq order. listEvents caps a single page at
-  // 2000 rows, so page by the last seen seq — a lap timeline must never
-  // silently drop the ring's early laps.
-  #allKernelEvents() {
-    const events = []
-    let sinceSeq = 0
-    for (;;) {
-      const batch = this.#kernelStore.listEvents({
-        sinceSeq,
-        limit: 2000,
-      })
-      events.push(...batch)
-      if (batch.length < 2000) {
-        return events
-      }
-      sinceSeq = batch[batch.length - 1].seq
-    }
-  }
-
-  #loopViewsWithTerminalFacts(view, events = undefined) {
-    const loops = loopsOf(view)
-    const stopped = loops.filter((loop) => loop.status === 'stopped')
-    if (stopped.length === 0) {
-      return loops
-    }
-    const keyOf = (loop) =>
-      `${loop.loopId}\u0000${[...loop.subscriptionIds].sort().join('\u0000')}`
-    const missing = stopped.filter(
-      (loop) =>
-        events !== undefined || !this.#loopTerminalFacts.has(keyOf(loop)),
-    )
-    if (missing.length > 0) {
-      const authoritativeEvents = events ?? this.#allKernelEvents()
-      for (const loop of missing) {
-        const terminal = loopTimelineOf(
-          view,
-          authoritativeEvents,
-          loop,
-        ).stops.at(-1)
-        if (terminal) {
-          this.#loopTerminalFacts.set(keyOf(loop), terminal)
-        }
-      }
-    }
-    return loops.map((loop) => {
-      const terminal = this.#loopTerminalFacts.get(keyOf(loop))
-      return terminal ? { ...loop, terminal } : loop
-    })
-  }
-
-  // L4 loop timeline: one ring's history, grouped lap by lap from the event
-  // log (pure derivation via graph-core; the kernel stores no loop object).
   getLoopTimeline(input: JsonRecord = {}) {
-    const loopId = optionalTrimmedString(input.loopId)
-    if (!loopId) {
-      throw new Error('getLoopTimeline requires a loopId')
-    }
-    const view = this.#kernelView(this.#readState())
-    const events = this.#allKernelEvents()
-    const loop = this.#loopViewsWithTerminalFacts(view, events).find(
-      (candidate) => candidate.loopId === loopId,
-    )
-    if (!loop) {
-      throw new Error(`Unknown loop: ${loopId}`)
-    }
-    const timeline = loopTimelineOf(view, events, loop)
-    return { loop, timeline }
+    return this.#queries.getLoopTimeline(input)
   }
 
   #humanCtx() {
@@ -1178,59 +1099,6 @@ export class RuntimeSessionManager {
   }
 
   // ---- Intent layer: subscriptions, gates, and the scheduling loop (G3) ----
-
-  // Builds the graph-core view of the kernel state from live runtime state.
-  // graph-core's fold() remains the replay/derivation contract (G1 tests pin
-  // that the same events reproduce this shape); the runtime evaluates
-  // against its live state so scheduling sees current session statuses.
-  #kernelView(state = this.#state) {
-    const sessions = {}
-    for (const session of Object.values(state.sessions as JsonRecord)) {
-      const node = state.nodes.find(
-        (item) => item.sessionId === session.sessionId,
-      )
-      sessions[session.sessionId] = {
-        sessionId: session.sessionId,
-        status: session.status,
-        frozen: node?.frozen === true,
-        freezeReason: node?.freezeReason,
-        archived: session.archived === true,
-        createdBy: undefined,
-      }
-    }
-    const scopes = {}
-    for (const cluster of Object.values(state.clusters as JsonRecord)) {
-      scopes[cluster.clusterId] = {
-        scopeId: cluster.clusterId,
-        kind: 'cluster',
-        parentId: undefined,
-        members: cluster.nodeIds.filter((id) => id !== cluster.masterSessionId),
-        masterSessionId: cluster.masterSessionId,
-      }
-    }
-    const pending = {}
-    for (const slot of Object.values(
-      (state.pendingActivations ?? {}) as JsonRecord,
-    )) {
-      pending[slot.slotKey] = {
-        slotKey: slot.slotKey,
-        subscriptionId: slot.subscriptionId,
-        target: slot.target,
-        triggerEventId: slot.triggerEventId,
-        status: slot.status,
-        createdAtSeq: Number.isFinite(slot.orderSeq) ? slot.orderSeq : 0,
-      }
-    }
-    return {
-      lastSeq: this.#kernelStore.latestSeq(),
-      sessions,
-      subscriptions: clone(state.subscriptions ?? {}),
-      scopes,
-      pending,
-      links: {},
-      sources: clone(state.sources ?? {}),
-    }
-  }
 
   #activeSubscriptionCount() {
     return Object.values(
@@ -1284,7 +1152,7 @@ export class RuntimeSessionManager {
       return
     }
 
-    const decisions = evaluateSubscriptions(this.#kernelView(), event)
+    const decisions = evaluateSubscriptions(this.#queries.kernelView(), event)
     for (const decision of decisions) {
       const ctx = this.#subscriptionRuleCtx(decision.subscriptionId, event.id)
       if (decision.kind === 'stop-subscription') {
@@ -1490,49 +1358,12 @@ export class RuntimeSessionManager {
     })
   }
 
-  #pendingRequestText(slot, subscription) {
-    // External triggers have no source session: name the registered source
-    // and show the event itself, so the gate decision is informed.
-    const external = slot.externalEvent
-    const externalSource = external
-      ? this.#state.sources?.[external.payload?.sourceId]
-      : undefined
-    const sourceLabel = slot.sourceSessionId
-      ? (this.#state.sessions[slot.sourceSessionId]?.label ??
-        slot.sourceSessionId)
-      : externalSource
-        ? externalSourceSummary(externalSource)
-        : external
-          ? (external.payload?.sourceId ?? 'external source')
-          : 'unknown'
-    const targetLabel = this.#state.sessions[slot.target]?.label ?? slot.target
-    const trigger = slot.reportId
-      ? `report ${slot.reportId}`
-      : external
-        ? `external event ${external.type}`
-        : 'a finished turn'
-    let eventLine
-    if (external) {
-      const { sourceId: _sourceId, ...payload } = external.payload ?? {}
-      const rendered = JSON.stringify(payload)
-      eventLine = `Event payload: ${rendered.length > 600 ? `${rendered.slice(0, 600)}…` : rendered}`
-    }
-    return [
-      `Pending activation requires your decision (slotKey: ${slot.slotKey}).`,
-      `Subscription ${subscription?.label ?? slot.subscriptionId}: ${sourceLabel} → ${targetLabel}, triggered by ${trigger} from ${sourceLabel}.`,
-      ...(eventLine ? [eventLine] : []),
-      `To allow it, call mcp__orrery_membrane__approve_activation exactly once with {"slotKey":"${slot.slotKey}"} — you may add "note" with extra instructions for the target.`,
-      `To reject it, call mcp__orrery_membrane__deny_activation exactly once with {"slotKey":"${slot.slotKey}","reason":"..."}.`,
-      'Then stop.',
-    ].join('\n')
-  }
-
   async #notifyMasterOfPending(slot, subscription, event, ctx) {
     const master = this.#state.sessions[slot.masterSessionId]
     if (!master) {
       return
     }
-    const request = this.#pendingRequestText(slot, subscription)
+    const request = pendingRequestText(this.#state, slot, subscription)
     try {
       await this.#cmdActivate(
         { sessionId: slot.masterSessionId, note: request },
@@ -1626,7 +1457,7 @@ export class RuntimeSessionManager {
     // the new governor gains it.
     const subscription = this.#state.subscriptions?.[slot.subscriptionId]
     const governor = subscription
-      ? governingMaster(this.#kernelView(), subscription)
+      ? governingMaster(this.#queries.kernelView(), subscription)
       : slot.masterSessionId
     if (
       kind === 'master' &&
@@ -1758,7 +1589,10 @@ export class RuntimeSessionManager {
             entries: [
               {
                 name: 'external-event.md',
-                content: this.#renderExternalEventMarkdown(slot.externalEvent),
+                content: renderExternalEventMarkdown(
+                  this.#state,
+                  slot.externalEvent,
+                ),
               },
             ],
             subscriptionId: slot.subscriptionId,
@@ -1968,58 +1802,12 @@ export class RuntimeSessionManager {
     return [
       {
         name: 'review.md',
-        content: this.#renderReportMarkdown(report),
+        content: renderReportMarkdown(this.#state, report),
       },
       ...this.#artifactBundleEntries(sourceSessionId).filter(
         (entry) => entry.name !== 'turn-summary.md',
       ),
     ]
-  }
-
-  #renderReportMarkdown(report) {
-    const payload = report.payload ?? {}
-    const lines = [
-      `# Report from ${this.#state.sessions[report.from]?.label ?? report.from}`,
-    ]
-    if (payload.type === 'verdict') {
-      lines.push(`Verdict: ${payload.verdict}`)
-      if (payload.summary) {
-        lines.push('', String(payload.summary))
-      }
-      const issues = Array.isArray(payload.issues) ? payload.issues : []
-      if (issues.length > 0) {
-        lines.push('', '## Issues')
-        for (const issue of issues) {
-          const location = [
-            issue.file,
-            Number.isFinite(issue.line) ? issue.line : undefined,
-          ]
-            .filter(Boolean)
-            .join(':')
-          lines.push(`- ${issue.message}${location ? ` (${location})` : ''}`)
-        }
-      }
-    } else {
-      lines.push('', JSON.stringify(payload, null, 2))
-    }
-    return `${lines.join('\n')}\n`
-  }
-
-  #renderExternalEventMarkdown(externalEvent) {
-    const payload = { ...(externalEvent.payload ?? {}) }
-    const sourceId = payload.sourceId
-    delete payload.sourceId
-    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
-    const lines = [
-      `# External event: ${externalEvent.type}`,
-      `Source: ${source ? externalSourceSummary(source) : (sourceId ?? 'unknown')}`,
-      `At: ${externalEvent.ts}`,
-      '',
-      '```json',
-      JSON.stringify(payload, null, 2),
-      '```',
-    ]
-    return `${lines.join('\n')}\n`
   }
 
   // --- Subscription authoring / stopping ---
@@ -2050,7 +1838,7 @@ export class RuntimeSessionManager {
     const subscription = normalizeSubscriptionInput(this.#state, input)
 
     // Static safety check on the prospective intent graph (§6.4).
-    const prospective = this.#kernelView()
+    const prospective = this.#queries.kernelView()
     prospective.subscriptions[subscription.id] = clone(subscription)
     let check = staticCheck(prospective)
 
@@ -2166,7 +1954,7 @@ export class RuntimeSessionManager {
     // A generic ring can become non-cyclic after its first stopped edge and
     // receive more terminal facts as paired/remaining edges stop. Recompute
     // summaries after every new stop; subsequent reads are cached again.
-    this.#loopTerminalFacts.clear()
+    this.#queries.clearLoopTerminalFacts()
     this.#clearTimer(subscriptionId)
     this.#appendKernelEvent('subscription.stopped', { subscriptionId }, ctx, {
       reason: ctx.reason ?? optionalTrimmedString(input.reason),
@@ -2482,336 +2270,24 @@ export class RuntimeSessionManager {
   // scheduler path — exactly the L1 timer pattern, generalized.
 
   registerExternalSource(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const kind = optionalTrimmedString(request.kind)
-    if (!kind || !externalSourceKinds.has(kind)) {
-      throw new Error(
-        `External source kind must be one of ${[...externalSourceKinds].join('|')}`,
-      )
-    }
-    const topic = optionalTrimmedString(request.topic) ?? kind
-    if (!isValidExternalTopic(topic)) {
-      throw new Error(
-        'External source topic must be a lowercase slug ([a-z][a-z0-9_-]*); "timer" is reserved',
-      )
-    }
-    const id =
-      optionalTrimmedString(request.id) ?? `src-${randomUUID().slice(0, 8)}`
-    if (this.#state.sources?.[id]) {
-      throw new Error(`External source id already exists: ${id}`)
-    }
-    let minIntervalSeconds
-    if (request.minIntervalSeconds !== undefined) {
-      minIntervalSeconds = Number(request.minIntervalSeconds)
-      if (!Number.isFinite(minIntervalSeconds) || minIntervalSeconds < 0) {
-        throw new Error(
-          'External source minIntervalSeconds must be a number >= 0',
-        )
-      }
-    }
-    const config = isObject(request.config) ? clone(request.config) : {}
-    if (kind === 'script') {
-      if (!optionalTrimmedString(config.command)) {
-        throw new Error('A script source requires config.command')
-      }
-      if (
-        config.args !== undefined &&
-        (!Array.isArray(config.args) ||
-          config.args.some((arg) => typeof arg !== 'string'))
-      ) {
-        throw new Error('Script source config.args must be an array of strings')
-      }
-      const mode = config.mode ?? 'lines'
-      if (mode !== 'lines' && mode !== 'exit') {
-        throw new Error('Script source config.mode must be "lines" or "exit"')
-      }
-      if (mode === 'exit') {
-        const everySeconds = Number(config.everySeconds ?? 60)
-        if (!Number.isInteger(everySeconds) || everySeconds < 5) {
-          throw new Error(
-            'Script source config.everySeconds must be an integer >= 5',
-          )
-        }
-        config.everySeconds = everySeconds
-      }
-      config.mode = mode
-    }
-    if (kind === 'git') {
-      const repoPath = optionalTrimmedString(config.repoPath)
-      if (!repoPath || !fs.existsSync(repoPath)) {
-        throw new Error(
-          'A git source requires config.repoPath pointing at an existing repository',
-        )
-      }
-      config.repoPath = repoPath
-      if (config.pollSeconds !== undefined) {
-        const pollSeconds = Number(config.pollSeconds)
-        if (!Number.isFinite(pollSeconds) || pollSeconds < 1) {
-          throw new Error('Git source config.pollSeconds must be a number >= 1')
-        }
-        config.pollSeconds = pollSeconds
-      }
-    }
-    const source = {
-      id,
-      kind,
-      topic,
-      label: optionalTrimmedString(request.label),
-      config,
-      ...(minIntervalSeconds !== undefined ? { minIntervalSeconds } : {}),
-      state: 'active',
-      createdAt: now(),
-    }
-    // Transport secrets are runtime-plane, not kernel facts: the ingestion
-    // decision never reads the token, so it stays out of the event log.
-    // Webhook-kind sources get one by default (their endpoint faces out).
-    const token =
-      optionalTrimmedString(request.token) ??
-      (kind === 'webhook' ? randomUUID() : undefined)
-    if (token) {
-      this.#state.sourceTokens = this.#state.sourceTokens ?? {}
-      this.#state.sourceTokens[id] = token
-    }
-    this.#state.sources = this.#state.sources ?? {}
-    this.#state.sources[id] = source
-    this.#appendKernelEvent(
-      'source.registered',
-      { source: clone(source) },
-      { actor: { kind: 'human' } },
-      { reason: optionalTrimmedString(request.reason) },
-    )
-    this.#syncAdapterForSource(source)
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return {
-      source: clone(source),
-      ...(token ? { token } : {}),
-    }
+    return this.#externalIngestion.registerExternalSource(input)
   }
 
   removeExternalSource(input: JsonRecord = {}) {
-    const sourceId = optionalTrimmedString(input.sourceId)
-    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
-    if (!source) {
-      throw new Error(`Unknown external source: ${sourceId ?? ''}`)
-    }
-    if (source.state === 'removed') {
-      return { ok: true, source: clone(source) }
-    }
-    source.state = 'removed'
-    this.#appendKernelEvent(
-      'source.removed',
-      { sourceId },
-      { actor: { kind: 'human' } },
-      { reason: optionalTrimmedString(input.reason) },
-    )
-    // Participant parity with killed sessions: an edge whose source is gone
-    // can never fire again, so leaving it active would only mislead.
-    for (const subscription of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord,
-    )) {
-      if (
-        subscription.state === 'active' &&
-        subscription.source?.kind === 'external' &&
-        subscription.source.sourceId === sourceId
-      ) {
-        this.#cmdStopSubscription(
-          {
-            subscriptionId: subscription.id,
-            reason: 'External source was removed.',
-          },
-          { actor: { kind: 'runtime' } },
-        )
-      }
-    }
-    this.#syncAdapterForSource(source)
-    if (this.#state.sourceTokens) {
-      delete this.#state.sourceTokens[sourceId]
-    }
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return { ok: true, source: clone(source) }
+    return this.#externalIngestion.removeExternalSource(input)
   }
 
   // Accept-or-drop for one emit. Dropped emits return {ok:false} and append
   // NOTHING — sampling exists to keep a chatty source out of the log; the
   // adapter re-emits current state on its next beat.
   emitExternalEvent(input: JsonRecord = {}) {
-    const sourceId = optionalTrimmedString(input.sourceId)
-    const source = sourceId ? this.#state.sources?.[sourceId] : undefined
-    if (!source) {
-      throw new Error(`Unknown external source: ${sourceId ?? ''}`)
-    }
-    const topic = optionalTrimmedString(input.topic)
-    if (topic !== undefined && topic !== source.topic) {
-      throw new Error(
-        `Emit topic must match the source's declared topic (${source.topic})`,
-      )
-    }
-    const payload = input.payload === undefined ? {} : input.payload
-    if (!isObject(payload)) {
-      throw new Error('Emit payload must be a JSON object')
-    }
-    for (const reserved of [
-      'sourceId',
-      'dedupeKey',
-      'subscriptionId',
-      'sessionId',
-    ]) {
-      if (payload[reserved] !== undefined) {
-        throw new Error(
-          `Emit payload must not use the reserved key "${reserved}"`,
-        )
-      }
-    }
-    if (
-      Buffer.byteLength(JSON.stringify(payload), 'utf8') >
-      externalPayloadMaxBytes
-    ) {
-      throw new Error(
-        `Emit payload exceeds ${externalPayloadMaxBytes} bytes; deliver a pointer (path/URL), not the artifact`,
-      )
-    }
-    const dedupeKey = optionalTrimmedString(input.dedupeKey)
-
-    const decision = externalIngestionDecision(
-      source,
-      { dedupeKey },
-      Date.now(),
-    )
-    if (decision.ok !== true) {
-      return {
-        ok: false,
-        dropped: true,
-        reason: decision.reason,
-      }
-    }
-
-    const event = this.#appendKernelEvent(
-      `external.${source.topic}`,
-      {
-        ...clone(payload),
-        sourceId: source.id,
-        ...(dedupeKey ? { dedupeKey } : {}),
-      },
-      { actor: { kind: 'runtime' } },
-      {
-        reason: `External emit (${externalSourceSummary(source)}).`,
-      },
-    )
-    // Snapshot anchors are caches of the appended fact (fold derives the
-    // same values on replay). lastDedupeKey tracks the last accepted
-    // event's key INCLUDING its absence — a key-less accepted event breaks
-    // the "consecutive" chain, so a later repeat of an older key passes.
-    source.lastEventAt = event?.ts ?? now()
-    source.lastDedupeKey = dedupeKey
-    this.#touch()
-    return {
-      ok: true,
-      eventId: event?.id,
-      type: `external.${source.topic}`,
-    }
+    return this.#externalIngestion.emitExternalEvent(input)
   }
 
   // Transport-layer auth for the HTTP ingestion path: sources without a
   // token accept unauthenticated local emits; sources with one require it.
   verifyExternalSourceToken(sourceId, token) {
-    const required = this.#state.sourceTokens?.[sourceId]
-    if (!required) {
-      return true
-    }
-    return typeof token === 'string' && token === required
-  }
-
-  // Adapter lifecycle: script/git sources run a watcher owned by the
-  // runtime; webhook and manual sources are pure ingestion-endpoint
-  // consumers. Adapter failures land on source.lastError (runtime-plane
-  // operational status, never a kernel fact).
-  #syncAdapterForSource(source) {
-    const existing = this.#externalAdapters.get(source.id)
-    if (existing) {
-      existing.stop()
-      this.#externalAdapters.delete(source.id)
-    }
-    if (source.state !== 'active') {
-      return
-    }
-    const adapter = createExternalSourceAdapter(source, {
-      emit: (input) => {
-        const result = this.emitExternalEvent({
-          sourceId: source.id,
-          ...input,
-        })
-        if (result.ok) {
-          const live = this.#state.sources?.[source.id]
-          if (live?.lastError) {
-            delete live.lastError
-            this.#touch()
-          }
-        }
-        return result
-      },
-      onError: (message) => this.#recordSourceError(source.id, message),
-    })
-    if (adapter) {
-      this.#externalAdapters.set(source.id, adapter)
-      adapter.start()
-    }
-  }
-
-  #recordSourceError(sourceId, message) {
-    const source = this.#state.sources?.[sourceId]
-    if (source && source.lastError !== message) {
-      source.lastError = message
-      this.#touch()
-    }
-  }
-
-  #stopAllExternalAdapters() {
-    for (const adapter of this.#externalAdapters.values()) {
-      try {
-        adapter.stop()
-      } catch {
-        // Best-effort teardown.
-      }
-    }
-    this.#externalAdapters.clear()
-  }
-
-  // Reconcile ingestion anchors from the event log before adapters start:
-  // the snapshot may be older than the last appended fact (events are
-  // truth). Exact per-source lookup, mirroring #recoverTimers.
-  #recoverExternalSourceAnchors() {
-    for (const source of Object.values(
-      (this.#state.sources ?? {}) as JsonRecord,
-    )) {
-      const logged = this.#kernelStore.latestEventWithPayloadValue(
-        `external.${source.topic}`,
-        'sourceId',
-        source.id,
-      )
-      if (logged) {
-        // Unconditional: both anchors are caches of appended facts, so the
-        // log's latest accepted event is always at least as fresh as any
-        // snapshot copy — and the dedupe anchor is that event's key
-        // INCLUDING its absence (a key-less accepted event breaks the
-        // "consecutive" chain). A freshness guard here would let a stale
-        // snapshot key with an equal timestamp survive recovery.
-        source.lastEventAt = logged.ts
-        source.lastDedupeKey = optionalTrimmedString(logged.payload?.dedupeKey)
-      }
-      // Adapters restart regardless of emit history — a source registered
-      // just before shutdown has no logged event yet and must still wake.
-      if (source.state === 'active') {
-        this.#syncAdapterForSource(source)
-      }
-    }
+    return this.#externalIngestion.verifyExternalSourceToken(sourceId, token)
   }
 
   #discardSlotsForSubscription(subscriptionId, ctx) {
@@ -2992,144 +2468,27 @@ export class RuntimeSessionManager {
   }
 
   listSessionSummaries() {
-    const state = this.#readState()
-    const sessions = Object.values(state.sessions ?? {})
-      .map((session) => this.#sessionSummary(session, state))
-      .sort((left, right) =>
-        String(right.updatedAt ?? '').localeCompare(
-          String(left.updatedAt ?? ''),
-        ),
-      )
-    return { sessions }
+    return this.#queries.listSessionSummaries()
   }
 
   getSessionView(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const state = this.#readState()
-    const session = this.#requireSession(request.sessionId, state)
-    const view = optionalTrimmedString(request.view) ?? 'summary'
-    if (view === 'summary') {
-      return {
-        view,
-        session: this.#sessionSummary(session, state),
-      }
-    }
-    if (view === 'raw') {
-      return { view, session: clone(session) }
-    }
-    if (view === 'transcript') {
-      return {
-        view,
-        session: this.#sessionSummary(session, state),
-        projection: projectSession(clone(session)),
-      }
-    }
-    throw new Error(`Unknown session view: ${view}`)
+    return this.#queries.getSessionView(input)
   }
 
   getGraphTopology() {
-    const state = this.#readState()
-    return clone({
-      version: state.version,
-      updatedAt: state.updatedAt,
-      nodes: state.nodes,
-      edges: state.edges,
-      clusters: state.clusters,
-    })
+    return this.#queries.getGraphTopology()
   }
 
   getSessionEvents(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const session = this.#requireSession(request.sessionId, this.#readState())
-    const events = session.runtimeEvents ?? []
-    const since = optionalTrimmedString(request.since)
-    let startIndex = 0
-    let reset = false
-    if (since) {
-      const sinceIndex = events.findIndex((event) => event.id === since)
-      if (sinceIndex >= 0) {
-        startIndex = sinceIndex + 1
-      } else {
-        // Cursor fell out of the truncated event window (or never existed):
-        // replay from the start and let the caller resynchronize.
-        reset = true
-      }
-    }
-    return {
-      sessionId: session.sessionId,
-      status: session.status,
-      events: clone(events.slice(startIndex)),
-      cursor: events.at(-1)?.id,
-      reset,
-    }
-  }
-
-  #requireSession(sessionId, state = this.#readState()) {
-    const id = optionalTrimmedString(sessionId)
-    const session = id ? state.sessions[id] : undefined
-    if (!session) {
-      throw new Error(`Unknown session: ${sessionId ?? ''}`)
-    }
-    return session
-  }
-
-  #sessionSummary(session, state = this.#readState()) {
-    const node = state.nodes.find(
-      (candidate) => candidate.sessionId === session.sessionId,
-    )
-    return {
-      sessionId: session.sessionId,
-      nodeId: session.nodeId,
-      label: session.label,
-      role: session.role,
-      status: session.status,
-      providerKind: session.providerKind,
-      providerInstanceId: session.providerInstanceId,
-      agent: session.agent,
-      cwd: session.cwd,
-      project: clone(session.project),
-      clusterId: node?.clusterId,
-      frozen: node?.frozen,
-      archived: session.archived,
-      error: session.error,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      finishedAt: session.finishedAt,
-      messageCount: Array.isArray(session.messages)
-        ? session.messages.length
-        : 0,
-      runtimeSettings: clone(session.runtimeSettings),
-    }
+    return this.#queries.getSessionEvents(input)
   }
 
   getProjectContext(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    try {
-      return gitProjectContext(request.cwd)
-    } catch (error) {
-      const cwd = safeCwd(request.cwd)
-      return {
-        cwd,
-        projectName: projectNameFromCwd(cwd),
-        isGitRepo: false,
-        branches: [],
-        error: error instanceof Error ? error.message : String(error),
-      }
-    }
+    return this.#queries.getProjectContext(input)
   }
 
   async openWorkspace(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const cwd = validateRunnableCwd(request.cwd)
-    const target = normalizeOpenWorkspaceTarget(request.target ?? 'vscode')
-    const { command, args } = workspaceOpenCommand(target, cwd)
-    await runWorkspaceOpenCommand(command, args, cwd)
-    return {
-      ok: true,
-      cwd,
-      target,
-      platform: process.platform,
-    }
+    return this.#workspaceService.openWorkspace(input)
   }
 
   // Embedded terminal lifecycle lives in TerminalService (terminal/).
@@ -3417,7 +2776,11 @@ export class RuntimeSessionManager {
         kind: 'create-session',
         envelope: this.#createEnvelope(sourceSessionId),
         label: linkLabel,
-        masterReason: this.#masterReasonFromInput(sourceSessionId, input),
+        masterReason: masterReasonFromInput(
+          this.#state,
+          sourceSessionId,
+          input,
+        ),
       })
     }
     journalAutomaticDeploymentResources(this.#wf())
@@ -3436,7 +2799,8 @@ export class RuntimeSessionManager {
       ctx,
       {
         reason:
-          ctx.reason ?? this.#masterReasonFromInput(sourceSessionId, input),
+          ctx.reason ??
+            masterReasonFromInput(this.#state, sourceSessionId, input),
       },
     )
     if (handoffDelivery) {
@@ -3836,7 +3200,8 @@ export class RuntimeSessionManager {
         kind: 'resume-session',
         envelope: this.#createEnvelope(edgeSourceSessionId),
         label: 'resume_session',
-        masterReason: this.#masterReasonFromInput(
+        masterReason: masterReasonFromInput(
+          this.#state,
           edgeSourceSessionId,
           edgeInput,
         ),
@@ -3860,7 +3225,11 @@ export class RuntimeSessionManager {
       {
         reason:
           ctx.reason ??
-          this.#masterReasonFromInput(edgeSourceSessionId, edgeInput),
+          masterReasonFromInput(
+            this.#state,
+            edgeSourceSessionId,
+            edgeInput,
+          ),
       },
     )
     this.#touch()
@@ -3916,134 +3285,15 @@ export class RuntimeSessionManager {
   }
 
   getWorkingTreeDiff(input: JsonRecord | string = {}) {
-    const sessionId =
-      typeof input === 'string'
-        ? input
-        : typeof input.sessionId === 'string' &&
-            input.sessionId.trim().length > 0
-          ? input.sessionId.trim()
-          : undefined
-
-    const state = this.#readState()
-    if (!sessionId || !state.sessions[sessionId]) {
-      throw new Error(`Unknown session: ${sessionId ?? ''}`)
-    }
-
-    if (typeof input === 'object' && nonEmptyString(input.turnId)) {
-      return checkpointDiffForSession(this.#checkpointHost(), sessionId, {
-        turnId: input.turnId.trim(),
-        ignoreWhitespace: input.ignoreWhitespace === true,
-      })
-    }
-
-    return workingTreeDiffForSession(this.#checkpointHost(), sessionId, {
-      ignoreWhitespace:
-        typeof input === 'object' && input.ignoreWhitespace === true,
-    })
+    return this.#workspaceService.getWorkingTreeDiff(input)
   }
 
   getWorkspaceFiles(input: JsonRecord | string = {}) {
-    const request = isObject(input) ? input : {}
-    const sessionId =
-      typeof input === 'string'
-        ? input
-        : typeof request.sessionId === 'string' &&
-            request.sessionId.trim().length > 0
-          ? request.sessionId.trim()
-          : undefined
-
-    const state = this.#readState()
-    if (!sessionId || !state.sessions[sessionId]) {
-      throw new Error(`Unknown session: ${sessionId ?? ''}`)
-    }
-
-    const session = state.sessions[sessionId]
-    const cwd = validateRunnableCwd(session.cwd)
-    const countState = { totalFiles: 0, truncated: false }
-    countWorkspaceFiles(cwd, countState)
-
-    const treeState = {
-      maxDepth: normalizeWorkspaceFilesLimit(
-        request.maxDepth,
-        workspaceFilesMaxDepth,
-        1,
-        workspaceFilesMaxDepth,
-      ),
-      remainingEntries: normalizeWorkspaceFilesLimit(
-        request.maxEntries,
-        workspaceFilesMaxEntries,
-        25,
-        workspaceFilesMaxEntries,
-      ),
-      truncated: false,
-    }
-
-    const entries = buildWorkspaceFileTree(cwd, '', 1, treeState)
-    return {
-      sessionId,
-      cwd,
-      generatedAt: now(),
-      totalFiles: countState.totalFiles,
-      entries,
-      truncated: countState.truncated || treeState.truncated,
-      ignoredDirectories: [...workspaceFilesIgnoredDirectories].sort(),
-    }
+    return this.#workspaceService.getWorkspaceFiles(input)
   }
 
   getWorkspaceFileContent(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const sessionId =
-      typeof request.sessionId === 'string' &&
-      request.sessionId.trim().length > 0
-        ? request.sessionId.trim()
-        : undefined
-
-    const state = this.#readState()
-    if (!sessionId || !state.sessions[sessionId]) {
-      throw new Error(`Unknown session: ${sessionId ?? ''}`)
-    }
-
-    const session = state.sessions[sessionId]
-    const cwd = validateRunnableCwd(session.cwd)
-    const { absolutePath, relativePath } = resolveWorkspaceFilePath(
-      cwd,
-      request.path,
-    )
-    const stat = fs.statSync(absolutePath)
-    if (!stat.isFile()) {
-      throw new Error(`Workspace path is not a file: ${relativePath}`)
-    }
-
-    const maxBytes = normalizeWorkspaceFilesLimit(
-      request.maxBytes,
-      workspaceFileContentMaxBytes,
-      1024,
-      workspaceFileContentMaxBytes,
-    )
-    const bytesToRead = Math.min(stat.size, maxBytes + 1)
-    const buffer = Buffer.alloc(bytesToRead)
-    const fd = fs.openSync(absolutePath, 'r')
-    let bytesRead = 0
-    try {
-      bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0)
-    } finally {
-      fs.closeSync(fd)
-    }
-
-    const contentBytes = buffer.subarray(0, Math.min(bytesRead, maxBytes))
-    const truncated = stat.size > maxBytes || bytesRead > maxBytes
-    const isBinary = contentBytes.includes(0)
-
-    return {
-      sessionId,
-      cwd,
-      path: relativePath,
-      generatedAt: now(),
-      size: stat.size,
-      content: isBinary ? '' : contentBytes.toString('utf8'),
-      truncated,
-      isBinary,
-    }
+    return this.#workspaceService.getWorkspaceFileContent(input)
   }
 
   killSession(sessionId) {
@@ -4146,8 +3396,8 @@ export class RuntimeSessionManager {
     for (const timer of this.#barrierTimers.values()) clearTimeout(timer)
     this.#barrierTimers.clear()
     // Source adapters likewise: construction restarts them from the
-    // persisted registry (#recoverExternalSourceAnchors).
-    this.#stopAllExternalAdapters()
+    // persisted registry (ExternalIngestionService.recoverSourceAnchors).
+    this.#externalIngestion.stopAllAdapters()
     this.#providerService?.closeAll?.()
     this.#bridge?.close()
     // The kernel store intentionally stays open: killAll is revivable (the
@@ -4421,7 +3671,7 @@ export class RuntimeSessionManager {
     const prompt =
       typeof input.prompt === 'string' && input.prompt.trim().length > 0
         ? input.prompt.trim()
-        : this.#defaultMasterPrompt(clusterId)
+        : defaultMasterPrompt(this.#state, clusterId)
     const label =
       typeof input.label === 'string' && input.label.trim().length > 0
         ? input.label.trim()
@@ -4761,7 +4011,7 @@ export class RuntimeSessionManager {
   #cmdStopLoop(input: JsonRecord = {}, ctx: JsonRecord) {
     const loopId = optionalTrimmedString(input.loopId)
     if (loopId) {
-      const loop = loopsOf(this.#kernelView()).find(
+      const loop = loopsOf(this.#queries.kernelView()).find(
         (candidate) => candidate.loopId === loopId,
       )
       if (!loop) {
@@ -4958,7 +4208,9 @@ export class RuntimeSessionManager {
       assertActivatable: (sessionId, ctx) =>
         this.#assertActivatable(sessionId, ctx),
       kernelView: (state) =>
-        state === undefined ? this.#kernelView() : this.#kernelView(state),
+        state === undefined
+          ? this.#queries.kernelView()
+          : this.#queries.kernelView(state),
       readState: () => this.#readState(),
       startRun: (sessionId, request) => this.#startRun(sessionId, request),
       resourcePolicy: (scopeId) => this.#resourcePolicy(scopeId),
@@ -5059,7 +4311,7 @@ export class RuntimeSessionManager {
 
   #cmdCleanupChannels(input: JsonRecord = {}, ctx: JsonRecord) {
     const sessionIds = optionalTrimmedString(input.sessionId)
-      ? [this.#requireSession(input.sessionId).sessionId]
+      ? [this.#queries.requireSession(input.sessionId).sessionId]
       : Object.keys(this.#state.sessions)
     const policy = {
         maxReadAgeDays: Number.isFinite(input.maxReadAgeDays)
@@ -5236,8 +4488,8 @@ export class RuntimeSessionManager {
 
   #cmdLinkSessions(input: JsonRecord = {}, ctx: JsonRecord) {
     const request = isObject(input) ? input : {}
-    const source = this.#requireSession(request.source).sessionId
-    const target = this.#requireSession(request.target).sessionId
+    const source = this.#queries.requireSession(request.source).sessionId
+    const target = this.#queries.requireSession(request.target).sessionId
     if (source === target) {
       throw new Error('Cannot link a session to itself')
     }
@@ -5538,7 +4790,7 @@ export class RuntimeSessionManager {
       'permission.requested',
       'workflow.milestone',
     ])
-    for (const event of this.#allKernelEvents()) {
+    for (const event of this.#queries.allKernelEvents()) {
       if (relevant.has(event.type)) this.#queueWorkflowWakeupsForKernelEvent(event)
     }
   }
@@ -8588,7 +7840,10 @@ export class RuntimeSessionManager {
     const startedAt = context.resource?.startedAt ?? session.startedAt ?? completedAt
     const measured = Math.max(0, Date.parse(completedAt) - Date.parse(startedAt))
     const toolCalls = (session.runtimeActivities ?? []).filter((activity) => activity.turnId === context.runId || (!activity.turnId && Date.parse(activity.startedAt ?? completedAt) >= Date.parse(startedAt))).length
-    const loopIds = this.#loopViewsWithTerminalFacts(this.#kernelView(this.#state)).filter((loop) => loop.memberSessionIds?.includes(sessionId)).map((loop) => loop.loopId)
+    const loopIds = this.#queries
+      .loopViewsWithTerminalFacts(this.#queries.kernelView(this.#state))
+      .filter((loop) => loop.memberSessionIds?.includes(sessionId))
+      .map((loop) => loop.loopId)
     const fact = {
       usageId: randomUUID(),
       sessionId,
@@ -8628,7 +7883,9 @@ export class RuntimeSessionManager {
     const council = planCouncilForSession(this.#wf(), sessionId)
     const participant = council?.participants?.[sessionId]
     const terminalCause = started.activationEventId
-      ? this.#allKernelEvents().find((event) => event.id === started.activationEventId)
+      ? this.#queries
+          .allKernelEvents()
+          .find((event) => event.id === started.activationEventId)
       : undefined
     const execution = participant?.expectedTurnId === started.turnId && validateExecutionEnvelope(participant.expectedExecutionEnvelope)
       ? participant.expectedExecutionEnvelope
@@ -8637,7 +7894,10 @@ export class RuntimeSessionManager {
           : terminalCause && validateExecutionEnvelope(terminalCause.execution ?? terminalCause.payload?.execution)
             ? (terminalCause.execution ?? terminalCause.payload.execution)
             : undefined
-    const loopIds = this.#loopViewsWithTerminalFacts(this.#kernelView(this.#state)).filter((loop) => loop.memberSessionIds?.includes(sessionId)).map((loop) => loop.loopId)
+    const loopIds = this.#queries
+      .loopViewsWithTerminalFacts(this.#queries.kernelView(this.#state))
+      .filter((loop) => loop.memberSessionIds?.includes(sessionId))
+      .map((loop) => loop.loopId)
     const fact = {
       usageId: randomUUID(),
       sessionId,
@@ -9059,37 +8319,6 @@ export class RuntimeSessionManager {
     )
   }
 
-  #reportSummary(payload) {
-    if (payload.type === 'verdict') {
-      if (
-        typeof payload.summary === 'string' &&
-        payload.summary.trim().length > 0
-      ) {
-        return payload.summary.trim()
-      }
-
-      if (Array.isArray(payload.issues) && payload.issues.length > 0) {
-        return payload.issues
-          .map((issue) =>
-            issue.file ? `${issue.message} (${issue.file})` : issue.message,
-          )
-          .join('\n')
-      }
-
-      return payload.verdict
-    }
-
-    if (payload.type === 'relationship') {
-      return payload.nature ?? payload.target
-    }
-
-    try {
-      return boundedText(JSON.stringify(payload.payload), 500)
-    } catch {
-      return 'info'
-    }
-  }
-
   #syncSessionRoleAndCluster(sessionId) {
     const session = this.#state.sessions[sessionId]
     const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
@@ -9200,33 +8429,6 @@ export class RuntimeSessionManager {
         ctx ?? { actor: { kind: 'runtime' } },
       )
     }
-  }
-
-  #defaultMasterPrompt(clusterId) {
-    const cluster = this.#state.clusters[clusterId]
-    const policy = cluster.loopPolicy
-    const until = policy?.until?.whenReport?.verdict
-      ? `until a report verdict is "${policy.until.whenReport.verdict}"`
-      : 'until the authored stop condition is met'
-    const maxIterations = policy?.maxIterations
-      ? `Respect maxIterations=${policy.maxIterations}.`
-      : 'Ask before continuing if the loop looks unbounded.'
-
-    return [
-      `You are the Orrery master session for cluster ${cluster.label}.`,
-      'Read the graph as a blackboard and coordinate only the sessions in your cluster scope.',
-      `The current LoopPolicy is: ${until}; onStop=freeze. ${maxIterations}`,
-      'When the loop runs, the runtime will activate you with pending activation requests (each has a slotKey).',
-      'For each request, decide once: call mcp__orrery_membrane__approve_activation with {"slotKey": ...} to allow it (optionally add "note" with extra instructions), or mcp__orrery_membrane__deny_activation with a reason to reject it. Then stop.',
-      'When the user asks for a Review, Goal loop, Handoff, or multi-model Plan Council, first call inspect_scope, then call propose_workflow with a complete high-level recipe input and a concise reason.',
-      'For new participants you may omit provider, model, cwd, and runtime settings when they should inherit your current provider/workspace. Plan Council participants are always normalized to read-only plan mode.',
-      'A Workflow Proposal is the only allowed authoring path: it creates no runtime sessions or relationships. Do not emulate a workflow with create_session, resume_session, activate, deliver, or link_sessions.',
-      'After proposing, explain the visible participants, relationships, stop conditions, safety policy, warnings, and Graph Diff, then stop and wait for human approval.',
-      'Workflow tool results are compact JSON summaries. Read their proposalId/status directly from the tool result; never use shell commands to locate or parse MCP tool-result files.',
-      'Only after the proposal status is approved may you call commit_workflow with proposalId, expectedBaseVersion, and a stable idempotencyKey. Human locks are authoritative and must survive every revision.',
-      'The runtime handles mechanical transitions (deliveries, activation, message assembly, and deterministic stop conditions). You compile intent, explain proposals, govern judgment points, and surface exceptions; do not route every turn yourself.',
-      'Governor wakeups are durable and limited to failures, caps, missing reports, human changes, permission expansion, and workflow milestones. Inspect the wakeup, propose a versioned Patch when the plan must change, or acknowledge it with a reason; never recreate a human-deleted or human-locked item automatically.',
-    ].join('\n')
   }
 
   // Restart recovery for the intent layer: subscriptions and pending slots
@@ -9346,7 +8548,7 @@ export class RuntimeSessionManager {
       throw new Error(`Unknown report source session: ${source ?? ''}`)
     }
 
-    const payload = this.#normalizeReportPayload(input)
+    const payload = normalizeReportPayload(input)
     const envelope = this.#createEnvelope(source)
     const runContext = this.#runContext.get(source)
     const turnId = runContext?.runId
@@ -9396,7 +8598,7 @@ export class RuntimeSessionManager {
           payload.type === 'verdict'
             ? (payload.issues?.length ?? 0)
             : undefined,
-        summary: this.#reportSummary(payload),
+        summary: reportSummary(payload),
       })
     }
 
@@ -9407,7 +8609,7 @@ export class RuntimeSessionManager {
         from: source,
         reportType: payload.type,
         verdict: payload.type === 'verdict' ? payload.verdict : undefined,
-        summary: truncateForLog(this.#reportSummary(payload), 200),
+        summary: truncateForLog(reportSummary(payload), 200),
         turnId,
       },
       reportCtx,
@@ -9474,136 +8676,6 @@ export class RuntimeSessionManager {
       frozen,
       freezeReason,
     })
-  }
-
-  #masterReasonFromInput(source, input) {
-    if (this.#state.sessions[source]?.role !== 'master') {
-      return undefined
-    }
-
-    const reason = input?.masterReason ?? input?.reason
-    return typeof reason === 'string' && reason.trim().length > 0
-      ? reason.trim()
-      : undefined
-  }
-
-  #normalizeReportPayload(input) {
-    if (!input || typeof input !== 'object') {
-      throw new Error('report payload is required')
-    }
-
-    if (input.type === 'verdict') {
-      if (
-        typeof input.verdict !== 'string' ||
-        input.verdict.trim().length === 0
-      ) {
-        throw new Error('report verdict is required')
-      }
-
-      let issues
-      if (input.issues !== undefined) {
-        if (!Array.isArray(input.issues)) {
-          throw new Error('verdict report issues must be an array')
-        }
-
-        issues = input.issues.map((issue, index) => {
-          if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
-            throw new Error(`verdict issue ${index} must be an object`)
-          }
-
-          if (
-            typeof issue.message !== 'string' ||
-            issue.message.trim().length === 0
-          ) {
-            throw new Error(`verdict issue ${index} message is required`)
-          }
-
-          if (issue.file !== undefined && typeof issue.file !== 'string') {
-            throw new Error(`verdict issue ${index} file must be a string`)
-          }
-
-          if (
-            issue.line !== undefined &&
-            (typeof issue.line !== 'number' || !Number.isFinite(issue.line))
-          ) {
-            throw new Error(
-              `verdict issue ${index} line must be a finite number`,
-            )
-          }
-
-          if (
-            issue.severity !== undefined &&
-            !['info', 'warn', 'error'].includes(issue.severity)
-          ) {
-            throw new Error(
-              `verdict issue ${index} severity must be info, warn, or error`,
-            )
-          }
-
-          return {
-            message: issue.message.trim(),
-            file: issue.file,
-            line: issue.line,
-            severity: issue.severity,
-          }
-        })
-      }
-
-      if (input.summary !== undefined && typeof input.summary !== 'string') {
-        throw new Error('verdict report summary must be a string')
-      }
-
-      return {
-        type: 'verdict',
-        verdict: input.verdict.trim(),
-        issues,
-        summary: input.summary,
-      }
-    }
-
-    if (input.type === 'relationship') {
-      if (
-        typeof input.target !== 'string' ||
-        input.target.trim().length === 0
-      ) {
-        throw new Error('relationship report target is required')
-      }
-
-      return {
-        type: 'relationship',
-        target: input.target.trim(),
-        nature: this.#optionalString(input.nature, 'relationship nature'),
-        sessionRef: this.#optionalString(
-          input.sessionRef,
-          'relationship sessionRef',
-        ),
-      }
-    }
-
-    if (input.type === 'info') {
-      if (!Object.hasOwn(input, 'payload')) {
-        throw new Error('info report payload is required')
-      }
-
-      return {
-        type: 'info',
-        payload: input.payload,
-      }
-    }
-
-    throw new Error(`Unknown report type: ${input.type}`)
-  }
-
-  #optionalString(value, label) {
-    if (value === undefined) {
-      return undefined
-    }
-
-    if (typeof value !== 'string') {
-      throw new Error(`${label} must be a string`)
-    }
-
-    return value
   }
 
   #checkpointChannelMutation(sessionId: string) {
