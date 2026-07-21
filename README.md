@@ -231,16 +231,6 @@ barriers, persistent state, usage and concurrency controls.
 Please report rough edges, failed setups, unclear concepts, and workflows you
 would like to run. Early feedback will directly shape the product.
 
-The customer-facing product name is **looperators**. `Orrery` / `orrery` remains
-the internal codename and technical namespace, so it still appears in source
-paths, commands, and environment variables.
-
-## Contributing
-
-Development conventions, architecture pointers, provider setup, and the
-verification matrix live in [`agents.md`](./agents.md). Product vision and
-design decisions live under [`design-docs/`](./design-docs/).
-
 ## License
 
 Licensed under the [Apache License 2.0](./LICENSE).

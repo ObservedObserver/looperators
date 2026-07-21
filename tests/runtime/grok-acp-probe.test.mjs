@@ -239,15 +239,12 @@ test('committed Grok fixtures contain placeholders instead of local identifiers 
   }
 })
 
-test('Grok delivery scripts and documentation contain no personal absolute user path', () => {
+test('committed Grok delivery surfaces contain no personal absolute user path', () => {
   const files = [
     path.join(repoRoot, 'scripts/grok-acp-probe.mjs'),
     path.join(repoRoot, 'scripts/grok-interaction-smoke.mjs'),
     path.join(repoRoot, 'scripts/grok-membrane-smoke.mjs'),
     path.join(repoRoot, 'README.md'),
-    path.join(repoRoot, 'design-docs/grok-provider-runtime.md'),
-    path.join(repoRoot, 'design-docs/commit-log/2026-07-11-grok-acp-p0-wire.md'),
-    path.join(repoRoot, 'design-docs/commit-log/2026-07-11-grok-acp-p3-adapter.md'),
   ]
   for (const file of files) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /\/Users\/[A-Za-z0-9._-]+\//)

@@ -85,6 +85,12 @@ Use three tiers in order. Kernel tests may use fake provider binaries and only
 verify graph-kernel logic and wire protocols; they do not constitute product
 acceptance.
 
+GitHub CI is intentionally narrower than the local verification matrix. It runs
+`npm run test:ci`, which is limited to environment-independent graph-core unit
+tests after lint and build. Do not add provider fakes, provider CLI probes,
+runtime integration tests, smoke scripts, headless acceptance, or UI acceptance
+to `test:ci`; those remain local-only checks in the tiers below.
+
 ### 1. Kernel regression checks
 
 ```sh

@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Deterministic checks
+    name: Unit checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -34,5 +34,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run deterministic checks
+      - name: Run unit checks
         run: npm run test:ci
