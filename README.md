@@ -1,30 +1,46 @@
 # looperators
 
+**English** | [中文](./README.zh-CN.md) | [Español](./README.es.md)
+
 > **Design the loop, not every prompt.**
 
-looperators is a **loop-native agent tool** for building, running, and
-visualizing long-running workflows between code-agent sessions.
+**looperators puts your AI coding agents on a canvas and wires them into loops
+that run themselves.**
+
+Connect a coding agent and a reviewing agent into a ring: implement, review,
+revise—until the review comes back clean, then stop on its own. You don't
+babysit it, and you don't prompt every turn. Come back, glance at the canvas,
+and see how many laps it took and why it stopped.
 
 <img width="3202" height="1518" alt="looperators-2" src="https://github.com/user-attachments/assets/cf02610e-0c44-4a1b-91cf-cb23a1a9d2b8" />
 
-Connect Claude Code, Codex, and Grok Build so that one session can wake another,
-pass along context, request a review, return failed work for repair, or react to
-an external event. Keep the relationship alive for one handoff, for a bounded
-loop, or as a persistent watcher that responds whenever its trigger fires.
+One generation is rarely the final answer. The work that actually ships comes
+out of a loop—implement, review, revise. And today, that loop usually runs on a
+human engine: read the output, paste the feedback, prompt again, every single
+lap.
 
-Start with a goal or a ready-made loop—not an empty canvas. For more complex
-work, a Master Agent can propose the sessions, roles, feedback paths, triggers,
-and stopping conditions for you. The graph becomes a live view and control
-surface for collaboration that is already happening.
+looperators makes the loop run itself. Put two agents on the canvas and connect
+them into a ring (Claude Code, Codex, and Grok Build all work—you can even have
+different models review each other). Give it a stopping condition: "until the
+review is clean, at most 6 laps." Hit Run and go do something else. A badge on
+the ring shows the current lap in real time; when it's done, the loop timeline
+explains every lap in a minute.
+
+And unlike other automation: **every agent on the graph is a real, long-lived
+session you can open at any time.** Lap two, and the reviewer is nitpicking
+naming style? Open it, tell it "ignore style, logic only," and the loop keeps
+turning—no killing the whole run and starting over.
+
+That is what **loop-native** means—the bet this whole workspace is built on:
+sessions are born into relationships, and loops are the system's mother tongue,
+not a patch bolted onto isolated chats. Design the loop once; the canvas keeps
+it visible, bounded, and yours to steer.
 
 ## Agents should not be islands
 
-Most coding-agent tools treat every session as an island. You become both the
-message bus and the loop engine: read Agent A, copy its output to Agent B, carry
-the feedback back to A, and repeat.
-
-looperators changes that default. Sessions live in relationships. They can wake
-one another, exchange context, review one another, return work upstream, and
+Most coding-agent tools treat every session as an island, with you as the ferry
+between them. In looperators, sessions live in relationships. They can wake one
+another, exchange context, review one another, return work upstream, and
 continue until a real stopping condition is met.
 
 Two questions shape the product:
