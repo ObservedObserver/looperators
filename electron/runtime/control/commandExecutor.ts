@@ -29,6 +29,13 @@ import type {
 
 type RunHandle = { kill: () => unknown }
 
+export type RecoveryControlCommand = {
+  commandId: string
+  idempotencyKey: string
+  kind: string
+  execute: (ctx: JsonRecord) => JsonRecord | undefined
+}
+
 export type CommandExecutorHost = {
   getState: () => JsonRecord
   setState: (state: JsonRecord) => void
@@ -428,12 +435,7 @@ export class CommandExecutor {
     idempotencyKey,
     kind,
     execute,
-  }: {
-    commandId: string
-    idempotencyKey: string
-    kind: string
-    execute: (ctx: JsonRecord) => JsonRecord | undefined
-  }) {
+  }: RecoveryControlCommand) {
     const duplicate = this.#kernelStore.getCommandRecord({
       commandId,
       idempotencyKey,
