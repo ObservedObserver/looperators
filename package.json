@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "main": "dist-electron/electron/main.js",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "npm run dev:app",
     "dev:app": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1 --port 48273 --strictPort\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on http://127.0.0.1:48273 dist-electron/electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:48273 electron .\"",
@@ -20,12 +23,15 @@
     "runtime:http:serve": "node dist-electron/electron/runtimeHttpServerCli.js",
     "emit": "node scripts/emit-external-event.mjs",
     "test": "npm run test:kernel",
-    "test:kernel": "npm run build:electron && node --test --test-concurrency=4 tests/runtime/*.test.mjs tests/graph-core/*.test.mjs",
+    "test:kernel": "npm run build:electron && npm run test:kernel:node && npm run test:kernel:smoke",
+    "test:kernel:node": "node --test --test-concurrency=4 tests/runtime/*.test.mjs tests/graph-core/*.test.mjs",
+    "test:kernel:smoke": "node scripts/canvas-orchestration-smoke.mjs && node scripts/runtime-persistence-recovery.mjs && node scripts/membrane-validation.mjs && node scripts/codex-interaction-smoke.mjs",
     "test:kernel:orchestration": "npm run build:electron && node scripts/canvas-orchestration-smoke.mjs",
     "test:kernel:master-loop": "npm run build:electron && node --test tests/runtime/subscriptions.test.mjs",
     "test:kernel:persistence": "npm run build:electron && node scripts/runtime-persistence-recovery.mjs",
     "test:kernel:membrane": "npm run build:electron && node scripts/membrane-validation.mjs",
     "test:kernel:codex-interaction": "npm run build:electron && node scripts/codex-interaction-smoke.mjs",
+    "test:ci": "npm run lint && npm run build && npm run test:kernel:node && npm run test:kernel:smoke",
     "acceptance:headless": "npm run build:electron && node scripts/acceptance-runner.mjs",
     "acceptance:membrane": "npm run build:electron && node scripts/membrane-smoke.mjs",
     "acceptance:electron": "npm run build:electron && node scripts/electron-typescript-acceptance.mjs",

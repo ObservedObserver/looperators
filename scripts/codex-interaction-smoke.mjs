@@ -405,7 +405,10 @@ try {
   const complexInputResult = runtime.answerUserInput({
     sessionId: complexInputSessionId,
     requestId: complexInputRequest.id,
-    answer: 'visible-shared-answer',
+    answers: {
+      'question-1': 'visible-shared-answer',
+      'question-2': 'visible-shared-answer',
+    },
   })
   assert.equal(complexInputResult.ok, true)
   await waitIdle(runtime, complexInputSessionId, 'complex user input session idle')
