@@ -15,12 +15,15 @@ import {
 import { compactId, formatClock } from '@/lib/format';
 import { reportIssueCount, reportSummary } from '@/lib/reports';
 import { sessionLabel } from '@/lib/session-display';
+import { type ProviderKind } from '@shared/provider-metadata';
 import { deriveLoopProductView, type LoopProductView } from '@shared/loop-product';
 
 export type AgentNodeData = {
   label: string;
   description: string;
   agent: string;
+  providerKind?: ProviderKind;
+  model?: string;
   role: 'worker' | 'master';
   status: SessionStatus;
   messageCount: number;

@@ -1,8 +1,9 @@
 import { memo } from 'react';
 import { BaseEdge, EdgeLabelRenderer, Handle, type Edge, type EdgeProps, type Node, type NodeProps, Position, getBezierPath } from '@xyflow/react';
-import { Activity, Clock, GitBranch, RotateCw, Snowflake, SquareTerminal, Webhook, Zap } from 'lucide-react';
+import { Activity, Bot, Clock, GitBranch, RotateCw, Snowflake, SquareTerminal, Webhook, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TermChip } from '@/components/terminal';
+import { agentIcons, modelFamilyIcon, vendorIcons, vendorLabels } from '@/components/brand-icons';
 import {
   type AgentNodeData,
   type GraphEdgeData,
@@ -14,14 +15,16 @@ import {
   edgeKindStrokes,
   edgeDisplayLabel,
 } from '@/lib/graph-view';
-import { statusLabels, sessionMarker, statePillBase, nodeStatePillCls } from '@/lib/session-display';
+import { statusLabels, statePillBase, nodeStatePillCls } from '@/lib/session-display';
 import { formatClock } from '@/lib/format';
 import { DraftAgentNode, DraftRelationshipEdge } from '@/components/draft-canvas';
 
 export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<Node<AgentNodeData>>) {
   const isMaster = data.role === 'master';
-  const marker = sessionMarker(data.status, selected ?? false, data.role);
   const freezeReason = data.freezeReason ?? data.masterReason;
+  const AgentGlyph = data.providerKind ? agentIcons[data.providerKind] : Bot;
+  const VendorGlyph = data.providerKind ? vendorIcons[data.providerKind] : undefined;
+  const modelFamily = modelFamilyIcon(data.model, data.providerKind);
   return (
     <div
       className={cn(
@@ -46,12 +49,39 @@ export const AgentNode = memo(function AgentNode({ data, selected }: NodeProps<N
         className="!size-3 !border-2 !border-card !bg-term-accent-hi"
         aria-label={`Connect from ${data.label} on the left`}
       />
-      <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-3">
-        <span className={cn('w-3.5 shrink-0 text-center text-[12px] leading-none', marker.cls)}>{marker.char}</span>
-        <div className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground" title={data.label}>
-          {data.label}
+      <div className="flex items-center gap-2.5 px-3.5 pb-2.5 pt-3">
+        {/* Identity trio (agent harness / model family / model vendor): the
+            avatar tile is the harness, its corner badge the vendor, and the
+            subline carries the model id with its family glyph. */}
+        <div
+          className={cn(
+            'relative flex size-8 shrink-0 items-center justify-center rounded-lg border',
+            isMaster ? 'border-term-amber/45 bg-term-amber/10 text-term-amber' : 'border-term-accent/35 bg-term-accent/10 text-accent-ink',
+            data.status === 'running' && 'animate-pulse',
+          )}
+          title={data.agent}
+        >
+          <AgentGlyph className="size-[17px]" />
+          {VendorGlyph ? (
+            <span
+              className="absolute -bottom-[5px] -right-[5px] flex size-[15px] items-center justify-center rounded-[5px] border border-border bg-background text-muted-foreground"
+              title={data.providerKind ? vendorLabels[data.providerKind] : undefined}
+            >
+              <VendorGlyph className="size-[9px]" />
+            </span>
+          ) : null}
         </div>
-        <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[9.5px] leading-none text-muted-foreground">{data.agent}</span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-semibold text-foreground" title={data.label}>
+            {data.label}
+          </div>
+          {modelFamily && data.model ? (
+            <div className="mt-[3px] flex min-w-0 items-center gap-1.5 text-[9.5px] leading-none text-muted-foreground" title={data.model}>
+              <modelFamily.Icon className={cn('size-2.5 shrink-0', modelFamily.brandClass)} />
+              <span className="truncate">{data.model}</span>
+            </div>
+          ) : null}
+        </div>
         {data.frozen || isMaster || data.status !== 'idle' ? (
           <span className={cn(statePillBase, nodeStatePillCls(data.status, data.role, data.frozen))}>
             {data.frozen ? 'frozen' : isMaster ? 'master' : statusLabels[data.status].toLowerCase()}

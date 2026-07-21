@@ -18,6 +18,7 @@ import {
 } from '@/lib/graph-view';
 import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/reports';
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
+import { isProviderKind } from '@/components/brand-icons';
 import { draftCanvasEdges, draftCanvasNodes } from '@/lib/draft-graph-view';
 import type { DraftGraphState } from '@/hooks/use-draft-graph';
 import { routeRuntimeAgentEdges } from '@shared/canvas-edge-routing';
@@ -86,6 +87,8 @@ export function useCanvas({
             label: session ? sessionDisplayLabel(session) : node.label,
             description: lastMessagePreview(session),
             agent: shortAgentName(session ? sessionProviderLabel(session) : node.agent),
+            providerKind: session?.providerKind ?? (isProviderKind(node.agent) ? node.agent : undefined),
+            model: session?.effectiveRuntimeConfig?.model ?? session?.runtimeSettings?.model,
             role: node.role,
             status: node.status,
             messageCount: session?.messages.length ?? 0,
