@@ -18,6 +18,7 @@ import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type SessionListState } from '@/hooks/use-session-list';
 import { type SessionActionsState } from '@/hooks/use-session-actions';
 import { type InteractionsState } from '@/hooks/use-interactions';
+import { AppUpdateNotice } from '@/components/app-update-notice';
 
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
@@ -467,6 +468,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
           </div>
         </div>
       </div>
+      {isElectron ? <AppUpdateNotice /> : null}
       <footer className="app-region-no-drag flex shrink-0 items-center gap-3 border-t border-border px-4 py-2 font-mono text-[11px] tracking-[0.02em] text-muted-foreground">
         <span className="flex items-center gap-1.5" title="Running chats">
           <span className={cn('size-1.5 rounded-full', runningSessions.length ? 'bg-emerald-500' : 'bg-muted-foreground/40')} />

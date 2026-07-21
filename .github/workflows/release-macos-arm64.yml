@@ -1,0 +1,167 @@
+name: Release macOS arm64
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, for example 0.2.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize, and publish
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - id: release
+        name: Resolve release version
+        shell: bash
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            raw_version="$DISPATCH_VERSION"
+          else
+            raw_version="$GITHUB_REF_NAME"
+          fi
+
+          version="${raw_version#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release version must be stable SemVer (X.Y.Z), received: $raw_version" >&2
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set package version from release tag
+        run: npm version "${{ steps.release.outputs.version }}" --no-git-tag-version
+
+      - name: Run deterministic checks
+        run: npm run test:ci
+
+      - name: Configure Apple signing and notarization
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_CONTENT APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required release secret: $name" >&2
+              exit 1
+            fi
+          done
+
+          key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$key_path"
+          chmod 600 "$key_path"
+          echo "APPLE_API_KEY=$key_path" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=$APPLE_API_ISSUER" >> "$GITHUB_ENV"
+          echo "CSC_LINK=$CSC_LINK" >> "$GITHUB_ENV"
+          echo "CSC_KEY_PASSWORD=$CSC_KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build signed macOS arm64 artifacts
+        run: npm run dist:mac
+
+      - name: Verify app signature, notarization, and updater assets
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          app_path="$(find release -maxdepth 2 -type d -name 'looperators.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "Packaged looperators.app was not found." >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")"
+          team_id="$(codesign -dv --verbose=4 "$app_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          architectures="$(lipo -archs "$app_path/Contents/MacOS/looperators")"
+          if [[ "$bundle_id" != "com.observedobserver.looperators" ]]; then
+            echo "Unexpected bundle identifier: $bundle_id" >&2
+            exit 1
+          fi
+          if [[ "$team_id" != "6RAXH4XM34" ]]; then
+            echo "Unexpected signing Team ID: $team_id" >&2
+            exit 1
+          fi
+          if [[ "$architectures" != "arm64" ]]; then
+            echo "Expected an arm64-only app, received: $architectures" >&2
+            exit 1
+          fi
+
+          feed_config="$app_path/Contents/Resources/app-update.yml"
+          if [[ ! -f "$feed_config" ]] || ! grep -q '^owner: ObservedObserver$' "$feed_config" || ! grep -q '^repo: looperators$' "$feed_config"; then
+            echo "The packaged GitHub update feed is missing or incorrect." >&2
+            exit 1
+          fi
+
+          required_assets=(
+            "release/looperators-${RELEASE_VERSION}-mac-arm64.dmg"
+            "release/looperators-${RELEASE_VERSION}-mac-arm64.zip"
+            "release/latest-mac.yml"
+          )
+          for asset in "${required_assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Missing required release asset: $asset" >&2
+              exit 1
+            fi
+          done
+
+          shopt -s nullglob
+          blockmaps=(release/*.blockmap)
+          if [[ ${#blockmaps[@]} -eq 0 ]]; then
+            echo "No differential-update blockmaps were generated." >&2
+            exit 1
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: looperators ${{ steps.release.outputs.version }}
+          generate_release_notes: true
+          prerelease: false
+          make_latest: true
+          fail_on_unmatched_files: true
+          files: |
+            release/looperators-${{ steps.release.outputs.version }}-mac-arm64.dmg
+            release/looperators-${{ steps.release.outputs.version }}-mac-arm64.zip
+            release/*.blockmap
+            release/latest-mac.yml

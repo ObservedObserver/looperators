@@ -19,29 +19,43 @@
 
 </div>
 
-Connect a coding agent and a reviewing agent into a ring: implement, review,
-revise—until the review comes back clean, then stop on its own. You don't
-babysit it, and you don't prompt every turn. Come back, glance at the canvas,
-and see how many laps it took and why it stopped.
+When you point AI at a complex programming task, you often end up running
+several agents at once: different models drafting solutions and debating them,
+or one agent writing code while another reviews it, round after round. But
+each agent lives in its own window, and the one shuttling messages between
+them is you—paste A's output to B, carry B's feedback back to A, every single
+round. The more agents and the more rounds, the more you become copy-paste
+middleware.
+
+That middleware role breaks down into three jobs: moving context between
+agents, triggering the right agent at the right time, and deciding when the
+loop is finished. looperators hands all three to the graph. Agents sit on a canvas,
+connected by edges—and the edges are not a diagram, they execute: when an
+upstream agent finishes, its output travels down the edge to the next agent;
+the downstream conclusion flows back up and wakes the original agent to keep
+going. Who triggers whom, what context moves, and when to stop are all defined
+on the edge. You stop relaying messages and only set up the relationships and
+the stopping condition once.
+
+You don't assemble that graph by hand, either—**looperators is not a low-code
+builder.** Chat with your agents the way you always do; whenever a loop takes
+shape in the conversation, the matching graph appears on the canvas
+automatically, ready to edit. Power users who want to design loops directly
+can do it in plain conversation too—no dragging boxes and wires.
 
 <img width="3202" height="1518" alt="looperators-2" src="https://github.com/user-attachments/assets/cf02610e-0c44-4a1b-91cf-cb23a1a9d2b8" />
 
-One generation is rarely the final answer. The work that actually ships comes
-out of a loop—implement, review, revise. And today, that loop usually runs on a
-human engine: read the output, paste the feedback, prompt again, every single
-lap.
+A favorite pattern: throw one problem at several models at once—Codex, Claude
+Code, and Grok Build each draft a solution, read and challenge each other, and
+revise until the discussion converges on a consensus. Nobody carries drafts
+around; the graph drives every round.
 
-looperators makes the loop run itself. Put two agents on the canvas and connect
-them into a ring (Claude Code, Codex, and Grok Build all work—you can even have
-different models review each other). Give it a stopping condition: "until the
-review is clean, at most 6 laps." Hit Run and go do something else. A badge on
-the ring shows the current lap in real time; when it's done, the loop timeline
-explains every lap in a minute.
-
-And unlike other automation: **every agent on the graph is a real, long-lived
-session you can open at any time.** Lap two, and the reviewer is nitpicking
-naming style? Open it, tell it "ignore style, logic only," and the loop keeps
-turning—no killing the whole run and starting over.
+Code Review is another ready-made ring: wire a coder and a reviewer together
+with one stopping condition—"until the review is clean, at most 6 laps."
+Finished work goes to review automatically, blocking issues come back
+automatically, and a badge on the ring shows the current lap. Any agent on the
+graph is a real session you can open mid-run as a normal chat: tell the
+reviewer "ignore style, logic only," and the loop keeps running.
 
 That is what **loop-native** means—the bet this whole workspace is built on:
 sessions are born into relationships, and loops are the system's mother tongue,
@@ -239,8 +253,7 @@ looperators currently ships a macOS (Apple Silicon) build; on other platforms,
 run from source.
 
 1. **[Download the latest release](https://github.com/ObservedObserver/looperators/releases/latest)**
-   and drag looperators into Applications. Builds are not notarized yet—if
-   macOS blocks the first launch, right-click the app and choose **Open**.
+   and drag looperators into Applications.
 2. Install and sign in to at least one supported code agent—Claude Code,
    Codex, or Grok Build.
 3. Open looperators and start with **New Workflow** for a ready-made loop, or

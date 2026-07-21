@@ -4,7 +4,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const membraneServerPath = path.join(__dirname, 'membraneMcpServer.js')
+const packagedMembraneServerPath = process.resourcesPath
+  ? path.join(process.resourcesPath, 'membraneMcpServer.js')
+  : undefined
+const membraneServerPath =
+  packagedMembraneServerPath && fs.existsSync(packagedMembraneServerPath)
+    ? packagedMembraneServerPath
+    : path.join(__dirname, 'membraneMcpServer.js')
 
 const commonCliPaths = [
   '/opt/homebrew/bin',

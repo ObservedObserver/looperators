@@ -2,14 +2,23 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
+import { AppUpdateController } from './appUpdater.js'
+import type { AppUpdateState } from '../shared/app-update.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 let runtime: RuntimeSessionManager | undefined
+let updates: AppUpdateController | undefined
 
 function broadcastRuntimeEvent(event) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('orrery:runtime-event', event)
+  }
+}
+
+function broadcastUpdateState(state: AppUpdateState) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send('orrery:update-state-changed', state)
   }
 }
 
@@ -43,6 +52,7 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  updates = new AppUpdateController({ broadcast: broadcastUpdateState })
   runtime = new RuntimeSessionManager({
     storageFile:
       process.env.ORRERY_RUNTIME_STORAGE_FILE ??
@@ -61,6 +71,11 @@ app.whenReady().then(() => {
     })
 
   ipcMain.handle('orrery:runtime-state', () => runtime.getState())
+  ipcMain.handle('orrery:update-state', () => updates.getState())
+  ipcMain.handle('orrery:check-for-updates', () =>
+    updates.checkForUpdates('manual'),
+  )
+  ipcMain.handle('orrery:open-update-page', () => updates.openReleasePage())
   ipcMain.handle('orrery:kernel-events', (_event, input) =>
     runtime.getKernelEvents(input),
   )
@@ -224,6 +239,7 @@ app.whenReady().then(() => {
   )
 
   createMainWindow()
+  updates.configure()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -245,4 +261,8 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('will-quit', () => {
+  updates?.dispose()
 })

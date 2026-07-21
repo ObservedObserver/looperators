@@ -69,6 +69,7 @@ import type {
 } from '@/shared/graph-state';
 import type { PlanCouncil } from '@shared/plan-council';
 import type { ProviderInstance } from '@/shared/provider-runtime';
+import type { AppUpdateState } from '@shared/app-update';
 
 const defaultRuntimeUrl = 'http://127.0.0.1:48274';
 
@@ -146,6 +147,12 @@ export type RuntimeApi = {
 export type ElectronOrreryApi = {
   platform: string;
   workspace?: RuntimeWorkspaceMetadata;
+  updates: {
+    getState: () => Promise<AppUpdateState>;
+    checkForUpdates: () => Promise<AppUpdateState>;
+    openReleasePage: () => Promise<void>;
+    onState: (listener: (state: AppUpdateState) => void) => () => void;
+  };
   runtime: RuntimeApi;
 };
 

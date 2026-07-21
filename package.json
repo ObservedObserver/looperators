@@ -1,7 +1,9 @@
 {
   "name": "orrery",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A loop-native desktop tool for agent workflows.",
+  "author": "ObservedObserver",
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "engines": {
@@ -16,7 +18,6 @@
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/prune-electron-output.mjs",
     "check:electron": "tsc -p tsconfig.electron.json --noEmit",
     "format:src": "prettier --write src",
-    "format:check": "prettier --check src",
     "lint": "oxlint",
     "cli": "node scripts/orrery-cli.mjs",
     "runtime:http": "npm run build:electron && node dist-electron/electron/runtimeHttpServerCli.js",
@@ -37,7 +38,58 @@
     "acceptance:membrane": "npm run build:electron && node scripts/membrane-smoke.mjs",
     "acceptance:electron": "npm run build:electron && node scripts/electron-typescript-acceptance.mjs",
     "preview": "vite preview",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish never",
+    "pack:mac": "npm run build && electron-builder --mac dir --arm64 --publish never"
+  },
+  "build": {
+    "appId": "com.observedobserver.looperators",
+    "productName": "looperators",
+    "artifactName": "looperators-${version}-mac-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist-electron/electron/runtime/membraneMcpServer.js",
+        "to": "membraneMcpServer.js"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "icon.icns",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "12.0"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ObservedObserver",
+        "repo": "looperators",
+        "releaseType": "release"
+      }
+    ]
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.191",
@@ -48,6 +100,7 @@
     "@xyflow/react": "^12.11.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.21.0",
     "radix-ui": "^1.6.0",
     "react": "^19.2.7",
@@ -68,6 +121,7 @@
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
     "electron": "^42.5.0",
+    "electron-builder": "^26.15.7",
     "oxlint": "^1.69.0",
     "prettier": "^3.9.4",
     "typescript": "~6.0.2",

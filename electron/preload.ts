@@ -5,6 +5,19 @@ contextBridge.exposeInMainWorld('orrery', {
   workspace: {
     defaultCwd: process.cwd(),
   },
+  updates: {
+    getState: () => ipcRenderer.invoke('orrery:update-state'),
+    checkForUpdates: () => ipcRenderer.invoke('orrery:check-for-updates'),
+    openReleasePage: () => ipcRenderer.invoke('orrery:open-update-page'),
+    onState: (listener) => {
+      const wrappedListener = (_event, state) => listener(state)
+      ipcRenderer.on('orrery:update-state-changed', wrappedListener)
+
+      return () => {
+        ipcRenderer.removeListener('orrery:update-state-changed', wrappedListener)
+      }
+    },
+  },
   runtime: {
     getState: () => ipcRenderer.invoke('orrery:runtime-state'),
     getKernelEvents: (input) =>

@@ -6,7 +6,7 @@
 
 ### *Design the loop, not every prompt.*
 
-**looperators pone tus agentes de código con IA sobre un canvas<br/>y los conecta en loops que giran solos.**
+**looperators pone tus agentes de código con IA sobre un canvas<br/>y los conecta en loops que corren solos.**
 
 [![Release](https://img.shields.io/github/v/release/ObservedObserver/looperators?color=0A84FF&label=release)](https://github.com/ObservedObserver/looperators/releases/latest)
 [![License](https://img.shields.io/github/license/ObservedObserver/looperators?color=8A2BE2)](./LICENSE)
@@ -19,32 +19,44 @@
 
 </div>
 
-Conecta un Agent que escribe código y otro que hace Code Review en un anillo:
-implementar, review, corregir—hasta que el review salga limpio y el loop se
-detenga solo. No tienes que vigilarlo ni escribir un prompt en cada turno.
-Vuelve, echa un vistazo al canvas y sabrás cuántas vueltas dio y por qué se
-detuvo.
+Al apuntar la IA a una tarea de programación compleja, muchos acabamos usando
+varios agentes a la vez: distintos modelos que redactan soluciones y las
+debaten, o un Agent que escribe código mientras otro le hace Code Review,
+ronda tras ronda. Pero cada Agent vive en su propia ventana, y quien acarrea
+los mensajes entre ellos eres tú—pegar la salida de A en B, llevar el feedback
+de B de vuelta a A, en cada ronda. Cuantos más Agents y más rondas, más te
+conviertes en un middleware de copiar y pegar.
+
+Ese papel de middleware son en realidad tres trabajos: mover contexto entre
+Agents, disparar al Agent correcto en el momento correcto y decidir cuándo
+termina el loop. looperators le entrega los tres al grafo. Los Agents se
+colocan sobre un canvas, conectados por aristas—y las aristas no son un diagrama: se ejecutan.
+Cuando un Agent termina, su salida viaja por la arista hasta el siguiente; la
+conclusión del de abajo vuelve río arriba y despierta al Agent original para
+que siga. Quién dispara a quién, qué contexto viaja y cuándo parar se define
+en la arista. Dejas de hacer de mensajero; solo defines una vez las relaciones
+y la condición de parada.
+
+Y ese grafo no se monta a mano—**looperators no es una herramienta low-code.**
+Habla con tus Agents como siempre; cuando en la conversación toma forma un
+loop, el grafo correspondiente aparece en el canvas automáticamente, listo
+para editar. Quien quiera diseñar loops directamente también puede hacerlo en
+conversación normal—sin arrastrar cajas ni cables.
 
 <img width="3202" height="1518" alt="looperators-2" src="https://github.com/user-attachments/assets/cf02610e-0c44-4a1b-91cf-cb23a1a9d2b8" />
 
-Una sola generación rara vez es la respuesta final. El trabajo que realmente
-llega a producción sale de un loop—implementar, Code Review, corregir. Y hoy,
-ese loop suele funcionar con motor humano: leer la salida, pegar el feedback,
-volver a escribir un prompt, vuelta tras vuelta.
+Un patrón favorito: lanza el mismo problema a varios modelos a la vez—Codex,
+Claude Code y Grok Build redactan cada uno una solución, se leen y se desafían
+entre sí, y revisan hasta que la discusión converge en un consenso. Nadie
+acarrea borradores; el grafo conduce cada ronda.
 
-looperators hace que el loop gire solo. Pon dos Agents en el canvas y
-conéctalos en un anillo (Claude Code, Codex y Grok Build funcionan—incluso
-puedes hacer que modelos distintos se revisen entre sí). Dale una condición de
-parada: "hasta que el review esté limpio, máximo 6 vueltas". Pulsa Run y
-dedícate a otra cosa. Una insignia sobre el anillo muestra la vuelta actual en
-tiempo real; al terminar, el timeline del loop explica cada vuelta en un
-minuto.
-
-Y a diferencia de otras automatizaciones: **cada Agent del grafo es una sesión
-real y de larga vida que puedes abrir en cualquier momento.** ¿Vuelta dos y el
-reviewer está obsesionado con el estilo de los nombres? Ábrelo, dile "ignora el
-estilo, solo lógica" y el loop sigue girando—sin matar el run entero y empezar
-de cero.
+Code Review es otro anillo listo para usar: conecta un coder y un reviewer con
+una condición de parada—"hasta que el review esté limpio, máximo 6 vueltas".
+El trabajo terminado va a review automáticamente, los blocking issues vuelven
+automáticamente, y una insignia sobre el anillo muestra la vuelta actual.
+Cualquier Agent del grafo es una sesión real que puedes abrir en plena
+ejecución como un chat normal: dile al reviewer "ignora el estilo, solo
+lógica" y el loop sigue corriendo.
 
 Eso es lo que significa **loop-native**—la apuesta sobre la que está construido
 todo este workspace: las sesiones nacen dentro de relaciones, y los loops son
@@ -207,7 +219,7 @@ El grafo reúne tres vistas del mismo trabajo:
   Master que determinan quién puede cambiar el workflow.
 
 Los loops aparecen como unidades legibles con su vuelta actual, estado,
-condición de parada y timeline. Ve si un loop está girando, esperando un gate,
+condición de parada y timeline. Ve si un loop está corriendo, esperando un gate,
 bloqueado, completo, congelado o detenido por una barrera, y abre la sesión o
 el evento exacto que lo explica.
 
@@ -251,9 +263,7 @@ looperators ofrece por ahora una build para macOS (Apple Silicon); en otras
 plataformas, ejecútalo desde el código fuente.
 
 1. **[Descarga la última release](https://github.com/ObservedObserver/looperators/releases/latest)**
-   y arrastra looperators a Applications. Las builds aún no están
-   notarizadas—si macOS bloquea el primer arranque, haz clic derecho sobre la
-   app y elige **Abrir**.
+   y arrastra looperators a Applications.
 2. Instala y autentica al menos un code agent compatible—Claude Code, Codex o
    Grok Build.
 3. Abre looperators y empieza con **New Workflow** para un loop listo para
