@@ -12,6 +12,7 @@ import {
   type SourceNodeData,
   type TimerNodeData,
   edgeKindClassNames,
+  edgeKindLabels,
   edgeKindStrokes,
   edgeDisplayLabel,
 } from '@/lib/graph-view';
@@ -339,7 +340,22 @@ export function ReadabilityEdge({
   });
   const edgeData = data as GraphEdgeData;
   const reason = edgeData.freezeReason ?? edgeData.masterReason;
-  const visibleDetail = reason ?? edgeData.summary;
+  const isSubscription = edgeData.kind === 'subscription';
+  const stopped = edgeData.subscriptionState === 'stopped';
+  const displayLabel = edgeDisplayLabel(edgeData);
+  // Auto-generated route labels ("systems → delivery") restate what the edge
+  // already draws between its nodes; only human-authored labels earn chip
+  // space. Everything dropped from the chip lands in the tooltip.
+  const chipLabel = isSubscription && (displayLabel === edgeKindLabels.subscription || /[→›]|->/.test(displayLabel)) ? undefined : displayLabel;
+  const tooltip = [
+    edgeData.label,
+    isSubscription && edgeData.summary ? `${edgeData.summary}${edgeData.gate ? ` · gate ${edgeData.gate}` : ''}` : edgeData.summary,
+    edgeData.untilSummary,
+    stopped ? 'stopped' : undefined,
+    reason,
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   return (
     <>
@@ -370,15 +386,15 @@ export function ReadabilityEdge({
         <button
           type="button"
           className={cn(
-            'nodrag nopan pointer-events-auto absolute rounded-md border px-2 py-1 font-mono text-[10px] leading-4 shadow-sm backdrop-blur-sm',
-            edgeKindClassNames[edgeData.kind],
+            'nodrag nopan pointer-events-auto absolute flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-[3px] font-mono text-[9.5px] leading-none shadow-sm backdrop-blur-sm',
+            stopped || edgeData.frozen ? 'border-border bg-background/85 text-muted-foreground' : edgeKindClassNames[edgeData.kind],
             edgeData.recent && 'orrery-edge-label-recent',
           )}
           style={{
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
             zIndex: 40,
           }}
-          title={[edgeData.summary, reason].filter(Boolean).join('\n')}
+          title={tooltip}
           aria-label={`Inspect Relationship: ${edgeData.label}`}
           onClick={(event) => {
             event.stopPropagation();
@@ -391,30 +407,31 @@ export function ReadabilityEdge({
             edgeData.inspect?.();
           }}
         >
-          <span className="flex items-center gap-1.5 whitespace-nowrap uppercase tracking-[0.06em]">
-            {edgeData.kind === 'subscription' ? null : <span className="tabular-nums opacity-70">#{edgeData.sequence}</span>}
-            <span>{edgeDisplayLabel(edgeData)}</span>
-            {edgeData.verdict ? <span>· {edgeData.verdict}</span> : null}
-            {edgeData.issueCount !== undefined ? <span className="tabular-nums">· {edgeData.issueCount} iss</span> : null}
-            {edgeData.kind === 'subscription' && edgeData.gate ? (
-              <span>· {edgeData.gate === 'auto' ? '⚡ auto' : edgeData.gate === 'master' ? '◆ master' : '⊘ human'}</span>
-            ) : null}
-            {edgeData.kind === 'subscription' && edgeData.firings !== undefined ? (
-              <span className="tabular-nums">
-                · {edgeData.firings}
-                {edgeData.maxFirings !== undefined ? `/${edgeData.maxFirings}` : ''}
-              </span>
-            ) : null}
-            {edgeData.subscriptionState === 'stopped' ? <span>· stopped</span> : null}
-            {edgeData.pendingStatus ? <span className="text-term-amber">· {edgeData.pendingStatus}</span> : null}
-          </span>
-          {edgeData.kind === 'subscription' && (edgeData.untilSummary || edgeData.summary) ? (
-            <span className="mt-0.5 block max-w-[220px] truncate normal-case tracking-normal opacity-80">
-              {[edgeData.summary, edgeData.untilSummary].filter(Boolean).join(' · ')}
-            </span>
-          ) : visibleDetail ? (
-            <span className="mt-0.5 block max-w-[220px] truncate normal-case tracking-normal opacity-80">{visibleDetail}</span>
-          ) : null}
+          {isSubscription ? null : <span className="tabular-nums opacity-60">#{edgeData.sequence}</span>}
+          {chipLabel ? <span className="max-w-[110px] truncate">{chipLabel}</span> : null}
+          {isSubscription ? (
+            <>
+              {edgeData.gate ? <span aria-hidden="true">{edgeData.gate === 'auto' ? '⚡' : edgeData.gate === 'master' ? '◆' : '⊘'}</span> : null}
+              {edgeData.summary ? <span className="max-w-[130px] truncate">{edgeData.summary}</span> : null}
+              {edgeData.firings !== undefined && (edgeData.maxFirings !== undefined || edgeData.firings > 0) ? (
+                <span className="tabular-nums opacity-75">
+                  {edgeData.firings}
+                  {edgeData.maxFirings !== undefined ? `/${edgeData.maxFirings}` : ''}
+                </span>
+              ) : null}
+              {stopped ? (
+                <span className="opacity-60" aria-hidden="true">
+                  ⏹
+                </span>
+              ) : null}
+              {edgeData.pendingStatus ? <span className="text-term-amber">● {edgeData.pendingStatus}</span> : null}
+            </>
+          ) : (
+            <>
+              {edgeData.verdict ? <span>{`${edgeData.verdict === 'clean' ? '✓' : '!'} ${edgeData.verdict}`}</span> : null}
+              {edgeData.issueCount ? <span className="tabular-nums">{edgeData.issueCount} iss</span> : null}
+            </>
+          )}
         </button>
       </EdgeLabelRenderer>
     </>
