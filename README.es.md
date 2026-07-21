@@ -1,11 +1,23 @@
+<div align="center">
+
 # looperators
 
 [English](./README.md) | [中文](./README.zh-CN.md) | **Español**
 
-> **Design the loop, not every prompt.**
+### *Design the loop, not every prompt.*
 
-**looperators pone tus agentes de código con IA sobre un canvas y los conecta
-en loops que giran solos.**
+**looperators pone tus agentes de código con IA sobre un canvas<br/>y los conecta en loops que giran solos.**
+
+[![Release](https://img.shields.io/github/v/release/ObservedObserver/looperators?color=0A84FF&label=release)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![License](https://img.shields.io/github/license/ObservedObserver/looperators?color=8A2BE2)](./LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-111111?logo=apple)
+![Agents](https://img.shields.io/badge/agents-Claude%20Code%20·%20Codex%20·%20Grok%20Build-2ea44f)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+
+[![Descargar para macOS](https://img.shields.io/badge/⬇_Descargar_para_macOS-Apple_Silicon-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![Primeros pasos](https://img.shields.io/badge/Primeros_pasos-3_pasos-30363D?style=for-the-badge)](#primeros-pasos)
+
+</div>
 
 Conecta un Agent que escribe código y otro que hace Code Review en un anillo:
 implementar, review, corregir—hasta que el review salga limpio y el loop se
@@ -235,18 +247,25 @@ bastante segura como para confiar en ella**.
 
 ## Primeros pasos
 
-looperators está en desarrollo activo y por ahora se ejecuta desde el código
-fuente. Instala y autentica al menos un code agent compatible—Claude Code,
-Codex o Grok Build. Desde el directorio del proyecto, ejecuta:
+looperators ofrece por ahora una build para macOS (Apple Silicon); en otras
+plataformas, ejecútalo desde el código fuente.
+
+1. **[Descarga la última release](https://github.com/ObservedObserver/looperators/releases/latest)**
+   y arrastra looperators a Applications. Las builds aún no están
+   notarizadas—si macOS bloquea el primer arranque, haz clic derecho sobre la
+   app y elige **Abrir**.
+2. Instala y autentica al menos un code agent compatible—Claude Code, Codex o
+   Grok Build.
+3. Abre looperators y empieza con **New Workflow** para un loop listo para
+   usar, o abre un chat de Master para describir un objetivo más complejo. El
+   chat y el grafo de Agents siguen disponibles durante toda la ejecución.
+
+Para ejecutar desde el código fuente:
 
 ```sh
 npm install
 npm run dev
 ```
-
-Empieza con **New Workflow** para un loop listo para usar, o abre un chat de
-Master para describir un objetivo más complejo. El chat y el grafo de Agents
-siguen disponibles durante toda la ejecución.
 
 ## Estado del proyecto
 

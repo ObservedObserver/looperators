@@ -1,10 +1,23 @@
+<div align="center">
+
 # looperators
 
 [English](./README.md) | **中文** | [Español](./README.es.md)
 
-> **Design the loop, not every prompt.**
+### *Design the loop, not every prompt.*
 
-**looperators 把 AI Agent 铺在画布上，连成会自己转的 loop。**
+**looperators 把 AI Agent 铺在画布上，<br/>连成会自己转的 loop。**
+
+[![Release](https://img.shields.io/github/v/release/ObservedObserver/looperators?color=0A84FF&label=release)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![License](https://img.shields.io/github/license/ObservedObserver/looperators?color=8A2BE2)](./LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-111111?logo=apple)
+![Agents](https://img.shields.io/badge/agents-Claude%20Code%20·%20Codex%20·%20Grok%20Build-2ea44f)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+
+[![下载 macOS 版](https://img.shields.io/badge/⬇_下载_macOS_版-Apple_Silicon-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![快速开始](https://img.shields.io/badge/快速开始-3_步-30363D?style=for-the-badge)](#快速开始)
+
+</div>
 
 写代码的 Agent 和做 Code Review 的 Agent 连成一个环：实现、review、修改，直到
 review 干净自动停。你不用盯着，也不用一句一句 prompt——回来看一眼画布，就知道
@@ -193,16 +206,23 @@ loop 在图上是一个可读的整体：当前第几圈、状态、停止条件
 
 ## 快速开始
 
-looperators 正在积极开发中，当前从源码运行。先安装并登录至少一个受支持的
-code agent——Claude Code、Codex 或 Grok Build。在项目目录下运行：
+looperators 目前提供 macOS（Apple Silicon）安装包；其他平台可从源码运行。
+
+1. **[下载最新 release](https://github.com/ObservedObserver/looperators/releases/latest)**，
+   把 looperators 拖进 Applications。构建暂未公证——如果 macOS 拦截首次启动，
+   右键点击应用选择**打开**即可。
+2. 安装并登录至少一个受支持的 code agent——Claude Code、Codex 或 Grok
+   Build。
+3. 打开 looperators，从 **New Workflow** 选一个现成的 loop 开始，或者打开
+   Master 聊天描述一个更复杂的目标。运行全程中，聊天和 Agent graph 都随时
+   可用。
+
+想从源码运行的话：
 
 ```sh
 npm install
 npm run dev
 ```
-
-从 **New Workflow** 选一个现成的 loop 开始，或者打开 Master 聊天描述一个更
-复杂的目标。运行全程中，聊天和 Agent graph 都随时可用。
 
 ## 项目状态
 

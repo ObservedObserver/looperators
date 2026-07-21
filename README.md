@@ -1,11 +1,23 @@
+<div align="center">
+
 # looperators
 
 **English** | [中文](./README.zh-CN.md) | [Español](./README.es.md)
 
-> **Design the loop, not every prompt.**
+### *Design the loop, not every prompt.*
 
-**looperators puts your AI coding agents on a canvas and wires them into loops
-that run themselves.**
+**looperators puts your AI coding agents on a canvas<br/>and wires them into loops that run themselves.**
+
+[![Release](https://img.shields.io/github/v/release/ObservedObserver/looperators?color=0A84FF&label=release)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![License](https://img.shields.io/github/license/ObservedObserver/looperators?color=8A2BE2)](./LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-111111?logo=apple)
+![Agents](https://img.shields.io/badge/agents-Claude%20Code%20·%20Codex%20·%20Grok%20Build-2ea44f)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+
+[![Download for macOS](https://img.shields.io/badge/⬇_Download_for_macOS-Apple_Silicon-0A84FF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/ObservedObserver/looperators/releases/latest)
+[![Get started](https://img.shields.io/badge/Get_started-3_steps-30363D?style=for-the-badge)](#get-started)
+
+</div>
 
 Connect a coding agent and a reviewing agent into a ring: implement, review,
 revise—until the review comes back clean, then stop on its own. You don't
@@ -223,18 +235,24 @@ collaboration visible, bounded, and safe enough to trust.
 
 ## Get started
 
-looperators is under active development and currently runs from source. Install
-and authenticate at least one supported code agent—Claude Code, Codex, or Grok
-Build. From the project directory, run:
+looperators currently ships a macOS (Apple Silicon) build; on other platforms,
+run from source.
+
+1. **[Download the latest release](https://github.com/ObservedObserver/looperators/releases/latest)**
+   and drag looperators into Applications. Builds are not notarized yet—if
+   macOS blocks the first launch, right-click the app and choose **Open**.
+2. Install and sign in to at least one supported code agent—Claude Code,
+   Codex, or Grok Build.
+3. Open looperators and start with **New Workflow** for a ready-made loop, or
+   open a Master chat to describe a more complex objective. Chat and the Agent
+   graph remain available throughout the run.
+
+To run from source instead:
 
 ```sh
 npm install
 npm run dev
 ```
-
-Start with **New Workflow** for a ready-made loop, or open a Master chat to
-describe a more complex objective. Chat and the Agent graph remain available
-throughout the run.
 
 ## Project status
 
