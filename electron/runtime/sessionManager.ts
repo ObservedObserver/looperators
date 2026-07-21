@@ -11,8 +11,6 @@
 //      - external event sources
 //      - session lifecycle: create/resume/deliver/activate/archive/kill
 //      - cluster/master/loop control
-//      - product workflows: draft/handoff/goal/connect/review/templates
-//      - plan council orchestration
 //      - workflow proposals, wakeups, barriers, membrane dispatch
 //      - resource policy, run queue, launchRun, provider event stream
 //      - checkpoints/diffs, reports, persistence triggers
@@ -25,6 +23,15 @@
 //   sessions/sessionInteraction.ts        attachments + request/input normalization
 //   persistence/runtimeStateRecovery.ts   state load/normalize/migrate/repair
 //   terminal/terminalService.ts           embedded terminal subsystem
+//   subscriptionAuthoring.ts              author_subscription input validation
+//   workspace/sessionCheckpoints.ts       per-turn git checkpoints + diffs
+//   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
+//   workflows/workflowKernel.ts           the explicit kernel surface below
+//   workflows/classicWorkflows.ts         draft/handoff/goal/connect + deployments
+//   workflows/planCouncil.ts              plan council orchestration
+//   workflows/reviewWorkflow.ts           review ring composer
+//   workflows/goalTemplates.ts            goal loop + template library
+//   workflows/workflowShared.ts           workflow resource compensation
 //
 // Growth stopline: new product workflows must not add new knowledge domains
 // to this class; register the domain here and put the implementation in its
@@ -272,12 +279,74 @@ import {
   normalizeState,
   withDiagnostics,
 } from './persistence/runtimeStateRecovery.js'
+import {
+  normalizeSubscriptionInput,
+  timerMinIntervalSeconds,
+} from './subscriptionAuthoring.js'
+import {
+  type CheckpointHost,
+  captureTurnCheckpoint,
+  checkpointDiffForSession,
+  completedTurnCount,
+  gitDiffForSession,
+  pruneTurnCheckpointRefs,
+  recordTurnCheckpointDiff,
+  workingTreeDiffForSession,
+} from './workspace/sessionCheckpoints.js'
+import {
+  type ProviderSetupHost,
+  getProviderSetupStatus,
+} from './providers/providerSetupStatus.js'
 import { TerminalService } from './terminal/terminalService.js'
+import type { WorkflowKernel } from './workflows/workflowKernel.js'
+import {
+  activeReviewPairRole,
+  automaticDeploymentExistingSessionIds,
+  captureWorkflowSession,
+  coderActivationNote,
+  connectAgents,
+  getWorkflowDeployments,
+  isGoalPairShape,
+  isReviewPairShape,
+  journalAutomaticDeploymentResources,
+  journalAutomaticDeploymentRunStarted,
+  journalPlannedWorkflowResource,
+  reconcileDynamicTopology,
+  recoverWorkflowDeployments,
+  reviewerActivationNote,
+  reviewerBootstrapPrompt,
+  startDraftWorkflow,
+  startGoalWorkflow,
+  startHandoffWorkflow,
+} from './workflows/classicWorkflows.js'
+import {
+  cmdRetryPlanCouncilParticipant,
+  commitPlanCouncilPatch,
+  getPlanCouncil,
+  getPlanCouncilArtifact,
+  nextCouncilBarrierGeneration,
+  planCouncilFailed,
+  planCouncilFinished,
+  planCouncilForSession,
+  reconcileInterruptedPlanCouncils,
+  startPlanCouncil,
+  startPlanCouncilCrossReview,
+  startPlanCouncilSynthesis,
+  stopPlanCouncil,
+} from './workflows/planCouncil.js'
+import { startReviewWorkflow } from './workflows/reviewWorkflow.js'
+import { discardWorkflowSession } from './workflows/workflowShared.js'
+import {
+  applyTemplate,
+  createGoalLoop,
+  listTemplates,
+  removeTemplate,
+  saveTemplate,
+} from './workflows/goalTemplates.js'
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
 
-const providerModelCatalogTtlMs = 5 * 60 * 1000
 // The unified command channel (kernel doc §7.5): every state mutation from any
 // actor (human/IPC, master/agent via membrane, rule via loop automation) goes
 // through dispatchCommand → validate → execute → append kernel event.
@@ -354,16 +423,6 @@ const kernelCommandKinds = new Set([
 // The emit payload rides the kernel log and the target's channel; cap it so
 // a chatty adapter cannot bloat either (the log is forever).
 const externalPayloadMaxBytes = 16 * 1024
-// Source-side minimum interval for timer subscriptions (L1): the guardrail
-// against high-frequency runaway lives on the source, not on the operator.
-// Overridable for tests via ORRERY_TIMER_MIN_INTERVAL_SECONDS.
-const defaultTimerMinIntervalSeconds = 15
-function timerMinIntervalSeconds() {
-  const fromEnv = Number(process.env.ORRERY_TIMER_MIN_INTERVAL_SECONDS)
-  return Number.isFinite(fromEnv) && fromEnv >= 1
-    ? fromEnv
-    : defaultTimerMinIntervalSeconds
-}
 // Kernel facts the subscription scheduler evaluates (§6.1 event patterns).
 // session.killed is not a trigger pattern; it sweeps subscriptions whose
 // participants died (kill parity with the old hero loop).
@@ -376,7 +435,6 @@ const schedulerTriggerEventTypes = new Set([
   // L1 timer source ticks (external event source, §2.4).
   'external.timer',
 ])
-const uiPatchMaxLength = 2 * 1024 * 1024
 type RuntimeRun = JsonRecord & {
   kill: () => boolean
   respondRuntimeRequest?: (input: JsonRecord) => JsonRecord | void
@@ -419,6 +477,10 @@ export class RuntimeSessionManager {
   #snapshotPersistTimer: ReturnType<typeof setTimeout> | undefined
   #snapshotPersistDelayMs = 750
   #planCouncilInFlight = new Set<string>()
+  // Concurrent-compile guards for workflow composers (see workflows/).
+  #goalLoopInFlight = new Set<string>()
+  #classicWorkflowInFlight = new Set<string>()
+  #workflowCompensatedRuns = new Set<string>()
   #commandChain: Promise<void> = Promise.resolve()
   #controlCommandContext = new AsyncLocalStorage<JsonRecord>()
   #workflowDeploymentCrashAfterStage: string | undefined
@@ -531,7 +593,7 @@ export class RuntimeSessionManager {
       )
     }
     const restartInterruptedSessionIds = new Set(this.#restartInterruptedSessionIds)
-    this.#reconcileInterruptedPlanCouncils(restartInterruptedSessionIds)
+    reconcileInterruptedPlanCouncils(this.#wf(), restartInterruptedSessionIds)
     this.#recoverInterruptedWorkflowWakeups(restartInterruptedSessionIds)
     this.#restartInterruptedSessionIds = []
     this.#bridge = new MembraneBridge({
@@ -541,8 +603,8 @@ export class RuntimeSessionManager {
       providerInstances: this.#state.providerInstances,
       adapters: providerAdapters instanceof Map ? providerAdapters : undefined,
     })
-    this.#recoverWorkflowDeployments()
-    this.#reconcileDynamicTopology()
+    recoverWorkflowDeployments(this.#wf())
+    reconcileDynamicTopology(this.#wf())
     this.#drainDurableEffects()
     this.#persistState()
     this.#sweepKilledParticipantSubscriptions()
@@ -686,9 +748,9 @@ export class RuntimeSessionManager {
       }
       automaticDeploymentId = previous?.deploymentId ?? `deployment-${commandId}`
       const existingSessionCheckpoints = Object.fromEntries(
-        this.#automaticDeploymentExistingSessionIds(kind, input)
+        automaticDeploymentExistingSessionIds(this.#wf(), kind, input)
           .filter((sessionId) => this.#state.sessions[sessionId])
-          .map((sessionId) => [sessionId, this.#captureWorkflowSession(sessionId)]),
+          .map((sessionId) => [sessionId, captureWorkflowSession(this.#wf(), sessionId)]),
       )
       if (previous) {
         this.#kernelStore.updateWorkflowDeployment(automaticDeploymentId, {
@@ -1052,7 +1114,7 @@ export class RuntimeSessionManager {
       case 'start_plan_council_synthesis':
         return this.startPlanCouncilSynthesis(input)
       case 'retry_plan_council_participant':
-        return this.#cmdRetryPlanCouncilParticipant(input, ctx)
+        return cmdRetryPlanCouncilParticipant(this.#wf(), input, ctx)
       case 'stop_plan_council':
         return this.stopPlanCouncil(input)
       case 'start_draft_workflow':
@@ -2103,7 +2165,7 @@ export class RuntimeSessionManager {
         throw new Error('Subscription executionRef must name a stored Workflow version and relationship.')
       }
     }
-    const subscription = this.#normalizeSubscriptionInput(input)
+    const subscription = normalizeSubscriptionInput(this.#state, input)
 
     // Static safety check on the prospective intent graph (§6.4).
     const prospective = this.#kernelView()
@@ -2158,7 +2220,7 @@ export class RuntimeSessionManager {
 
     this.#state.subscriptions = this.#state.subscriptions ?? {}
     this.#state.subscriptions[subscription.id] = subscription
-    this.#journalAutomaticDeploymentResources()
+    journalAutomaticDeploymentResources(this.#wf())
     this.#appendKernelEvent(
       'subscription.authored',
       { subscription: clone(subscription) },
@@ -2181,332 +2243,6 @@ export class RuntimeSessionManager {
         cyclicSubscriptionIds: check.cyclicSubscriptionIds,
         guardedSubscriptionIds: guarded,
       },
-    }
-  }
-
-  #normalizeSubscriptionInput(input: JsonRecord = {}) {
-    const sourceSessionId = optionalTrimmedString(input.sourceSessionId)
-    const sourceClusterId = optionalTrimmedString(input.sourceClusterId)
-    let source = isObject(input.source) ? input.source : undefined
-    if (!source && sourceSessionId) {
-      source = {
-        kind: 'session',
-        sessionId: sourceSessionId,
-      }
-    }
-    if (!source && sourceClusterId) {
-      source = {
-        kind: 'cluster',
-        clusterId: sourceClusterId,
-      }
-    }
-    if (
-      !source ||
-      (source.kind === 'session' && !this.#state.sessions[source.sessionId]) ||
-      (source.kind === 'cluster' && !this.#state.clusters[source.clusterId]) ||
-      (source.kind !== 'session' &&
-        source.kind !== 'cluster' &&
-        source.kind !== 'timer' &&
-        source.kind !== 'external')
-    ) {
-      throw new Error(
-        'Subscription source must be an existing session or cluster, {kind:"timer"}, or {kind:"external",sourceId}',
-      )
-    }
-    let externalSource
-    if (source.kind === 'external') {
-      const sourceId = optionalTrimmedString(source.sourceId)
-      externalSource = sourceId ? this.#state.sources?.[sourceId] : undefined
-      if (!externalSource || externalSource.state !== 'active') {
-        throw new Error(
-          `Subscription external source must be a registered, active source (got: ${sourceId ?? ''})`,
-        )
-      }
-    }
-
-    const targetSessionId =
-      optionalTrimmedString(input.targetSessionId) ??
-      (isObject(input.target)
-        ? optionalTrimmedString(input.target.sessionId)
-        : undefined)
-    if (!targetSessionId || !this.#state.sessions[targetSessionId]) {
-      throw new Error('Subscription target must be an existing session')
-    }
-
-    const on = isObject(input.on) ? input.on : { on: input.on }
-    if (!validSubscriptionPatterns.has(on.on)) {
-      throw new Error(
-        `Subscription pattern must be one of finished|failed|report|delivered|schedule|external`,
-      )
-    }
-    // Timer source ⟺ schedule pattern: a clock emits nothing but ticks, and
-    // a schedule can be driven by nothing but a clock.
-    if ((source.kind === 'timer') !== (on.on === 'schedule')) {
-      throw new Error(
-        'A schedule pattern requires source {kind:"timer"}, and a timer source requires the schedule pattern',
-      )
-    }
-    // Same pairing for L2: an external source emits nothing but its own
-    // facts, and the external pattern can be driven by nothing else.
-    if ((source.kind === 'external') !== (on.on === 'external')) {
-      throw new Error(
-        'An external pattern requires source {kind:"external",sourceId}, and an external source requires the external pattern',
-      )
-    }
-    const pattern: JsonRecord = { on: on.on }
-    if (on.on === 'report' && isObject(on.match)) {
-      pattern.match = {
-        ...(optionalTrimmedString(on.match.type)
-          ? { type: on.match.type.trim() }
-          : {}),
-        ...(optionalTrimmedString(on.match.verdict)
-          ? { verdict: on.match.verdict.trim() }
-          : {}),
-      }
-    }
-    if (on.on === 'delivered' && optionalTrimmedString(on.topic)) {
-      pattern.topic = on.topic.trim()
-    }
-    if (on.on === 'external') {
-      // Topic narrows by fact name; it is optional but must agree with the
-      // source's declared topic when present (one topic per source in v1 —
-      // a mismatch would be a subscription that can never fire).
-      const topic = optionalTrimmedString(on.topic)
-      if (topic !== undefined) {
-        if (topic !== externalSource.topic) {
-          throw new Error(
-            `Subscription external topic must match the source's topic (${externalSource.topic})`,
-          )
-        }
-        pattern.topic = topic
-      }
-      if (on.match !== undefined) {
-        if (!isObject(on.match)) {
-          throw new Error(
-            'Subscription external match must be an object of string fields',
-          )
-        }
-        const match = {}
-        for (const [key, value] of Object.entries(on.match)) {
-          if (typeof value !== 'string' || value.length === 0 || !key.trim()) {
-            throw new Error(
-              'Subscription external match values must be non-empty strings',
-            )
-          }
-          match[key.trim()] = value
-        }
-        if (Object.keys(match).length > 0) {
-          pattern.match = match
-        }
-      }
-    }
-    if (on.on === 'schedule') {
-      // Exactly one schedule form: an interval or a wall-clock daily time
-      // (the cron-shaped case the proposal's morning-report scenario needs).
-      const hasInterval = on.everySeconds !== undefined
-      const hasDailyAt = optionalTrimmedString(on.dailyAt) !== undefined
-      if (hasInterval === hasDailyAt) {
-        throw new Error(
-          'Subscription schedule requires exactly one of everySeconds or dailyAt',
-        )
-      }
-      if (hasDailyAt) {
-        const dailyAt = normalizeDailyAt(on.dailyAt.trim())
-        if (!dailyAt) {
-          throw new Error(
-            'Subscription schedule.dailyAt must be HH:MM (24h, runtime-host local time)',
-          )
-        }
-        pattern.dailyAt = dailyAt
-      } else {
-        const everySeconds = Number(on.everySeconds)
-        const minimum = timerMinIntervalSeconds()
-        if (!Number.isInteger(everySeconds) || everySeconds < minimum) {
-          throw new Error(
-            `Subscription schedule.everySeconds must be an integer >= ${minimum}`,
-          )
-        }
-        pattern.everySeconds = everySeconds
-      }
-    }
-
-    const action = isObject(input.action)
-      ? input.action
-      : { kind: input.action }
-    if (action.kind === 'create') {
-      const validation = validateDynamicCreateAction(action, {
-        providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
-      })
-      if (!validation.ok) throw new Error(validation.errors.join(' '))
-      if (on.on !== 'report') {
-        throw new Error('Dynamic create subscriptions require a report trigger.')
-      }
-      if (!isObject(input.stop) || !Number.isSafeInteger(Number(input.stop.maxFirings))) {
-        throw new Error('Dynamic create subscriptions require a bounded stop.maxFirings.')
-      }
-    } else if (action.kind !== 'deliver' && action.kind !== 'deliver+activate') {
-      throw new Error('Subscription action must be deliver, deliver+activate, or validated create')
-    }
-    if (source.kind === 'timer' && action.kind !== 'deliver+activate') {
-      // A clock has no artifacts to forward; a deliver-only schedule would
-      // fire empty deliveries forever.
-      throw new Error('A timer subscription requires action deliver+activate')
-    }
-    if (source.kind === 'external' && action.kind !== 'deliver+activate') {
-      // The emit payload is delivered as part of the activation; a
-      // deliver-only external edge has no source session to bundle from.
-      throw new Error(
-        'An external subscription requires action deliver+activate',
-      )
-    }
-
-    const gate = optionalTrimmedString(input.gate)
-    if (gate && !validSubscriptionGates.has(gate)) {
-      throw new Error('Subscription gate must be auto, master, or human')
-    }
-    const concurrency = optionalTrimmedString(input.concurrency) ?? 'coalesce'
-    if (!validSubscriptionConcurrencies.has(concurrency)) {
-      throw new Error(
-        'Subscription concurrency must be coalesce, queue, drop, or interrupt',
-      )
-    }
-    if (source.kind === 'timer' && concurrency === 'queue') {
-      // Ticks are fungible: a backlog of stale ticks is exactly the
-      // anti-pattern §6.1 warns about, so timer edges never queue even
-      // though session/cluster edges may keep an ordered backlog.
-      throw new Error(
-        'A timer subscription cannot use queue concurrency; ticks coalesce (or drop/interrupt)',
-      )
-    }
-    const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
-    if (!validSubscriptionOnStops.has(onStop)) {
-      throw new Error(
-        'Subscription onStop must be freeze-edge, freeze-target, or freeze-cluster',
-      )
-    }
-
-    let stop
-    if (isObject(input.stop)) {
-      stop = {}
-      if (
-        isObject(input.stop.whenReport) &&
-        optionalTrimmedString(input.stop.whenReport.verdict)
-      ) {
-        stop.whenReport = {
-          verdict: input.stop.whenReport.verdict.trim(),
-        }
-      }
-      if (input.stop.maxFirings !== undefined) {
-        const maxFirings = Number(input.stop.maxFirings)
-        if (!Number.isInteger(maxFirings) || maxFirings <= 0) {
-          throw new Error(
-            'Subscription stop.maxFirings must be a positive integer',
-          )
-        }
-        stop.maxFirings = maxFirings
-      }
-      if (optionalTrimmedString(input.stop.deadline)) {
-        if (Number.isNaN(Date.parse(input.stop.deadline))) {
-          throw new Error(
-            'Subscription stop.deadline must be a parseable date-time',
-          )
-        }
-        stop.deadline = input.stop.deadline.trim()
-      }
-      if (Object.keys(stop).length === 0) {
-        stop = undefined
-      }
-    }
-
-    // A scheduled activation carries no upstream artifacts, so the note is
-    // the whole activation message; default to a deterministic template.
-    const note = action.kind === 'create' ? undefined :
-      optionalTrimmedString(action.note) ??
-      (source.kind === 'timer'
-        ? `Scheduled activation: this session runs on a timer (${scheduleSummary(pattern as { on: 'schedule' })}).`
-        : source.kind === 'external'
-          ? `External activation: triggered by ${externalSourceSummary(externalSource)}. The triggering event is in your channel as external-event.md.`
-          : undefined)
-
-    return {
-      id: optionalTrimmedString(input.id) ?? `sub-${randomUUID().slice(0, 8)}`,
-      source:
-        source.kind === 'session'
-          ? { kind: 'session', sessionId: source.sessionId }
-          : source.kind === 'timer'
-            ? { kind: 'timer' }
-            : source.kind === 'external'
-              ? {
-                  kind: 'external',
-                  sourceId: externalSource.id,
-                }
-              : {
-                  kind: 'cluster',
-                  clusterId: source.clusterId,
-                },
-      on: pattern,
-      target: {
-        kind: 'session',
-        sessionId: targetSessionId,
-      },
-      action: action.kind === 'create'
-        ? {
-            kind: 'create',
-            template: {
-              templateId: action.template.templateId.trim(),
-              labelPrefix: action.template.labelPrefix.trim(),
-              role: 'triage',
-              prompt: action.template.prompt.trim(),
-              providerKind: action.template.providerKind,
-              providerInstanceId: action.template.providerInstanceId.trim(),
-              ...(isObject(action.template.runtimeSettings)
-                ? { runtimeSettings: clone(action.template.runtimeSettings) }
-                : {}),
-              workspace: {
-                access: action.template.workspace.access,
-                workMode: action.template.workspace.workMode,
-              },
-              retention: action.template.retention,
-            },
-            forEach: { kind: 'report-issues' },
-            limits: {
-              maxGenerationDepth: Number(action.limits.maxGenerationDepth),
-              maxSessions: Number(action.limits.maxSessions),
-              maxFanOut: Number(action.limits.maxFanOut),
-              maxPlanVersions: Number(action.limits.maxPlanVersions),
-            },
-          }
-        : {
-            kind: action.kind,
-            ...(optionalTrimmedString(action.topic)
-              ? { topic: action.topic.trim() }
-              : {}),
-            ...(note ? { note } : {}),
-          },
-      ...(isObject(input.executionRef) &&
-          optionalTrimmedString(input.executionRef.workflowId) &&
-          Number.isSafeInteger(Number(input.executionRef.workflowVersion)) &&
-          Number(input.executionRef.workflowVersion) > 0 &&
-          optionalTrimmedString(input.executionRef.runId) &&
-          optionalTrimmedString(input.executionRef.phaseId)
-        ? {
-            executionRef: {
-              workflowId: input.executionRef.workflowId.trim(),
-              workflowVersion: Number(input.executionRef.workflowVersion),
-              runId: input.executionRef.runId.trim(),
-              phaseId: input.executionRef.phaseId.trim(),
-            },
-          }
-        : {}),
-      gate: gate ?? undefined,
-      concurrency,
-      stop,
-      onStop,
-      state: 'active',
-      firings: 0,
-      label: optionalTrimmedString(input.label),
-      preset: optionalTrimmedString(input.preset),
-      createdAt: now(),
     }
   }
 
@@ -2588,13 +2324,13 @@ export class RuntimeSessionManager {
       {
         forwardPrefix: 'goal-check-',
         reversePrefix: 'goal-retry-',
-        shape: (forward, reverse) => this.#isGoalPairShape(forward, reverse),
+        shape: (forward, reverse) => isGoalPairShape(this.#wf(), forward, reverse),
         label: 'Goal loop',
       },
       {
         forwardPrefix: 'review-pass-',
         reversePrefix: 'review-fix-',
-        shape: (forward, reverse) => this.#isReviewPairShape(forward, reverse),
+        shape: (forward, reverse) => isReviewPairShape(this.#wf(), forward, reverse),
         label: 'Review loop',
       },
     ]
@@ -3540,258 +3276,7 @@ export class RuntimeSessionManager {
   }
 
   async getProviderSetupStatus(input: JsonRecord = {}) {
-    const request = isObject(input) ? input : {}
-    const requestedProviderKind = request.providerKind ?? 'claude-code'
-    if (!validProviderKinds.has(requestedProviderKind)) {
-      throw new Error(
-        `Unsupported provider kind: ${String(requestedProviderKind)}`,
-      )
-    }
-    const requestedInstanceId = optionalTrimmedString(
-      request.providerInstanceId,
-    )
-    const requestedInstance = requestedInstanceId
-      ? this.#state.providerInstances.find(
-          (instance) => instance.providerInstanceId === requestedInstanceId,
-        )
-      : undefined
-    if (requestedInstanceId && !requestedInstance) {
-      throw new Error(`Unknown provider instance: ${requestedInstanceId}`)
-    }
-    if (requestedInstance && requestedInstance.kind !== requestedProviderKind) {
-      throw new Error(
-        `Provider instance ${requestedInstance.providerInstanceId} is ${requestedInstance.kind}, not ${requestedProviderKind}.`,
-      )
-    }
-    const providerKind = requestedProviderKind
-    const providerInstance =
-      requestedInstance ??
-      this.#state.providerInstances.find(
-        (instance) => instance.kind === providerKind,
-      )
-    const command = commandForProviderInstance(providerKind, providerInstance)
-    const binary = commandExists(command)
-    const cwd = nonEmptyString(request.cwd)
-      ? safeCwd(request.cwd)
-      : process.cwd()
-    const cwdValid = isValidCwd(cwd)
-    const providerDiagnostic = providerSetupErrorDiagnostic(
-      providerKind,
-      this.#state.diagnostics ?? [],
-    )
-    const grokProbe =
-      providerKind === 'grok' && binary.ok && cwdValid
-        ? await probeGrokProvider({
-            providerInstance,
-            cwd,
-            totalTimeoutMs:
-              typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-                ? request.timeoutMs
-                : 15_000,
-          })
-        : undefined
-    const grokReady = grokProbe?.status === 'ready'
-    const providerInstanceId =
-      providerInstance?.providerInstanceId ??
-      defaultProviderInstanceForKind(providerKind).providerInstanceId
-    const previousCatalog = isObject(
-      this.#state.providerModelCatalogs?.[providerInstanceId],
-    )
-      ? this.#state.providerModelCatalogs[providerInstanceId]
-      : undefined
-    const previousFetchedAt = Date.parse(previousCatalog?.fetchedAt ?? '')
-    const previousIsFresh =
-      request.forceRefresh !== true &&
-      previousCatalog?.source === 'live' &&
-      Number.isFinite(previousFetchedAt) &&
-      Date.now() - previousFetchedAt < providerModelCatalogTtlMs
-    let models = previousCatalog
-    let modelDiscoveryError
-
-    if (binary.ok && cwdValid && !previousIsFresh) {
-      try {
-        const discovered =
-          providerKind === 'codex'
-            ? await probeCodexModelCatalog({
-                providerInstance,
-                cwd,
-                totalTimeoutMs:
-                  typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-                    ? request.timeoutMs
-                    : 15_000,
-              })
-            : providerKind === 'claude-code'
-              ? await probeClaudeModelCatalog({
-                  providerInstance,
-                  cwd,
-                  totalTimeoutMs:
-                    typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-                      ? request.timeoutMs
-                      : 15_000,
-                })
-              : grokProbe?.catalog
-
-        if (!discovered) {
-          throw new Error(
-            grokProbe?.message ?? `${providerKind} returned no model catalog.`,
-          )
-        }
-        if (discovered.availableModels.length === 0) {
-          throw new Error(`${providerKind} returned an empty model catalog.`)
-        }
-        models = {
-          ...discovered,
-          providerKind,
-          providerInstanceId,
-          fetchedAt: now(),
-          source: 'live',
-          stale: false,
-        }
-      } catch (error) {
-        modelDiscoveryError =
-          error instanceof Error ? error.message : String(error)
-        models = previousCatalog?.availableModels?.length
-          ? {
-              ...previousCatalog,
-              source: 'cache',
-              stale: true,
-              error: modelDiscoveryError,
-            }
-          : fallbackProviderModelCatalog(
-              providerKind,
-              providerInstanceId,
-              modelDiscoveryError,
-            )
-      }
-    } else if (!models) {
-      const reason = !binary.ok
-        ? `Provider binary is not available: ${command}.`
-        : !cwdValid
-          ? `Workspace is not available: ${cwd}.`
-          : undefined
-      models = fallbackProviderModelCatalog(
-        providerKind,
-        providerInstanceId,
-        reason,
-      )
-      modelDiscoveryError = reason
-    }
-
-    this.#state.providerModelCatalogs = {
-      ...(isObject(this.#state.providerModelCatalogs)
-        ? this.#state.providerModelCatalogs
-        : {}),
-      [providerInstanceId]: models,
-    }
-    this.#touchDeferred()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
-
-    return {
-      providerKind,
-      providerInstanceId,
-      generatedAt: now(),
-      models,
-      checks: [
-        {
-          id: 'runtime',
-          label: 'Runtime',
-          status: 'ok',
-          message: 'Orrery runtime is connected.',
-        },
-        {
-          id: 'provider-instance',
-          label: 'Provider profile',
-          status: providerInstance ? 'ok' : 'warning',
-          message: providerInstance
-            ? `Using ${providerInstance.label}.`
-            : `No saved provider profile for ${providerKind}; using runtime defaults.`,
-          detail: providerInstance?.providerInstanceId,
-        },
-        {
-          id: 'binary',
-          label: 'Binary',
-          status: binary.ok ? 'ok' : 'error',
-          message: binary.ok
-            ? `Using ${command}.`
-            : `Provider binary is not available: ${command}.`,
-          detail: binary.detail,
-        },
-        {
-          id: 'models',
-          label: 'Models',
-          status: modelDiscoveryError
-            ? 'warning'
-            : models.stale
-              ? 'warning'
-              : 'ok',
-          message: modelDiscoveryError
-            ? `Using ${models.source} model catalog: ${modelDiscoveryError}`
-            : `Discovered ${models.availableModels.length} model${models.availableModels.length === 1 ? '' : 's'} from ${providerKind}.`,
-        },
-        {
-          id: 'cwd',
-          label: 'Project cwd',
-          status: cwdValid ? 'ok' : 'error',
-          message: cwdValid
-            ? `Project folder is available: ${cwd}.`
-            : `Project folder is not available: ${cwd}.`,
-        },
-        {
-          id: 'auth',
-          label: 'Auth/account',
-          status:
-            providerKind === 'grok'
-              ? grokReady
-                ? 'ok'
-                : grokProbe
-                  ? 'error'
-                  : 'unknown'
-              : providerDiagnostic
-                ? 'warning'
-                : 'unknown',
-          message:
-            providerKind === 'grok'
-              ? grokProbe?.message ??
-                'Grok auth was not probed because the binary or project folder is unavailable.'
-              : providerDiagnostic
-                ? providerDiagnostic.message
-                : 'Provider auth and account status are managed by the local CLI; start a chat to verify.',
-          detail:
-            providerKind === 'grok'
-              ? grokProbe?.detail
-              : providerDiagnostic?.type,
-        },
-        ...(providerKind === 'grok'
-          ? [
-              {
-                id: 'acp-session',
-                label: 'ACP session setup',
-                status: grokReady ? 'ok' : grokProbe ? 'error' : 'unknown',
-                message: grokReady
-                  ? 'initialize, authenticate, and session/new completed successfully.'
-                  : grokProbe
-                    ? grokProbe.message
-                    : 'ACP session setup was not attempted.',
-                detail:
-                  grokProbe?.catalog?.setupCreatesSession === true
-                    ? 'The readiness probe creates an upstream Grok session.'
-                    : undefined,
-              },
-            ]
-          : []),
-        {
-          id: 'mcp',
-          label: 'MCP / tools',
-          status: 'ok',
-          message:
-            providerKind === 'codex'
-              ? 'Orrery membrane MCP bridge is mounted per-thread for Codex sessions.'
-              : providerKind === 'grok'
-                ? 'Orrery membrane MCP bridge will be injected into Grok ACP sessions.'
-                : 'Orrery membrane MCP bridge is available for Claude sessions.',
-        },
-      ],
-    }
+    return getProviderSetupStatus(this.#providerSetupHost(), input)
   }
 
   upsertProviderInstance(input: JsonRecord = {}) {
@@ -3916,7 +3401,7 @@ export class RuntimeSessionManager {
     let workspace
     if (normalizeWorkMode(input.workMode) === 'worktree') {
       const worktreePlan = planSessionWorktree(input.cwd, sessionId, input.branch)
-      this.#journalPlannedWorkflowResource({
+      journalPlannedWorkflowResource(this.#wf(), {
         sessionId,
         cwd: worktreePlan.workspace.cwd,
         project: clone(worktreePlan.workspace.project),
@@ -4053,7 +3538,7 @@ export class RuntimeSessionManager {
         masterReason: this.#masterReasonFromInput(sourceSessionId, input),
       })
     }
-    this.#journalAutomaticDeploymentResources()
+    journalAutomaticDeploymentResources(this.#wf())
     const createdEvent = this.#appendKernelEvent(
       'session.created',
       {
@@ -4371,7 +3856,7 @@ export class RuntimeSessionManager {
     }
     try {
       const checkpoint = lastAssistant?.runId
-        ? this.#checkpointDiffForSession(sessionId, { turnId: lastAssistant.runId })
+        ? checkpointDiffForSession(this.#checkpointHost(), sessionId, { turnId: lastAssistant.runId })
         : undefined
       const diff = checkpoint
         ? [
@@ -4381,7 +3866,7 @@ export class RuntimeSessionManager {
               : undefined,
             checkpoint.patch ? `Patch:\n${checkpoint.patch}` : 'No changes in the completed turn.',
           ].filter(Boolean).join('\n\n')
-        : this.#gitDiffForSession(sessionId)
+        : gitDiffForSession(this.#checkpointHost(), sessionId)
       if (typeof diff === 'string' && diff.trim().length > 0 && !diff.endsWith('No changes in the completed turn.')) {
         entries.push({
           name: 'workspace-diff.patch',
@@ -4563,13 +4048,13 @@ export class RuntimeSessionManager {
     }
 
     if (typeof input === 'object' && nonEmptyString(input.turnId)) {
-      return this.#checkpointDiffForSession(sessionId, {
+      return checkpointDiffForSession(this.#checkpointHost(), sessionId, {
         turnId: input.turnId.trim(),
         ignoreWhitespace: input.ignoreWhitespace === true,
       })
     }
 
-    return this.#workingTreeDiffForSession(sessionId, {
+    return workingTreeDiffForSession(this.#checkpointHost(), sessionId, {
       ignoreWhitespace:
         typeof input === 'object' && input.ignoreWhitespace === true,
     })
@@ -4701,7 +4186,7 @@ export class RuntimeSessionManager {
         session.updatedAt = now()
         this.#updateNodeStatus(sessionId, 'killed')
         const killedEvent = this.#appendKernelEvent('session.killed', { sessionId, turnId: queued.turnId, queuedTurnIds: queuedTurns, queued: true }, ctx)
-        this.#planCouncilFailed(sessionId, 'Queued provider run was cancelled.')
+        planCouncilFailed(this.#wf(), sessionId, 'Queued provider run was cancelled.')
         this.#settleDynamicSpawnChild(sessionId, 'cancelled', 'Queued provider run was cancelled.')
         this.#touch()
         return { ok: true, kernelEventId: killedEvent?.id, state: this.getState() }
@@ -5259,7 +4744,7 @@ export class RuntimeSessionManager {
         agent: 'claude-code',
         label: 'Reviewer',
         cluster: clusterId,
-        prompt: this.#reviewerBootstrapPrompt(),
+        prompt: reviewerBootstrapPrompt(this.#wf()),
         masterReason: 'Loop preset created the reviewer.',
       }),
       ctx,
@@ -5277,7 +4762,7 @@ export class RuntimeSessionManager {
         action: {
           kind: 'deliver+activate',
           topic: 'diff',
-          note: this.#reviewerActivationNote(),
+          note: reviewerActivationNote(this.#wf()),
         },
         gate: 'master',
         concurrency: 'coalesce',
@@ -5297,7 +4782,7 @@ export class RuntimeSessionManager {
         action: {
           kind: 'deliver+activate',
           topic: 'review',
-          note: this.#coderActivationNote(),
+          note: coderActivationNote(this.#wf()),
         },
         gate: 'master',
         concurrency: 'coalesce',
@@ -5476,1368 +4961,204 @@ export class RuntimeSessionManager {
     }
   }
 
-  #reviewerBootstrapPrompt() {
-    return [
-      'You are the Reviewer in an Orrery hero review loop.',
-      'Your job on each activation: read the diff delivered in your context channel, then call mcp__orrery_membrane__report exactly once with type "verdict" — verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain.',
-      'Do not edit files.',
-      'For now, reply with exactly: ready. Then stop and wait for activations.',
-    ].join('\n')
-  }
-
-  #reviewerActivationNote() {
-    return [
-      'Review the latest diff delivered in your context channel (file paths listed below).',
-      'Do not edit files.',
-      'Call mcp__orrery_membrane__report exactly once with type "verdict": verdict "issues" with an issues array when fixes are needed, or verdict "clean" when no fixes remain. Then stop.',
-    ].join('\n')
-  }
-
-  #coderActivationNote() {
-    return [
-      'The reviewer reported issues; the review is delivered in your context channel (file paths listed below).',
-      'Fix the listed issues, then stop so the loop can run the reviewer again.',
-    ].join('\n')
-  }
-
   authorSubscription(input: JsonRecord = {}) {
     return this.#cmdAuthorSubscription(input, this.#humanCtx())
   }
 
-  // ---- L3 goal loop preset: one sentence compiles into a judge ring ----
-  //
-  // Not a new kernel verb: the preset expands into ordinary commands
-  // (create_session + author_subscription ×2), so the log records only
-  // regular facts and the loop stays a reading of subscriptions. The user's
-  // natural-language goal goes exclusively into the judge's prompts; the
-  // ruling stays typed (report verdict done|fail) and the runtime keeps
-  // deciding stop deterministically via whenReport + maxFirings (§6.2).
+  // ---- workflow orchestration lives in workflows/ ----
+  // These delegates keep the public API stable; implementations access the
+  // kernel through the explicit WorkflowKernel surface (#wf()).
+  #providerSetupHostCache: ProviderSetupHost | undefined
 
-  // The bootstrap stays goal-free on purpose: the goal sentence has exactly
-  // one home — the check edge's activation note, restated to the judge on
-  // every lap (which also survives judge-side context compaction).
-  #goalJudgeBootstrapPrompt(workerLabel: string) {
-    return [
-      `You are the goal judge for the session "${workerLabel}".`,
-      'You will be activated after each of its turns; each activation carries the goal and the judging instructions.',
-      'For now, reply "ready" and stop. Do not check anything yet.',
-    ].join('\n')
-  }
-
-  #goalJudgeActivationNote(goal: string) {
-    return [
-      `Goal check. The goal: "${goal}"`,
-      '',
-      'Judge ONLY whether the goal is met right now:',
-      '1. Prefer deterministic, executable checks — run the test suite, linter, build, or a script in the workspace — over impressions.',
-      '2. Then CALL the mcp__orrery_membrane__report TOOL exactly once with a typed verdict:',
-      '   - {"type":"verdict","verdict":"done","summary":"<one-line proof, e.g. the passing command>"} if the goal is met.',
-      '   - {"type":"verdict","verdict":"fail","summary":"<what is missing>","issues":[{"message":"<concrete failure to fix>"}]} if not.',
-      '3. The verdict only counts when submitted through that tool call — a verdict written as a plain chat message is discarded and the goal loop stalls.',
-      '4. Do not fix anything yourself. Do not ask questions. Report via the tool, then stop.',
-    ].join('\n')
-  }
-
-  // Deliberately goal-free: the worker acts on the judge's TYPED verdict
-  // and issues only — the user's natural language stays in judge prompts
-  // (design constraint 1), and the worker never re-interprets the goal.
-  #goalWorkerRetryNote() {
-    return [
-      'The goal judge reported the goal is not met yet.',
-      'Its verdict and issues are delivered in your context channel. Fix exactly those failures, then finish your turn so the judge can check again.',
-    ].join('\n')
-  }
-
-  // Concurrent-compile guard: the duplicate scan below is a read over live
-  // state, and judge creation awaits — two overlapping calls could both
-  // pass the scan and leave two rings on one worker (TOCTOU).
-  #goalLoopInFlight = new Set<string>()
-  #classicWorkflowInFlight = new Set<string>()
-  #workflowCompensatedRuns = new Set<string>()
-
-  #captureWorkflowSession(sessionId: string) {
-    return {
-      session: clone(this.#state.sessions[sessionId]),
-      nodeStatus: this.#state.nodes.find((node) => node.sessionId === sessionId)?.status,
-      channel: this.#channelStore.checkpoint(sessionId),
+  #providerSetupHost(): ProviderSetupHost {
+    if (this.#providerSetupHostCache) return this.#providerSetupHostCache
+    const self = this
+    this.#providerSetupHostCache = {
+      get state() {
+        return self.#state
+      },
+      getState: () => this.getState(),
+      touchDeferred: () => this.#touchDeferred(),
+      broadcast: (event) => this.#broadcast(event),
     }
+    return this.#providerSetupHostCache
   }
 
-  #restoreWorkflowSession(sessionId: string, checkpoint) {
-    const run = this.#runs.get(sessionId)
-    if (run) {
-      this.#workflowCompensatedRuns.add(sessionId)
-      try {
-        run.kill()
-      } catch {
-        // The failed provider may already be closing.
-      }
+  #checkpointHostCache: CheckpointHost | undefined
+
+  #checkpointHost(): CheckpointHost {
+    if (this.#checkpointHostCache) return this.#checkpointHostCache
+    const self = this
+    this.#checkpointHostCache = {
+      get state() {
+        return self.#state
+      },
+      get runContext() {
+        return self.#runContext
+      },
+      appendProviderRuntimeEvent: (sessionId, event) =>
+        this.#appendProviderRuntimeEvent(sessionId, event),
     }
-    this.#runContext.delete(sessionId)
-    this.#state.sessions[sessionId] = checkpoint.session
-    const node = this.#state.nodes.find((candidate) => candidate.sessionId === sessionId)
-    if (node && checkpoint.nodeStatus) node.status = checkpoint.nodeStatus
-    this.#channelStore.restore(sessionId, checkpoint.channel)
+    return this.#checkpointHostCache
   }
 
-  // A COMPILED goal ring, not just an id-prefix match: author_subscription
-  // accepts user-chosen ids, so the duplicate guard and the stop pairing
-  // demand the preset's full fingerprint — reciprocal session participants
-  // AND the compiled trigger/action/stop shape on both edges. (A pair that
-  // reproduces all of this by hand IS a goal loop in every observable
-  // respect, so treating it as one is the correct semantics, not a spoof.)
-  #isGoalPairShape(check, retry) {
-    return Boolean(
-      check &&
-      retry &&
-      /^goal-check-/.test(check.id ?? '') &&
-      retry.id === check.id.replace(/^goal-check-/, 'goal-retry-') &&
-      check.source?.kind === 'session' &&
-      retry.source?.kind === 'session' &&
-      retry.source.sessionId === check.target?.sessionId &&
-      retry.target?.sessionId === check.source.sessionId &&
-      check.on?.on === 'finished' &&
-      retry.on?.on === 'report' &&
-      retry.on?.match?.type === 'verdict' &&
-      retry.on?.match?.verdict === 'fail' &&
-      check.action?.kind === 'deliver+activate' &&
-      retry.action?.kind === 'deliver+activate' &&
-      check.stop?.whenReport?.verdict === 'done' &&
-      retry.stop?.whenReport?.verdict === 'done',
-    )
-  }
+  #wfKernel: WorkflowKernel | undefined
 
-  #isCompiledGoalCheckEdge(subscription) {
-    if (
-      subscription.state !== 'active' ||
-      !/^goal-check-/.test(subscription.id ?? '')
-    ) {
-      return false
+  #wf(): WorkflowKernel {
+    if (this.#wfKernel) return this.#wfKernel
+    const self = this
+    this.#wfKernel = {
+      get state() {
+        return self.#state
+      },
+      get kernelStore() {
+        return self.#kernelStore
+      },
+      get channelStore() {
+        return self.#channelStore
+      },
+      get controlCommandContext() {
+        return self.#controlCommandContext
+      },
+      get classicWorkflowInFlight() {
+        return self.#classicWorkflowInFlight
+      },
+      get planCouncilInFlight() {
+        return self.#planCouncilInFlight
+      },
+      get goalLoopInFlight() {
+        return self.#goalLoopInFlight
+      },
+      get workflowCompensatedRuns() {
+        return self.#workflowCompensatedRuns
+      },
+      get runs() {
+        return self.#runs
+      },
+      get runContext() {
+        return self.#runContext
+      },
+      get workflowDeploymentCrashAfterStage() {
+        return self.#workflowDeploymentCrashAfterStage
+      },
+      get committedStateDuringCommand() {
+        return self.#committedStateDuringCommand
+      },
+      getState: () => this.getState(),
+      dispatchCommand: (command) => this.dispatchCommand(command),
+      killSession: (sessionId) => this.killSession(sessionId),
+      cmdAuthorSubscription: (input, ctx) =>
+        this.#cmdAuthorSubscription(input, ctx),
+      cmdCreateSession: (input, ctx, opts) =>
+        (this.#cmdCreateSession as any)(input, ctx, opts),
+      cmdActivate: (input, ctx, opts) =>
+        (this.#cmdActivate as any)(input, ctx, opts),
+      cmdDeliver: (input, ctx, opts) =>
+        (this.#cmdDeliver as any)(input, ctx, opts),
+      cmdResumeSession: (input, ctx, opts) =>
+        (this.#cmdResumeSession as any)(input, ctx, opts),
+      cmdStopSubscription: (input, ctx) => this.#cmdStopSubscription(input, ctx),
+      cmdCreateBarrier: (input, ctx) => this.#cmdCreateBarrier(input, ctx),
+      cmdArriveBarrier: (input, ctx) => this.#cmdArriveBarrier(input, ctx),
+      cmdCancelBarrier: (input, ctx) => this.#cmdCancelBarrier(input, ctx),
+      cmdUnfreeze: (input, ctx) => this.#cmdUnfreeze(input, ctx),
+      cmdSetResourcePolicy: (input, ctx) =>
+        this.#cmdSetResourcePolicy(input, ctx),
+      cmdLinkSessions: (input, ctx) => this.#cmdLinkSessions(input, ctx),
+      workflowCommandCtx: () => this.#workflowCommandCtx(),
+      humanCtx: () => this.#humanCtx(),
+      subscriptionRuleCtx: (subscriptionId, causeId) =>
+        this.#subscriptionRuleCtx(subscriptionId, causeId),
+      touch: () => this.#touch(),
+      broadcast: (event) => this.#broadcast(event),
+      appendKernelEvent: (type, payload, ctx, opts) =>
+        this.#appendKernelEvent(type, payload, ctx, opts),
+      assertActivatable: (sessionId, ctx) =>
+        this.#assertActivatable(sessionId, ctx),
+      kernelView: (state) =>
+        state === undefined ? this.#kernelView() : this.#kernelView(state),
+      readState: () => this.#readState(),
+      startRun: (sessionId, request) => this.#startRun(sessionId, request),
+      resourcePolicy: (scopeId) => this.#resourcePolicy(scopeId),
+      resourceScopeId: (sessionId) => this.#resourceScopeId(sessionId),
+      isSessionFrozen: (sessionId) => this.#isSessionFrozen(sessionId),
+      drainApprovedSlots: () => this.#drainApprovedSlots(),
+      deliverToChannel: (...args: any[]) =>
+        (this.#deliverToChannel as any)(...args),
+      createPendingActivation: (...args: any[]) =>
+        (this.#createPendingActivation as any)(...args),
+      clearTimer: (subscriptionId) => this.#clearTimer(subscriptionId),
+      activeWorkflowPlan: (workflowId) => this.#activeWorkflowPlan(workflowId),
     }
-    const retry =
-      this.#state.subscriptions?.[
-        subscription.id.replace(/^goal-check-/, 'goal-retry-')
-      ]
-    return this.#isGoalPairShape(subscription, retry)
+    return this.#wfKernel
   }
 
-  // The L6 review-until-clean template's ring fingerprint, the goal-pair
-  // discipline applied to review edges: coder finished → reviewer, reviewer
-  // report(issues) → coder, both stopping at verdict clean. Without this,
-  // a cap-stopped review-pass leaves review-fix lingering active — the
-  // canvas badge says stopped while a zombie reverse edge pollutes lists.
-  #isReviewPairShape(pass, fix) {
-    return Boolean(
-      pass &&
-      fix &&
-      /^review-pass-/.test(pass.id ?? '') &&
-      fix.id === pass.id.replace(/^review-pass-/, 'review-fix-') &&
-      pass.source?.kind === 'session' &&
-      fix.source?.kind === 'session' &&
-      fix.source.sessionId === pass.target?.sessionId &&
-      fix.target?.sessionId === pass.source.sessionId &&
-      pass.on?.on === 'finished' &&
-      fix.on?.on === 'report' &&
-      fix.on?.match?.type === 'verdict' &&
-      fix.on?.match?.verdict === 'issues' &&
-      pass.action?.kind === 'deliver+activate' &&
-      fix.action?.kind === 'deliver+activate' &&
-      pass.stop?.whenReport?.verdict === 'clean' &&
-      fix.stop?.whenReport?.verdict === 'clean',
-    )
-  }
-
-  #activeReviewPairRole(sessionId) {
-    for (const pass of Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord,
-    )) {
-      if (
-        pass.state !== 'active' ||
-        pass.source?.kind !== 'session' ||
-        !/^review-pass-/.test(pass.id ?? '')
-      ) {
-        continue
-      }
-      const fix =
-        this.#state.subscriptions?.[
-          pass.id.replace(/^review-pass-/, 'review-fix-')
-        ]
-      if (fix?.state === 'active' && this.#isReviewPairShape(pass, fix)) {
-        if (pass.source.sessionId === sessionId) return 'Coder'
-        if (pass.target?.sessionId === sessionId) return 'Reviewer'
-      }
-    }
-    return undefined
-  }
-
-  // P3 static authoring compiler. The renderer sends its runtime-free Draft
-  // graph once; this command creates every new Agent in prepared state,
-  // installs every Relationship, and only then starts root Agents. Draft ids
-  // are returned as an explicit mapping and never enter the kernel log.
   async startDraftWorkflow(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_draft_workflow',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const graph = input.graph as any
-    const sessionSummaries = {}
-    for (const session of Object.values(this.#state.sessions as JsonRecord)) {
-      const node = this.#state.nodes.find(
-        (candidate) => candidate.sessionId === session.sessionId,
-      )
-      sessionSummaries[session.sessionId] = {
-        sessionId: session.sessionId,
-        cwd: session.cwd,
-        status: session.status,
-        frozen: node?.frozen === true,
-      }
-    }
-    const validation = validateDraftGraph(graph, {
-      sessions: sessionSummaries,
-      providerInstanceIds: this.#state.providerInstances.map(
-        (instance) => instance.providerInstanceId,
-      ),
-    })
-    if (!validation.ok) {
-      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-    }
-    const ctx = this.#humanCtx()
-    const createdSessionIds: string[] = []
-    const subscriptionIds: string[] = []
-    const nodeSessionIds = {}
-    const relationSubscriptionIds = {}
-    const preparedRuns = new Map()
-    const existingCheckpoints = new Map()
-
-    try {
-      // Instantiate in graph dependency order, not visual creation order.
-      // A new Review target must bind to the Coder's FINAL cwd (especially
-      // after worktree creation), so its source has to exist first.
-      const pendingNodeIds = new Set(graph.nodeOrder)
-      const instantiationOrder: string[] = []
-      while (pendingNodeIds.size > 0) {
-        const ready = graph.nodeOrder.filter(
-          (draftNodeId) =>
-            pendingNodeIds.has(draftNodeId) &&
-            graph.relationOrder.every((relationId) => {
-              const relation = graph.relations[relationId]
-              return (
-                relation.targetNodeId !== draftNodeId ||
-                !pendingNodeIds.has(relation.sourceNodeId)
-              )
-            }),
-        )
-        if (ready.length === 0) {
-          throw new Error('Draft workflow needs an acyclic starting order.')
-        }
-        for (const draftNodeId of ready) {
-          pendingNodeIds.delete(draftNodeId)
-          instantiationOrder.push(draftNodeId)
-        }
-      }
-
-      for (const draftNodeId of instantiationOrder) {
-        const draftNode = graph.nodes[draftNodeId]
-        const endpoint = draftNode.endpoint
-        if (endpoint.kind === 'existing') {
-          this.#assertActivatable(endpoint.sessionId, ctx)
-          nodeSessionIds[draftNodeId] = endpoint.sessionId
-          existingCheckpoints.set(endpoint.sessionId, {
-            session: clone(this.#state.sessions[endpoint.sessionId]),
-            nodeStatus: this.#state.nodes.find(
-              (node) => node.sessionId === endpoint.sessionId,
-            )?.status,
-          })
-          continue
-        }
-
-        const sourceReview = graph.relationOrder
-          .map((relationId) => graph.relations[relationId])
-          .find(
-            (relation) =>
-              relation.kind === 'review-loop' &&
-              relation.sourceNodeId === draftNodeId,
-          )
-        const targetReview = graph.relationOrder
-          .map((relationId) => graph.relations[relationId])
-          .find(
-            (relation) =>
-              relation.kind === 'review-loop' &&
-              relation.targetNodeId === draftNodeId,
-          )
-        const prompt = sourceReview
-          ? coderActivationInstruction(endpoint.prompt)
-          : targetReview
-            ? reviewerBootstrapInstruction(
-                optionalTrimmedString(targetReview.instruction) ??
-                  endpoint.prompt,
-              )
-            : endpoint.prompt
-        const reviewSourceSessionId = targetReview
-          ? nodeSessionIds[targetReview.sourceNodeId]
-          : undefined
-        const reviewSource = reviewSourceSessionId
-          ? this.#state.sessions[reviewSourceSessionId]
-          : undefined
-        const created = await this.#cmdCreateSession(
-          {
-            prompt,
-            // P1 workspace contract: a Reviewer observes the exact checkout
-            // the Coder changed. Its independent provider settings remain,
-            // but workspace/worktree settings do not fork the review target.
-            cwd: reviewSource?.cwd ?? endpoint.cwd,
-            workMode: reviewSource ? 'local' : endpoint.workMode,
-            branch: reviewSource ? undefined : endpoint.branch,
-            label: endpoint.label,
-            providerKind: endpoint.providerKind,
-            providerInstanceId: endpoint.providerInstanceId,
-            runtimeSettings: endpoint.runtimeSettings,
-          },
-          ctx,
-          {
-            deferStart: true,
-            position: draftNode.position,
-          },
-        )
-        nodeSessionIds[draftNodeId] = created.sessionId
-        createdSessionIds.push(created.sessionId)
-        preparedRuns.set(created.sessionId, created.preparedRun)
-      }
-
-      for (const relationId of graph.relationOrder) {
-        const relation = graph.relations[relationId]
-        if (relation.kind !== 'review-loop') continue
-        const sourceSessionId = nodeSessionIds[relation.sourceNodeId]
-        const targetSessionId = nodeSessionIds[relation.targetNodeId]
-        if (
-          this.#state.sessions[sourceSessionId]?.cwd !==
-          this.#state.sessions[targetSessionId]?.cwd
-        ) {
-          throw new Error(
-            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
-          )
-        }
-      }
-
-      for (const relationId of graph.relationOrder) {
-        const relation = graph.relations[relationId]
-        const compiled = compileDraftRelation(graph, relationId)
-        const sourceSessionId = nodeSessionIds[relation.sourceNodeId]
-        const targetSessionId = nodeSessionIds[relation.targetNodeId]
-        if (compiled.kind === 'subscription') {
-          const subscriptionId = `draft-${randomUUID().slice(0, 8)}`
-          subscriptionIds.push(subscriptionId)
-          this.#cmdAuthorSubscription(
-            {
-              id: subscriptionId,
-              label: compiled.label,
-              sourceSessionId,
-              on: compiled.on,
-              targetSessionId,
-              action: compiled.action,
-              gate: 'auto',
-              concurrency: 'coalesce',
-              stop: compiled.stop,
-              onStop: 'freeze-edge',
-            },
-            ctx,
-          )
-          relationSubscriptionIds[relationId] = [subscriptionId]
-          continue
-        }
-
-        const suffix = randomUUID().slice(0, 8)
-        const passId = `review-pass-${suffix}`
-        const fixId = `review-fix-${suffix}`
-        subscriptionIds.push(passId, fixId)
-        const stop = {
-          whenReport: { verdict: 'clean' },
-          maxFirings: compiled.input.maxLaps,
-        }
-        this.#cmdAuthorSubscription(
-          {
-            id: passId,
-            label: 'review pass',
-            preset: 'review-workflow',
-            sourceSessionId,
-            on: { on: 'finished' },
-            targetSessionId,
-            action: {
-              kind: 'deliver+activate',
-              topic: 'diff',
-              note: reviewerActivationInstruction(
-                compiled.input.reviewer.instruction,
-                compiled.input.blocking,
-              ),
-            },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            stop,
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        this.#cmdAuthorSubscription(
-          {
-            id: fixId,
-            label: 'blocking issues',
-            preset: 'review-workflow',
-            sourceSessionId: targetSessionId,
-            on: {
-              on: 'report',
-              match: { type: 'verdict', verdict: 'issues' },
-            },
-            targetSessionId: sourceSessionId,
-            action: {
-              kind: 'deliver+activate',
-              topic: 'review',
-              note: coderFixInstruction(),
-            },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            stop,
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        relationSubscriptionIds[relationId] = [passId, fixId]
-      }
-
-      const targets = new Set(
-        graph.relationOrder.map(
-          (relationId) => graph.relations[relationId].targetNodeId,
-        ),
-      )
-      const rootNodeIds = graph.nodeOrder.filter((id) => !targets.has(id))
-      if (rootNodeIds.length === 0) {
-        throw new Error('Draft workflow needs at least one starting Agent.')
-      }
-      for (const draftNodeId of rootNodeIds) {
-        const endpoint = graph.nodes[draftNodeId].endpoint
-        const sessionId = nodeSessionIds[draftNodeId]
-        if (endpoint.kind === 'new') {
-          const preparedRun = preparedRuns.get(sessionId)
-          delete this.#state.sessions[sessionId].prepared
-          await this.#startRun(sessionId, {
-            ...preparedRun,
-            runKind: 'create',
-          })
-        } else {
-          const sourceReview = graph.relationOrder
-            .map((relationId) => graph.relations[relationId])
-            .some(
-              (relation) =>
-                relation.kind === 'review-loop' &&
-                relation.sourceNodeId === draftNodeId,
-            )
-          await this.#cmdResumeSession(
-            {
-              sessionId,
-              message: sourceReview
-                ? coderActivationInstruction(endpoint.prompt)
-                : endpoint.prompt,
-            },
-            ctx,
-          )
-        }
-        await this.#settleProviderStart()
-        if (this.#state.sessions[sessionId]?.status === 'failed') {
-          throw new Error(
-            this.#state.sessions[sessionId].error ??
-              `The provider for ${draftNodeId} could not start.`,
-          )
-        }
-      }
-
-      return {
-        mapping: {
-          nodeSessionIds,
-          relationSubscriptionIds,
-        },
-        createdSessionIds,
-        subscriptionIds,
-        state: this.getState(),
-      }
-    } catch (error) {
-      for (const subscriptionId of subscriptionIds) {
-        this.#discardWorkflowSubscription(subscriptionId)
-      }
-      for (const sessionId of [...createdSessionIds].reverse()) {
-        this.#discardWorkflowSession(sessionId)
-      }
-      for (const [sessionId, checkpoint] of existingCheckpoints) {
-        if (this.#runs.has(sessionId)) continue
-        this.#state.sessions[sessionId] = checkpoint.session
-        const node = this.#state.nodes.find(
-          (candidate) => candidate.sessionId === sessionId,
-        )
-        if (node && checkpoint.nodeStatus) node.status = checkpoint.nodeStatus
-      }
-      this.#touch()
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
-      throw error
-    }
+    return startDraftWorkflow(this.#wf(), input)
   }
 
   async startHandoffWorkflow(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_handoff_workflow',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const sessions = Object.fromEntries(
-      (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
-        session.sessionId,
-        {
-          sessionId: session.sessionId,
-          cwd: session.cwd,
-          status: session.status,
-          frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
-        },
-      ]),
-    )
-    const validation = validateHandoffWorkflowStart(input as any, {
-      sessions,
-      providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
-    })
-    if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-
-    const ctx = this.#workflowCommandCtx()
-    const createdSessionIds: string[] = []
-    const subscriptionIds: string[] = []
-    const deliveredTo: string[] = []
-    const preparedRuns = new Map()
-    const lockedSessionIds = [input.source, input.target]
-      .filter((endpoint) => endpoint?.kind === 'existing')
-      .map((endpoint) => endpoint.sessionId)
-    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
-      throw new Error('One of these Agents is already being changed by another workflow; wait for it to finish.')
-    }
-    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
-    const existingCheckpoints = new Map(
-      lockedSessionIds.map((sessionId) => [sessionId, this.#captureWorkflowSession(sessionId)]),
-    )
-    const endpointSession = async (endpoint, role) => {
-      if (endpoint.kind === 'existing') {
-        this.#assertActivatable(endpoint.sessionId, ctx)
-        return endpoint.sessionId
-      }
-      const created = await this.#cmdCreateSession(
-        {
-          prompt: endpoint.prompt,
-          cwd: endpoint.cwd,
-          workMode: endpoint.workMode,
-          branch: endpoint.branch,
-          label: endpoint.label || role,
-          providerKind: endpoint.providerKind,
-          providerInstanceId: endpoint.providerInstanceId,
-          runtimeSettings: endpoint.runtimeSettings,
-        },
-        ctx,
-        { deferStart: true },
-      )
-      createdSessionIds.push(created.sessionId)
-      preparedRuns.set(created.sessionId, created.preparedRun)
-      return created.sessionId
-    }
-
-    try {
-      const sourceSessionId = await endpointSession(input.source, 'Source')
-      const targetSessionId = await endpointSession(input.target, 'Receiver')
-      const note = optionalTrimmedString(input.note)
-      if (input.source.kind === 'new') {
-        const subscriptionId = `handoff-once-${randomUUID().slice(0, 8)}`
-        subscriptionIds.push(subscriptionId)
-        this.#cmdAuthorSubscription(
-          {
-            id: subscriptionId,
-            label: 'handoff once',
-            sourceSessionId,
-            on: { on: 'finished' },
-            targetSessionId,
-            action: { kind: 'deliver+activate', topic: 'handoff', note },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            stop: { maxFirings: 1 },
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        delete this.#state.sessions[sourceSessionId].prepared
-        await this.#startRun(sourceSessionId, {
-          ...preparedRuns.get(sourceSessionId),
-          runKind: 'create',
-        })
-        await this.#settleProviderStart()
-        if (this.#state.sessions[sourceSessionId]?.status === 'failed') {
-          throw new Error(this.#state.sessions[sourceSessionId].error ?? 'The Source provider could not start.')
-        }
-      } else {
-        this.#assertActivatable(targetSessionId, ctx)
-        this.#cmdDeliver({ sessionId: targetSessionId, source: sourceSessionId, topic: 'handoff' }, ctx)
-        await this.#cmdActivate({ sessionId: targetSessionId, note, edgeSourceSessionId: sourceSessionId }, ctx)
-        await this.#settleProviderStart()
-        if (this.#state.sessions[targetSessionId]?.status === 'failed') {
-          throw new Error(this.#state.sessions[targetSessionId].error ?? 'The Receiver provider could not start.')
-        }
-        deliveredTo.push(targetSessionId)
-      }
-      return { sourceSessionId, targetSessionId, createdSessionIds, subscriptionIds, deliveredTo, state: this.getState() }
-    } catch (error) {
-      for (const id of subscriptionIds) this.#discardWorkflowSubscription(id)
-      for (const id of [...createdSessionIds].reverse()) this.#discardWorkflowSession(id)
-      for (const [sessionId, checkpoint] of existingCheckpoints) {
-        this.#restoreWorkflowSession(sessionId, checkpoint)
-      }
-      this.#touch()
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
-      throw error
-    } finally {
-      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
-    }
+    return startHandoffWorkflow(this.#wf(), input)
   }
 
   async startGoalWorkflow(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_goal_workflow',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const sessions = Object.fromEntries(
-      (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
-        session.sessionId,
-        {
-          sessionId: session.sessionId,
-          cwd: session.cwd,
-          status: session.status,
-          frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
-        },
-      ]),
-    )
-    const validation = validateGoalWorkflowStart(input as any, {
-      sessions,
-      providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
-    })
-    if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-
-    const ctx = this.#workflowCommandCtx()
-    const createdSessionIds: string[] = []
-    let workerSessionId
-    let preparedRun
-    let goalResult
-    const lockedSessionIds = input.worker?.kind === 'existing' ? [input.worker.sessionId] : []
-    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
-      throw new Error('This Worker is already being changed by another workflow; wait for it to finish.')
-    }
-    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
-    const existingCheckpoint = input.worker.kind === 'existing'
-      ? this.#captureWorkflowSession(input.worker.sessionId)
-      : undefined
-    try {
-      if (input.worker.kind === 'new') {
-        const created = await this.#cmdCreateSession(
-          {
-            prompt: input.worker.prompt,
-            cwd: input.worker.cwd,
-            workMode: input.worker.workMode,
-            branch: input.worker.branch,
-            label: input.worker.label || 'Worker',
-            providerKind: input.worker.providerKind,
-            providerInstanceId: input.worker.providerInstanceId,
-            runtimeSettings: input.worker.runtimeSettings,
-          },
-          ctx,
-          { deferStart: true },
-        )
-        workerSessionId = created.sessionId
-        preparedRun = created.preparedRun
-        createdSessionIds.push(workerSessionId)
-      } else {
-        workerSessionId = input.worker.sessionId
-        this.#assertActivatable(workerSessionId, ctx)
-      }
-      goalResult = await this.createGoalLoop({
-        workerSessionId,
-        goal: input.goal,
-        maxLaps: input.maxLaps,
-        judgeProviderInstanceId: input.judgeProviderInstanceId,
-        judgeModel: input.judgeModel,
-        judgeRuntimeSettings: input.judgeRuntimeSettings,
-        preset: 'workflow:goal',
-      })
-      createdSessionIds.push(goalResult.judgeSessionId)
-      if (input.worker.kind === 'new') {
-        delete this.#state.sessions[workerSessionId].prepared
-        await this.#startRun(workerSessionId, { ...preparedRun, runKind: 'create' })
-      } else {
-        await this.#cmdResumeSession({ sessionId: workerSessionId, message: input.worker.prompt }, ctx)
-      }
-      await this.#settleProviderStart()
-      const workerSession = this.#state.sessions[workerSessionId]
-      if (!workerSession || workerSession.status === 'failed' || workerSession.status === 'killed') {
-        throw new Error(workerSession?.error ?? `The Worker provider could not start (${workerSession?.status ?? 'missing'}).`)
-      }
-      const judgeSession = this.#state.sessions[goalResult.judgeSessionId]
-      if (!judgeSession || judgeSession.status === 'failed' || judgeSession.status === 'killed') {
-        throw new Error(
-          `The Judge provider could not start: ${judgeSession?.error ?? judgeSession?.status ?? 'missing session'}`,
-        )
-      }
-      const subscriptionIds = [goalResult.checkSubscription.id, goalResult.retrySubscription.id]
-      if (subscriptionIds.some((id) => this.#state.subscriptions[id]?.state !== 'active')) {
-        throw new Error('The Goal relationships stopped while the Worker and Judge were starting.')
-      }
-      return {
-        workerSessionId,
-        judgeSessionId: goalResult.judgeSessionId,
-        createdSessionIds,
-        subscriptionIds,
-        loop: loopsOf(this.#kernelView()).find((loop) => loop.subscriptionIds.includes(goalResult.checkSubscription.id)),
-        state: this.getState(),
-      }
-    } catch (error) {
-      if (goalResult) {
-        this.#discardWorkflowSubscription(goalResult.checkSubscription.id)
-        this.#discardWorkflowSubscription(goalResult.retrySubscription.id)
-      }
-      for (const id of [...createdSessionIds].reverse()) this.#discardWorkflowSession(id)
-      if (input.worker.kind === 'existing' && existingCheckpoint) {
-        this.#restoreWorkflowSession(input.worker.sessionId, existingCheckpoint)
-      }
-      this.#touch()
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
-      throw error
-    } finally {
-      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
-    }
+    return startGoalWorkflow(this.#wf(), input)
   }
 
-  // P3 dynamic authoring compiler. Current-result is an immediate command;
-  // next-completion is standing intent. Both paths share one preflight and
-  // one compensation boundary so the renderer never assembles half a
-  // Relationship from low-level HTTP/IPC calls.
   async connectAgents(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'connect_agents',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const validation = validateAgentConnection(
-      input as any,
-      this.#state.providerInstances.map(
-        (instance) => instance.providerInstanceId,
-      ),
-    )
-    if (!validation.ok) {
-      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-    }
-    const sourceSessionId = optionalTrimmedString(input.sourceSessionId)
-    const source = this.#state.sessions[sourceSessionId]
-    if (!source) throw new Error(`Unknown source Agent: ${sourceSessionId}`)
-    if (source.status === 'killed')
-      throw new Error('Killed Agent cannot be connected.')
-    if (
-      input.timing === 'current-result' &&
-      (source.status === 'running' || source.status === 'pending')
-    ) {
-      throw new Error(
-        'The source Agent is still working. Wait for next completion to avoid delivering a partial workspace.',
-      )
-    }
-
-    const targetInput = input.target as JsonRecord
-    const behavior = input.behavior
-    const instruction = optionalTrimmedString(input.instruction)
-    const compiled = compileAgentConnection(input as any)
-    const ctx = this.#humanCtx()
-    const createdSessionIds: string[] = []
-    const subscriptionIds: string[] = []
-    let targetSessionId: string
-    let existingCheckpoint
-
-    try {
-      if (targetInput.kind === 'new') {
-        const reviewerLike = [
-          'one-review',
-          'keep-reviewing',
-          'review-loop',
-        ].includes(behavior)
-        const created = await this.#cmdCreateSession(
-          {
-            prompt:
-              behavior === 'review-loop'
-                ? reviewerBootstrapInstruction(instruction)
-                : reviewerLike
-                  ? `You are a Reviewer connected from another Orrery Agent. ${instruction}`
-                  : instruction,
-            cwd: optionalTrimmedString(targetInput.cwd) ?? source.cwd,
-            workMode: 'local',
-            label: targetInput.label,
-            providerKind: targetInput.providerKind,
-            providerInstanceId: targetInput.providerInstanceId,
-            runtimeSettings: targetInput.runtimeSettings,
-          },
-          ctx,
-          {
-            deferStart: true,
-            position: targetInput.position,
-          },
-        )
-        targetSessionId = created.sessionId
-        createdSessionIds.push(targetSessionId)
-      } else {
-        targetSessionId = optionalTrimmedString(targetInput.sessionId)
-        this.#assertActivatable(targetSessionId, ctx)
-        existingCheckpoint = {
-          session: clone(this.#state.sessions[targetSessionId]),
-          nodeStatus: this.#state.nodes.find(
-            (node) => node.sessionId === targetSessionId,
-          )?.status,
-        }
-      }
-      if (targetSessionId === sourceSessionId)
-        throw new Error('Connect two different Agents.')
-      if (
-        ['one-review', 'keep-reviewing', 'review-loop'].includes(behavior) &&
-        this.#state.sessions[targetSessionId].cwd !== source.cwd
-      ) {
-        throw new Error(
-          'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
-        )
-      }
-
-      let forwardSubscriptionId
-      if (compiled.relationships.length === 2) {
-        const suffix = randomUUID().slice(0, 8)
-        const passId = `review-pass-${suffix}`
-        const fixId = `review-fix-${suffix}`
-        subscriptionIds.push(passId, fixId)
-        const review = (input.review as JsonRecord) ?? {
-          blocking: { mode: 'p0-p1' },
-          maxLaps: defaultCycleMaxFirings,
-        }
-        const stop = {
-          whenReport: { verdict: 'clean' },
-          maxFirings: Number(review.maxLaps),
-        }
-        this.#cmdAuthorSubscription(
-          {
-            id: passId,
-            label: 'review pass',
-            preset: 'review-workflow',
-            sourceSessionId,
-            on: { on: 'finished' },
-            targetSessionId,
-            action: {
-              kind: 'deliver+activate',
-              topic: 'diff',
-              note: reviewerActivationInstruction(
-                instruction,
-                review.blocking as any,
-              ),
-            },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            stop,
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        this.#cmdAuthorSubscription(
-          {
-            id: fixId,
-            label: 'blocking issues',
-            preset: 'review-workflow',
-            sourceSessionId: targetSessionId,
-            on: {
-              on: 'report',
-              match: { type: 'verdict', verdict: 'issues' },
-            },
-            targetSessionId: sourceSessionId,
-            action: {
-              kind: 'deliver+activate',
-              topic: 'review',
-              note: coderFixInstruction(),
-            },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            stop,
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        forwardSubscriptionId = passId
-      } else if (!compiled.immediate || behavior === 'keep-reviewing') {
-        const subscriptionId = `connect-${randomUUID().slice(0, 8)}`
-        subscriptionIds.push(subscriptionId)
-        const reviewLike = behavior !== 'handoff-once'
-        this.#cmdAuthorSubscription(
-          {
-            id: subscriptionId,
-            label:
-              behavior === 'handoff-once'
-                ? 'handoff once'
-                : behavior === 'one-review'
-                  ? 'one review'
-                  : 'review future turns',
-            sourceSessionId,
-            on: { on: 'finished' },
-            targetSessionId,
-            action: {
-              kind: 'deliver+activate',
-              topic: reviewLike ? 'diff' : 'handoff',
-              note: instruction,
-            },
-            gate: 'auto',
-            concurrency: 'coalesce',
-            ...(behavior === 'handoff-once' || behavior === 'one-review'
-              ? { stop: { maxFirings: 1 } }
-              : {}),
-            onStop: 'freeze-edge',
-          },
-          ctx,
-        )
-        forwardSubscriptionId = subscriptionId
-      }
-
-      if (compiled.immediate) {
-        if (forwardSubscriptionId) {
-          const subscription = this.#state.subscriptions[forwardSubscriptionId]
-          const startedEvent = this.#appendKernelEvent(
-            'relationship.started',
-            {
-              sessionId: sourceSessionId,
-              targetSessionId,
-              subscriptionId: forwardSubscriptionId,
-            },
-            ctx,
-            {
-              reason:
-                'The user connected the current result to this Relationship.',
-            },
-          )
-          await this.#createPendingActivation(
-            {
-              kind: 'pend-activation',
-              subscriptionId: forwardSubscriptionId,
-              target: targetSessionId,
-              action: subscription.action,
-              gate: subscription.gate,
-              triggerEventId: startedEvent?.id,
-            },
-            startedEvent,
-            this.#subscriptionRuleCtx(forwardSubscriptionId, startedEvent?.id),
-          )
-          // Product transports wrap connect_agents in dispatchCommand and
-          // drain only after the durable commit. The legacy in-process API
-          // used by kernel tests has no outer command boundary, so it must
-          // perform the equivalent drain here.
-          if (!this.#controlCommandContext.getStore()) {
-            await this.#drainApprovedSlots()
-          }
-        } else {
-          this.#cmdDeliver(
-            {
-              sessionId: targetSessionId,
-              source: sourceSessionId,
-              topic: behavior === 'handoff-once' ? 'handoff' : 'diff',
-              note: instruction,
-            },
-            ctx,
-          )
-          await this.#cmdActivate(
-            {
-              sessionId: targetSessionId,
-              note: instruction,
-              edgeSourceSessionId: sourceSessionId,
-            },
-            ctx,
-          )
-        }
-      }
-
-      return {
-        targetSessionId,
-        createdSessionIds,
-        subscriptionIds,
-        state: this.getState(),
-      }
-    } catch (error) {
-      for (const subscriptionId of subscriptionIds)
-        this.#discardWorkflowSubscription(subscriptionId)
-      for (const sessionId of [...createdSessionIds].reverse())
-        this.#discardWorkflowSession(sessionId)
-      if (
-        existingCheckpoint &&
-        targetSessionId &&
-        !this.#runs.has(targetSessionId)
-      ) {
-        this.#state.sessions[targetSessionId] = existingCheckpoint.session
-        const node = this.#state.nodes.find(
-          (candidate) => candidate.sessionId === targetSessionId,
-        )
-        if (node && existingCheckpoint.nodeStatus)
-          node.status = existingCheckpoint.nodeStatus
-      }
-      this.#touch()
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
-      throw error
-    }
-  }
-
-  #planCouncilHistory(council, type, summary) {
-    const ts = now()
-    council.updatedAt = ts
-    council.history.push({
-      id: randomUUID(),
-      type,
-      ts,
-      phase: council.phase,
-      summary,
-    })
-  }
-
-  #advanceWorkflowDeployment(
-    deploymentId: string,
-    stage: string,
-    journal: JsonRecord = {},
-    status = 'in_progress',
-  ) {
-    const transaction = this.#controlCommandContext.getStore()
-    if (transaction && transaction.closed !== true) {
-      transaction.workflowDeploymentIds.add(deploymentId)
-    }
-    if (
-      status === 'completed' &&
-      transaction &&
-      transaction.closed !== true
-    ) {
-      const current = this.#kernelStore.getWorkflowDeployment(deploymentId)
-      if (!current) throw new Error(`Unknown workflow deployment: ${deploymentId}`)
-      transaction.deploymentFinalizations.push({
-        deploymentId,
-        stage,
-        status,
-        journal,
-      })
-      return {
-        ...current,
-        stage,
-        status,
-        journal: { ...current.journal, ...journal },
-      }
-    }
-    const deployment = this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-      stage,
-      status,
-      journal,
-    })
-    if (
-      status === 'in_progress' &&
-      this.#workflowDeploymentCrashAfterStage === stage
-    ) {
-      const error = new Error(
-        `Injected workflow deployment crash after ${stage}.`,
-      ) as Error & { code?: string }
-      error.code = 'ORRERY_DEPLOYMENT_CRASH'
-      throw error
-    }
-    return deployment
-  }
-
-  #automaticDeploymentExistingSessionIds(kind: string, input: JsonRecord) {
-    if (kind === 'commit_workflow') {
-      const proposalId = optionalTrimmedString(input.proposalId)
-      const proposal = proposalId ? this.#state.workflowProposals?.[proposalId] : undefined
-      const recipeInput = proposal?.proposedPlan?.recipeInput
-      if (!recipeInput) return []
-      if (proposal.patch) {
-        const active = this.#activeWorkflowPlan(proposal.workflowId)
-        const councilId = active?.executionMapping?.productWorkflowId
-        const council = councilId ? this.#state.planCouncils?.[councilId] : undefined
-        return [...new Set([
-          ...Object.values(active?.executionMapping?.participantSessionIds ?? {}),
-          council?.coordinatorSessionId,
-        ].filter(Boolean))]
-      }
-      if (recipeInput.recipe === 'review') {
-        return [recipeInput.input?.coder, recipeInput.input?.reviewer]
-          .filter((endpoint) => endpoint?.kind === 'existing')
-          .map((endpoint) => endpoint.sessionId)
-      }
-      if (recipeInput.recipe === 'goal') {
-        return recipeInput.input?.worker?.kind === 'existing'
-          ? [recipeInput.input.worker.sessionId]
-          : []
-      }
-      if (recipeInput.recipe === 'handoff') {
-        return [recipeInput.input?.source, recipeInput.input?.target]
-          .filter((endpoint) => endpoint?.kind === 'existing')
-          .map((endpoint) => endpoint.sessionId)
-      }
-      return optionalTrimmedString(recipeInput.input?.coordinatorSessionId)
-        ? [recipeInput.input.coordinatorSessionId]
-        : []
-    }
-    if (kind === 'resume_session' || kind === 'activate') {
-      return optionalTrimmedString(input.sessionId) ? [input.sessionId] : []
-    }
-    if (kind === 'rule_execute_activation') {
-      const slot = this.#state.pendingActivations?.[input.slotKey]
-      return slot?.target ? [slot.target] : []
-    }
-    if (kind === 'connect_agents') {
-      return [
-        optionalTrimmedString(input.sourceSessionId),
-        input.target?.kind === 'existing'
-          ? optionalTrimmedString(input.target.sessionId)
-          : undefined,
-      ].filter(Boolean)
-    }
-    if (
-      kind === 'start_plan_council_cross_review' ||
-      kind === 'start_plan_council_synthesis' ||
-      kind === 'retry_plan_council_participant'
-    ) {
-      const workflowId = optionalTrimmedString(input.workflowId ?? input.runId)
-      const council = workflowId
-        ? this.#state.planCouncils?.[workflowId] ??
-          Object.values(this.#state.planCouncils ?? {}).find(
-            (candidate: JsonRecord) => candidate.runId === workflowId,
-          )
-        : undefined
-      return council
-        ? [...new Set([...council.participantOrder, council.coordinatorSessionId].filter(Boolean))]
-        : []
-    }
-    if (kind === 'start_handoff_workflow') {
-      return [input.source, input.target]
-        .filter((endpoint) => endpoint?.kind === 'existing')
-        .map((endpoint) => endpoint.sessionId)
-    }
-    if (kind === 'start_goal_workflow') {
-      return input.worker?.kind === 'existing' ? [input.worker.sessionId] : []
-    }
-    if (kind === 'start_draft_workflow') {
-      const graph = input.graph
-      return Object.values(graph?.nodes ?? {})
-        .map((node: JsonRecord) => node.endpoint)
-        .filter((endpoint) => endpoint?.kind === 'existing')
-        .map((endpoint) => endpoint.sessionId)
-    }
-    return []
-  }
-
-  #journalPlannedWorkflowResource(descriptor) {
-    const transaction = this.#controlCommandContext.getStore()
-    if (!transaction || transaction.closed === true) return
-    const deploymentIds = new Set([
-      ...(transaction.workflowDeploymentIds ?? []),
-      ...(transaction.automaticDeploymentId
-        ? [transaction.automaticDeploymentId]
-        : []),
-    ])
-    for (const deploymentId of deploymentIds) {
-      const deployment = this.#kernelStore.getWorkflowDeployment(deploymentId)
-      if (!deployment || deployment.status !== 'in_progress') continue
-      const createdSessionIds = [
-        ...new Set([...(deployment.journal.createdSessionIds ?? []), descriptor.sessionId]),
-      ]
-      const resources = [
-        ...(deployment.journal.createdSessionResources ?? []).filter(
-          (candidate) => candidate.sessionId !== descriptor.sessionId,
-        ),
-        descriptor,
-      ]
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        journal: {
-          createdSessionIds,
-          createdSessionResources: resources,
-          resourceIntentAt: now(),
-        },
-      })
-    }
-  }
-
-  #updateAutomaticDeployment(stage: string, journal: JsonRecord = {}) {
-    const transaction = this.#controlCommandContext.getStore()
-    const deploymentId = transaction?.automaticDeploymentId
-    if (!deploymentId || transaction.closed === true) return
-    this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-      stage,
-      journal,
-    })
-    if (this.#workflowDeploymentCrashAfterStage === stage) {
-      const error = new Error(`Injected workflow deployment crash after ${stage}.`)
-      ;(error as Error & { code?: string }).code = 'ORRERY_DEPLOYMENT_CRASH'
-      throw error
-    }
-  }
-
-  #journalAutomaticDeploymentResources() {
-    const transaction = this.#controlCommandContext.getStore()
-    if (!transaction?.automaticDeploymentId || transaction.closed === true) return
-    const deployment = this.#kernelStore.getWorkflowDeployment(
-      transaction.automaticDeploymentId,
-    )
-    const createdSessionIds = Object.keys(this.#state.sessions).filter(
-      (sessionId) => !this.#committedStateDuringCommand?.sessions?.[sessionId],
-    )
-    const createdSubscriptionIds = Object.keys(this.#state.subscriptions ?? {}).filter(
-      (subscriptionId) =>
-        !this.#committedStateDuringCommand?.subscriptions?.[subscriptionId],
-    )
-    this.#updateAutomaticDeployment(
-      createdSubscriptionIds.length > 0
-        ? 'graph-committed'
-        : createdSessionIds.length > 0
-          ? 'resources-created'
-          : deployment?.stage ?? 'prepared',
-      {
-        createdSessionIds,
-        createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-        createdSubscriptionIds,
-      },
-    )
-  }
-
-  #journalAutomaticDeploymentRunStarted(sessionId: string) {
-    const transaction = this.#controlCommandContext.getStore()
-    const deploymentId = transaction?.automaticDeploymentId
-    if (!deploymentId || transaction.closed === true) return
-    this.#journalAutomaticDeploymentResources()
-    const deployment = this.#kernelStore.getWorkflowDeployment(deploymentId)
-    this.#updateAutomaticDeployment('roots-started', {
-      startedSessionIds: [
-        ...new Set([...(deployment?.journal?.startedSessionIds ?? []), sessionId]),
-      ],
-    })
-  }
-
-  #recoverWorkflowDeployments() {
-    for (const deployment of this.#kernelStore.listWorkflowDeployments({
-      status: 'in_progress',
-    })) {
-      const journal = deployment.journal ?? {}
-      for (const subscriptionId of journal.createdSubscriptionIds ?? []) {
-        this.#discardWorkflowSubscription(subscriptionId)
-      }
-      for (const sessionId of [...(journal.createdSessionIds ?? [])].reverse()) {
-        const descriptor = (journal.createdSessionResources ?? []).find(
-          (candidate) => candidate.sessionId === sessionId,
-        )
-        if (this.#state.sessions[sessionId]) {
-          this.#discardWorkflowSession(sessionId)
-        } else if (descriptor) {
-          this.#cleanupWorkflowResourceDescriptor(descriptor)
-        }
-      }
-      for (const [sessionId, checkpoint] of Object.entries(
-        journal.existingSessionCheckpoints ?? {},
-      )) {
-        if (isObject(checkpoint)) {
-          this.#restoreWorkflowSession(sessionId, checkpoint)
-        }
-      }
-      for (const [sessionId, checkpoint] of Object.entries(journal.channelCheckpoints ?? {})) {
-        if (Array.isArray(checkpoint)) this.#channelStore.restore(sessionId, checkpoint as any)
-      }
-      if (journal.artifactWorkflowId) {
-        delete this.#state.planCouncils?.[journal.artifactWorkflowId]
-        this.#channelStore.removeArtifacts(journal.artifactWorkflowId)
-      }
-      const reason = `Recovered incomplete deployment from stage ${deployment.stage}; compensated created resources.`
-      this.#kernelStore.updateWorkflowDeployment(deployment.deploymentId, {
-        stage: 'aborted',
-        status: 'aborted',
-        journal: { recoveredAt: now(), reason },
-      })
-      this.#appendKernelEvent(
-        'workflow.deployment.aborted',
-        {
-          deploymentId: deployment.deploymentId,
-          workflowId: deployment.workflowId,
-          previousStage: deployment.stage,
-        },
-        { actor: { kind: 'runtime' } },
-        { reason },
-      )
-    }
-  }
-
-  #reconcileDynamicTopology() {
-    const groups = this.#state.dynamicSpawnGroups ?? {}
-    for (const group of Object.values(groups) as JsonRecord[]) {
-      const seenItems = new Set<string>()
-      for (const child of group.children ?? []) {
-        const session = this.#state.sessions[child.sessionId]
-        if (seenItems.has(child.itemKey)) {
-          child.status = 'recycled'
-          child.error = 'Duplicate dynamic item reconciled after restart.'
-          if (session) session.archived = true
-          continue
-        }
-        seenItems.add(child.itemKey)
-        if (!session) {
-          child.status = 'failed'
-          child.error = 'Dynamic participant was missing during restart reconciliation.'
-          group.status = 'failed'
-          group.reason = child.error
-        } else if (['prepared', 'running'].includes(child.status) && ['failed', 'killed'].includes(session.status)) {
-          child.status = session.status === 'failed' ? 'failed' : 'cancelled'
-          child.error = session.error ?? 'Dynamic participant was interrupted by restart.'
-          group.status = 'failed'
-          group.reason = child.error
-        }
-      }
-      group.updatedAt = now()
-    }
-    for (const session of Object.values(this.#state.sessions) as JsonRecord[]) {
-      const topology = session.dynamicTopology
-      if (!topology || groups[topology.groupId]) continue
-      session.archived = true
-      this.#appendKernelEvent(
-        'dynamic.orphan.reconciled',
-        { sessionId: session.sessionId, missingGroupId: topology.groupId },
-        { actor: { kind: 'runtime' } },
-        { reason: 'Archived a dynamic participant whose durable spawn group is missing.' },
-      )
-    }
+    return connectAgents(this.#wf(), input)
   }
 
   getWorkflowDeployments(input: JsonRecord = {}) {
-    return {
-      deployments: this.#kernelStore.listWorkflowDeployments({
-        status: optionalTrimmedString(input.status),
-      }),
-    }
+    return getWorkflowDeployments(this.#wf(), input)
+  }
+
+  getPlanCouncil(input: JsonRecord | string = {}) {
+    return getPlanCouncil(this.#wf(), input)
+  }
+
+  getPlanCouncilArtifact(input: JsonRecord = {}) {
+    return getPlanCouncilArtifact(this.#wf(), input)
+  }
+
+  async startPlanCouncil(input: JsonRecord = {}) {
+    return startPlanCouncil(this.#wf(), input)
+  }
+
+  async startPlanCouncilCrossReview(input: JsonRecord = {}) {
+    return startPlanCouncilCrossReview(this.#wf(), input)
+  }
+
+  async startPlanCouncilSynthesis(input: JsonRecord = {}) {
+    return startPlanCouncilSynthesis(this.#wf(), input)
+  }
+
+  stopPlanCouncil(input: JsonRecord = {}) {
+    return stopPlanCouncil(this.#wf(), input)
+  }
+
+  async startReviewWorkflow(input: JsonRecord = {}) {
+    return startReviewWorkflow(this.#wf(), input)
+  }
+
+  async createGoalLoop(input: JsonRecord = {}) {
+    return createGoalLoop(this.#wf(), input)
+  }
+
+  listTemplates() {
+    return listTemplates(this.#wf())
+  }
+
+  async applyTemplate(input: JsonRecord = {}) {
+    return applyTemplate(this.#wf(), input)
+  }
+
+  saveTemplate(input: JsonRecord = {}) {
+    return saveTemplate(this.#wf(), input)
+  }
+
+  removeTemplate(input: JsonRecord = {}) {
+    return removeTemplate(this.#wf(), input)
   }
 
   cleanupChannels(input: JsonRecord = {}) {
@@ -6898,2188 +5219,6 @@ export class RuntimeSessionManager {
     this.#touch()
     this.#broadcast({ type: 'runtime.state', state: this.getState() })
     return { ok: true, results, removedDeliveries, removedBytes, state: this.getState() }
-  }
-
-  #setPlanCouncilPhase(council, phase, summary) {
-    council.phase = phase
-    this.#planCouncilHistory(council, 'phase-changed', summary)
-  }
-
-  #nextCouncilBarrierGeneration(council: JsonRecord, phaseId: string) {
-    return Object.values(this.#state.barriers ?? {}).filter(
-      (barrier: JsonRecord) =>
-        barrier.runId === council.runId && barrier.phaseId === phaseId,
-    ).length + 1
-  }
-
-  #maybeAdvancePlanCouncil(council: JsonRecord, gate: 'crossReview' | 'synthesis') {
-    const policy = council.advancement?.[gate] ?? 'human'
-    if (policy === 'auto') {
-      const kind = gate === 'crossReview'
-        ? 'start_plan_council_cross_review'
-        : 'start_plan_council_synthesis'
-      const generation = this.#nextCouncilBarrierGeneration(
-        council,
-        gate === 'crossReview' ? 'peer-review' : 'synthesis',
-      )
-      queueMicrotask(() => {
-        void this.dispatchCommand({
-          commandId: `council-auto-${council.runId}-${gate}-g${generation}`,
-          idempotencyKey: `council-auto:${council.runId}:${gate}:g${generation}`,
-          kind,
-          actor: { kind: 'runtime' },
-          input: { workflowId: council.workflowId },
-        }).catch((error) => this.#failPlanCouncil(council, `Automatic ${gate} advancement failed: ${error instanceof Error ? error.message : String(error)}`))
-      })
-    } else if (policy === 'master') {
-      this.#appendKernelEvent('workflow.milestone', {
-        workflowId: council.workflowId,
-        runId: council.runId,
-        milestone: gate === 'crossReview' ? 'council-proposals-ready' : 'council-reviews-ready',
-        summary: `Plan Council ${council.workflowId} ${gate} phase is ready for Master judgment.`,
-      }, { actor: { kind: 'runtime' } })
-    }
-  }
-
-  #cancelPendingCouncilBarriers(council: JsonRecord, reason: string, causeId?: string) {
-    for (const barrierId of Object.values(council.barrierIds ?? {}) as string[]) {
-      if (this.#state.barriers?.[barrierId]?.status !== 'pending') continue
-      this.#cmdCancelBarrier(
-        { barrierId, reason },
-        { actor: { kind: 'runtime' }, causeId },
-      )
-    }
-  }
-
-  #failPlanCouncil(council, message, causeId?: string) {
-    if (!council || ['completed', 'stopped', 'failed'].includes(council.phase)) {
-      return
-    }
-    if (council.phase === 'blocked' && /Resource budget exhausted:/i.test(String(message ?? ''))) return
-    if (council.phase === 'blocked') {
-      council.phase = council.blockedFromPhase ?? council.phase
-      delete council.blockedAt
-      delete council.blockedFromPhase
-      delete council.blockedParticipantId
-      delete council.blockedParticipantIds
-      delete council.blockReason
-      delete council.blockKind
-    }
-    council.failure = String(message ?? 'Plan Council failed.')
-    this.#cancelPendingCouncilBarriers(council, council.failure, causeId)
-    this.#setPlanCouncilPhase(council, 'failed', council.failure)
-    this.#appendKernelEvent(
-      'council.failed',
-      {
-        workflowId: council.workflowId,
-        runId: council.runId,
-        error: truncateForLog(council.failure, 400),
-      },
-      { actor: { kind: 'runtime' }, causeId },
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'plan-council.updated',
-      workflowId: council.workflowId,
-      state: this.getState(),
-    })
-  }
-
-  #reconcileInterruptedPlanCouncils(interruptedSessionIds: Set<string>) {
-    if (interruptedSessionIds.size === 0) return
-    for (const council of Object.values(this.#state.planCouncils ?? {}) as JsonRecord[]) {
-      if (['completed', 'stopped', 'failed'].includes(council.phase)) continue
-      const participant = council.participantOrder
-        ?.map((sessionId) => council.participants?.[sessionId])
-        .find(
-          (candidate) =>
-            candidate?.expectedTurnId &&
-            interruptedSessionIds.has(candidate.sessionId),
-        )
-      if (!participant) continue
-      this.#failPlanCouncil(
-        council,
-        `${participant.label} was interrupted by runtime restart; restart this Plan Council from a new run.`,
-      )
-    }
-  }
-
-  #planCouncilForSession(sessionId: string) {
-    return Object.values(this.#state.planCouncils ?? {}).find(
-      (council: JsonRecord) => council.participants?.[sessionId],
-    ) as JsonRecord | undefined
-  }
-
-  #completedAssistantContent(sessionId: string, expectedTurnId: string) {
-    const session = this.#state.sessions[sessionId]
-    const message = [...(session?.messages ?? [])]
-      .reverse()
-      .find(
-        (candidate) =>
-          candidate.role === 'assistant' &&
-          candidate.status === 'complete' &&
-          candidate.runId === expectedTurnId &&
-          nonEmptyString(candidate.content),
-      )
-    return optionalTrimmedString(message?.content)
-  }
-
-  #materializePlanCouncilArtifact(
-    council: JsonRecord,
-    participant: JsonRecord,
-    kind: 'proposal' | 'peer-review' | 'synthesis',
-    expectedTurnId: string,
-    causeId?: string,
-  ) {
-    const content = this.#completedAssistantContent(
-      participant.sessionId,
-      expectedTurnId,
-    )
-    if (!content) {
-      throw new Error(
-        `${participant.label} finished without a readable ${kind} response.`,
-      )
-    }
-    const sizeBytes = Buffer.byteLength(content, 'utf8')
-    if (sizeBytes > planCouncilArtifactMaxBytes) {
-      throw new Error(
-        `${participant.label} produced a ${kind} artifact of ${sizeBytes} bytes; the Plan Council limit is ${planCouncilArtifactMaxBytes} bytes.`,
-      )
-    }
-    const artifactId = `council-${kind}-${randomUUID()}`
-    const execution = validateExecutionEnvelope(participant.expectedExecutionEnvelope)
-      ? clone(participant.expectedExecutionEnvelope)
-      : undefined
-    const transaction = this.#controlCommandContext.getStore()
-    const contentRef = this.#channelStore.artifactRef(council.workflowId, artifactId)
-    if (transaction && transaction.closed !== true) {
-      transaction.outboxEffects.push({
-        effectId: `council-artifact:${artifactId}`,
-        kind: 'council-artifact-write',
-        payload: {
-          workflowId: council.workflowId,
-          artifactId,
-          content,
-          ...(execution ? { execution: clone(execution) } : {}),
-        },
-      })
-    } else {
-      this.#channelStore.writeArtifact(council.workflowId, artifactId, content)
-    }
-    const artifactVersion = Math.max(0, ...council.artifacts
-      .filter((artifact) => artifact.kind === kind && artifact.authorSessionId === participant.sessionId)
-      .map((artifact) => Number(artifact.version) || 0)) + 1
-    const artifact = {
-      artifactId,
-      kind,
-      workflowId: council.workflowId,
-      runId: council.runId,
-      phaseId: kind,
-      round: 1,
-      version: artifactVersion,
-      authorSessionId: participant.sessionId,
-      contentRef,
-      digest: createHash('sha256').update(content).digest('hex'),
-      sizeBytes,
-      createdAt: now(),
-      ...(execution ? { execution } : {}),
-      ...(execution && execution.workflowId !== council.workflowId
-        ? { governingWorkflowId: execution.workflowId }
-        : {}),
-    }
-    council.artifacts.push(artifact)
-    delete participant.expectedTurnId
-    delete participant.expectedArtifactKind
-    delete participant.expectedExecutionEnvelope
-    this.#appendKernelEvent(
-      'council.artifact.created',
-      {
-        workflowId: council.workflowId,
-        runId: council.runId,
-        artifactId,
-        kind,
-        authorSessionId: participant.sessionId,
-        contentRef,
-        digest: artifact.digest,
-        sizeBytes,
-        ...(execution ? { execution } : {}),
-      },
-      { actor: { kind: 'runtime' }, causeId },
-    )
-    this.#planCouncilHistory(
-      council,
-      'artifact-created',
-      `${participant.label} produced ${kind}.`,
-    )
-  }
-
-  #planCouncilFinished(sessionId: string, turnId: string, causeId?: string) {
-    const council = this.#planCouncilForSession(sessionId)
-    if (!council || ['completed', 'stopped', 'failed'].includes(council.phase)) {
-      return
-    }
-    const participant = council.participants[sessionId]
-    if (
-      participant.expectedTurnId !== turnId ||
-      !participant.expectedArtifactKind
-    ) {
-      return
-    }
-    try {
-      const artifactKind = participant.expectedArtifactKind
-      const execution = clone(participant.expectedExecutionEnvelope)
-      this.#materializePlanCouncilArtifact(
-        council,
-        participant,
-        participant.expectedArtifactKind,
-        turnId,
-        causeId,
-      )
-      const barrierKey = artifactKind === 'proposal'
-        ? 'proposal'
-        : artifactKind === 'peer-review'
-          ? 'peer-review'
-          : 'synthesis'
-      const barrierId = council.barrierIds?.[barrierKey]
-      const barrierArrival = barrierId && execution
-        ? this.#cmdArriveBarrier({
-            barrierId,
-            participantKey: participant.key,
-            eventId: causeId ?? `artifact:${participant.sessionId}:${turnId}`,
-            envelope: execution,
-          }, { actor: { kind: 'runtime' }, causeId })
-        : undefined
-      if (
-        council.phase === 'drafting-plans' &&
-        barrierArrival?.released
-      ) {
-        this.#setPlanCouncilPhase(
-          council,
-          'ready-for-cross-review',
-          council.advancement?.crossReview === 'auto'
-            ? 'All independent plans are ready. Automatic cross-review advancement is queued.'
-            : council.advancement?.crossReview === 'master'
-              ? 'All independent plans are ready. Waiting for Master judgment to start cross-review.'
-              : 'All independent plans are ready. Waiting for human approval to start cross-review.',
-        )
-        this.#maybeAdvancePlanCouncil(council, 'crossReview')
-      } else if (
-        council.phase === 'reviewing-peers' &&
-        barrierArrival?.released
-      ) {
-        this.#setPlanCouncilPhase(
-          council,
-          'ready-for-synthesis',
-          council.advancement?.synthesis === 'auto'
-            ? 'All peer reviews are ready. Automatic synthesis advancement is queued.'
-            : council.advancement?.synthesis === 'master'
-              ? 'All peer reviews are ready. Waiting for Master judgment to synthesize.'
-              : 'All peer reviews are ready. Waiting for human approval to synthesize.',
-        )
-        this.#maybeAdvancePlanCouncil(council, 'synthesis')
-      } else if (
-        council.phase === 'synthesizing' &&
-        participant.role === 'synthesizer' &&
-        barrierArrival?.released
-      ) {
-        this.#setPlanCouncilPhase(
-          council,
-          'completed',
-          'The final synthesis is ready.',
-        )
-        const synthesis = [...council.artifacts].reverse().find(
-          (artifact) => artifact.kind === 'synthesis',
-        )
-        this.#appendKernelEvent(
-          'workflow.milestone',
-          {
-            workflowId: council.workflowId,
-            runId: council.runId,
-            milestone: 'plan-council-synthesis-completed',
-            summary: 'Plan Council completed and its final synthesis is ready for an implementation Workflow Proposal.',
-            artifactId: synthesis?.artifactId,
-            contentRef: synthesis?.contentRef,
-          },
-          {
-            actor: { kind: 'runtime' },
-            causeId,
-            ...(synthesis?.execution
-              ? { execution: clone(synthesis.execution) }
-              : {}),
-          },
-        )
-        if (
-          council.coordinatorSessionId &&
-          council.coordinatorSessionId !== participant.sessionId &&
-          this.#state.sessions[council.coordinatorSessionId]
-        ) {
-          const content = this.#completedAssistantContent(
-            participant.sessionId,
-            turnId,
-          )
-          if (content) {
-            this.#deliverToChannel(
-              {
-                target: council.coordinatorSessionId,
-                from: participant.sessionId,
-                topic: `plan-council:${council.workflowId}:synthesis`,
-                note: 'Plan Council completed. The final synthesis is attached.',
-                entries: [{ name: 'final-plan.md', content }],
-              },
-              {
-                actor: { kind: 'runtime' },
-                causeId,
-                ...(synthesis?.execution
-                  ? { execution: clone(synthesis.execution) }
-                  : {}),
-              },
-            )
-          }
-        }
-      }
-    } catch (error) {
-      this.#failPlanCouncil(
-        council,
-        error instanceof Error ? error.message : String(error),
-        causeId,
-      )
-    }
-  }
-
-  #planCouncilFailed(sessionId: string, error: string) {
-    const council = this.#planCouncilForSession(sessionId)
-    if (!council || ['completed', 'stopped', 'failed'].includes(council.phase)) {
-      return
-    }
-    const participant = council.participants[sessionId]
-    if (!participant?.expectedTurnId) return
-    if (/Resource budget exhausted:/i.test(error)) {
-      const firstBlock = council.phase !== 'blocked'
-      if (firstBlock) {
-        council.blockedAt = now()
-        council.blockedFromPhase = council.phase
-        council.blockedParticipantIds = []
-      }
-      council.blockedParticipantIds ??= council.blockedParticipantId ? [council.blockedParticipantId] : []
-      if (!council.blockedParticipantIds.includes(sessionId)) council.blockedParticipantIds.push(sessionId)
-      council.blockedParticipantId = council.blockedParticipantIds[0]
-      const blockedLabels = council.blockedParticipantIds.map((id) => council.participants[id]?.label ?? id)
-      council.blockReason = `${blockedLabels.join(', ')} reached a configured resource budget. Adjust or disable the budget, then retry.`
-      council.blockKind = 'resource-budget'
-      council.failure = council.blockReason
-      if (firstBlock) this.#setPlanCouncilPhase(council, 'blocked', council.blockReason)
-      else this.#planCouncilHistory(council, 'blocked', council.blockReason)
-      this.#appendKernelEvent(
-        'council.blocked',
-        {
-          workflowId: council.workflowId,
-          runId: council.runId,
-          participantSessionId: sessionId,
-          reason: truncateForLog(council.blockReason, 400),
-          kind: council.blockKind,
-        },
-        { actor: { kind: 'runtime' } },
-      )
-      this.#touch()
-      this.#broadcast({ type: 'plan-council.updated', workflowId: council.workflowId, state: this.getState() })
-      return
-    }
-    this.#failPlanCouncil(council, `${participant.label} failed: ${error}`)
-  }
-
-  async #cmdRetryPlanCouncilParticipant(input: JsonRecord = {}, ctx: JsonRecord) {
-    if (ctx.actor?.kind !== 'human') throw new Error('Only a human can retry a blocked Plan Council participant.')
-    const workflowId = optionalTrimmedString(input.workflowId)
-    const council = workflowId ? this.#state.planCouncils?.[workflowId] : undefined
-    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-    if (council.phase !== 'blocked' || !council.blockedParticipantId || !council.blockedFromPhase) {
-      throw new Error(`Plan Council ${workflowId} is not blocked on a retryable participant.`)
-    }
-    const sessionId = council.blockedParticipantId
-    const participant = council.participants?.[sessionId]
-    const session = this.#state.sessions[sessionId]
-    if (!participant || !session || !participant.expectedArtifactKind || !participant.expectedExecutionEnvelope) {
-      throw new Error('Blocked Plan Council participant is missing retry provenance.')
-    }
-    const scopeId = this.#resourceScopeId(sessionId)
-    if (input.disableConsumptionBudget === true) {
-      this.#cmdSetResourcePolicy({ scopeId, consumptionEnforcement: 'off' }, ctx)
-    }
-    const policy = this.#resourcePolicy(scopeId)
-    if (policy.consumptionEnforcement === 'hard') {
-      throw new Error('The consumption budget is still enforced. Disable it or raise its limits before retrying.')
-    }
-    if (this.#isSessionFrozen(sessionId)) {
-      this.#cmdUnfreeze({ target: sessionId, reason: 'Retrying the blocked Plan Council participant.' }, ctx)
-    }
-    const previousExecution = clone(participant.expectedExecutionEnvelope)
-    const attempt = Number(previousExecution.attempt) + 1
-    const execution = {
-      ...previousExecution,
-      activationId: `${council.workflowId}:${previousExecution.phaseId}:retry-pending:${attempt}`,
-      attempt,
-    }
-    const note = participant.expectedArtifactKind === 'proposal'
-      ? plannerPrompt(council.objective, council.reviewFocus, participant.label)
-      : participant.expectedArtifactKind === 'peer-review'
-        ? crossReviewPrompt(council.reviewFocus)
-        : synthesizerPrompt(council.objective, council.reviewFocus)
-    const restoredPhase = council.blockedFromPhase
-    delete participant.expectedTurnId
-    const activated = await this.#cmdActivate({ sessionId, note }, { ...ctx, execution })
-    participant.expectedTurnId = activated.runId
-    participant.expectedExecutionEnvelope = { ...execution, activationId: activated.runId }
-    const remainingBlocked = (council.blockedParticipantIds ?? [sessionId]).filter((id) => id !== sessionId)
-    if (remainingBlocked.length > 0) {
-      council.blockedParticipantIds = remainingBlocked
-      council.blockedParticipantId = remainingBlocked[0]
-      const blockedLabels = remainingBlocked.map((id) => council.participants[id]?.label ?? id)
-      council.blockReason = `${blockedLabels.join(', ')} still require a resource-budget retry.`
-      council.failure = council.blockReason
-    } else {
-      council.phase = restoredPhase
-      delete council.blockedAt
-      delete council.blockedFromPhase
-      delete council.blockedParticipantId
-      delete council.blockedParticipantIds
-      delete council.blockReason
-      delete council.blockKind
-      delete council.failure
-    }
-    this.#planCouncilHistory(council, 'retried', `${participant.label} was retried as attempt ${attempt}.`)
-    this.#appendKernelEvent(
-      'council.participant-retried',
-      { workflowId: council.workflowId, runId: council.runId, participantSessionId: sessionId, attempt },
-      { ...ctx, execution: clone(participant.expectedExecutionEnvelope) },
-    )
-    this.#touch()
-    this.#broadcast({ type: 'plan-council.updated', workflowId: council.workflowId, state: this.getState() })
-    return { council: clone(council), state: this.getState() }
-  }
-
-  getPlanCouncil(input: JsonRecord | string = {}) {
-    const workflowId =
-      typeof input === 'string'
-        ? input
-        : optionalTrimmedString(input.workflowId ?? input.runId)
-    const state = this.#readState()
-    const council = workflowId
-      ? state.planCouncils?.[workflowId] ??
-        Object.values(state.planCouncils ?? {}).find(
-          (candidate: JsonRecord) => candidate.runId === workflowId,
-        )
-      : undefined
-    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-    return { council: clone(council) }
-  }
-
-  getPlanCouncilArtifact(input: JsonRecord = {}) {
-    const { council } = this.getPlanCouncil(input)
-    const artifactId = optionalTrimmedString(input.artifactId)
-    const artifact = council.artifacts.find(
-      (candidate) => candidate.artifactId === artifactId,
-    )
-    if (!artifact) throw new Error(`Unknown Plan Council artifact: ${artifactId ?? ''}`)
-    return { artifact, content: this.#channelStore.readArtifact(artifact.contentRef) }
-  }
-
-  async startPlanCouncil(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      const requestKey = optionalTrimmedString(input.idempotencyKey) ??
-        optionalTrimmedString(input.commandId)
-      const previous = requestKey
-        ? this.#kernelStore.getWorkflowDeploymentByCommandId(requestKey)
-        : undefined
-      const existingCouncil = previous?.status === 'completed'
-        ? this.#state.planCouncils?.[previous.workflowId]
-        : undefined
-      if (existingCouncil) {
-        return {
-          workflowId: existingCouncil.workflowId,
-          runId: existingCouncil.runId,
-          deploymentId: previous.deploymentId,
-          participantSessionIds: Object.fromEntries(
-            existingCouncil.participantOrder.map((id) => [existingCouncil.participants[id].key, id]),
-          ),
-          synthesizerSessionId: existingCouncil.synthesizerSessionId,
-          council: clone(existingCouncil),
-          state: this.getState(),
-        }
-      }
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_plan_council',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const validation = validatePlanCouncilStart(input as any, {
-      providerInstanceIds: this.#state.providerInstances.map(
-        (instance) => instance.providerInstanceId,
-      ),
-      sessionIds: Object.keys(this.#state.sessions),
-    })
-    if (!validation.ok) {
-      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-    }
-    const councilResourcePolicy = this.#resourcePolicy('global')
-    if (input.planners.length > councilResourcePolicy.maxFanout) {
-      throw new Error(`Plan Council fan-out ${input.planners.length} exceeds global resource policy ${councilResourcePolicy.maxFanout}.`)
-    }
-    const ctx = this.#workflowCommandCtx()
-    const requestedDeploymentCommandId =
-      optionalTrimmedString(input.idempotencyKey) ??
-      optionalTrimmedString(input.commandId)
-    if (requestedDeploymentCommandId) {
-      const previous = this.#kernelStore.getWorkflowDeploymentByCommandId(
-        requestedDeploymentCommandId,
-      )
-      if (previous) {
-        if (previous.status !== 'completed') {
-          throw new Error(
-            `Plan Council command ${requestedDeploymentCommandId} previously ${previous.status} at ${previous.stage}.`,
-          )
-        }
-        const council = this.#state.planCouncils?.[previous.workflowId]
-        if (!council) {
-          throw new Error(
-            `Completed Plan Council deployment ${previous.deploymentId} is missing its durable projection.`,
-          )
-        }
-        return {
-          workflowId: council.workflowId,
-          runId: council.runId,
-          deploymentId: previous.deploymentId,
-          participantSessionIds: Object.fromEntries(
-            council.participantOrder.map((id) => [council.participants[id].key, id]),
-          ),
-          synthesizerSessionId: council.synthesizerSessionId,
-          council: clone(council),
-          state: this.getState(),
-        }
-      }
-    }
-    const workflowId = `plan-council-${randomUUID()}`
-    const runId = randomUUID()
-    const deploymentId = `deployment-${workflowId}`
-    const deploymentCommandId = requestedDeploymentCommandId ?? randomUUID()
-    const createdSessionIds: string[] = []
-    const preparedRuns = new Map<string, JsonRecord>()
-    const participants = {}
-    const participantOrder: string[] = []
-    const createParticipant = async (spec, role) => {
-      const created = await this.#cmdCreateSession(
-        {
-          prompt:
-            role === 'planner'
-              ? plannerPrompt(input.objective, input.reviewFocus, spec.label)
-              : synthesizerPrompt(input.objective, input.reviewFocus),
-          cwd: input.cwd,
-          workMode: 'local',
-          label: spec.label,
-          providerKind: spec.providerKind,
-          providerInstanceId: spec.providerInstanceId,
-          runtimeSettings: {
-            ...spec.runtimeSettings,
-            runtimeMode: 'approval-required',
-            sandbox: 'read-only',
-          },
-          ...(input.coordinatorSessionId
-            ? {
-                sourceSessionId: input.coordinatorSessionId,
-                linkLabel: `Plan Council ${role}`,
-              }
-            : {}),
-        },
-        ctx,
-        { deferStart: true },
-      )
-      createdSessionIds.push(created.sessionId)
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        journal: {
-          createdSessionIds: [...createdSessionIds],
-          createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-        },
-      })
-      preparedRuns.set(created.sessionId, created.preparedRun)
-      participants[created.sessionId] = {
-        ...clone(spec),
-        runtimeSettings: {
-          ...clone(spec.runtimeSettings),
-          runtimeMode: 'approval-required',
-          sandbox: 'read-only',
-        },
-        role,
-        sessionId: created.sessionId,
-      }
-      participantOrder.push(created.sessionId)
-      return created.sessionId
-    }
-
-    this.#kernelStore.createWorkflowDeployment({
-      deploymentId,
-      workflowId,
-      commandId: deploymentCommandId,
-      stage: 'prepared',
-      journal: {
-        kind: 'plan-council',
-        artifactWorkflowId: workflowId,
-        createdSessionIds: [],
-        createdSubscriptionIds: [],
-      },
-    })
-    try {
-      this.#advanceWorkflowDeployment(deploymentId, 'prepared')
-      for (const planner of input.planners) {
-        await createParticipant(planner, 'planner')
-      }
-      const synthesizerSessionId = await createParticipant(
-        input.synthesizer,
-        'synthesizer',
-      )
-      this.#advanceWorkflowDeployment(deploymentId, 'resources-created', {
-        createdSessionIds: [...createdSessionIds],
-        createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-      })
-      if (!input.coordinatorSessionId) {
-        input.coordinatorSessionId = synthesizerSessionId
-      }
-      for (const plannerSessionId of participantOrder.filter(
-        (id) => id !== synthesizerSessionId,
-      )) {
-        this.#cmdLinkSessions(
-          {
-            source: plannerSessionId,
-            target: synthesizerSessionId,
-            label: 'Plan Council participant',
-            reason: 'Independent plan flows to the Council synthesizer.',
-          },
-          ctx,
-        )
-      }
-      const ts = now()
-      const council = {
-        workflowId,
-        runId,
-        objective: input.objective.trim(),
-        cwd: path.resolve(input.cwd),
-        ...(optionalTrimmedString(input.reviewFocus)
-          ? { reviewFocus: input.reviewFocus.trim() }
-          : {}),
-        phase: 'configured',
-        round: 1,
-        coordinatorSessionId: input.coordinatorSessionId,
-        synthesizerSessionId,
-        reviewTopology: input.reviewTopology === 'hub-and-spoke' ? 'hub-and-spoke' : 'full-mesh',
-        participantOrder,
-        participants,
-        artifacts: [],
-        history: [],
-        createdAt: ts,
-        updatedAt: ts,
-        advancement: {
-          crossReview: ['human', 'master', 'auto'].includes(input.advancement?.crossReview)
-            ? input.advancement.crossReview
-            : 'human',
-          synthesis: ['human', 'master', 'auto'].includes(input.advancement?.synthesis)
-            ? input.advancement.synthesis
-            : 'human',
-        },
-        barrierIds: {} as Record<string, string>,
-      }
-      this.#state.planCouncils[workflowId] = council
-      const authoringWorkflowId = optionalTrimmedString(input.workflowPlanRef?.workflowId) ?? workflowId
-      const authoringWorkflowVersion = Number.isSafeInteger(input.workflowPlanRef?.version)
-        ? input.workflowPlanRef.version
-        : 1
-      const proposalCorrelationKey = executionCorrelationKey({
-        workflowId: authoringWorkflowId,
-        workflowVersion: authoringWorkflowVersion,
-        runId,
-        phaseId: 'proposal',
-      })
-      const proposalBarrier = this.#cmdCreateBarrier({
-        barrierId: `${workflowId}:proposal:1`,
-        mode: 'all',
-        expectedParticipantKeys: participantOrder
-          .filter((id) => id !== synthesizerSessionId)
-          .map((id) => participants[id].key),
-        envelope: {
-          workflowId: authoringWorkflowId,
-          workflowVersion: authoringWorkflowVersion,
-          runId,
-          phaseId: 'proposal',
-          activationId: `${workflowId}:proposal:setup`,
-          attempt: 1,
-          correlationKey: proposalCorrelationKey,
-        },
-      }, ctx).barrier
-      council.barrierIds.proposal = proposalBarrier.barrierId
-      this.#planCouncilHistory(
-        council,
-        'started',
-        'Council prepared all participants before starting any planner.',
-      )
-      this.#setPlanCouncilPhase(
-        council,
-        'drafting-plans',
-        'Independent planners started in parallel.',
-      )
-      this.#touch()
-      this.#advanceWorkflowDeployment(deploymentId, 'graph-committed')
-      for (const sessionId of participantOrder) {
-        if (sessionId === synthesizerSessionId) continue
-        delete this.#state.sessions[sessionId].prepared
-        participants[sessionId].expectedArtifactKind = 'proposal'
-        const preparedRun = preparedRuns.get(sessionId)
-        if (!preparedRun) throw new Error(`Missing prepared run for ${sessionId}.`)
-        const turnId = await this.#startRun(sessionId, {
-          prompt: preparedRun.prompt,
-          attachments: preparedRun.attachments,
-          runKind: 'create',
-          userMessageId: preparedRun.userMessageId,
-          activationEventId: preparedRun.activationEventId,
-          channelReadSeqs: preparedRun.channelReadSeqs,
-          execution: {
-            workflowId: authoringWorkflowId,
-            workflowVersion: authoringWorkflowVersion,
-            runId,
-            phaseId: 'proposal',
-            activationId: `${workflowId}:proposal:pending`,
-            attempt: 1,
-            correlationKey: proposalCorrelationKey,
-          },
-        })
-        participants[sessionId].expectedTurnId = turnId
-        participants[sessionId].expectedExecutionEnvelope = {
-          workflowId: authoringWorkflowId,
-          workflowVersion: authoringWorkflowVersion,
-          runId,
-          phaseId: 'proposal',
-          activationId: turnId,
-          attempt: 1,
-          correlationKey: proposalCorrelationKey,
-        }
-      }
-      await this.#settleProviderStart()
-      const failed = participantOrder
-        .filter((id) => id !== synthesizerSessionId)
-        .map((id) => this.#state.sessions[id])
-        .find((session) => session?.status === 'failed')
-      if (failed) throw new Error(failed.error ?? `${failed.label} could not start.`)
-      this.#advanceWorkflowDeployment(deploymentId, 'roots-started')
-      this.#touch()
-      this.#advanceWorkflowDeployment(
-        deploymentId,
-        'active',
-        {
-          activatedAt: now(),
-          participantSessionIds: Object.fromEntries(
-            participantOrder.map((id) => [participants[id].key, id]),
-          ),
-          synthesizerSessionId,
-        },
-        'completed',
-      )
-      this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-      return {
-        workflowId,
-        runId,
-        deploymentId,
-        participantSessionIds: Object.fromEntries(
-          participantOrder.map((id) => [participants[id].key, id]),
-        ),
-        synthesizerSessionId,
-        council: clone(council),
-        state: this.getState(),
-      }
-    } catch (error) {
-      if ((error as Error & { code?: string })?.code === 'ORRERY_DEPLOYMENT_CRASH') {
-        throw error
-      }
-      delete this.#state.planCouncils?.[workflowId]
-      this.#channelStore.removeArtifacts(workflowId)
-      for (const sessionId of [...createdSessionIds].reverse()) {
-        this.#discardWorkflowSession(sessionId)
-      }
-      this.#touch()
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        stage: 'aborted',
-        status: 'aborted',
-        journal: {
-          reason: error instanceof Error ? error.message : String(error),
-          abortedAt: now(),
-        },
-      })
-      this.#broadcast({ type: 'runtime.state', state: this.getState() })
-      throw error
-    }
-  }
-
-  async startPlanCouncilCrossReview(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_plan_council_cross_review',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const workflowId = optionalTrimmedString(input.workflowId ?? input.runId)
-    const council = this.#state.planCouncils?.[workflowId]
-    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-    if (['reviewing-peers', 'ready-for-synthesis', 'synthesizing', 'completed'].includes(council.phase)) {
-      return { council: clone(council), state: this.getState() }
-    }
-    if (council.phase !== 'ready-for-cross-review') {
-      throw new Error(`Plan Council is ${council.phase}; all proposals must be ready before cross-review.`)
-    }
-    if (this.#planCouncilInFlight.has(workflowId)) throw new Error('This Plan Council phase is already starting.')
-    this.#planCouncilInFlight.add(workflowId)
-    const phaseCtx: JsonRecord = this.#workflowCommandCtx()
-    try {
-      const reviewerIds = council.reviewTopology === 'hub-and-spoke'
-        ? [council.synthesizerSessionId]
-        : council.participantOrder.filter(
-            (id) => ['planner', 'reviewer'].includes(council.participants[id].role),
-          )
-      for (const sessionId of reviewerIds) this.#assertActivatable(sessionId, phaseCtx)
-      const proposalBarrier = this.#state.barriers?.[council.barrierIds?.proposal]
-      const correlationKey = executionCorrelationKey({
-        workflowId: proposalBarrier?.workflowId ?? council.workflowId,
-        workflowVersion: proposalBarrier?.workflowVersion ?? 1,
-        runId: council.runId,
-        phaseId: 'peer-review',
-        generation: this.#nextCouncilBarrierGeneration(council, 'peer-review'),
-      })
-      const reviewGeneration = this.#nextCouncilBarrierGeneration(council, 'peer-review')
-      const reviewBarrier = this.#cmdCreateBarrier({
-        barrierId: `${council.workflowId}:peer-review:g${reviewGeneration}`,
-        mode: 'all',
-        expectedParticipantKeys: reviewerIds.map((id) => council.participants[id].key),
-        envelope: {
-          workflowId: proposalBarrier?.workflowId ?? council.workflowId,
-          workflowVersion: proposalBarrier?.workflowVersion ?? 1,
-          runId: council.runId,
-          phaseId: 'peer-review', activationId: `${council.workflowId}:peer-review:setup`,
-          attempt: 1, correlationKey,
-        },
-      }, phaseCtx).barrier
-      phaseCtx.execution = {
-        workflowId: reviewBarrier.workflowId,
-        workflowVersion: reviewBarrier.workflowVersion,
-        runId: council.runId,
-        phaseId: 'peer-review',
-        activationId: `${council.workflowId}:peer-review:delivery`,
-        attempt: 1,
-        correlationKey,
-      }
-      council.barrierIds['peer-review'] = reviewBarrier.barrierId
-      const supersededArtifactIds = new Set(council.supersededArtifactIds ?? [])
-      const proposals = council.artifacts.filter(
-        (artifact) => artifact.kind === 'proposal' && !supersededArtifactIds.has(artifact.artifactId),
-      )
-      for (const reviewerId of reviewerIds) {
-        for (const artifact of proposals) {
-          if (artifact.authorSessionId === reviewerId) continue
-          this.#cmdDeliver(
-            {
-              sessionId: reviewerId,
-              source: artifact.authorSessionId,
-              topic: `proposal:${artifact.authorSessionId}`,
-              filename: `proposal-${artifact.authorSessionId}.md`,
-              content: this.#channelStore.readArtifact(artifact.contentRef),
-            },
-            phaseCtx,
-          )
-        }
-      }
-      const advancingActor = phaseCtx.actor?.kind === 'master'
-        ? 'Master'
-        : phaseCtx.actor?.kind === 'runtime'
-          ? 'Automatic policy'
-          : 'Human'
-      this.#setPlanCouncilPhase(council, 'reviewing-peers', `${advancingActor} advanced the cross-review phase.`)
-      for (const sessionId of reviewerIds) {
-        council.participants[sessionId].expectedArtifactKind = 'peer-review'
-        const result = await this.#cmdActivate(
-          {
-            sessionId,
-            note: crossReviewPrompt(council.reviewFocus),
-          },
-          phaseCtx,
-        )
-        council.participants[sessionId].expectedTurnId = result.runId
-        council.participants[sessionId].expectedExecutionEnvelope = {
-          workflowId: reviewBarrier.workflowId,
-          workflowVersion: reviewBarrier.workflowVersion,
-          runId: council.runId,
-          phaseId: 'peer-review', activationId: result.runId, attempt: 1, correlationKey,
-        }
-      }
-      await this.#settleProviderStart()
-      const failed = reviewerIds
-        .map((id) => this.#state.sessions[id])
-        .find((session) => session?.status === 'failed')
-      if (failed) throw new Error(failed.error ?? `${failed.label} could not start cross-review.`)
-      this.#touch()
-      this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-      return { council: clone(council), state: this.getState() }
-    } catch (error) {
-      this.#failPlanCouncil(
-        council,
-        error instanceof Error ? error.message : String(error),
-      )
-      this.#touch()
-      this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-      ;(error as Error & { commitState?: boolean }).commitState = true
-      throw error
-    } finally {
-      this.#planCouncilInFlight.delete(workflowId)
-    }
-  }
-
-  async startPlanCouncilSynthesis(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_plan_council_synthesis',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const workflowId = optionalTrimmedString(input.workflowId ?? input.runId)
-    const council = this.#state.planCouncils?.[workflowId]
-    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-    if (['synthesizing', 'completed'].includes(council.phase)) {
-      return { council: clone(council), state: this.getState() }
-    }
-    if (council.phase !== 'ready-for-synthesis') {
-      throw new Error(`Plan Council is ${council.phase}; all peer reviews must be ready before synthesis.`)
-    }
-    const phaseCtx: JsonRecord = this.#workflowCommandCtx()
-    try {
-      const synthesizerId = council.synthesizerSessionId
-      this.#assertActivatable(synthesizerId, phaseCtx)
-      const proposalBarrier = this.#state.barriers?.[council.barrierIds?.proposal]
-      const correlationKey = executionCorrelationKey({
-        workflowId: proposalBarrier?.workflowId ?? council.workflowId,
-        workflowVersion: proposalBarrier?.workflowVersion ?? 1,
-        runId: council.runId,
-        phaseId: 'synthesis',
-        generation: this.#nextCouncilBarrierGeneration(council, 'synthesis'),
-      })
-      const synthesisGeneration = this.#nextCouncilBarrierGeneration(council, 'synthesis')
-      const synthesisBarrier = this.#cmdCreateBarrier({
-        barrierId: `${council.workflowId}:synthesis:g${synthesisGeneration}`,
-        mode: 'all', expectedParticipantKeys: [council.participants[synthesizerId].key],
-        envelope: {
-          workflowId: proposalBarrier?.workflowId ?? council.workflowId,
-          workflowVersion: proposalBarrier?.workflowVersion ?? 1,
-          runId: council.runId, phaseId: 'synthesis',
-          activationId: `${council.workflowId}:synthesis:setup`, attempt: 1, correlationKey,
-        },
-      }, phaseCtx).barrier
-      phaseCtx.execution = {
-        workflowId: synthesisBarrier.workflowId,
-        workflowVersion: synthesisBarrier.workflowVersion,
-        runId: council.runId,
-        phaseId: 'synthesis',
-        activationId: `${council.workflowId}:synthesis:delivery`,
-        attempt: 1,
-        correlationKey,
-      }
-      council.barrierIds.synthesis = synthesisBarrier.barrierId
-      const supersededArtifactIds = new Set(council.supersededArtifactIds ?? [])
-      for (const artifact of council.artifacts.filter(
-        (item) => item.kind !== 'synthesis' && !supersededArtifactIds.has(item.artifactId),
-      )) {
-        this.#cmdDeliver(
-          {
-            sessionId: synthesizerId,
-            source: artifact.authorSessionId,
-            topic: `${artifact.kind}:${artifact.authorSessionId}`,
-            filename: `${artifact.kind}-${artifact.authorSessionId}.md`,
-            content: this.#channelStore.readArtifact(artifact.contentRef),
-          },
-          phaseCtx,
-        )
-      }
-      const advancingActor = phaseCtx.actor?.kind === 'master'
-        ? 'Master'
-        : phaseCtx.actor?.kind === 'runtime'
-          ? 'Automatic policy'
-          : 'Human'
-      this.#setPlanCouncilPhase(council, 'synthesizing', `${advancingActor} advanced final synthesis.`)
-      council.participants[synthesizerId].expectedArtifactKind = 'synthesis'
-      const result = await this.#cmdActivate(
-        {
-          sessionId: synthesizerId,
-          note: synthesizerPrompt(council.objective, council.reviewFocus),
-        },
-        phaseCtx,
-      )
-      council.participants[synthesizerId].expectedTurnId = result.runId
-      council.participants[synthesizerId].expectedExecutionEnvelope = {
-        workflowId: synthesisBarrier.workflowId,
-        workflowVersion: synthesisBarrier.workflowVersion,
-        runId: council.runId, phaseId: 'synthesis', activationId: result.runId,
-        attempt: 1, correlationKey,
-      }
-      await this.#settleProviderStart()
-      const failed = this.#state.sessions[synthesizerId]
-      if (failed?.status === 'failed') {
-        throw new Error(failed.error ?? `${failed.label} could not start synthesis.`)
-      }
-      this.#touch()
-      this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-      return { council: clone(council), state: this.getState() }
-    } catch (error) {
-      this.#failPlanCouncil(
-        council,
-        error instanceof Error ? error.message : String(error),
-      )
-      this.#touch()
-      this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-      ;(error as Error & { commitState?: boolean }).commitState = true
-      throw error
-    }
-  }
-
-  stopPlanCouncil(input: JsonRecord = {}) {
-    const workflowId = optionalTrimmedString(input.workflowId ?? input.runId)
-    const council = this.#state.planCouncils?.[workflowId]
-    if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-    if (['completed', 'stopped', 'failed'].includes(council.phase)) {
-      return { council: clone(council), state: this.getState() }
-    }
-    council.stoppedAt = now()
-    this.#cancelPendingCouncilBarriers(
-      council,
-      optionalTrimmedString(input.reason) ?? 'Human stopped the Plan Council.',
-    )
-    this.#setPlanCouncilPhase(
-      council,
-      'stopped',
-      'Human stopped the Council. Running turns may settle, but no new phase can start.',
-    )
-    this.#appendKernelEvent(
-      'council.stopped',
-      { workflowId, runId: council.runId },
-      this.#humanCtx(),
-      { reason: optionalTrimmedString(input.reason) },
-    )
-    this.#touch()
-    this.#broadcast({ type: 'plan-council.updated', workflowId, state: this.getState() })
-    return { council: clone(council), state: this.getState() }
-  }
-
-  // Product-facing Review until clean compiler. Unlike the older template
-  // path, this accepts new or existing endpoints and commits the whole ring
-  // before the first Coder turn. New Reviewers stay provider-cold until the
-  // first diff arrives; there is no synthetic "ready" turn.
-  async startReviewWorkflow(input: JsonRecord = {}) {
-    if (!this.#controlCommandContext.getStore()) {
-      return this.dispatchCommand({
-        commandId: optionalTrimmedString(input.commandId),
-        idempotencyKey: optionalTrimmedString(input.idempotencyKey),
-        expectedVersion: Number.isInteger(input.expectedVersion) ? input.expectedVersion : undefined,
-        kind: 'start_review_workflow',
-        actor: { kind: 'human' },
-        input,
-      })
-    }
-    const sessionSummaries = {}
-    for (const session of Object.values(this.#state.sessions as JsonRecord)) {
-      const node = this.#state.nodes.find(
-        (candidate) => candidate.sessionId === session.sessionId,
-      )
-      sessionSummaries[session.sessionId] = {
-        sessionId: session.sessionId,
-        cwd: session.cwd,
-        status: session.status,
-        frozen: node?.frozen === true,
-      }
-    }
-    const validation = validateReviewWorkflowStart(input as any, {
-      sessions: sessionSummaries,
-      providerInstanceIds: this.#state.providerInstances.map(
-        (instance) => instance.providerInstanceId,
-      ),
-    })
-    if (!validation.ok) {
-      throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-    }
-
-    const coderInput = input.coder as JsonRecord
-    const reviewerInput = input.reviewer as JsonRecord
-    if (
-      coderInput.kind === 'existing' &&
-      reviewerInput.kind === 'existing' &&
-      coderInput.sessionId === reviewerInput.sessionId
-    ) {
-      throw new Error('Coder and Reviewer must be different Agents.')
-    }
-
-    const ctx = this.#workflowCommandCtx()
-    const deploymentCommandId =
-      optionalTrimmedString(input.idempotencyKey) ??
-      optionalTrimmedString(input.commandId) ??
-      randomUUID()
-    const previousDeployment =
-      this.#kernelStore.getWorkflowDeploymentByCommandId(deploymentCommandId)
-    if (previousDeployment) {
-      if (previousDeployment.status !== 'completed') {
-        throw new Error(
-          `Review Workflow command ${deploymentCommandId} previously ${previousDeployment.status} at ${previousDeployment.stage}.`,
-        )
-      }
-      const result = previousDeployment.journal.result
-      if (!isObject(result)) {
-        throw new Error(
-          `Completed Review Workflow deployment ${previousDeployment.deploymentId} has no durable result.`,
-        )
-      }
-      return {
-        ...clone(result),
-        loop: loopsOf(this.#kernelView()).find((loop) =>
-          loop.subscriptionIds.includes(result.subscriptionIds?.[0]),
-        ),
-        state: this.getState(),
-      }
-    }
-    const workflowId = `review-workflow-${randomUUID()}`
-    const deploymentId = `deployment-${workflowId}`
-    const createdSessionIds: string[] = []
-    const subscriptionIds: string[] = []
-    let coderSessionId: string
-    let reviewerSessionId: string
-    let preparedCoderRun
-    let existingCoderCheckpoint
-    const lockedSessionIds = [coderInput, reviewerInput]
-      .filter((endpoint) => endpoint.kind === 'existing')
-      .map((endpoint) => endpoint.sessionId)
-    if (lockedSessionIds.some((sessionId) => this.#classicWorkflowInFlight.has(sessionId))) {
-      throw new Error('One of these Agents is already being changed by another workflow; wait for it to finish.')
-    }
-    for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.add(sessionId)
-
-    this.#kernelStore.createWorkflowDeployment({
-      deploymentId,
-      workflowId,
-      commandId: deploymentCommandId,
-      journal: {
-        kind: 'review-workflow',
-        createdSessionIds: [],
-        createdSubscriptionIds: [],
-        existingSessionCheckpoints: {},
-      },
-    })
-
-    try {
-      this.#advanceWorkflowDeployment(deploymentId, 'prepared')
-      if (coderInput.kind === 'new') {
-        const created = await this.#cmdCreateSession(
-          {
-            prompt: coderActivationInstruction(String(coderInput.prompt)),
-            cwd: coderInput.cwd,
-            workMode: coderInput.workMode,
-            branch: coderInput.branch,
-            label: optionalTrimmedString(coderInput.label) ?? 'Coder',
-            providerKind: coderInput.providerKind,
-            providerInstanceId: coderInput.providerInstanceId,
-            runtimeSettings: coderInput.runtimeSettings,
-          },
-          ctx,
-          { deferStart: true },
-        )
-        coderSessionId = created.sessionId
-        preparedCoderRun = created.preparedRun
-        createdSessionIds.push(coderSessionId)
-        this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-          journal: {
-            createdSessionIds: [...createdSessionIds],
-            createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-          },
-        })
-      } else {
-        coderSessionId = optionalTrimmedString(coderInput.sessionId)
-        this.#assertActivatable(coderSessionId, ctx)
-        existingCoderCheckpoint = this.#captureWorkflowSession(coderSessionId)
-        this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-          journal: {
-            existingSessionCheckpoints: {
-              [coderSessionId]: existingCoderCheckpoint,
-            },
-          },
-        })
-      }
-
-      const coder = this.#state.sessions[coderSessionId]
-      if (reviewerInput.kind === 'new') {
-        const created = await this.#cmdCreateSession(
-          {
-            prompt: reviewerBootstrapInstruction(reviewerInput.instruction),
-            cwd: coder.cwd,
-            workMode: 'local',
-            label: optionalTrimmedString(reviewerInput.label) ?? 'Reviewer',
-            providerKind: reviewerInput.providerKind,
-            providerInstanceId: reviewerInput.providerInstanceId,
-            runtimeSettings: reviewerInput.runtimeSettings,
-            sourceSessionId: coderSessionId,
-            linkLabel: 'review partner',
-          },
-          ctx,
-          { deferStart: true },
-        )
-        reviewerSessionId = created.sessionId
-        createdSessionIds.push(reviewerSessionId)
-        this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-          journal: {
-            createdSessionIds: [...createdSessionIds],
-            createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-          },
-        })
-      } else {
-        reviewerSessionId = optionalTrimmedString(reviewerInput.sessionId)
-        this.#assertActivatable(reviewerSessionId, ctx)
-        if (this.#state.sessions[reviewerSessionId].cwd !== coder.cwd) {
-          throw new Error(
-            'Coder and Reviewer must use the same workspace so the Reviewer can verify the diff.',
-          )
-        }
-      }
-
-      this.#advanceWorkflowDeployment(deploymentId, 'resources-created', {
-        createdSessionIds: [...createdSessionIds],
-        createdSessionResources: this.#workflowResourceDescriptors(createdSessionIds),
-      })
-
-      const suffix = randomUUID().slice(0, 8)
-      const passId = `review-pass-${suffix}`
-      const fixId = `review-fix-${suffix}`
-      // Track intended ids before authoring so compensation also reaches the
-      // edge whose author command mutated state but failed while broadcasting.
-      subscriptionIds.push(passId, fixId)
-      const stop = {
-        whenReport: { verdict: 'clean' },
-        maxFirings: Number(input.maxLaps),
-      }
-      const pass = this.#cmdAuthorSubscription(
-        {
-          id: passId,
-          label: 'review pass',
-          preset: 'review-workflow',
-          sourceSessionId: coderSessionId,
-          on: { on: 'finished' },
-          targetSessionId: reviewerSessionId,
-          action: {
-            kind: 'deliver+activate',
-            topic: 'diff',
-            note: reviewerActivationInstruction(
-              String(reviewerInput.instruction),
-              input.blocking as any,
-            ),
-          },
-          gate: 'auto',
-          concurrency: 'coalesce',
-          stop,
-          onStop: 'freeze-edge',
-        },
-        ctx,
-      )
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        journal: { createdSubscriptionIds: [passId] },
-      })
-      const fix = this.#cmdAuthorSubscription(
-        {
-          id: fixId,
-          label: 'blocking issues',
-          preset: 'review-workflow',
-          sourceSessionId: reviewerSessionId,
-          on: {
-            on: 'report',
-            match: { type: 'verdict', verdict: 'issues' },
-          },
-          targetSessionId: coderSessionId,
-          action: {
-            kind: 'deliver+activate',
-            topic: 'review',
-            note: coderFixInstruction(),
-          },
-          gate: 'auto',
-          concurrency: 'coalesce',
-          stop,
-          onStop: 'freeze-edge',
-        },
-        ctx,
-      )
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        journal: { createdSubscriptionIds: [...subscriptionIds] },
-      })
-      // The normalized ids are pinned above; retain these assertions close to
-      // the compiler boundary in case authoring ever rewrites explicit ids.
-      if (pass.subscription.id !== passId || fix.subscription.id !== fixId) {
-        throw new Error(
-          'Review workflow relationship ids changed during authoring.',
-        )
-      }
-      this.#touch()
-      this.#advanceWorkflowDeployment(deploymentId, 'graph-committed', {
-        createdSubscriptionIds: [...subscriptionIds],
-      })
-
-      // The first provider invocation is deliberately last. At this point
-      // both endpoints and both guarded relationships are already visible to
-      // the scheduler, so even an instant Coder finish cannot outrun the ring.
-      if (coderInput.kind === 'new') {
-        delete this.#state.sessions[coderSessionId].prepared
-        await this.#startRun(coderSessionId, {
-          ...preparedCoderRun,
-          runKind: 'create',
-        })
-      } else {
-        await this.#cmdResumeSession(
-          {
-            sessionId: coderSessionId,
-            message: coderActivationInstruction(String(coderInput.prompt)),
-          },
-          ctx,
-        )
-      }
-      await this.#settleProviderStart()
-      if (this.#state.sessions[coderSessionId]?.status === 'failed') {
-        throw new Error(
-          this.#state.sessions[coderSessionId].error ??
-            'The Coder provider could not start.',
-        )
-      }
-
-      this.#advanceWorkflowDeployment(deploymentId, 'roots-started')
-
-      const state = this.getState()
-      const loop = state.loops?.find((candidate) =>
-        candidate.subscriptionIds.includes(passId),
-      )
-      const result = {
-        coderSessionId,
-        reviewerSessionId,
-        createdSessionIds,
-        subscriptionIds,
-        loop,
-        state,
-      }
-      this.#advanceWorkflowDeployment(
-        deploymentId,
-        'active',
-        {
-          result: {
-            coderSessionId,
-            reviewerSessionId,
-            createdSessionIds: [...createdSessionIds],
-            subscriptionIds: [...subscriptionIds],
-          },
-          activatedAt: now(),
-        },
-        'completed',
-      )
-      return { ...result, deploymentId }
-    } catch (error) {
-      if ((error as Error & { code?: string })?.code === 'ORRERY_DEPLOYMENT_CRASH') {
-        throw error
-      }
-      // Compensation is renderer-clean: a failed one-click start must return
-      // to the editable Draft, not leave a stopped half-ring or waiting
-      // participant on the canvas. Kernel facts already emitted remain an
-      // audit trail, but live intent/session state is removed atomically.
-      for (const subscriptionId of subscriptionIds) {
-        this.#discardWorkflowSubscription(subscriptionId)
-      }
-      for (const sessionId of [...createdSessionIds].reverse()) {
-        this.#discardWorkflowSession(sessionId)
-      }
-      if (
-        coderInput.kind === 'existing' &&
-        coderSessionId &&
-        existingCoderCheckpoint &&
-        existingCoderCheckpoint
-      ) {
-        this.#restoreWorkflowSession(coderSessionId, existingCoderCheckpoint)
-      }
-      this.#touch()
-      this.#kernelStore.updateWorkflowDeployment(deploymentId, {
-        stage: 'aborted',
-        status: 'aborted',
-        journal: {
-          reason: error instanceof Error ? error.message : String(error),
-          abortedAt: now(),
-        },
-      })
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
-      throw error
-    } finally {
-      for (const sessionId of lockedSessionIds) this.#classicWorkflowInFlight.delete(sessionId)
-    }
-  }
-
-  #discardWorkflowSubscription(subscriptionId: string) {
-    this.#clearTimer(subscriptionId)
-    for (const [slotKey, slot] of Object.entries(
-      (this.#state.pendingActivations ?? {}) as JsonRecord,
-    )) {
-      if (slot.subscriptionId === subscriptionId) {
-        delete this.#state.pendingActivations[slotKey]
-      }
-    }
-    delete this.#state.subscriptions?.[subscriptionId]
-  }
-
-  #workflowResourceDescriptors(sessionIds: string[]) {
-    return sessionIds
-      .map((sessionId) => {
-        const session = this.#state.sessions[sessionId]
-        return session
-          ? {
-              sessionId,
-              cwd: session.cwd,
-              project: clone(session.project),
-            }
-          : undefined
-      })
-      .filter(Boolean)
-  }
-
-  #cleanupWorkflowResourceDescriptor(descriptor) {
-    if (descriptor?.project?.workMode === 'worktree' && descriptor.project.repoRoot) {
-      try {
-        gitOutput(descriptor.project.repoRoot, [
-          'worktree',
-          'remove',
-          '--force',
-          descriptor.cwd,
-        ])
-      } catch {
-        // Worktree may already be absent.
-      }
-      if (descriptor.project.branch?.startsWith('orrery/')) {
-        try {
-          gitOutput(descriptor.project.repoRoot, [
-            'branch',
-            '-D',
-            descriptor.project.branch,
-          ])
-        } catch {
-          // Generated branch may already be absent.
-        }
-      }
-    }
-    try {
-      fs.rmSync(this.#channelStore.channelDir(descriptor.sessionId), {
-        recursive: true,
-        force: true,
-      })
-    } catch {
-      // Best-effort recovery cleanup.
-    }
-  }
-
-  async #settleProviderStart() {
-    // Provider process failures (for example ENOENT or an immediate CLI
-    // bootstrap error) are delivered asynchronously after startTurn returns.
-    // Atomic workflow APIs cross two event-loop checks before reporting
-    // success so those startup failures enter the same compensation path.
-    await new Promise<void>((resolve) => setImmediate(resolve))
-    await new Promise<void>((resolve) => setImmediate(resolve))
-  }
-
-  #discardWorkflowSession(sessionId: string) {
-    const run = this.#runs.get(sessionId)
-    if (run) {
-      // Compensation removes the live Session immediately, before an
-      // asynchronous provider close/error can arrive. Detach the run from
-      // killAll and make its eventual callbacks no-ops against that removed
-      // Session.
-      this.#workflowCompensatedRuns.add(sessionId)
-      this.#runs.delete(sessionId)
-      try {
-        run.kill()
-      } catch {
-        // Best-effort provider compensation; live graph cleanup still runs.
-      }
-    }
-    const session = this.#state.sessions[sessionId]
-    if (session?.project?.workMode === 'worktree' && session.project.repoRoot) {
-      try {
-        gitOutput(session.project.repoRoot, [
-          'worktree',
-          'remove',
-          '--force',
-          session.cwd,
-        ])
-      } catch {
-        // The worktree may already have been removed or never fully created.
-      }
-      if (session.project.branch?.startsWith('orrery/')) {
-        try {
-          gitOutput(session.project.repoRoot, [
-            'branch',
-            '-D',
-            session.project.branch,
-          ])
-        } catch {
-          // Generated branch cleanup is best-effort compensation.
-        }
-      }
-    }
-    delete this.#state.sessions[sessionId]
-    this.#state.nodes = this.#state.nodes.filter(
-      (node) => node.sessionId !== sessionId,
-    )
-    this.#state.edges = this.#state.edges.filter(
-      (edge) => edge.source !== sessionId && edge.target !== sessionId,
-    )
-    for (const cluster of Object.values(this.#state.clusters as JsonRecord)) {
-      cluster.nodeIds = cluster.nodeIds.filter((id) => id !== sessionId)
-      if (cluster.masterSessionId === sessionId) {
-        delete cluster.masterSessionId
-      }
-    }
-    this.#runContext.delete(sessionId)
-    try {
-      fs.rmSync(this.#channelStore.channelDir(sessionId), {
-        recursive: true,
-        force: true,
-      })
-    } catch {
-      // Channel cleanup is best-effort and outside the product graph.
-    }
-  }
-
-  async createGoalLoop(input: JsonRecord = {}) {
-    const ctx = this.#workflowCommandCtx()
-    const workerSessionId = optionalTrimmedString(input.workerSessionId)
-    const worker = workerSessionId
-      ? this.#state.sessions[workerSessionId]
-      : undefined
-    if (!worker) {
-      throw new Error(
-        `Unknown goal loop worker session: ${workerSessionId ?? ''}`,
-      )
-    }
-    if (worker.status === 'killed') {
-      throw new Error('Cannot set a goal on a killed session')
-    }
-    const goal = optionalTrimmedString(input.goal)
-    if (!goal) {
-      throw new Error('A goal loop requires a non-empty goal sentence')
-    }
-    const maxLaps =
-      input.maxLaps === undefined
-        ? defaultCycleMaxFirings
-        : Number(input.maxLaps)
-    if (!Number.isInteger(maxLaps) || maxLaps < 1 || maxLaps > 99) {
-      throw new Error('Goal loop maxLaps must be an integer between 1 and 99')
-    }
-    const gate = optionalTrimmedString(input.gate) ?? 'auto'
-    if (!validSubscriptionGates.has(gate)) {
-      throw new Error('Goal loop gate must be auto, master, or human')
-    }
-    // Everything is validated BEFORE the judge session exists: an invalid
-    // input must never leave a half-compiled preset behind.
-    const onStop = optionalTrimmedString(input.onStop) ?? 'freeze-edge'
-    if (!validSubscriptionOnStops.has(onStop)) {
-      throw new Error(
-        'Goal loop onStop must be freeze-edge, freeze-target, or freeze-cluster',
-      )
-    }
-    const duplicate = Object.values(
-      (this.#state.subscriptions ?? {}) as JsonRecord,
-    ).find(
-      (subscription) =>
-        subscription.source?.kind === 'session' &&
-        subscription.source.sessionId === worker.sessionId &&
-        this.#isCompiledGoalCheckEdge(subscription),
-    )
-    if (duplicate) {
-      throw new Error(
-        `Session already has an active goal loop (${duplicate.id}); stop it before setting a new goal`,
-      )
-    }
-    if (this.#goalLoopInFlight.has(worker.sessionId)) {
-      throw new Error(
-        'A goal loop is already being created for this session; wait for it to finish',
-      )
-    }
-    this.#goalLoopInFlight.add(worker.sessionId)
-
-    try {
-      const workerLabel = worker.label ?? worker.sessionId
-      // Cross-provider Judges keep the Worker's trust/reasoning policy, but
-      // provider-specific model ids are cleared by the shared resolver.
-      const judgeRuntime = resolveGoalJudgeRuntime(
-        worker,
-        this.#state.providerInstances,
-        optionalTrimmedString(input.judgeProviderInstanceId),
-        optionalTrimmedString(input.judgeModel),
-      )
-      const judgeRuntimeSettings = isObject(input.judgeRuntimeSettings)
-        ? normalizeProviderRuntimeSettings(input.judgeRuntimeSettings)
-        : judgeRuntime.runtimeSettings
-      const created = await this.#cmdCreateSession(
-        {
-          prompt: this.#goalJudgeBootstrapPrompt(workerLabel),
-          cwd: worker.cwd,
-          label: `${workerLabel} · judge`,
-          providerKind: judgeRuntime.providerKind,
-          providerInstanceId: judgeRuntime.providerInstanceId,
-          // The judge inherits the worker's runtime settings: its checks run
-          // in the same workspace under the same declared trust level (a
-          // read-only judge could not even run the test suite the goal
-          // demands), and the same model unless a provider override says so.
-          ...(judgeRuntimeSettings
-            ? {
-                runtimeSettings: judgeRuntimeSettings,
-              }
-            : {}),
-          sourceSessionId: worker.sessionId,
-          linkLabel: 'goal judge',
-        },
-        ctx,
-      )
-      const judgeSessionId = created.sessionId
-
-      // The worker was only validated before the awaited judge creation; a
-      // kill landing inside that gap would otherwise leave an active ring
-      // on a dead worker that the earlier kill sweep never saw. Everything
-      // from here to the second authoring is synchronous, so this recheck
-      // closes the gap.
-      const workerNow = this.#state.sessions[worker.sessionId]
-      if (!workerNow || workerNow.status === 'killed') {
-        try {
-          this.killSession(judgeSessionId)
-        } catch {
-          // Best-effort cleanup; the throw below is the real signal.
-        }
-        throw new Error(
-          'The worker session was killed while the goal loop was being created',
-        )
-      }
-
-      // Neutral labels on purpose: the goal sentence would otherwise persist
-      // in subscription.authored facts — it belongs in judge prompts only
-      // (the check edge's note IS the judge's activation prompt).
-      const suffix = randomUUID().slice(0, 8)
-      const stop = {
-        whenReport: { verdict: 'done' },
-        maxFirings: maxLaps,
-      }
-      // Optional provenance tag (the L6 template library passes
-      // `template:goal-loop`); pairing/stop logic never reads it.
-      const preset = optionalTrimmedString(input.preset)
-      // Compile compensation: authoring can fail after the judge exists
-      // (static-check refusal, invalid input on a delegated call). Without
-      // the unwind below, a half-compiled ring strands an orphan judge —
-      // and the template executor's own rollback cannot reach resources it
-      // never got ids for.
-      let check
-      let retry
-      try {
-        check = this.#cmdAuthorSubscription(
-          {
-            id: `goal-check-${suffix}`,
-            label: 'goal check',
-            ...(preset ? { preset } : {}),
-            sourceSessionId: worker.sessionId,
-            on: { on: 'finished' },
-            targetSessionId: judgeSessionId,
-            action: {
-              kind: 'deliver+activate',
-              note: this.#goalJudgeActivationNote(goal),
-            },
-            gate,
-            stop,
-            onStop,
-          },
-          ctx,
-        )
-        retry = this.#cmdAuthorSubscription(
-          {
-            id: `goal-retry-${suffix}`,
-            label: 'goal retry',
-            ...(preset ? { preset } : {}),
-            sourceSessionId: judgeSessionId,
-            on: {
-              on: 'report',
-              match: { type: 'verdict', verdict: 'fail' },
-            },
-            targetSessionId: worker.sessionId,
-            action: {
-              kind: 'deliver+activate',
-              note: this.#goalWorkerRetryNote(),
-            },
-            gate,
-            stop,
-            onStop,
-          },
-          ctx,
-        )
-      } catch (error) {
-        if (check) {
-          try {
-            this.#cmdStopSubscription(
-              {
-                subscriptionId: check.subscription.id,
-                reason: 'Goal loop compile aborted before completing the ring.',
-              },
-              { actor: { kind: 'runtime' } },
-            )
-          } catch {
-            // Best-effort cleanup; the rethrow below is the real signal.
-          }
-        }
-        try {
-          this.killSession(judgeSessionId)
-        } catch {
-          // Best-effort cleanup only.
-        }
-        throw error
-      }
-
-      return {
-        judgeSessionId,
-        checkSubscription: check.subscription,
-        retrySubscription: retry.subscription,
-        state: this.getState(),
-      }
-    } finally {
-      this.#goalLoopInFlight.delete(worker.sessionId)
-    }
-  }
-
-  // ---- L6 template library: pick a template, fill slots, land real edges ----
-  //
-  // Templates are compilers, not entities (proposal §L6): applying one
-  // expands into the same ordinary commands a hand-authored relation would
-  // use, so what lands on the canvas IS the compiled truth the user can
-  // learn from. Saved templates are runtime-plane config — the scheduler
-  // never reads them, so they live in the snapshot, never the kernel log.
-
-  listTemplates() {
-    return {
-      templates: templateDescriptors(this.#readState().templates),
-    }
-  }
-
-  async applyTemplate(input: JsonRecord = {}) {
-    const templateId = optionalTrimmedString(input.templateId)
-    if (!templateId) {
-      throw new Error('applyTemplate requires a templateId')
-    }
-    const params = isObject(input.params) ? input.params : {}
-    const saved = this.#state.templates?.[templateId]
-    const plan = saved
-      ? compileSavedTemplate(saved, params)
-      : compileBuiltinTemplate(templateId, params)
-
-    // Validate every literal endpoint BEFORE creating anything: a stale id
-    // in one slot must not leave an orphan created session or half a ring.
-    const requireSession = (sessionId: string, role: string) => {
-      const session = this.#state.sessions[sessionId]
-      if (!session || session.status === 'killed') {
-        throw new Error(
-          `Template ${role} must be an existing session (got: ${sessionId})`,
-        )
-      }
-    }
-    for (const step of plan.steps) {
-      if (step.kind === 'create-session') {
-        requireSession(step.inheritFromSessionId, 'session to inherit from')
-      } else if (step.kind === 'goal-loop') {
-        requireSession(step.input.workerSessionId, 'worker')
-      } else if (step.kind === 'handoff') {
-        for (const [endpoint, role] of [
-          [step.source, 'handoff source'],
-          [step.target, 'handoff target'],
-        ] as const) {
-          if ('session' in endpoint) {
-            requireSession(endpoint.session, role)
-          }
-        }
-      } else {
-        for (const [endpoint, role] of [
-          [step.input.source, 'source'],
-          [step.input.target, 'target'],
-        ] as const) {
-          if ('session' in endpoint) {
-            requireSession(endpoint.session, role)
-          } else if ('external' in endpoint) {
-            const source = this.#state.sources?.[endpoint.external]
-            if (!source || source.state !== 'active') {
-              throw new Error(
-                `Template ${role} must be a registered, active external source (got: ${endpoint.external})`,
-              )
-            }
-          }
-        }
-      }
-    }
-
-    // Shared suffix keeps paired edges from one apply visibly siblings
-    // (the goal-check/goal-retry precedent). Duplicate prefixes within one
-    // apply (a saved template can hold two same-shaped edges) fall back to
-    // runtime-generated ids instead of overwriting each other.
-    const suffix = randomUUID().slice(0, 8)
-    const assignedIds = new Set<string>()
-    const templateEdgeId = (idPrefix?: string) => {
-      if (!idPrefix) {
-        return undefined
-      }
-      const id = `${idPrefix}-${suffix}`
-      if (assignedIds.has(id) || this.#state.subscriptions?.[id]) {
-        return undefined
-      }
-      assignedIds.add(id)
-      return id
-    }
-    const refs = new Map<string, string>()
-    const createdSessionIds = []
-    const subscriptionIds = []
-    // Sessions that received a one-shot handoff (kernel doc §8.1: a
-    // command, not a subscription) — reported so the UI can say what
-    // actually happened when nothing standing was created.
-    const deliveredTo = []
-    let judgeSessionId
-
-    const resolveSession = (endpoint) => {
-      if ('session' in endpoint) return endpoint.session
-      if ('ref' in endpoint) {
-        const sessionId = refs.get(endpoint.ref)
-        if (!sessionId) {
-          throw new Error(
-            `Template plan step references "${endpoint.ref}" before creating it`,
-          )
-        }
-        return sessionId
-      }
-      throw new Error('Template endpoint cannot be resolved to a session')
-    }
-
-    // Any mid-plan failure unwinds everything this apply created so far —
-    // not just the killed-participant case: a saved multi-step template can
-    // fail on its Nth step (for example the goal-loop duplicate guard) and
-    // must not strand earlier sessions or edges on the canvas.
-    const unwind = () => {
-      for (const createdId of createdSessionIds) {
-        try {
-          this.killSession(createdId)
-        } catch {
-          // Best-effort cleanup; the rethrow below is the real signal.
-        }
-      }
-      for (const authoredId of subscriptionIds) {
-        try {
-          this.#cmdStopSubscription(
-            {
-              subscriptionId: authoredId,
-              reason: 'Template apply aborted before completing its plan.',
-            },
-            { actor: { kind: 'runtime' } },
-          )
-        } catch {
-          // The kill sweep may have stopped it already.
-        }
-      }
-    }
-
-    try {
-      for (const step of plan.steps) {
-        if (step.kind === 'create-session') {
-          // The created participant inherits the anchor session's provider,
-          // workspace, and trust level — the goal-judge precedent: a reviewer
-          // in a different sandbox could not even read the work it reviews.
-          const from = this.#state.sessions[step.inheritFromSessionId]
-          const created = await this.#cmdCreateSession(
-            {
-              prompt: step.prompt,
-              cwd: from.cwd,
-              label: step.label,
-              providerKind: from.providerKind,
-              providerInstanceId: from.providerInstanceId,
-              ...(isObject(from.runtimeSettings)
-                ? {
-                    runtimeSettings: clone(from.runtimeSettings),
-                  }
-                : {}),
-              sourceSessionId: from.sessionId,
-              ...(step.linkLabel ? { linkLabel: step.linkLabel } : {}),
-            },
-            this.#humanCtx(),
-          )
-          refs.set(step.ref, created.sessionId)
-          createdSessionIds.push(created.sessionId)
-        } else if (step.kind === 'handoff') {
-          // The kernel §8.1 one-shot: deliver the source's artifact bundle,
-          // activate the target once, leave NOTHING standing. An idle
-          // source hands off immediately — this is a command, so there is
-          // no edge to linger as active afterwards.
-          const from = resolveSession(step.source)
-          const to = resolveSession(step.target)
-          for (const sessionId of [from, to]) {
-            const session = this.#state.sessions[sessionId]
-            if (!session || session.status === 'killed') {
-              throw new Error(
-                'A participant session was killed while the template was being applied',
-              )
-            }
-          }
-          // Handoff is one logical command even though the kernel records its
-          // two facts separately. Preflight before writing the channel so a
-          // busy/frozen target cannot make Apply reject after leaving an
-          // invisible partial delivery. #cmdActivate checks again immediately
-          // after delivery, closing the normal command-level TOCTOU window.
-          const ctx = this.#humanCtx()
-          this.#assertActivatable(to, ctx)
-          this.#cmdDeliver(
-            {
-              sessionId: to,
-              source: from,
-              topic: step.topic,
-            },
-            ctx,
-          )
-          await this.#cmdActivate({ sessionId: to, note: step.note }, ctx)
-          deliveredTo.push(to)
-        } else if (step.kind === 'goal-loop') {
-          // Whole-ring delegation: the L3 preset owns judge creation, the
-          // duplicate guard, and the paired stop; the preset tag keeps the
-          // template provenance on the compiled edges.
-          const result = await this.createGoalLoop({
-            ...(step.input as JsonRecord),
-            preset: `template:${templateId}`,
-          })
-          judgeSessionId = result.judgeSessionId
-          createdSessionIds.push(result.judgeSessionId)
-          subscriptionIds.push(
-            result.checkSubscription.id,
-            result.retrySubscription.id,
-          )
-        } else {
-          const body = step.input
-          const source =
-            'timer' in body.source
-              ? { kind: 'timer' }
-              : 'external' in body.source
-                ? {
-                    kind: 'external',
-                    sourceId: body.source.external,
-                  }
-                : {
-                    kind: 'session',
-                    sessionId: resolveSession(body.source),
-                  }
-          const targetSessionId = resolveSession(body.target)
-          // Endpoint liveness recheck: the pre-validation above ran before
-          // any awaited session creation, so a kill landing inside that gap
-          // would otherwise leave an orphan created participant plus edges
-          // anchored to a dead session that the kill sweep never saw (the
-          // goal-loop recheck precedent). Authoring itself is synchronous,
-          // so a recheck per author step closes every interleaving.
-          const participants = [
-            ...(source.kind === 'session' ? [source.sessionId] : []),
-            targetSessionId,
-          ]
-          for (const sessionId of participants) {
-            const session = this.#state.sessions[sessionId]
-            if (!session || session.status === 'killed') {
-              throw new Error(
-                'A participant session was killed while the template was being applied',
-              )
-            }
-          }
-          const edgeId = templateEdgeId(body.idPrefix)
-          const authored = this.#cmdAuthorSubscription(
-            {
-              ...(edgeId ? { id: edgeId } : {}),
-              ...(body.label ? { label: body.label } : {}),
-              preset: `template:${templateId}`,
-              source,
-              on: clone(body.on),
-              targetSessionId,
-              action: clone(body.action),
-              ...(body.gate ? { gate: body.gate } : {}),
-              ...(body.concurrency ? { concurrency: body.concurrency } : {}),
-              ...(body.stop ? { stop: clone(body.stop) } : {}),
-              ...(body.onStop ? { onStop: body.onStop } : {}),
-            },
-            this.#humanCtx(),
-          )
-          subscriptionIds.push(authored.subscription.id)
-        }
-      }
-    } catch (error) {
-      unwind()
-      throw error
-    }
-
-    return {
-      templateId,
-      createdSessionIds,
-      subscriptionIds,
-      ...(deliveredTo.length > 0 ? { deliveredTo } : {}),
-      ...(judgeSessionId ? { judgeSessionId } : {}),
-      state: this.getState(),
-    }
-  }
-
-  saveTemplate(input: JsonRecord = {}) {
-    const name = optionalTrimmedString(input.name)
-    if (!name) {
-      throw new Error('saveTemplate requires a name')
-    }
-    const workflowSpec = isObject(input.workflowSpec) ? input.workflowSpec : undefined
-    if (workflowSpec) {
-      const workflowValidationContext = {
-        sessions: Object.fromEntries(
-          (Object.values(this.#state.sessions) as JsonRecord[]).map((session) => [
-            session.sessionId,
-            {
-              sessionId: session.sessionId,
-              cwd: session.cwd,
-              status: session.status,
-              frozen: this.#state.nodes.find((node) => node.sessionId === session.sessionId)?.frozen,
-            },
-          ]),
-        ),
-        providerInstanceIds: this.#state.providerInstances.map((instance) => instance.providerInstanceId),
-      }
-      const validation =
-        workflowSpec.version !== 1
-          ? { ok: false, issues: [{ message: 'Saved workflow version is unsupported.' }] }
-          : workflowSpec.kind === 'handoff'
-            ? validateHandoffWorkflowStart(workflowSpec.input, {
-                ...workflowValidationContext,
-              })
-            : workflowSpec.kind === 'goal-loop'
-              ? validateGoalWorkflowStart(workflowSpec.input, {
-                  ...workflowValidationContext,
-                })
-              : workflowSpec.kind === 'review-until-clean'
-                ? validateReviewWorkflowStart(workflowSpec.input, {
-                    ...workflowValidationContext,
-                  })
-              : { ok: false, issues: [{ message: 'Saved workflow kind is unsupported.' }] }
-      if (!validation.ok) throw new Error(validation.issues.map((issue) => issue.message).join(' '))
-    }
-    const ids = Array.isArray(input.subscriptionIds)
-      ? input.subscriptionIds
-          .map((id) => optionalTrimmedString(id))
-          .filter(Boolean)
-      : []
-    const subscriptions = ids.map((id) => {
-      const subscription = this.#state.subscriptions?.[id]
-      if (!subscription) {
-        throw new Error(`Unknown subscription: ${id}`)
-      }
-      return subscription
-    })
-    const body = workflowSpec ? { slots: [], subscriptions: [] } : parameterizeSubscriptions(subscriptions, {
-      session: (sessionId) => this.#state.sessions[sessionId]?.label,
-      source: (sourceId) => {
-        const source = this.#state.sources?.[sourceId]
-        return source ? externalSourceSummary(source) : undefined
-      },
-    })
-    const savedLoop = loopsOf(this.#kernelView()).find(
-      (loop) =>
-        loop.subscriptionIds.length === ids.length &&
-        loop.subscriptionIds.every((id) => ids.includes(id)),
-    )
-    const savedFields = workflowSpec
-      ? {
-          kind: workflowSpec.kind === 'goal-loop' ? 'goal' : workflowSpec.kind === 'review-until-clean' ? 'review' : 'relationship',
-          relationshipCount: workflowSpec.kind === 'handoff' ? 1 : 2,
-          ...(workflowSpec.kind !== 'handoff' ? { maxLaps: workflowSpec.input.maxLaps } : {}),
-          instructions: [
-            workflowSpec.kind === 'goal-loop'
-              ? workflowSpec.input.goal
-              : workflowSpec.kind === 'review-until-clean'
-                ? [
-                    workflowSpec.input.reviewer.instruction,
-                    ...(workflowSpec.input.blocking.mode === 'custom'
-                      ? [workflowSpec.input.blocking.customCriteria]
-                      : []),
-                  ]
-                : workflowSpec.input.note,
-          ].flat().filter(Boolean),
-        }
-      : {
-      kind:
-        savedLoop?.kind === 'review'
-          ? 'review'
-          : savedLoop?.kind === 'goal'
-            ? 'goal'
-            : 'relationship',
-      relationshipCount: subscriptions.length,
-      ...(savedLoop?.lapCap ? { maxLaps: savedLoop.lapCap } : {}),
-      instructions: [
-        ...new Set(
-          subscriptions
-            .map((subscription) => optionalTrimmedString(subscription.action?.note))
-            .filter(Boolean),
-        ),
-      ],
-        }
-    const template = {
-      id: `tpl-${randomUUID().slice(0, 8)}`,
-      name,
-      ...(optionalTrimmedString(input.tagline)
-        ? { tagline: input.tagline.trim() }
-        : {}),
-      createdAt: now(),
-      savedFields,
-      ...(workflowSpec ? { workflowSpec: clone(workflowSpec) } : {}),
-      ...body,
-    }
-    this.#state.templates = this.#state.templates ?? {}
-    this.#state.templates[template.id] = template
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return {
-      template: clone(template),
-      state: this.getState(),
-    }
-  }
-
-  removeTemplate(input: JsonRecord = {}) {
-    const templateId = optionalTrimmedString(input.templateId)
-    const template = templateId
-      ? this.#state.templates?.[templateId]
-      : undefined
-    if (!template) {
-      throw new Error(`Unknown template: ${templateId ?? ''}`)
-    }
-    // No tombstone: nothing on the graph references a template after it
-    // compiled — removed means gone (unlike sources, which stopped edges
-    // still point at).
-    delete this.#state.templates[templateId]
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return { ok: true, state: this.getState() }
   }
 
   stopSubscription(input: JsonRecord = {}) {
@@ -10797,7 +6936,7 @@ export class RuntimeSessionManager {
     if (!patch || patch.baseVersion !== base.version) {
       throw new Error('Workflow Patch metadata does not match the active base plan.')
     }
-    if (base.recipe === 'plan-council') return this.#commitPlanCouncilPatch(proposal, base, ctx)
+    if (base.recipe === 'plan-council') return commitPlanCouncilPatch(this.#wf(), proposal, base, ctx)
     const mapping = clone(base.executionMapping)
     if (!mapping) throw new Error('Active Workflow has no execution mapping to patch.')
     mapping.planVersion = proposal.proposedPlan.version
@@ -10901,227 +7040,6 @@ export class RuntimeSessionManager {
       }
       throw error
     }
-  }
-
-  #deliverCouncilArtifacts(
-    council: JsonRecord,
-    targetSessionId: string,
-    kinds: string[],
-    ctx: JsonRecord = { actor: { kind: 'runtime' } },
-  ) {
-    const superseded = new Set(council.supersededArtifactIds ?? [])
-    for (const artifact of council.artifacts.filter(
-      (item: JsonRecord) => kinds.includes(item.kind) && !superseded.has(item.artifactId),
-    )) {
-      this.#cmdDeliver({
-        sessionId: targetSessionId,
-        source: artifact.authorSessionId,
-        topic: `${artifact.kind}:${artifact.authorSessionId}:v${artifact.version}`,
-        filename: `${artifact.kind}-${artifact.authorSessionId}-v${artifact.version}.md`,
-        content: this.#channelStore.readArtifact(artifact.contentRef),
-      }, ctx)
-    }
-  }
-
-  #createCouncilPatchBarrier(
-    council: JsonRecord,
-    participant: JsonRecord,
-    kind: 'proposal' | 'peer-review' | 'synthesis',
-  ) {
-    const phaseId = kind
-    const proposalBarrier = this.#state.barriers?.[council.barrierIds?.proposal]
-    const matching = Object.values(this.#state.barriers ?? {}).filter(
-      (barrier: JsonRecord) =>
-        barrier.runId === council.runId && barrier.phaseId === phaseId,
-    )
-    const generation = matching.length + 1
-    const workflowId = proposalBarrier?.workflowId ?? council.workflowId
-    const workflowVersion = proposalBarrier?.workflowVersion ?? 1
-    const correlationKey = executionCorrelationKey({
-      workflowId,
-      workflowVersion,
-      runId: council.runId,
-      phaseId,
-      generation,
-    })
-    const barrier = this.#cmdCreateBarrier({
-      barrierId: `${council.workflowId}:${phaseId}:patch:${generation}`,
-      mode: 'all',
-      expectedParticipantKeys: [participant.key],
-      envelope: {
-        workflowId,
-        workflowVersion,
-        runId: council.runId,
-        phaseId,
-        activationId: `${council.workflowId}:${phaseId}:patch-setup:${generation}`,
-        attempt: 1,
-        correlationKey,
-      },
-    }, { actor: { kind: 'runtime' } }).barrier
-    council.barrierIds ??= {}
-    council.barrierIds[phaseId] = barrier.barrierId
-    return { barrier, correlationKey }
-  }
-
-  async #activateCouncilPatchParticipant(
-    council: JsonRecord,
-    participant: JsonRecord,
-    kind: 'proposal' | 'peer-review' | 'synthesis',
-  ) {
-    const sessionId = participant.sessionId
-    const { barrier, correlationKey } = this.#createCouncilPatchBarrier(
-      council,
-      participant,
-      kind,
-    )
-    const execution = {
-      workflowId: barrier.workflowId,
-      workflowVersion: barrier.workflowVersion,
-      runId: council.runId,
-      phaseId: kind,
-      activationId: `${council.workflowId}:${kind}:patch-pending`,
-      attempt: 1,
-      correlationKey,
-    }
-    const phaseCtx = { actor: { kind: 'runtime' }, execution }
-    delete this.#state.sessions[sessionId].prepared
-    if (kind === 'peer-review') this.#deliverCouncilArtifacts(council, sessionId, ['proposal'], phaseCtx)
-    if (kind === 'synthesis') this.#deliverCouncilArtifacts(council, sessionId, ['proposal', 'peer-review'], phaseCtx)
-    const note = kind === 'proposal'
-      ? plannerPrompt(council.objective, council.reviewFocus)
-      : kind === 'peer-review'
-        ? crossReviewPrompt(council.reviewFocus)
-        : synthesizerPrompt(council.objective, council.reviewFocus)
-    participant.expectedArtifactKind = kind
-    const activated = await this.#cmdActivate({ sessionId, note }, phaseCtx)
-    participant.expectedTurnId = activated.runId
-    participant.expectedExecutionEnvelope = {
-      ...execution,
-      activationId: activated.runId,
-    }
-  }
-
-  async #commitPlanCouncilPatch(proposal: JsonRecord, base: JsonRecord, ctx: JsonRecord) {
-    const councilId = base.executionMapping?.productWorkflowId
-    const council = councilId ? this.#state.planCouncils?.[councilId] : undefined
-    if (!council) throw new Error('Active Plan Council execution is unavailable.')
-    const mapping = clone(base.executionMapping)
-    mapping.planVersion = proposal.proposedPlan.version
-    mapping.committedAt = now()
-    const createdSessionIds: string[] = []
-    const createdSubscriptionIds: string[] = []
-    for (const operation of proposal.patch.operations ?? []) {
-      if (!['add-verifier', 'replace-participant', 'resynthesize'].includes(operation.op)) {
-        throw new Error(`Plan Council does not support ${operation.op} at product-phase runtime.`)
-      }
-      if (operation.op === 'resynthesize') {
-        if (!['completed', 'ready-for-synthesis'].includes(council.phase)) {
-          throw new Error(`Plan Council is ${council.phase}; resynthesis requires completed reviews.`)
-        }
-        const synthesizer = council.participants[council.synthesizerSessionId]
-        this.#setPlanCouncilPhase(council, 'synthesizing', `Workflow Patch requested resynthesis: ${operation.reason}`)
-        await this.#activateCouncilPatchParticipant(council, synthesizer, 'synthesis')
-        continue
-      }
-
-      if (['reviewing-peers', 'synthesizing'].includes(council.phase)) {
-        throw new Error(`Plan Council is ${council.phase}; participant topology cannot change during an active phase.`)
-      }
-
-      const participantKey = operation.op === 'add-verifier'
-        ? operation.verifier.key
-        : operation.participantKey
-      const spec = proposal.proposedPlan.participants.find(
-        (candidate: JsonRecord) => candidate.key === participantKey,
-      )
-      if (!spec) throw new Error(`Plan Council patch participant is missing: ${participantKey}`)
-      let sessionId
-      if (spec.endpoint.kind === 'existing') {
-        sessionId = spec.endpoint.sessionId
-      } else {
-        const created = await this.#cmdCreateSession({
-          prompt: spec.prompt,
-          label: spec.label,
-          cwd: spec.workspace.cwd,
-          workMode: spec.workspace.workMode,
-          branch: spec.workspace.branch,
-          providerKind: spec.endpoint.providerKind,
-          providerInstanceId: spec.endpoint.providerInstanceId,
-          runtimeSettings: spec.endpoint.runtimeSettings,
-          cluster: proposal.proposedPlan.scopeId === 'global' ? undefined : proposal.proposedPlan.scopeId,
-        }, ctx, { deferStart: true })
-        sessionId = created.sessionId
-        createdSessionIds.push(sessionId)
-      }
-      const councilParticipant = {
-        key: participantKey.replace(/^(planner|synthesizer):/, ''),
-        label: spec.label,
-        providerKind: spec.endpoint.kind === 'new'
-          ? spec.endpoint.providerKind
-          : this.#state.sessions[sessionId].providerKind,
-        providerInstanceId: spec.endpoint.kind === 'new'
-          ? spec.endpoint.providerInstanceId
-          : this.#state.sessions[sessionId].providerInstanceId,
-        runtimeSettings: clone(spec.endpoint.kind === 'new'
-          ? spec.endpoint.runtimeSettings
-          : this.#state.sessions[sessionId].runtimeSettings),
-        role: operation.op === 'add-verifier' ? 'reviewer' : undefined,
-        sessionId,
-      }
-      if (operation.op === 'add-verifier') {
-        council.participants[sessionId] = councilParticipant
-        council.participantOrder.push(sessionId)
-        mapping.participantSessionIds[participantKey] = sessionId
-        for (const relationship of proposal.proposedPlan.relationships.filter(
-          (candidate: JsonRecord) => candidate.to === participantKey,
-        )) {
-          mapping.relationshipRuntimeRefs[relationship.key] = {
-            kind: 'product-phase',
-            ref: `${council.workflowId}:${relationship.key}`,
-          }
-        }
-        if (['ready-for-synthesis', 'completed'].includes(council.phase)) {
-          councilParticipant.role = 'reviewer'
-          this.#setPlanCouncilPhase(council, 'reviewing-peers', 'A Workflow Patch added a specialist reviewer.')
-          await this.#activateCouncilPatchParticipant(council, councilParticipant, 'peer-review')
-        } else {
-          delete this.#state.sessions[sessionId].prepared
-        }
-        continue
-      }
-
-      const oldSessionId = mapping.participantSessionIds[participantKey]
-      const oldParticipant = council.participants[oldSessionId]
-      if (!oldParticipant) throw new Error(`Plan Council participant mapping is stale: ${participantKey}`)
-      councilParticipant.role = oldParticipant.role
-      council.supersededArtifactIds ??= []
-      council.supersededParticipantIds ??= []
-      council.supersededParticipantIds.push(oldSessionId)
-      council.supersededArtifactIds.push(...council.artifacts
-        .filter((artifact: JsonRecord) => artifact.authorSessionId === oldSessionId)
-        .map((artifact: JsonRecord) => artifact.artifactId))
-      council.participantOrder = council.participantOrder.map(
-        (candidate: string) => candidate === oldSessionId ? sessionId : candidate,
-      )
-      delete council.participants[oldSessionId]
-      council.participants[sessionId] = councilParticipant
-      mapping.participantSessionIds[participantKey] = sessionId
-      if (council.synthesizerSessionId === oldSessionId) council.synthesizerSessionId = sessionId
-      const artifactKind = councilParticipant.role === 'planner'
-        ? 'proposal'
-        : councilParticipant.role === 'reviewer'
-          ? 'peer-review'
-          : 'synthesis'
-      this.#setPlanCouncilPhase(
-        council,
-        artifactKind === 'proposal' ? 'drafting-plans' : artifactKind === 'peer-review' ? 'reviewing-peers' : 'synthesizing',
-        `Workflow Patch replaced ${oldParticipant.label}.`,
-      )
-      await this.#activateCouncilPatchParticipant(council, councilParticipant, artifactKind)
-    }
-    this.#touch()
-    this.#broadcast({ type: 'plan-council.updated', workflowId: council.workflowId, state: this.getState() })
-    return { mapping, createdSessionIds, createdSubscriptionIds }
   }
 
   async #cmdCommitWorkflow(input: JsonRecord = {}, ctx: JsonRecord) {
@@ -11526,7 +7444,7 @@ export class RuntimeSessionManager {
       const kind = gate === 'crossReview'
         ? 'start_plan_council_cross_review'
         : 'start_plan_council_synthesis'
-      const generation = this.#nextCouncilBarrierGeneration(
+      const generation = nextCouncilBarrierGeneration(this.#wf(), 
         council,
         gate === 'crossReview' ? 'peer-review' : 'synthesis',
       )
@@ -11618,7 +7536,7 @@ export class RuntimeSessionManager {
           'Master sessions cannot create raw graph nodes. Use propose_workflow so capability checks, Graph Diff, approval, and atomic commit are enforced.',
         )
       }
-      const reviewRole = this.#activeReviewPairRole(source)
+      const reviewRole = activeReviewPairRole(this.#wf(), source)
       if (reviewRole) {
         throw new Error(
           `${reviewRole} is already assigned to an active Review until clean workflow. Do not create another session; continue your assigned work and finish so Orrery can advance the existing review pair.`,
@@ -11994,7 +7912,7 @@ export class RuntimeSessionManager {
       session.status = 'pending'
       session.updatedAt = queuedAt
       this.#updateMessageRunId(session, request?.userMessageId, runId)
-      const council = this.#planCouncilForSession(sessionId)
+      const council = planCouncilForSession(this.#wf(), sessionId)
       const participant = council?.participants?.[sessionId]
       if (participant?.expectedArtifactKind && !participant.expectedTurnId) participant.expectedTurnId = runId
     }
@@ -12026,7 +7944,7 @@ export class RuntimeSessionManager {
         const exceeded = this.#budgetExceededFor(candidate, candidate.turnId)
         if (exceeded) {
           const error = this.#freezeForBudget(candidate.sessionId, exceeded)
-          this.#planCouncilFailed(candidate.sessionId, error.message)
+          planCouncilFailed(this.#wf(), candidate.sessionId, error.message)
           this.#settleDynamicSpawnChild(candidate.sessionId, 'failed', error.message)
           continue
         }
@@ -12060,7 +7978,7 @@ export class RuntimeSessionManager {
     resource,
   ) {
     const session = this.#state.sessions[sessionId]
-    const council = this.#planCouncilForSession(sessionId)
+    const council = planCouncilForSession(this.#wf(), sessionId)
     const participant = council?.participants?.[sessionId]
     const runExecution = validateExecutionEnvelope(execution)
       ? { ...clone(execution), activationId: runId }
@@ -12090,7 +8008,7 @@ export class RuntimeSessionManager {
       throw error
     }
     const membraneToken = this.#bridge.createRunToken(sessionId)
-    const fromTurnCount = this.#completedTurnCount(session)
+    const fromTurnCount = completedTurnCount(this.#checkpointHost(), session)
     let turnCheckpoint
     session.status = 'running'
     session.startedAt = now()
@@ -12098,7 +8016,7 @@ export class RuntimeSessionManager {
     session.updatedAt = session.startedAt
     try {
       turnCheckpoint = {
-        ...this.#captureTurnCheckpoint({
+        ...captureTurnCheckpoint(this.#checkpointHost(), {
           sessionId,
           turnId: runId,
           turnCount: fromTurnCount,
@@ -12152,7 +8070,7 @@ export class RuntimeSessionManager {
       type: 'runtime.state',
       state: this.getState(),
     })
-    this.#journalAutomaticDeploymentRunStarted(sessionId)
+    journalAutomaticDeploymentRunStarted(this.#wf(), sessionId)
 
     let run
     try {
@@ -12230,7 +8148,7 @@ export class RuntimeSessionManager {
       current.signal = signal
       current.finishedAt = now()
       current.updatedAt = current.finishedAt
-      this.#recordTurnCheckpointDiff(sessionId, current.finishedAt)
+      recordTurnCheckpointDiff(this.#checkpointHost(), sessionId, current.finishedAt)
       this.#appendTurnCompletedIfMissing(sessionId, current.finishedAt)
       this.#cancelOpenRuntimeInteractions(sessionId, current.finishedAt)
 
@@ -12444,7 +8362,7 @@ export class RuntimeSessionManager {
       (removedEvent) => removedEvent.type === 'turn.diff.updated',
     )
     if (event.type === 'turn.diff.updated' || removedDiffEvent) {
-      this.#pruneTurnCheckpointRefs(sessionId)
+      pruneTurnCheckpointRefs(this.#checkpointHost(), sessionId)
     }
 
     if (event.type === 'runtime.configured') {
@@ -12825,7 +8743,7 @@ export class RuntimeSessionManager {
     if (!session || !started?.turnId || (this.#state.usageFacts ?? []).some((fact) => fact.turnId === started.turnId)) return
     const completedAt = now()
     const startedAt = started.ts ?? session.startedAt ?? completedAt
-    const council = this.#planCouncilForSession(sessionId)
+    const council = planCouncilForSession(this.#wf(), sessionId)
     const participant = council?.participants?.[sessionId]
     const terminalCause = started.activationEventId
       ? this.#allKernelEvents().find((event) => event.id === started.activationEventId)
@@ -12928,7 +8846,7 @@ export class RuntimeSessionManager {
     }
     let changeset
     try {
-      changeset = this.#checkpointDiffForSession(sessionId, { turnId: lastAssistant.runId, unbounded: true })
+      changeset = checkpointDiffForSession(this.#checkpointHost(), sessionId, { turnId: lastAssistant.runId, unbounded: true })
     } catch (error) {
       const detail = String(error instanceof Error ? error.message : error)
       const conflict = { kind: 'workflow-conflict', code: /maxBuffer|ENOBUFS|buffer/i.test(detail) ? 'changeset-too-large' : 'changeset-unavailable', sessionId, detail: truncateForLog(detail, 1200) }
@@ -13065,7 +8983,7 @@ export class RuntimeSessionManager {
         ...(context.execution ? { execution: clone(context.execution) } : {}),
       },
     )
-    this.#planCouncilFinished(sessionId, runId, finishedEvent?.id)
+    planCouncilFinished(this.#wf(), sessionId, runId, finishedEvent?.id)
     this.#settleDynamicSpawnChild(sessionId, 'completed')
     this.#recordUsageFact(sessionId, session.finishedAt)
     this.#releaseWorkspaceLease(runId, 'completed')
@@ -13098,7 +9016,7 @@ export class RuntimeSessionManager {
     session.updatedAt = session.finishedAt
     this.#markActiveAssistant(sessionId, 'failed')
     this.#updateNodeStatus(sessionId, 'failed')
-    this.#recordTurnCheckpointDiff(sessionId, session.finishedAt)
+    recordTurnCheckpointDiff(this.#checkpointHost(), sessionId, session.finishedAt)
     this.#appendTurnCompletedIfMissing(sessionId, session.finishedAt)
     this.#cancelOpenRuntimeInteractions(sessionId, session.finishedAt)
     this.#appendProviderRuntimeEvent(sessionId, {
@@ -13124,7 +9042,7 @@ export class RuntimeSessionManager {
         ...(context?.execution ? { execution: clone(context.execution) } : {}),
       },
     )
-    this.#planCouncilFailed(sessionId, String(error ?? 'Unknown provider error'))
+    planCouncilFailed(this.#wf(), sessionId, String(error ?? 'Unknown provider error'))
     this.#settleDynamicSpawnChild(sessionId, 'failed', String(error ?? 'Unknown provider error'))
     this.#touch()
     this.#emitRuntimeEvent({
@@ -13446,448 +9364,6 @@ export class RuntimeSessionManager {
 
   #emitRuntimeEvent(event) {
     this.#broadcast(event)
-  }
-
-  #completedTurnCount(session) {
-    return (session.runtimeEvents ?? []).filter(
-      (event) => event.type === 'turn.completed',
-    ).length
-  }
-
-  #captureTurnCheckpoint({ sessionId, turnId, turnCount, stage }) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      throw new Error(`Unknown session: ${sessionId}`)
-    }
-
-    const cwd = validateRunnableCwd(session.cwd)
-    let repoRoot
-    try {
-      gitOutput(cwd, ['rev-parse', '--is-inside-work-tree'])
-      repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(
-        `Project folder is not a Git work tree: ${cwd}. ${message}`,
-      )
-    }
-
-    const ref = checkpointRef({
-      sessionId,
-      turnCount,
-      turnId,
-      stage,
-    })
-    const tempIndex = path.join(
-      os.tmpdir(),
-      `orrery-checkpoint-${process.pid}-${randomUUID()}.index`,
-    )
-    const env = gitCheckpointEnv(tempIndex)
-
-    try {
-      const hasHead = hasGitHead(cwd, env)
-      const indexTree = hasHead ? gitOutput(cwd, ['write-tree']) : emptyGitTree
-      gitOutput(cwd, ['read-tree', indexTree], { env })
-      gitOutput(cwd, ['add', '-A', '--', '.'], { env })
-      const tree = gitOutput(cwd, ['write-tree'], { env })
-      const commitArgs = ['commit-tree', tree]
-      if (hasHead) {
-        commitArgs.push('-p', gitOutput(cwd, ['rev-parse', 'HEAD']))
-      }
-      const commit = gitOutput(cwd, commitArgs, { env })
-      gitOutput(cwd, ['update-ref', ref, commit])
-
-      return {
-        ref,
-        commit,
-        cwd,
-        repoRoot,
-        turnCount,
-        stage,
-      }
-    } finally {
-      try {
-        fs.rmSync(tempIndex, { force: true })
-        fs.rmSync(`${tempIndex}.lock`, { force: true })
-      } catch {
-        // Best-effort cleanup; the temp index is outside the user's repo.
-      }
-    }
-  }
-
-  #diffSummaryForCheckpointRange({
-    sessionId,
-    turnId,
-    cwd,
-    repoRoot,
-    fromCheckpointRef,
-    toCheckpointRef,
-    fromTurnCount,
-    toTurnCount,
-    ignoreWhitespace = false,
-    unbounded = false,
-  }) {
-    const diffArgs = [
-      'diff',
-      '--patch',
-      '--no-color',
-      '--no-ext-diff',
-      '--no-textconv',
-      '--relative',
-    ]
-
-    if (ignoreWhitespace === true) {
-      diffArgs.push('--ignore-all-space')
-    }
-
-    const rawPatch = gitOutput(
-      cwd,
-      [...diffArgs, fromCheckpointRef, toCheckpointRef, '--', '.'],
-      { maxBuffer: gitDiffMaxBuffer },
-    )
-    const files = parseDiffFilesFromPatch(rawPatch)
-
-    return {
-      sessionId,
-      turnId,
-      cwd,
-      repoRoot,
-      generatedAt: now(),
-      range: {
-        kind: 'checkpoint',
-        fromCheckpointRef,
-        toCheckpointRef,
-        fromTurnCount,
-        toTurnCount,
-      },
-      files,
-      totals: totalsForDiffFiles(files),
-      patch: unbounded ? rawPatch : boundedText(rawPatch, uiPatchMaxLength),
-      truncated: unbounded ? false : rawPatch.length > uiPatchMaxLength,
-    }
-  }
-
-  #recordTurnCheckpointDiff(sessionId, ts) {
-    const session = this.#state.sessions[sessionId]
-    const context = this.#runContext.get(sessionId)
-    if (!session || !context || context.turnDiffRecorded === true) {
-      return
-    }
-
-    context.turnDiffRecorded = true
-    const turnId = context.runId
-    const fromTurnCount = Number.isInteger(
-      context.turnCheckpoint?.fromTurnCount,
-    )
-      ? context.turnCheckpoint.fromTurnCount
-      : this.#completedTurnCount(session)
-    const toTurnCount = fromTurnCount + 1
-
-    if (context.turnCheckpoint?.error || !context.turnCheckpoint?.ref) {
-      this.#appendProviderRuntimeEvent(sessionId, {
-        id: randomUUID(),
-        ts,
-        type: 'turn.diff.updated',
-        sessionId,
-        turnId,
-        diff: {
-          sessionId,
-          turnId,
-          cwd: session.cwd,
-          generatedAt: ts,
-          files: [],
-          totals: { files: 0, additions: 0, deletions: 0 },
-          error:
-            context.turnCheckpoint?.error ??
-            'No baseline checkpoint was captured for this turn.',
-        },
-      })
-      return
-    }
-
-    try {
-      const after = this.#captureTurnCheckpoint({
-        sessionId,
-        turnId,
-        turnCount: toTurnCount,
-        stage: 'after',
-      })
-      const diff = this.#diffSummaryForCheckpointRange({
-        sessionId,
-        turnId,
-        cwd: after.cwd,
-        repoRoot: after.repoRoot,
-        fromCheckpointRef: context.turnCheckpoint.ref,
-        toCheckpointRef: after.ref,
-        fromTurnCount,
-        toTurnCount,
-      })
-
-      const { patch: _patch, ...summary } = diff
-      this.#appendProviderRuntimeEvent(sessionId, {
-        id: randomUUID(),
-        ts,
-        type: 'turn.diff.updated',
-        sessionId,
-        turnId,
-        diff: summary,
-      })
-    } catch (error) {
-      this.#appendProviderRuntimeEvent(sessionId, {
-        id: randomUUID(),
-        ts,
-        type: 'turn.diff.updated',
-        sessionId,
-        turnId,
-        diff: {
-          sessionId,
-          turnId,
-          cwd: session.cwd,
-          generatedAt: ts,
-          files: [],
-          totals: { files: 0, additions: 0, deletions: 0 },
-          error: error instanceof Error ? error.message : String(error),
-        },
-      })
-    }
-  }
-
-  #pruneTurnCheckpointRefs(sessionId) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      return
-    }
-
-    let cwd
-    try {
-      cwd = validateRunnableCwd(session.cwd)
-    } catch {
-      return
-    }
-
-    const keepRefs = new Set()
-    const activeContext = this.#runContext.get(sessionId)
-    if (nonEmptyString(activeContext?.turnCheckpoint?.ref)) {
-      keepRefs.add(activeContext.turnCheckpoint.ref)
-    }
-
-    for (const event of session.runtimeEvents ?? []) {
-      if (event.type !== 'turn.diff.updated' || !isObject(event.diff?.range)) {
-        continue
-      }
-      const { fromCheckpointRef, toCheckpointRef } = event.diff.range
-      if (nonEmptyString(fromCheckpointRef)) {
-        keepRefs.add(fromCheckpointRef)
-      }
-      if (nonEmptyString(toCheckpointRef)) {
-        keepRefs.add(toCheckpointRef)
-      }
-    }
-
-    let refs
-    try {
-      refs = gitOutput(cwd, [
-        'for-each-ref',
-        '--format=%(refname)',
-        checkpointSessionRefRoot(sessionId),
-      ])
-        .split('\n')
-        .map((ref) => ref.trim())
-        .filter(Boolean)
-    } catch {
-      return
-    }
-
-    for (const ref of refs) {
-      if (keepRefs.has(ref)) {
-        continue
-      }
-      try {
-        gitOutput(cwd, ['update-ref', '-d', ref])
-      } catch {
-        // Stale checkpoint cleanup is best-effort; the persisted diff event remains authoritative.
-      }
-    }
-  }
-
-  #gitDiffForSession(sessionId) {
-    try {
-      const result = this.#workingTreeDiffForSession(sessionId)
-      const stat = result.files
-        .map((file) => `${file.path} | +${file.additions} -${file.deletions}`)
-        .join('\n')
-      const content = [
-        `Project cwd: ${result.cwd}`,
-        stat ? `Diff stat:\n${stat}` : undefined,
-        result.patch ? `Patch:\n${result.patch}` : 'No current git diff.',
-      ].filter(Boolean)
-
-      return boundedText(content.join('\n\n'))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      const cwd = this.#state.sessions[sessionId]?.cwd ?? process.cwd()
-      return `Unable to read git diff for ${cwd}: ${message}`
-    }
-  }
-
-  #checkpointDiffForSession(sessionId, options: JsonRecord = {}) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      throw new Error(`Unknown session: ${sessionId}`)
-    }
-
-    const turnId = nonEmptyString(options.turnId)
-      ? options.turnId.trim()
-      : undefined
-    if (!turnId) {
-      throw new Error('Turn id is required for checkpoint diff.')
-    }
-
-    const diffEvent = [...(session.runtimeEvents ?? [])]
-      .reverse()
-      .find(
-        (event) =>
-          event.type === 'turn.diff.updated' &&
-          event.turnId === turnId &&
-          isObject(event.diff),
-      )
-    if (!diffEvent) {
-      throw new Error(`No checkpoint diff found for turn: ${turnId}`)
-    }
-    if (nonEmptyString(diffEvent.diff.error)) {
-      throw new Error(diffEvent.diff.error)
-    }
-    if (!isObject(diffEvent.diff.range)) {
-      throw new Error(`Checkpoint diff range is missing for turn: ${turnId}`)
-    }
-
-    const cwd = validateRunnableCwd(diffEvent.diff.cwd ?? session.cwd)
-    const range = diffEvent.diff.range
-    const result = this.#diffSummaryForCheckpointRange({
-      sessionId,
-      turnId,
-      cwd,
-      repoRoot: diffEvent.diff.repoRoot ?? gitRepoRoot(cwd) ?? cwd,
-      fromCheckpointRef: range.fromCheckpointRef,
-      toCheckpointRef: range.toCheckpointRef,
-      fromTurnCount: range.fromTurnCount,
-      toTurnCount: range.toTurnCount,
-      ignoreWhitespace: options.ignoreWhitespace === true,
-      unbounded: options.unbounded === true,
-    })
-
-    return {
-      sessionId,
-      cwd,
-      repoRoot: result.repoRoot,
-      generatedAt: result.generatedAt,
-      range: result.range,
-      files: result.files,
-      totals: result.totals,
-      statusEntries: [],
-      patch: result.patch,
-      truncated: result.truncated,
-    }
-  }
-
-  #workingTreeDiffForSession(sessionId, options: JsonRecord = {}) {
-    const session = this.#state.sessions[sessionId]
-    if (!session) {
-      throw new Error(`Unknown session: ${sessionId}`)
-    }
-
-    const cwd = validateRunnableCwd(session.cwd)
-    let repoRoot
-    try {
-      gitOutput(cwd, ['rev-parse', '--is-inside-work-tree'])
-      repoRoot = gitOutput(cwd, ['rev-parse', '--show-toplevel'])
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(
-        `Project folder is not a Git work tree: ${cwd}. ${message}`,
-      )
-    }
-
-    const tempIndex = path.join(
-      os.tmpdir(),
-      `orrery-diff-${process.pid}-${randomUUID()}.index`,
-    )
-    const env = {
-      ...process.env,
-      GIT_INDEX_FILE: tempIndex,
-    }
-
-    try {
-      const hasHead = hasGitHead(cwd, env)
-      const baseTree = hasHead ? 'HEAD' : emptyGitTree
-      const indexTree = gitOutput(cwd, ['write-tree'])
-      gitOutput(cwd, ['read-tree', indexTree], { env })
-      gitOutput(cwd, ['add', '-A', '--', '.'], { env })
-      const workingTree = gitOutput(cwd, ['write-tree'], {
-        env,
-      })
-      const diffArgs = [
-        'diff',
-        '--patch',
-        '--no-color',
-        '--no-ext-diff',
-        '--no-textconv',
-        '--relative',
-      ]
-
-      if (options.ignoreWhitespace === true) {
-        diffArgs.push('--ignore-all-space')
-      }
-
-      const stagedPatch = gitOutput(
-        cwd,
-        [...diffArgs, baseTree, indexTree, '--', '.'],
-        {
-          maxBuffer: gitDiffMaxBuffer,
-        },
-      )
-      const unstagedPatch = gitOutput(
-        cwd,
-        [...diffArgs, indexTree, workingTree, '--', '.'],
-        { maxBuffer: gitDiffMaxBuffer },
-      )
-      const rawPatch = [stagedPatch, unstagedPatch]
-        .filter((section) => section.trim().length > 0)
-        .join('\n\n')
-      const files = parseDiffFilesFromPatch(rawPatch)
-      const patch = boundedText(rawPatch, uiPatchMaxLength)
-      const statusOutput = gitOutput(
-        cwd,
-        ['status', '--short', '--untracked-files=all', '--', '.'],
-        { maxBuffer: 4 * 1024 * 1024 },
-      )
-
-      return {
-        sessionId,
-        cwd,
-        repoRoot,
-        generatedAt: now(),
-        range: {
-          kind: 'working-tree',
-          base: 'HEAD',
-          target: 'workspace',
-        },
-        files,
-        totals: totalsForDiffFiles(files),
-        statusEntries: statusOutput
-          ? statusOutput.split('\n').filter((line) => line.trim().length > 0)
-          : [],
-        patch,
-        truncated: rawPatch.length > uiPatchMaxLength,
-      }
-    } finally {
-      try {
-        fs.rmSync(tempIndex, { force: true })
-        fs.rmSync(`${tempIndex}.lock`, { force: true })
-      } catch {
-        // Best-effort cleanup; the temp index is outside the user's repo.
-      }
-    }
   }
 
   #loopCoderSessionId(cluster) {
@@ -14362,7 +9838,7 @@ export class RuntimeSessionManager {
     const checkpointSessionIds = new Set(Object.keys(checkpoint.sessions ?? {}))
     for (const sessionId of Object.keys(this.#state.sessions ?? {})) {
       if (!checkpointSessionIds.has(sessionId)) {
-        this.#discardWorkflowSession(sessionId)
+        discardWorkflowSession(this.#wf(), sessionId)
       }
     }
     for (const [sessionId, channelCheckpoint] of transaction.channelCheckpoints) {
