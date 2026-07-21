@@ -331,6 +331,62 @@ function persistedStateWithSession(sessionId, cwd) {
   }
 }
 
+test('legacy JSON migration records interruption facts for active sessions', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-legacy-active-recovery-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const sessionId = 'legacy-active-session'
+  const turnId = 'legacy-active-turn'
+  const startedAt = '2026-06-30T00:00:01.000Z'
+  const legacyState = persistedStateWithSession(sessionId, tempRoot)
+  legacyState.nodes[0].status = 'running'
+  legacyState.sessions[sessionId].status = 'running'
+  legacyState.sessions[sessionId].startedAt = startedAt
+  legacyState.sessions[sessionId].runtimeEvents = [
+    {
+      id: 'legacy-active-turn-started',
+      ts: startedAt,
+      type: 'turn.started',
+      sessionId,
+      turnId,
+    },
+  ]
+  fs.writeFileSync(storageFile, JSON.stringify(legacyState, null, 2))
+
+  const runtime = new RuntimeSessionManager({ storageFile })
+  try {
+    const state = runtime.getState()
+    assert.equal(state.sessions[sessionId].status, 'failed')
+    assert.ok(
+      state.diagnostics?.some(
+        (item) => item.type === 'runtime.active_session_recovered',
+      ),
+      'legacy active-session recovery should remain visible in diagnostics',
+    )
+    assert.ok(
+      runtime.getKernelEvents({ limit: 2000 }).events.some(
+        (event) =>
+          event.type === 'session.failed' &&
+          event.payload.sessionId === sessionId &&
+          event.payload.interruptedByRestart === true &&
+          event.actor.kind === 'runtime',
+      ),
+      'legacy active sessions must record a restart-interrupted terminal fact',
+    )
+    assert.ok(
+      state.usageFacts.some(
+        (fact) =>
+          fact.sessionId === sessionId &&
+          fact.turnId === turnId &&
+          fact.source === 'unavailable',
+      ),
+      'legacy active turns must record unavailable usage on recovery',
+    )
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('compiled RuntimeSessionManager creates, resumes, persists, and validates reports', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-ts-runtime-test-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')

@@ -284,6 +284,7 @@ export function normalizeLoopState(loopState) {
 export function loadLegacyJsonState(
   storageFile: string | undefined,
   diagnostics: JsonRecord[] = [],
+  restartInterruptedSessionIds: string[] = [],
 ) {
   if (!storageFile || !fs.existsSync(storageFile)) {
     return undefined
@@ -292,7 +293,11 @@ export function loadLegacyJsonState(
   const primary = readJsonFile(storageFile)
   if (primary.ok) {
     return {
-      state: normalizeState(primary.value, diagnostics),
+      state: normalizeState(
+        primary.value,
+        diagnostics,
+        restartInterruptedSessionIds,
+      ),
       imported: true,
     }
   }
@@ -321,7 +326,11 @@ export function loadLegacyJsonState(
         ),
       )
       return {
-        state: normalizeState(backup.value, diagnostics),
+        state: normalizeState(
+          backup.value,
+          diagnostics,
+          restartInterruptedSessionIds,
+        ),
         imported: true,
       }
     }

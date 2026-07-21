@@ -9936,7 +9936,11 @@ export class RuntimeSessionManager {
       )
     }
 
-    const legacy = loadLegacyJsonState(this.#storageFile, storeDiagnostics)
+    const legacy = loadLegacyJsonState(
+      this.#storageFile,
+      storeDiagnostics,
+      this.#restartInterruptedSessionIds,
+    )
     if (legacy) {
       if (legacy.imported) {
         this.#legacyImportKind = storeWasCorrupted
