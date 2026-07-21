@@ -26,6 +26,7 @@
 //   subscriptionAuthoring.ts              author_subscription input validation
 //   workspace/sessionCheckpoints.ts       per-turn git checkpoints + diffs
 //   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
+//   control/commandRegistry.ts             command kind + handler/policy registry
 //   workflows/workflowKernel.ts           the explicit kernel surface below
 //   workflows/classicWorkflows.ts         draft/handoff/goal/connect + deployments
 //   workflows/planCouncil.ts              plan council orchestration
@@ -298,6 +299,11 @@ import {
   getProviderSetupStatus,
 } from './providers/providerSetupStatus.js'
 import { TerminalService } from './terminal/terminalService.js'
+import {
+  commandRegistryEntry,
+  createKernelCommandRegistry,
+  type KernelCommandHandlers,
+} from './control/commandRegistry.js'
 import type { WorkflowKernel } from './workflows/workflowKernel.js'
 import {
   activeReviewPairRole,
@@ -347,79 +353,6 @@ import {
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
 
-// The unified command channel (kernel doc §7.5): every state mutation from any
-// actor (human/IPC, master/agent via membrane, rule via loop automation) goes
-// through dispatchCommand → validate → execute → append kernel event.
-const kernelCommandKinds = new Set([
-  'create_session',
-  'resume_session',
-  'deliver',
-  'activate',
-  'archive_session',
-  'kill_session',
-  'respond_runtime_request',
-  'answer_user_input',
-  'upsert_scope',
-  'create_master',
-  'assign_master',
-  'set_loop_policy',
-  'update_node_positions',
-  'start_loop',
-  'stop_loop',
-  'freeze',
-  'unfreeze',
-  'link_sessions',
-  'remove_edge',
-  'report',
-  'upsert_provider_instance',
-  'author_subscription',
-  'stop_subscription',
-  'approve_activation',
-  'deny_activation',
-  'cleanup_channels',
-  'propose_workflow',
-  'propose_workflow_patch',
-  'revise_workflow',
-  'approve_workflow_proposal',
-  'reject_workflow_proposal',
-  'expire_workflow_proposal',
-  'commit_workflow',
-  'abort_workflow_proposal',
-  'lock_workflow_item',
-  'record_workflow_wakeup',
-  'notify_workflow_wakeup',
-  'acknowledge_workflow_wakeup',
-  'create_barrier',
-  'arrive_barrier',
-  'cancel_barrier',
-  'expire_barrier',
-  'provider_complete_run',
-  'set_resource_policy',
-  'merge_worktree_changes',
-  'cleanup_worktree',
-  'create_goal_loop',
-  'start_review_workflow',
-  'start_plan_council',
-  'start_plan_council_cross_review',
-  'start_plan_council_synthesis',
-  'retry_plan_council_participant',
-  'stop_plan_council',
-  'start_draft_workflow',
-  'start_handoff_workflow',
-  'start_goal_workflow',
-  'connect_agents',
-  'apply_template',
-  'save_template',
-  'remove_template',
-  'register_external_source',
-  'remove_external_source',
-  'rule_stop_for_event',
-  'rule_deliver_for_event',
-  'rule_pend_activation',
-  'rule_execute_activation',
-  'rule_drop_activation',
-  'rule_stop_killed_subscriptions',
-])
 // The emit payload rides the kernel log and the target's channel; cap it so
 // a chatty adapter cannot bloat either (the log is forever).
 const externalPayloadMaxBytes = 16 * 1024
@@ -483,6 +416,104 @@ export class RuntimeSessionManager {
   #workflowCompensatedRuns = new Set<string>()
   #commandChain: Promise<void> = Promise.resolve()
   #controlCommandContext = new AsyncLocalStorage<JsonRecord>()
+  #commandRegistry = createKernelCommandRegistry({
+    create_session: (input, ctx) => this.#cmdCreateSession(input, ctx),
+    resume_session: (input, ctx) => this.#cmdResumeSession(input, ctx),
+    deliver: (input, ctx) => this.#cmdDeliver(input, ctx),
+    activate: (input, ctx) => this.#cmdActivate(input, ctx),
+    archive_session: (input, ctx) => this.#cmdArchiveSession(input, ctx),
+    kill_session: (input, ctx) => this.#cmdKillSession(input, ctx),
+    respond_runtime_request: (input, ctx) =>
+      this.#cmdRespondRuntimeRequest(input, ctx),
+    answer_user_input: (input, ctx) => this.#cmdAnswerUserInput(input, ctx),
+    upsert_scope: (input, ctx) => this.#cmdUpsertCluster(input, ctx),
+    create_master: (input, ctx) =>
+      this.#cmdCreateMasterForCluster(input, ctx),
+    assign_master: (input, ctx) => this.#cmdAssignMaster(input, ctx),
+    set_loop_policy: (input, ctx) => this.#cmdSetLoopPolicy(input, ctx),
+    update_node_positions: (input, ctx) =>
+      this.#cmdUpdateNodePositions(input, ctx),
+    start_loop: (input, ctx) => this.#cmdStartLoop(input, ctx),
+    stop_loop: (input, ctx) => this.#cmdStopLoop(input, ctx),
+    freeze: (input, ctx) => this.#cmdFreeze(input, ctx),
+    unfreeze: (input, ctx) => this.#cmdUnfreeze(input, ctx),
+    link_sessions: (input, ctx) => this.#cmdLinkSessions(input, ctx),
+    remove_edge: (input, ctx) => this.#cmdRemoveEdge(input, ctx),
+    report: (input, ctx) => this.#cmdReport(input, ctx),
+    upsert_provider_instance: (input, ctx) =>
+      this.#cmdUpsertProviderInstance(input, ctx),
+    author_subscription: (input, ctx) =>
+      this.#cmdAuthorSubscription(input, ctx),
+    stop_subscription: (input, ctx) =>
+      this.#cmdStopSubscription(input, ctx),
+    approve_activation: (input, ctx) =>
+      this.#cmdApproveActivation(input, ctx),
+    deny_activation: (input, ctx) => this.#cmdDenyActivation(input, ctx),
+    cleanup_channels: (input, ctx) => this.#cmdCleanupChannels(input, ctx),
+    propose_workflow: (input, ctx) => this.#cmdProposeWorkflow(input, ctx),
+    propose_workflow_patch: (input, ctx) =>
+      this.#cmdProposeWorkflowPatch(input, ctx),
+    revise_workflow: (input, ctx) => this.#cmdReviseWorkflow(input, ctx),
+    approve_workflow_proposal: (input, ctx) =>
+      this.#cmdApproveWorkflowProposal(input, ctx),
+    reject_workflow_proposal: (input, ctx) =>
+      this.#cmdRejectWorkflowProposal(input, ctx),
+    expire_workflow_proposal: (input, ctx) =>
+      this.#cmdExpireWorkflowProposal(input, ctx),
+    commit_workflow: (input, ctx) => this.#cmdCommitWorkflow(input, ctx),
+    abort_workflow_proposal: (input, ctx) =>
+      this.#cmdAbortWorkflowProposal(input, ctx),
+    lock_workflow_item: (input, ctx) =>
+      this.#cmdLockWorkflowItem(input, ctx),
+    record_workflow_wakeup: (input, ctx) =>
+      this.#cmdRecordWorkflowWakeup(input, ctx),
+    notify_workflow_wakeup: (input, ctx) =>
+      this.#cmdNotifyWorkflowWakeup(input, ctx),
+    acknowledge_workflow_wakeup: (input, ctx) =>
+      this.#cmdAcknowledgeWorkflowWakeup(input, ctx),
+    create_barrier: (input, ctx) => this.#cmdCreateBarrier(input, ctx),
+    arrive_barrier: (input, ctx) => this.#cmdArriveBarrier(input, ctx),
+    cancel_barrier: (input, ctx) => this.#cmdCancelBarrier(input, ctx),
+    expire_barrier: (input, ctx) => this.#cmdExpireBarrier(input, ctx),
+    provider_complete_run: (input, ctx) =>
+      this.#cmdCompleteProviderRun(input, ctx),
+    set_resource_policy: (input, ctx) =>
+      this.#cmdSetResourcePolicy(input, ctx),
+    merge_worktree_changes: (input, ctx) =>
+      this.#cmdMergeWorktreeChanges(input, ctx),
+    cleanup_worktree: (input, ctx) => this.#cmdCleanupWorktree(input, ctx),
+    create_goal_loop: (input) => this.createGoalLoop(input),
+    start_review_workflow: (input) => this.startReviewWorkflow(input),
+    start_plan_council: (input) => this.startPlanCouncil(input),
+    start_plan_council_cross_review: (input) =>
+      this.startPlanCouncilCrossReview(input),
+    start_plan_council_synthesis: (input) =>
+      this.startPlanCouncilSynthesis(input),
+    retry_plan_council_participant: (input, ctx) =>
+      cmdRetryPlanCouncilParticipant(this.#wf(), input, ctx),
+    stop_plan_council: (input) => this.stopPlanCouncil(input),
+    start_draft_workflow: (input) => this.startDraftWorkflow(input),
+    start_handoff_workflow: (input) => this.startHandoffWorkflow(input),
+    start_goal_workflow: (input) => this.startGoalWorkflow(input),
+    connect_agents: (input) => this.connectAgents(input),
+    apply_template: (input) => this.applyTemplate(input),
+    save_template: (input) => this.saveTemplate(input),
+    remove_template: (input) => this.removeTemplate(input),
+    register_external_source: (input) => this.registerExternalSource(input),
+    remove_external_source: (input) => this.removeExternalSource(input),
+    rule_stop_for_event: (input, ctx) =>
+      this.#stopSubscriptionWithOnStop(input.decision, ctx),
+    rule_deliver_for_event: (input, ctx) =>
+      this.#deliverSubscriptionFiring(input, ctx),
+    rule_pend_activation: (input, ctx) =>
+      this.#createPendingActivation(input.decision, input.event, ctx),
+    rule_execute_activation: (input) =>
+      this.#cmdRuleExecuteActivation(input),
+    rule_drop_activation: (input, ctx) =>
+      this.#cmdRuleDropActivation(input, ctx),
+    rule_stop_killed_subscriptions: (input) =>
+      this.#cmdRuleStopKilledSubscriptions(input),
+  } satisfies KernelCommandHandlers)
   #workflowDeploymentCrashAfterStage: string | undefined
   #workflowDeploymentCrashAfterResourceCreate = false
   #controlCommandCrashBeforeEffectDrain = false
@@ -665,7 +696,8 @@ export class RuntimeSessionManager {
 
   async #dispatchControlCommand(command: JsonRecord = {}): Promise<any> {
     const kind = optionalTrimmedString(command.kind)
-    if (!kind || !kernelCommandKinds.has(kind)) {
+    const commandEntry = commandRegistryEntry(this.#commandRegistry, kind)
+    if (!kind || !commandEntry) {
       throw new Error(`Unknown kernel command: ${kind ?? ''}`)
     }
 
@@ -724,22 +756,8 @@ export class RuntimeSessionManager {
       throw new ControlVersionConflictError(expectedVersion, currentVersion)
     }
 
-    const automaticallyJournaledWorkflow = [
-      'create_session',
-      'resume_session',
-      'activate',
-      'rule_execute_activation',
-      'connect_agents',
-      'start_draft_workflow',
-      'start_handoff_workflow',
-      'start_goal_workflow',
-      'commit_workflow',
-      'start_plan_council_cross_review',
-      'start_plan_council_synthesis',
-      'retry_plan_council_participant',
-    ].includes(kind)
     let automaticDeploymentId
-    if (automaticallyJournaledWorkflow) {
+    if (commandEntry.automaticallyJournaledWorkflow === true) {
       const previous = this.#kernelStore.getWorkflowDeploymentByCommandId(commandId)
       if (previous && previous.status !== 'aborted') {
         throw new Error(
@@ -796,7 +814,7 @@ export class RuntimeSessionManager {
 
     try {
       const result = await this.#controlCommandContext.run(transaction, () =>
-        this.#executeCommandKind(kind, input, ctx),
+        commandEntry.handler(input, ctx),
       )
       if (automaticDeploymentId) {
         const durableResult = isObject(result)
@@ -820,7 +838,9 @@ export class RuntimeSessionManager {
         command: {
           commandId, idempotencyKey, kind, actor: ctx.actor, expectedVersion,
           ...(ctx.execution ? { execution: clone(ctx.execution) } : {}),
-          ...(kind === 'provider_complete_run' ? { affectsControlVersion: false } : {}),
+          ...(commandEntry.affectsControlVersion === false
+            ? { affectsControlVersion: false }
+            : {}),
         },
         result: isObject(result) ? result : { value: result },
         deploymentFinalizations: transaction.deploymentFinalizations,
@@ -851,11 +871,7 @@ export class RuntimeSessionManager {
       }
       this.#drainDurableEffects()
       queueMicrotask(() => this.#drainWorkflowWakeups())
-      if (
-        kind === 'unfreeze' ||
-        kind === 'approve_activation' ||
-        kind === 'connect_agents'
-      ) {
+      if (commandEntry.drainApprovedSlotsAfterCommit === true) {
         queueMicrotask(() => {
           void this.#drainApprovedSlots()
         })
@@ -888,7 +904,9 @@ export class RuntimeSessionManager {
           command: {
             commandId, idempotencyKey, kind, actor: ctx.actor, expectedVersion,
             ...(ctx.execution ? { execution: clone(ctx.execution) } : {}),
-            ...(kind === 'provider_complete_run' ? { affectsControlVersion: false } : {}),
+            ...(commandEntry.affectsControlVersion === false
+              ? { affectsControlVersion: false }
+              : {}),
           },
           result: {
             ok: false,
@@ -1008,166 +1026,30 @@ export class RuntimeSessionManager {
     }
   }
 
-  async #executeCommandKind(kind, input, ctx) {
+  async #cmdRuleExecuteActivation(input: JsonRecord) {
+    const slot = this.#state.pendingActivations?.[input.slotKey]
+    const subscription = slot
+      ? this.#state.subscriptions?.[slot.subscriptionId]
+      : undefined
+    if (!slot || !subscription) return { ok: false }
+    await this.#executeApprovedSlot(slot, subscription)
+    return { ok: true }
+  }
 
-    switch (kind) {
-      case 'create_session':
-        return this.#cmdCreateSession(input, ctx)
-      case 'resume_session':
-        return this.#cmdResumeSession(input, ctx)
-      case 'deliver':
-        return this.#cmdDeliver(input, ctx)
-      case 'activate':
-        return this.#cmdActivate(input, ctx)
-      case 'archive_session':
-        return this.#cmdArchiveSession(input, ctx)
-      case 'kill_session':
-        return this.#cmdKillSession(input, ctx)
-      case 'respond_runtime_request':
-        return this.#cmdRespondRuntimeRequest(input, ctx)
-      case 'answer_user_input':
-        return this.#cmdAnswerUserInput(input, ctx)
-      case 'upsert_scope':
-        return this.#cmdUpsertCluster(input, ctx)
-      case 'create_master':
-        return this.#cmdCreateMasterForCluster(input, ctx)
-      case 'assign_master':
-        return this.#cmdAssignMaster(input, ctx)
-      case 'set_loop_policy':
-        return this.#cmdSetLoopPolicy(input, ctx)
-      case 'update_node_positions':
-        return this.#cmdUpdateNodePositions(input, ctx)
-      case 'start_loop':
-        return this.#cmdStartLoop(input, ctx)
-      case 'stop_loop':
-        return this.#cmdStopLoop(input, ctx)
-      case 'freeze':
-        return this.#cmdFreeze(input, ctx)
-      case 'unfreeze':
-        return this.#cmdUnfreeze(input, ctx)
-      case 'link_sessions':
-        return this.#cmdLinkSessions(input, ctx)
-      case 'remove_edge':
-        return this.#cmdRemoveEdge(input, ctx)
-      case 'report':
-        return this.#cmdReport(input, ctx)
-      case 'upsert_provider_instance':
-        return this.#cmdUpsertProviderInstance(input, ctx)
-      case 'author_subscription':
-        return this.#cmdAuthorSubscription(input, ctx)
-      case 'stop_subscription':
-        return this.#cmdStopSubscription(input, ctx)
-      case 'approve_activation':
-        return this.#cmdApproveActivation(input, ctx)
-      case 'deny_activation':
-        return this.#cmdDenyActivation(input, ctx)
-      case 'cleanup_channels':
-        return this.#cmdCleanupChannels(input, ctx)
-      case 'propose_workflow':
-        return this.#cmdProposeWorkflow(input, ctx)
-      case 'propose_workflow_patch':
-        return this.#cmdProposeWorkflowPatch(input, ctx)
-      case 'revise_workflow':
-        return this.#cmdReviseWorkflow(input, ctx)
-      case 'approve_workflow_proposal':
-        return this.#cmdApproveWorkflowProposal(input, ctx)
-      case 'reject_workflow_proposal':
-        return this.#cmdRejectWorkflowProposal(input, ctx)
-      case 'expire_workflow_proposal':
-        return this.#cmdExpireWorkflowProposal(input, ctx)
-      case 'commit_workflow':
-        return this.#cmdCommitWorkflow(input, ctx)
-      case 'abort_workflow_proposal':
-        return this.#cmdAbortWorkflowProposal(input, ctx)
-      case 'lock_workflow_item':
-        return this.#cmdLockWorkflowItem(input, ctx)
-      case 'record_workflow_wakeup':
-        return this.#cmdRecordWorkflowWakeup(input, ctx)
-      case 'notify_workflow_wakeup':
-        return this.#cmdNotifyWorkflowWakeup(input, ctx)
-      case 'acknowledge_workflow_wakeup':
-        return this.#cmdAcknowledgeWorkflowWakeup(input, ctx)
-      case 'create_barrier':
-        return this.#cmdCreateBarrier(input, ctx)
-      case 'arrive_barrier':
-        return this.#cmdArriveBarrier(input, ctx)
-      case 'cancel_barrier':
-        return this.#cmdCancelBarrier(input, ctx)
-      case 'expire_barrier':
-        return this.#cmdExpireBarrier(input, ctx)
-      case 'provider_complete_run':
-        return this.#cmdCompleteProviderRun(input, ctx)
-      case 'set_resource_policy':
-        return this.#cmdSetResourcePolicy(input, ctx)
-      case 'merge_worktree_changes':
-        return this.#cmdMergeWorktreeChanges(input, ctx)
-      case 'cleanup_worktree':
-        return this.#cmdCleanupWorktree(input, ctx)
-      case 'create_goal_loop':
-        return this.createGoalLoop(input)
-      case 'start_review_workflow':
-        return this.startReviewWorkflow(input)
-      case 'start_plan_council':
-        return this.startPlanCouncil(input)
-      case 'start_plan_council_cross_review':
-        return this.startPlanCouncilCrossReview(input)
-      case 'start_plan_council_synthesis':
-        return this.startPlanCouncilSynthesis(input)
-      case 'retry_plan_council_participant':
-        return cmdRetryPlanCouncilParticipant(this.#wf(), input, ctx)
-      case 'stop_plan_council':
-        return this.stopPlanCouncil(input)
-      case 'start_draft_workflow':
-        return this.startDraftWorkflow(input)
-      case 'start_handoff_workflow':
-        return this.startHandoffWorkflow(input)
-      case 'start_goal_workflow':
-        return this.startGoalWorkflow(input)
-      case 'connect_agents':
-        return this.connectAgents(input)
-      case 'apply_template':
-        return this.applyTemplate(input)
-      case 'save_template':
-        return this.saveTemplate(input)
-      case 'remove_template':
-        return this.removeTemplate(input)
-      case 'register_external_source':
-        return this.registerExternalSource(input)
-      case 'remove_external_source':
-        return this.removeExternalSource(input)
-      case 'rule_stop_for_event':
-        return this.#stopSubscriptionWithOnStop(input.decision, ctx)
-      case 'rule_deliver_for_event':
-        return this.#deliverSubscriptionFiring(input, ctx)
-      case 'rule_pend_activation':
-        return this.#createPendingActivation(input.decision, input.event, ctx)
-      case 'rule_execute_activation': {
-        const slot = this.#state.pendingActivations?.[input.slotKey]
-        const subscription = slot
-          ? this.#state.subscriptions?.[slot.subscriptionId]
-          : undefined
-        if (!slot || !subscription) return { ok: false }
-        await this.#executeApprovedSlot(slot, subscription)
-        return { ok: true }
-      }
-      case 'rule_drop_activation':
-        if (optionalTrimmedString(input.slotKey)) {
-          delete this.#state.pendingActivations?.[input.slotKey]
-        }
-        this.#appendKernelEvent(
-          'activation.dropped',
-          input.payload ?? {},
-          ctx,
-          { reason: input.reason },
-        )
-        this.#touch()
-        return { ok: true }
-      case 'rule_stop_killed_subscriptions':
-        this.#stopSubscriptionsForKilledParticipant(input.event)
-        return { ok: true }
+  #cmdRuleDropActivation(input: JsonRecord, ctx: JsonRecord) {
+    if (optionalTrimmedString(input.slotKey)) {
+      delete this.#state.pendingActivations?.[input.slotKey]
     }
+    this.#appendKernelEvent('activation.dropped', input.payload ?? {}, ctx, {
+      reason: input.reason,
+    })
+    this.#touch()
+    return { ok: true }
+  }
 
-    throw new Error(`Unhandled kernel command: ${kind}`)
+  #cmdRuleStopKilledSubscriptions(input: JsonRecord) {
+    this.#stopSubscriptionsForKilledParticipant(input.event)
+    return { ok: true }
   }
 
   getKernelEvents(input: JsonRecord = {}) {
