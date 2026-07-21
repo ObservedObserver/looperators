@@ -96,6 +96,8 @@ is reached. Every lap, verdict, and return path remains visible.
 Run several agents or models as independent planners, let them read and
 challenge one another, and then synthesize the strongest result.
 
+<img width="3140" height="1532" alt="looperators-discuss2" src="https://github.com/user-attachments/assets/a1bb358a-0e07-486e-8d9b-350aa57ec29a" />
+
 The built-in **Plan Council** preserves the proposals, disagreements, peer
 reviews, and route to the final decision—not only the final answer. More complex
 deliberation workflows can continue exchanging feedback until a consensus rule
