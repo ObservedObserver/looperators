@@ -314,6 +314,7 @@ const tools = [
     description:
       'Master-only. Propose a versioned, reviewable incremental patch to an active Workflow. ' +
       'Supported operations: replace-participant, add-verifier, add-dynamic-triage, stop-branch, change-relationship-policy, and Plan Council resynthesize. ' +
+      'Every operations item uses the discriminator field op (not type). For add-verifier use {op:"add-verifier", verifier:{key,label,prompt,...}, observes:[participantKey]}; verifier fields are nested under verifier. ' +
       'add-dynamic-triage installs a bounded typed-issues create action from a fixed validated template; it never accepts prompt interpolation or raw graph authoring. ' +
       'The proposal records impact and rollback information and does not mutate the running graph.',
     inputSchema: {
@@ -327,7 +328,61 @@ const tools = [
           type: 'array',
           items: {
             type: 'object',
-            description: 'A constrained patch operation. Participant specs may select a new provider or an existing in-Scope session.',
+            description:
+              'A constrained patch operation. Always set op. Participant specs may select a new provider or an existing in-Scope session.',
+            properties: {
+              op: {
+                type: 'string',
+                enum: [
+                  'replace-participant',
+                  'add-verifier',
+                  'add-dynamic-triage',
+                  'stop-branch',
+                  'change-relationship-policy',
+                  'resynthesize',
+                ],
+              },
+              participantKey: { type: 'string' },
+              replacement: { type: 'object' },
+              verifier: {
+                type: 'object',
+                description:
+                  'Required for add-verifier. The key is the stable Workflow participant key; new verifiers may inherit provider and workspace fields from an observed participant.',
+                properties: {
+                  key: { type: 'string' },
+                  label: { type: 'string' },
+                  role: { type: 'string' },
+                  prompt: { type: 'string' },
+                  kind: { type: 'string', enum: ['new', 'existing'] },
+                  sessionId: { type: 'string' },
+                  providerKind: { type: 'string', enum: ['claude-code', 'codex', 'grok'] },
+                  providerInstanceId: { type: 'string' },
+                  runtimeSettings: { type: 'object' },
+                  workspace: {
+                    type: 'object',
+                    properties: {
+                      cwd: { type: 'string' },
+                      access: { type: 'string', enum: ['read', 'write'] },
+                      workMode: { type: 'string', enum: ['local', 'worktree'] },
+                      branch: { type: 'string' },
+                    },
+                  },
+                },
+                required: ['key', 'prompt'],
+              },
+              observes: { type: 'array', items: { type: 'string' }, minItems: 1 },
+              trigger: { type: 'string', enum: ['finished', 'report'] },
+              gate: { type: 'string', enum: ['auto', 'master', 'human'] },
+              stop: { type: 'string' },
+              relationshipKey: { type: 'string' },
+              relationshipKeys: { type: 'array', items: { type: 'string' } },
+              sourceParticipantKey: { type: 'string' },
+              ownerParticipantKey: { type: 'string' },
+              action: { type: 'object' },
+              maxFirings: { type: 'number', minimum: 1 },
+              reason: { type: 'string' },
+            },
+            required: ['op'],
           },
           minItems: 1,
         },

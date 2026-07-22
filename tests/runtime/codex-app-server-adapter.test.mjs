@@ -384,6 +384,16 @@ test('membrane MCP server explains that Plan Council cross-review is not another
     proposalTool.inputSchema.properties.input.properties.reviewFocus.type,
     'string'
   )
+
+  const patchTool = messages
+    .find((message) => message.id === 1)
+    ?.result.tools.find((tool) => tool.name === 'propose_workflow_patch')
+  const patchOperation = patchTool?.inputSchema.properties.operations.items
+  assert.ok(patchTool)
+  assert.match(patchTool.description, /discriminator field op \(not type\)/i)
+  assert.deepEqual(patchOperation.required, ['op'])
+  assert.ok(patchOperation.properties.op.enum.includes('add-verifier'))
+  assert.deepEqual(patchOperation.properties.verifier.required, ['key', 'prompt'])
 })
 
 function writeFakeCodexAppServer(dir, { exitAfterTurnStartMs, turnCompletion }) {
