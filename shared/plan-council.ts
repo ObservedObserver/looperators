@@ -235,7 +235,7 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
 export function crossReviewPrompt(reviewFocus?: string) {
   return [
     'Cross-review the other planners\' proposals delivered in your context channel.',
-    'Do not revise your original proposal and do not edit files.',
+    'Use only the delivered proposal context. Do not inspect the project workspace, run shell commands, revise your original proposal, or edit files.',
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'For each peer proposal, cite at least one specific claim or design choice. Identify agreements, conflicts, missing constraints, and recommended changes. Finish with the decisions a synthesizer should make. Keep the response under 900 words, then stop.',
   ].filter(Boolean).join('\n\n')
@@ -247,6 +247,7 @@ export function synthesizerPrompt(objective: string, reviewFocus?: string) {
     `Original planning task: ${trimmed(objective)}`,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'Read every proposal and peer review delivered in your context channel.',
+    'Use only the delivered proposal and peer-review context. Do not inspect the project workspace or run shell commands; all required evidence has already been delivered.',
     'Produce one final plan with: consensus, material disagreements, explicit choices and reasons, rejected alternatives, staged implementation tasks, risks, and a concrete verification plan. Keep the response under 1,800 words. Do not edit files, then stop.',
   ].filter(Boolean).join('\n\n')
 }

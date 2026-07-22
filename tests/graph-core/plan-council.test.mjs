@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  crossReviewPrompt,
   planCouncilProductView,
   plannerPrompt,
+  synthesizerPrompt,
   validatePlanCouncilStart,
 } from '../../dist-electron/shared/plan-council.js';
 
@@ -120,4 +122,13 @@ test('independent planner prompt forbids premature channel discovery', () => {
   assert.match(prompt, /Never inspect Orrery channel\/inbox directories/);
   assert.match(prompt, /exactly one read-only file read or search command per tool call/);
   assert.match(prompt, /never chain commands/);
+});
+
+test('review and synthesis phases consume delivered artifacts without workspace shell reads', () => {
+  const crossReview = crossReviewPrompt('Crash safety.');
+  const synthesis = synthesizerPrompt('Plan a migration.', 'Crash safety.');
+  assert.match(crossReview, /Use only the delivered proposal context/);
+  assert.match(crossReview, /Do not inspect the project workspace, run shell commands/);
+  assert.match(synthesis, /Use only the delivered proposal and peer-review context/);
+  assert.match(synthesis, /Do not inspect the project workspace or run shell commands/);
 });
