@@ -63,6 +63,10 @@ export async function run({ orrery, provider, workDir, log }) {
   const baseMapping = base.executionMapping;
   await orrery.waitForIdle(baseMapping.participantSessionIds.coder, { timeoutMs: 300_000 });
   await orrery.waitForIdle(baseMapping.participantSessionIds.reviewer, { timeoutMs: 300_000 });
+  // Reaching the base Review lap cap emits a Governor wakeup and can activate
+  // the Master while the Reviewer is still finishing. Do not race that
+  // governed turn with the explicit patch-authoring instruction below.
+  await orrery.waitForIdle(master.sessionId, { timeoutMs: 300_000 });
   const beforePatch = await orrery.state();
   const beforeSessionCount = Object.keys(beforePatch.sessions).length;
 
