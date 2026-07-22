@@ -380,7 +380,7 @@ export class ClusterControlRuntime {
     // nodes; the in-subscription create action lands in a later version).
     const reviewer = await this.#host.cmdCreateSession(
       this.#host.membraneCreateInput(masterSessionId, {
-        agent: 'claude-code',
+        agent: this.#host.state().sessions[masterSessionId].providerKind,
         label: 'Reviewer',
         cluster: clusterId,
         prompt: this.#host.reviewerBootstrapPrompt(),
