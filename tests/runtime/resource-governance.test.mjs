@@ -298,6 +298,181 @@ test('provider caps backpressure readers; interrupt releases its lease and admit
   } finally { cleanup() }
 })
 
+test('killAll cancels a provider launch waiting for the membrane before the adapter can start', async () => {
+  const { runtime, adapter, cleanup } = harness('orrery-shutdown-launch-race-')
+  try {
+    const creating = runtime.createSession({
+      prompt: 'must never reach provider adapter',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'read-only' },
+    })
+    runtime.killAll()
+    await assert.rejects(
+      Promise.race([
+        creating,
+        delay(500).then(() => {
+          throw new Error('provider launch did not settle after runtime shutdown')
+        }),
+      ]),
+      /cancelled by runtime shutdown/,
+    )
+    assert.equal(adapter.startedTurns.length, 0)
+    assert.equal(
+      runtime.getState().workspaceLeases.some((lease) => lease.status === 'active'),
+      false,
+    )
+    const createdEvent = runtime.getKernelEvents({ type: 'session.created' }).events[0]
+    const failedEvent = runtime.getKernelEvents({ type: 'session.failed' }).events[0]
+    assert.equal(failedEvent.causeId, createdEvent.id)
+  } finally {
+    cleanup()
+  }
+})
+
+test('an authorized command revives a queued run on the same manager after killAll', async () => {
+  const { runtime, adapter, cleanup } = harness('orrery-shutdown-queue-revive-')
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'shutdown-revive-cap',
+      kind: 'set_resource_policy',
+      actor: { kind: 'human' },
+      input: { scopeId: 'global', maxConcurrentPerProvider: 1 },
+    })
+    await runtime.createSession({
+      prompt: 'ORRERY_SLEEP active before shutdown',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'read-only', interactionMode: 'plan' },
+    })
+    const queued = await runtime.createSession({
+      prompt: 'queued across shutdown',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'read-only', interactionMode: 'plan' },
+    })
+    assert.equal(runtime.getState().runQueue.length, 1)
+    assert.equal(adapter.startedTurns.length, 1)
+
+    runtime.killAll()
+    await waitFor('shutdown releases the active lease', () =>
+      runtime.getState().workspaceLeases.every((lease) => lease.status !== 'active'),
+    )
+    assert.equal(runtime.getState().runQueue.length, 1)
+
+    await assert.rejects(
+      runtime.dispatchCommand({
+        commandId: 'invalid-revive-provider-run-queue',
+        kind: 'not_a_kernel_command',
+        actor: { kind: 'human' },
+      }),
+      /Unknown kernel command/,
+    )
+    await delay(100)
+    assert.equal(adapter.startedTurns.length, 1)
+    assert.equal(runtime.getState().runQueue.length, 1)
+
+    await runtime.dispatchCommand({
+      commandId: 'revive-provider-run-queue',
+      kind: 'update_node_positions',
+      actor: { kind: 'human' },
+      input: { positions: [] },
+    })
+    await waitFor('revived queued run starts', () => adapter.startedTurns.length === 2)
+    await waitFor(
+      'revived queued run completes',
+      () => runtime.getState().sessions[queued.sessionId]?.status === 'idle',
+    )
+    assert.equal(runtime.getState().runQueue.length, 0)
+  } finally { cleanup() }
+})
+
+test('direct and dispatched provider APIs revive a reusable manager after killAll', async () => {
+  const { runtime, adapter, cleanup } = harness('orrery-shutdown-direct-revive-')
+  try {
+    runtime.killAll()
+    const created = await runtime.createSession({
+      prompt: 'direct create after shutdown',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'read-only' },
+    })
+    await waitFor(
+      'directly revived run completes',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle',
+    )
+    assert.equal(adapter.startedTurns.length, 1)
+
+    runtime.killAll()
+    const dispatched = await runtime.dispatchCommand({
+      commandId: 'create-after-second-shutdown',
+      kind: 'create_session',
+      actor: { kind: 'human' },
+      input: {
+        prompt: 'dispatched create after shutdown',
+        cwd: process.cwd(),
+        runtimeSettings: { sandbox: 'read-only' },
+      },
+    })
+    await waitFor(
+      'dispatched revived run completes',
+      () => runtime.getState().sessions[dispatched.sessionId]?.status === 'idle',
+    )
+    assert.equal(adapter.startedTurns.length, 2)
+  } finally { cleanup() }
+})
+
+test('a command submitted before killAll cannot revive the queue across the shutdown epoch', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-shutdown-stale-command-'))
+  const adapter = new DeterministicProviderAdapter()
+  const runtime = new RuntimeSessionManager({
+    storageFile: path.join(root, 'state.json'),
+    providerAdapters: new Map([['claude-code', adapter]]),
+    controlCommandCommitDelayMs: 200,
+  })
+  try {
+    await runtime.dispatchCommand({
+      commandId: 'serialize-before-shutdown',
+      kind: 'set_resource_policy',
+      actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: true },
+    })
+    await runtime.createSession({
+      prompt: 'ORRERY_SLEEP lease owner before shutdown',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'workspace-write' },
+    })
+    const queued = await runtime.createSession({
+      prompt: 'queued behind stale command',
+      cwd: process.cwd(),
+      runtimeSettings: { sandbox: 'workspace-write' },
+    })
+    const staleCommand = runtime.dispatchCommand({
+      commandId: 'submitted-before-shutdown',
+      kind: 'update_node_positions',
+      actor: { kind: 'human' },
+      input: { positions: [] },
+    })
+    await delay(20)
+    runtime.killAll()
+    await staleCommand
+    await delay(100)
+    assert.equal(adapter.startedTurns.length, 1)
+    assert.equal(runtime.getState().runQueue.length, 1)
+
+    await runtime.dispatchCommand({
+      commandId: 'submitted-after-shutdown',
+      kind: 'update_node_positions',
+      actor: { kind: 'human' },
+      input: { positions: [] },
+    })
+    await waitFor('current-epoch command revives queue', () => adapter.startedTurns.length === 2)
+    await waitFor(
+      'current-epoch queued run completes',
+      () => runtime.getState().sessions[queued.sessionId]?.status === 'idle',
+    )
+  } finally {
+    runtime.killAll()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('budget reservations prevent concurrent oversubscription and exhaustion commits through command path', async () => {
   const { runtime, root, cleanup } = harness('orrery-budget-command-')
   try {
