@@ -118,6 +118,36 @@ test('Grok adapter runs initialize/auth/new/prompt and emits canonical output', 
   }
 })
 
+test('Grok native auto mode is applied as a global CLI permission mode', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-auto-mode-'))
+  const { run, logFile } = startRun(tempRoot, 'normal', {
+    runtimeSettings: { runtimeMode: 'auto', reasoningEffort: 'low' },
+  })
+  const captured = capture(run)
+  try {
+    await waitForClose(run)
+    assert.equal(captured.errors.length, 0)
+    assert.deepEqual(wire(logFile)[0].startup.argv, [
+      '--permission-mode',
+      'auto',
+      'agent',
+      '--reasoning-effort',
+      'low',
+      'stdio',
+    ])
+    const configured = captured.providerEvents.find(
+      (event) => event.type === 'runtime.configured',
+    )
+    assert.equal(configured.effectiveRuntimeConfig.modeLabel, 'Auto')
+    assert.equal(
+      configured.effectiveRuntimeConfig.native.permissionPolicy,
+      'provider-auto',
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('Grok adapter cold-loads and suppresses late replay projection', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-load-'))
   const { run, logFile } = startRun(tempRoot, 'delayed-load-late-replay', {

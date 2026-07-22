@@ -102,7 +102,7 @@ test('membrane create_session from Codex uses the default Claude SDK profile', a
     assert.equal(childSession.backend, 'claude-agent-sdk')
     assert.equal(childSession.providerInstanceId, 'default-claude-sdk')
     assert.equal(childSession.runtimeSettings.model, undefined)
-    assert.equal(childSession.runtimeSettings.runtimeMode, 'approval-required')
+    assert.equal(childSession.runtimeSettings.runtimeMode, 'auto')
   } finally {
     runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
@@ -171,7 +171,7 @@ test('membrane create_session applies the full same-provider and cross-provider 
         } else {
           assert.equal(session.providerInstanceId, defaultInstances[targetKind])
           assert.equal(session.runtimeSettings.model, undefined)
-          assert.equal(session.runtimeSettings.runtimeMode, 'approval-required')
+          assert.equal(session.runtimeSettings.runtimeMode, 'auto')
         }
       }
     }

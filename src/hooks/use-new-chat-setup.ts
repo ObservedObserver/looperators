@@ -1,7 +1,7 @@
 import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AgentSession, GraphState, ProjectContext, ProviderSetupStatus, WorkMode } from '@/shared/graph-state';
-import { providerReasoningEfforts, type ProviderInstance, type ProviderKind, type ProviderReasoningEffort, type ProviderRuntimeMode } from '@/shared/provider-runtime';
+import { defaultProviderRuntimeSettings, providerReasoningEfforts, type ProviderInstance, type ProviderKind, type ProviderReasoningEffort, type ProviderRuntimeMode } from '@/shared/provider-runtime';
 import { providerCapability, providerRuntimeModeCapability } from '@/shared/provider-runtime';
 import type { RuntimeApi, RuntimeClient } from '@/runtime-client';
 import { defaultWorkspaceCwd, demoMode, latestSessionCwd, projectNameFromCwd, projectOptionsFromSessions, validateProjectCwd } from '@/lib/workspace';
@@ -35,7 +35,7 @@ export function useNewChatSetup({
   const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd);
   const [newWorkMode, setNewWorkMode] = useState<WorkMode>('local');
   const [newBranch, setNewBranch] = useState('');
-  const [newRuntimeMode, setNewRuntimeMode] = useState<ProviderRuntimeMode>('approval-required');
+  const [newRuntimeMode, setNewRuntimeMode] = useState<ProviderRuntimeMode>(defaultProviderRuntimeSettings.runtimeMode);
   const [newModel, setNewModel] = useState('');
   const [newReasoningEffort, setNewReasoningEffort] = useState<ProviderReasoningEffort>('medium');
   const [newProjectContext, setNewProjectContext] = useState<ProjectContext>();
@@ -61,7 +61,7 @@ export function useNewChatSetup({
       );
     }
     const runtimeModes = providerCapability(providerKind).runtimeModes;
-    setNewRuntimeMode((current) => (providerRuntimeModeCapability(providerKind, current) ? current : (runtimeModes[0]?.id ?? 'approval-required')));
+    setNewRuntimeMode((current) => (providerRuntimeModeCapability(providerKind, current) ? current : (runtimeModes[0]?.id ?? defaultProviderRuntimeSettings.runtimeMode)));
   }, []);
 
   const newCwdValidation = useMemo(() => validateProjectCwd(newCwd), [newCwd]);

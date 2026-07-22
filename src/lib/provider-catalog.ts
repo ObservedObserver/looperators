@@ -6,6 +6,7 @@ import {
   type ProviderReasoningEffort,
   type ProviderRuntimeMode,
   type ProviderRuntimeSettings,
+  defaultProviderRuntimeSettings,
   providerCapabilities,
   providerRuntimeModeCapability,
   providerReasoningEfforts,
@@ -184,7 +185,7 @@ export function runtimeConfigSummary(
     }
   }
   const modeLabel =
-    effectiveRuntimeConfig?.modeLabel ?? providerRuntimeModeCapability(providerKind, runtimeSettings?.runtimeMode ?? 'approval-required')?.effectiveLabel;
+    effectiveRuntimeConfig?.modeLabel ?? providerRuntimeModeCapability(providerKind, runtimeSettings?.runtimeMode ?? defaultProviderRuntimeSettings.runtimeMode)?.effectiveLabel;
   if (modeLabel) {
     parts.push(modeLabel);
   }

@@ -137,7 +137,7 @@ export function useDraftGraph({
             providerKind,
             providerInstanceId: providerInstance.providerInstanceId,
             runtimeSettings: {
-              runtimeMode: ordinal === 0 ? 'auto-accept-edits' : 'approval-required',
+              runtimeMode: 'auto',
               reasoningEffort: ordinal === 0 ? 'medium' : 'high',
             },
           },

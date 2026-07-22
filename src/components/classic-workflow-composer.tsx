@@ -54,7 +54,7 @@ function newAgent(instances: GraphState['providerInstances'], role: string, prov
     providerInstanceId: providerInstanceForKind(instances, providerKind).providerInstanceId,
     model: '',
     reasoningEffort: role === 'Receiver' ? 'high' : 'medium',
-    runtimeMode: role === 'Receiver' ? 'approval-required' : 'auto-accept-edits',
+    runtimeMode: 'auto',
   };
 }
 

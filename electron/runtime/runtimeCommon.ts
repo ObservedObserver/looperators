@@ -95,6 +95,7 @@ export const validUserInputRequestStatuses = new Set([
 ])
 export const validProviderRuntimeModes = new Set([
   'approval-required',
+  'auto',
   'auto-accept-edits',
   'full-access',
 ])

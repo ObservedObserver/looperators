@@ -21,10 +21,15 @@ export const codexMembraneServerName = 'mcp__orrery_membrane'
 type RuntimeSettings = Record<string, any>
 
 function runtimeModeToCodexConfig(runtimeSettings: RuntimeSettings = {}) {
+  const approvalsReviewer =
+    runtimeSettings.runtimeMode === 'auto' || runtimeSettings.runtimeMode == null
+      ? 'auto_review'
+      : undefined
   if (runtimeSettings.approvalPolicy && runtimeSettings.sandbox) {
     return {
       approvalPolicy: runtimeSettings.approvalPolicy,
       sandbox: runtimeSettings.sandbox,
+      approvalsReviewer,
     }
   }
 
@@ -33,17 +38,26 @@ function runtimeModeToCodexConfig(runtimeSettings: RuntimeSettings = {}) {
       return {
         approvalPolicy: 'never',
         sandbox: 'danger-full-access',
+        approvalsReviewer,
       }
     case 'auto-accept-edits':
       return {
         approvalPolicy: 'on-request',
         sandbox: 'workspace-write',
+        approvalsReviewer,
       }
     case 'approval-required':
-    default:
       return {
         approvalPolicy: 'untrusted',
         sandbox: 'read-only',
+        approvalsReviewer,
+      }
+    case 'auto':
+    default:
+      return {
+        approvalPolicy: 'on-request',
+        sandbox: 'workspace-write',
+        approvalsReviewer,
       }
   }
 }
@@ -55,8 +69,10 @@ function codexModeLabel(runtimeSettings: RuntimeSettings = {}) {
     case 'auto-accept-edits':
       return 'Auto edits'
     case 'approval-required':
-    default:
       return 'Supervised'
+    case 'auto':
+    default:
+      return 'Auto'
   }
 }
 
@@ -64,7 +80,7 @@ function effectiveCodexRuntimeConfig(runtimeSettings: RuntimeSettings = {}) {
   const config = runtimeModeToCodexConfig(runtimeSettings)
   return {
     providerKind: 'codex',
-    runtimeMode: runtimeSettings.runtimeMode ?? 'approval-required',
+    runtimeMode: runtimeSettings.runtimeMode ?? 'auto',
     modeLabel: codexModeLabel(runtimeSettings),
     ...(runtimeSettings?.model ? { model: runtimeSettings.model } : {}),
     ...(runtimeSettings?.reasoningEffort
@@ -73,6 +89,9 @@ function effectiveCodexRuntimeConfig(runtimeSettings: RuntimeSettings = {}) {
     native: {
       approvalPolicy: config.approvalPolicy,
       sandbox: config.sandbox,
+      ...(config.approvalsReviewer
+        ? { approvalsReviewer: config.approvalsReviewer }
+        : {}),
       ...(runtimeSettings?.serviceTier
         ? { serviceTier: runtimeSettings.serviceTier }
         : {}),
@@ -137,6 +156,9 @@ function threadStartParams({ cwd, runtimeSettings, mcpHandoff }) {
   return {
     cwd,
     approvalPolicy: config.approvalPolicy,
+    ...(config.approvalsReviewer
+      ? { approvalsReviewer: config.approvalsReviewer }
+      : {}),
     sandbox: config.sandbox,
     threadSource: 'user',
     sessionStartSource: 'startup',
@@ -199,6 +221,9 @@ function turnStartParams({ threadId, prompt, attachments, cwd, runtimeSettings }
     input: codexInputItems({ prompt, attachments }),
     cwd,
     approvalPolicy: config.approvalPolicy,
+    ...(config.approvalsReviewer
+      ? { approvalsReviewer: config.approvalsReviewer }
+      : {}),
     sandboxPolicy: sandboxPolicyForCodex(config.sandbox, cwd),
     ...(runtimeSettings?.model ? { model: runtimeSettings.model } : {}),
     ...(runtimeSettings?.serviceTier

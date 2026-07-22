@@ -59,6 +59,7 @@ test('Grok ACP client launches grok agent stdio with provider args and env', asy
   const logFile = path.join(tempRoot, 'wire.jsonl')
   const client = new GrokAcpClient({
     cwd: tempRoot,
+    globalArgs: ['--permission-mode', 'auto'],
     providerInstance: {
       binaryPath: fakeGrok,
       launchArgs: ['--profile', 'test'],
@@ -68,7 +69,14 @@ test('Grok ACP client launches grok agent stdio with provider args and env', asy
   try {
     await client.request('initialize', {}, { timeoutMs: 1000 })
     const startup = JSON.parse(fs.readFileSync(logFile, 'utf8').split('\n')[0]).startup
-    assert.deepEqual(startup.argv, ['agent', '--profile', 'test', 'stdio'])
+    assert.deepEqual(startup.argv, [
+      '--permission-mode',
+      'auto',
+      'agent',
+      '--profile',
+      'test',
+      'stdio',
+    ])
     assert.equal(startup.custom, 'yes')
   } finally {
     client.close()

@@ -1,5 +1,5 @@
 import type { ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode } from '@/shared/provider-runtime';
-import { providerCapability, providerReasoningEfforts, providerSupportsReasoningEffort } from '@/shared/provider-runtime';
+import { defaultProviderRuntimeSettings, providerCapability, providerReasoningEfforts, providerSupportsReasoningEffort } from '@/shared/provider-runtime';
 import { modelOptionsForInstance, providerInstanceForKind, providerOptions, reasoningEffortOptionsForKind } from '@/lib/provider-catalog';
 import type { GraphState } from '@/shared/graph-state';
 import type { ReviewBlockingMode } from '@shared/review-workflow';
@@ -37,7 +37,7 @@ export function AgentRuntimeFields({
       reasoningEffort: reasoningEfforts.includes(value.reasoningEffort)
         ? value.reasoningEffort
         : (reasoningEfforts.includes('medium') ? 'medium' : (reasoningEfforts[0] ?? value.reasoningEffort)),
-      runtimeMode: providerCapability(providerKind).runtimeModes[0]?.id ?? 'approval-required',
+      runtimeMode: providerCapability(providerKind).runtimeModes[0]?.id ?? defaultProviderRuntimeSettings.runtimeMode,
     });
   };
 

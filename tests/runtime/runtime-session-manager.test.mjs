@@ -2110,7 +2110,7 @@ test('compiled RuntimeSessionManager marks open provider interactions stale afte
     assert.equal(session.runtimeSettings.reasoningEffort, 'high')
     assert.equal(
       runtime.getState().sessions[nullSettingsSessionId].runtimeSettings.runtimeMode,
-      'approval-required'
+      'auto'
     )
     assert.equal(
       runtime

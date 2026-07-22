@@ -2019,7 +2019,7 @@ export class RuntimeSessionManager {
         providerInstanceId: action.template.providerInstanceId,
         runtimeSettings: {
           ...(action.template.runtimeSettings ?? {}),
-          runtimeMode: action.template.workspace.access === 'read-only' ? 'approval-required' : 'auto-accept-edits',
+          runtimeMode: action.template.workspace.access === 'read-only' ? 'approval-required' : 'auto',
           sandbox: action.template.workspace.access === 'read-only' ? 'read-only' : 'workspace-write',
         },
       }, ctx, { deferStart: true })
@@ -6121,8 +6121,7 @@ export class RuntimeSessionManager {
         runtimeSettings: {
           ...inheritedSettings,
           ...(isObject(spec.runtimeSettings) ? spec.runtimeSettings : {}),
-          runtimeMode: 'approval-required',
-          ...(readOnly ? { sandbox: 'read-only' } : {}),
+          ...(readOnly ? { runtimeMode: 'approval-required', sandbox: 'read-only' } : {}),
         },
       }
     }

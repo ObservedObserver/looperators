@@ -85,7 +85,7 @@ export function ReviewWorkflowComposer({
     draftFromEndpoint(savedInput?.coder, {
       mode: 'new', sessionId: '', label: 'Coder', providerKind: initialCoderKind,
       providerInstanceId: providerInstanceForKind(instances, initialCoderKind).providerInstanceId,
-      model: '', reasoningEffort: 'medium', runtimeMode: 'auto-accept-edits',
+      model: '', reasoningEffort: 'medium', runtimeMode: 'auto',
     }),
   );
   const [reviewer, setReviewer] = useState<AgentDraft>(() =>

@@ -3,7 +3,7 @@ export const reviewBlockingModes = ['any-issue', 'p0-p1', 'custom'] as const;
 export type ReviewBlockingMode = (typeof reviewBlockingModes)[number];
 
 export type ReviewRuntimeSettings = {
-  runtimeMode: 'approval-required' | 'auto-accept-edits' | 'full-access';
+  runtimeMode: 'approval-required' | 'auto' | 'auto-accept-edits' | 'full-access';
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   model?: string;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';

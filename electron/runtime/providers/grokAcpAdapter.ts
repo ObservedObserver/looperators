@@ -75,7 +75,7 @@ function effectiveRuntimeConfig(
   appliedReasoningEffort?: string,
   reasoningSuppressed = false,
 ) {
-  const runtimeMode = runtimeSettings.runtimeMode ?? 'approval-required'
+  const runtimeMode = runtimeSettings.runtimeMode ?? 'auto'
   return {
     providerKind: 'grok',
     runtimeMode,
@@ -84,7 +84,9 @@ function effectiveRuntimeConfig(
         ? 'Full access'
         : runtimeSettings.runtimeMode === 'auto-accept-edits'
           ? 'Auto edits'
-          : 'Supervised',
+          : runtimeSettings.runtimeMode === 'approval-required'
+            ? 'Supervised'
+            : 'Auto',
     ...(runtimeSettings.model ? { model: runtimeSettings.model } : {}),
     ...(appliedReasoningEffort
       ? { reasoningEffort: appliedReasoningEffort }
@@ -97,10 +99,15 @@ function effectiveRuntimeConfig(
           ? 'allow-when-wire-option-exists'
           : runtimeMode === 'auto-accept-edits'
             ? 'allow-structured-edit-only'
-            : 'prompt',
+            : runtimeMode === 'approval-required'
+              ? 'prompt'
+              : 'provider-auto',
     },
     notes: [
       'Grok permissions are selected only through same-direction ACP options.',
+      ...(runtimeMode === 'auto'
+        ? ['Grok Build owns automatic approval classification; denied or escalated requests remain supervised.']
+        : []),
       ...(runtimeMode === 'auto-accept-edits'
         ? ['Unknown or non-edit tool kinds remain supervised.']
         : []),
@@ -371,6 +378,10 @@ export class GrokAcpRun extends EventEmitter {
       this.#client = new GrokAcpClient({
         cwd: input.cwd,
         providerInstance: input.providerInstance,
+        globalArgs:
+          (input.runtimeSettings?.runtimeMode ?? 'auto') === 'auto'
+            ? ['--permission-mode', 'auto']
+            : [],
         agentArgs: this.#appliedReasoningEffort
           ? ['--reasoning-effort', this.#appliedReasoningEffort]
           : [],

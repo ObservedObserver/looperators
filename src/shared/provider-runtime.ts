@@ -3,7 +3,7 @@ import type { ProviderAgentKind, ProviderKind } from '../../shared/provider-meta
 
 export type { ProviderAgentKind, ProviderKind } from '../../shared/provider-metadata';
 
-export type ProviderRuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
+export type ProviderRuntimeMode = 'approval-required' | 'auto' | 'auto-accept-edits' | 'full-access';
 
 export type ProviderApprovalPolicy = 'untrusted' | 'on-request' | 'never';
 
@@ -50,6 +50,12 @@ export type ProviderEffectiveRuntimeConfig = {
 };
 
 export const providerRuntimeModeOptions: ProviderRuntimeModeCapability[] = [
+  {
+    id: 'auto',
+    label: 'Auto',
+    effectiveLabel: 'Auto',
+    description: 'Use the provider-native automatic approval reviewer while keeping its safety boundary.',
+  },
   {
     id: 'approval-required',
     label: 'Supervised',
@@ -139,7 +145,7 @@ export type ChatAttachment = {
 };
 
 export const defaultProviderRuntimeSettings: ProviderRuntimeSettings = {
-  runtimeMode: 'approval-required',
+  runtimeMode: 'auto',
 };
 
 export type ProviderInstance = {

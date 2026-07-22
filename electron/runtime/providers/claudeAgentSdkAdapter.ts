@@ -94,8 +94,10 @@ export function claudePermissionModeForRuntime(runtimeSettings) {
     case 'auto-accept-edits':
       return 'acceptEdits'
     case 'approval-required':
-    default:
       return 'default'
+    case 'auto':
+    default:
+      return 'auto'
   }
 }
 
@@ -107,8 +109,10 @@ function claudeModeLabel(runtimeSettings) {
     case 'auto-accept-edits':
       return 'Auto edits'
     case 'approval-required':
-    default:
       return 'Supervised'
+    case 'auto':
+    default:
+      return 'Auto'
   }
 }
 
@@ -132,7 +136,7 @@ export function claudeRuntimeOptions(runtimeSettings) {
     })
   }
   return /** @type {{ permissionMode: ClaudePermissionMode, allowDangerouslySkipPermissions?: boolean }} */ ({
-    permissionMode: 'default',
+    permissionMode,
   })
 }
 
@@ -141,7 +145,7 @@ export function effectiveClaudeRuntimeConfig(runtimeSettings) {
   const native = claudeRuntimeOptions(runtimeSettings)
   return {
     providerKind: 'claude-code',
-    runtimeMode: settings.runtimeMode ?? 'approval-required',
+    runtimeMode: settings.runtimeMode ?? 'auto',
     modeLabel: claudeModeLabel(settings),
     ...(nonEmptyString(settings.model)
       ? { model: settings.model.trim() }
@@ -189,7 +193,7 @@ export function automaticClaudePermissionResult(
   if (membraneToolNames.includes(String(toolName))) {
     return allow
   }
-  const runtimeMode = runtimeSettings?.runtimeMode ?? 'approval-required'
+  const runtimeMode = runtimeSettings?.runtimeMode ?? 'auto'
   if (
     runtimeMode === 'full-access' ||
     (runtimeMode === 'auto-accept-edits' && isClaudeEditTool(toolName))

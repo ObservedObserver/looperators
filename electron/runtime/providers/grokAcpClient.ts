@@ -151,10 +151,12 @@ export class GrokAcpClient extends EventEmitter {
   constructor({
     cwd,
     providerInstance,
+    globalArgs = [],
     agentArgs = [],
   }: {
     cwd?: string
     providerInstance?: GrokAcpProviderInstance
+    globalArgs?: string[]
     agentArgs?: string[]
   } = {}) {
     super()
@@ -173,7 +175,7 @@ export class GrokAcpClient extends EventEmitter {
     }
     this.#child = spawn(
       command,
-      ['agent', ...launchArgs(providerInstance), ...agentArgs, 'stdio'],
+      [...globalArgs, 'agent', ...launchArgs(providerInstance), ...agentArgs, 'stdio'],
       {
         cwd,
         env: childEnv,

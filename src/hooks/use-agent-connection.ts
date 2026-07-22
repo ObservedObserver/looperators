@@ -129,7 +129,7 @@ export function useAgentConnection({
           providerInstanceId: instance.providerInstanceId,
           model: '',
           reasoningEffort: 'high',
-          runtimeMode: 'approval-required',
+          runtimeMode: 'auto',
           position,
         },
         timing: defaultTiming(runtimeState, sourceSessionId),

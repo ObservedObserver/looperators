@@ -406,7 +406,7 @@ test('Codex run mounts the membrane per thread and settles when the app-server d
     cwd: tempRoot,
     sessionId: 'session-1',
     turnId: 'orrery-turn-1',
-    runtimeSettings: { runtimeMode: 'full-access' },
+    runtimeSettings: { runtimeMode: 'auto' },
     membrane: { bridgeUrl: 'http://127.0.0.1:9999', token: 'run-token' },
     providerInstance: {
       providerInstanceId: 'default-codex',
@@ -439,6 +439,13 @@ test('Codex run mounts the membrane per thread and settles when the app-server d
       .split('\n')
       .map((line) => JSON.parse(line))
     const threadStart = requests.find((message) => message.method === 'thread/start')
+    const turnStart = requests.find((message) => message.method === 'turn/start')
+    assert.equal(threadStart.params.approvalPolicy, 'on-request')
+    assert.equal(threadStart.params.sandbox, 'workspace-write')
+    assert.equal(threadStart.params.approvalsReviewer, 'auto_review')
+    assert.equal(turnStart.params.approvalPolicy, 'on-request')
+    assert.equal(turnStart.params.sandboxPolicy.type, 'workspaceWrite')
+    assert.equal(turnStart.params.approvalsReviewer, 'auto_review')
     const membraneServer =
       threadStart.params.config.mcp_servers.mcp__orrery_membrane
     assert.ok(membraneServer, 'thread/start carries the membrane mcp server')

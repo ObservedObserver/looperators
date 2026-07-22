@@ -25,7 +25,7 @@ import {
 } from '../runtimeCommon.js'
 
 export const defaultProviderRuntimeSettings = {
-  runtimeMode: 'approval-required',
+  runtimeMode: 'auto',
 }
 export function providerConfig(
   input: JsonRecord = {},
@@ -322,4 +322,3 @@ export function normalizeProviderEffectiveRuntimeConfig(
       : {}),
   }
 }
-

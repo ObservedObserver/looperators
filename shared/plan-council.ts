@@ -15,7 +15,7 @@ export type PlanCouncilPhase = (typeof planCouncilPhases)[number]
 export type PlanCouncilArtifactKind = 'proposal' | 'peer-review' | 'synthesis'
 
 export type PlanCouncilRuntimeSettings = {
-  runtimeMode: 'approval-required' | 'auto-accept-edits' | 'full-access'
+  runtimeMode: 'approval-required' | 'auto' | 'auto-accept-edits' | 'full-access'
   approvalPolicy?: 'untrusted' | 'on-request' | 'never'
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access'
   model?: string

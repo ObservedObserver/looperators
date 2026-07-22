@@ -64,6 +64,9 @@ test('Claude runtime mode maps to SDK permissionMode options', () => {
     claudeRuntimeOptions({ runtimeMode: 'auto-accept-edits' }),
     { permissionMode: 'acceptEdits' }
   )
+  assert.deepEqual(claudeRuntimeOptions({ runtimeMode: 'auto' }), {
+    permissionMode: 'auto',
+  })
   assert.deepEqual(claudeRuntimeOptions({ runtimeMode: 'full-access' }), {
     permissionMode: 'bypassPermissions',
     allowDangerouslySkipPermissions: true,
@@ -71,6 +74,10 @@ test('Claude runtime mode maps to SDK permissionMode options', () => {
 })
 
 test('Claude effective runtime config records provider-native permission mode', () => {
+  assert.deepEqual(
+    effectiveClaudeRuntimeConfig({ runtimeMode: 'auto' }).native,
+    { permissionMode: 'auto' }
+  )
   assert.deepEqual(
     effectiveClaudeRuntimeConfig({
       runtimeMode: 'full-access',
@@ -118,6 +125,15 @@ test('Claude runtime mode controls automatic permission decisions', () => {
       { toolUseID: 'tool-3' }
     ),
     undefined
+  )
+  assert.equal(
+    automaticClaudePermissionResult(
+      { runtimeMode: 'auto' },
+      'Bash',
+      { toolUseID: 'tool-4' }
+    ),
+    undefined,
+    'Claude owns classification in native auto mode'
   )
 })
 
