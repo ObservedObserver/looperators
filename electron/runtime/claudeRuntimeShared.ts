@@ -101,6 +101,10 @@ export function createMcpHandoff(membrane, { keepBootstrap = false } = {}) {
         command: process.execPath,
         args: [membraneServerPath],
         env: {
+          // A packaged Electron executable ignores a JavaScript entrypoint
+          // unless it is explicitly launched in Node mode. This remains a
+          // no-op when headless tests already run under Node.
+          ELECTRON_RUN_AS_NODE: '1',
           ORRERY_MEMBRANE_BOOTSTRAP_FILE: bootstrapPath,
           ...(keepBootstrap ? { ORRERY_MEMBRANE_BOOTSTRAP_KEEP: '1' } : {}),
         },

@@ -55,6 +55,10 @@ try {
     config.mcpServers?.orrery_membrane?.env?.ORRERY_MEMBRANE_BOOTSTRAP_FILE === bootstrapPath,
     'MCP config should reference the protected bootstrap file',
   )
+  assert(
+    config.mcpServers?.orrery_membrane?.env?.ELECTRON_RUN_AS_NODE === '1',
+    'MCP config should launch the membrane server in Electron Node mode',
+  )
   cleanupMcpHandoff(handoff)
   assert(!fs.existsSync(handoff.dir), 'handoff cleanup should remove the protected directory')
 
