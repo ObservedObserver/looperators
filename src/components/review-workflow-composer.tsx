@@ -183,14 +183,18 @@ export function ReviewWorkflowComposer({
     return { ok: issues.length === 0, issues };
   }, [instances, payload, projectContext, sessionContext, workMode]);
 
-  const providerCheckKey = useMemo(
-    () =>
-      JSON.stringify({
-        endpoints: [coder, reviewer].filter((agent) => agent.mode === 'new').map((agent) => [agent.providerKind, agent.providerInstanceId]),
-        cwd: coder.mode === 'new' ? cwd.trim() : sessionContext[coder.sessionId]?.cwd,
-      }),
-    [coder, cwd, reviewer, sessionContext],
+  const providerCheckCwd = coder.mode === 'new' ? cwd.trim() || undefined : sessionContext[coder.sessionId]?.cwd;
+  const providerCheckInput = useMemo(
+    () => ({
+      endpoints: [
+        ...(coder.mode === 'new' ? [{ providerKind: coder.providerKind, providerInstanceId: coder.providerInstanceId }] : []),
+        ...(reviewer.mode === 'new' ? [{ providerKind: reviewer.providerKind, providerInstanceId: reviewer.providerInstanceId }] : []),
+      ],
+      cwd: providerCheckCwd,
+    }),
+    [coder.mode, coder.providerInstanceId, coder.providerKind, providerCheckCwd, reviewer.mode, reviewer.providerInstanceId, reviewer.providerKind],
   );
+  const providerCheckKey = JSON.stringify(providerCheckInput);
   const preflightPending =
     (coder.mode === 'new' && Boolean(cwd.trim()) && checkedProjectCwd !== cwd.trim()) ||
     checkedProviderKey !== providerCheckKey ||
@@ -251,15 +255,13 @@ export function ReviewWorkflowComposer({
     setSetupMessages([]);
     setSetupNotices([]);
     setIsCheckingProviders(true);
-    const checks = [coder, reviewer]
-      .filter((agent) => agent.mode === 'new')
-      .map((agent) =>
-        runtimeApi.getProviderSetupStatus({
-          providerKind: agent.providerKind,
-          providerInstanceId: agent.providerInstanceId,
-          cwd: coder.mode === 'new' ? cwd.trim() || undefined : sessionContext[coder.sessionId]?.cwd,
-        }),
-      );
+    const checks = providerCheckInput.endpoints.map((endpoint) =>
+      runtimeApi.getProviderSetupStatus({
+        providerKind: endpoint.providerKind,
+        providerInstanceId: endpoint.providerInstanceId,
+        cwd: providerCheckInput.cwd,
+      }),
+    );
     Promise.all(checks)
       .then((statuses) => {
         if (!active) return;
@@ -285,7 +287,7 @@ export function ReviewWorkflowComposer({
     return () => {
       active = false;
     };
-  }, [coder, cwd, providerCheckKey, reviewer, runtimeApi, sessionContext]);
+  }, [providerCheckInput, providerCheckKey, runtimeApi]);
 
   const chooseFolder = async () => {
     if (!runtimeApi) return;
