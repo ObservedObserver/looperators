@@ -430,8 +430,11 @@ try {
   assert.equal(approvalTurnStart.params.effort, 'high')
   const inputTurnStart = turnStartLogForPrompt(logs, 'USER_INPUT_REQUEST')
   assert.deepEqual(inputTurnStart.params.sandboxPolicy, {
-    type: 'readOnly',
+    type: 'workspaceWrite',
+    writableRoots: [process.cwd()],
     networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
   })
   const autoEditTurnStart = turnStartLogForPrompt(logs, 'AUTO_EDIT_REQUEST')
   assert.deepEqual(autoEditTurnStart.params.sandboxPolicy, {
@@ -449,6 +452,10 @@ try {
     Object.hasOwn(validInteractionTurnStart.params, 'collaborationMode'),
     false
   )
+  assert.deepEqual(validInteractionTurnStart.params.sandboxPolicy, {
+    type: 'readOnly',
+    networkAccess: false,
+  })
   assert.equal(validInteractionTurnStart.params.model, 'gpt-5-codex')
   assert.equal(validInteractionTurnStart.params.effort, 'low')
   const invalidInteractionTurnStart = turnStartLogForPrompt(
