@@ -11,7 +11,7 @@
 //      - external event sources
 //      - session lifecycle: create/resume/deliver/activate/archive/kill
 //      - cluster/master/loop control
-//      - workflow proposals, wakeups, barriers, membrane dispatch
+//      - workflow proposals, wakeups, barriers
 //      - resource policy, run queue, launchRun, provider event stream
 //      - checkpoints/diffs, reports, persistence triggers
 //
@@ -30,6 +30,7 @@
 //   control/commandRegistry.ts             command kind + handler/policy registry
 //   control/commandExecutor.ts             serialized transaction + effect authority
 //   clusters/clusterControlRuntime.ts      Scope/Master/Loop/freeze topology control
+//   membrane/membraneRequestRuntime.ts     sanctioned agent control-surface dispatch
 //   scheduler/schedulerRuntime.ts           fact -> gate -> activation + timer lifecycle
 //   sessions/sessionRuntimeController.ts    admission + provider turn lifecycle
 //   reports/reportFormatting.ts            report/prompt render + payload validation
@@ -52,7 +53,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createEmptyGraphState } from '../../shared/graph-state.js'
-import { providerKinds, providerMetadata } from '../../shared/provider-metadata.js'
 import { providerEnvKeyIsSensitive } from '../../shared/provider-setup.js'
 import { ContextChannelStore, activationPreamble } from './contextChannel.js'
 import { ExternalIngestionService } from './external/externalIngestionService.js'
@@ -85,7 +85,6 @@ import {
 import { WorkspaceService } from './workspace/workspaceService.js'
 import {
   defaultProviderInstanceForKind,
-  defaultProviderRuntimeSettings,
   normalizeProviderInstance,
   normalizeProviderRuntimeSettings,
   providerConfig,
@@ -122,6 +121,7 @@ import {
   type RecoveryControlCommand,
 } from './control/commandExecutor.js'
 import { ClusterControlRuntime } from './clusters/clusterControlRuntime.js'
+import { MembraneRequestRuntime } from './membrane/membraneRequestRuntime.js'
 import { SchedulerRuntime } from './scheduler/schedulerRuntime.js'
 import {
   SessionRuntimeController,
@@ -137,7 +137,6 @@ import type { WorkflowKernel } from './workflows/workflowKernel.js'
 import { WorkflowGovernanceRuntime } from './workflows/governanceRuntime.js'
 import { WorkflowProposalRuntime } from './workflows/proposalRuntime.js'
 import {
-  activeReviewPairRole,
   automaticDeploymentExistingSessionIds,
   captureWorkflowSession,
   coderActivationNote,
@@ -161,7 +160,6 @@ import {
   commitPlanCouncilPatch,
   getPlanCouncil,
   getPlanCouncilArtifact,
-  nextCouncilBarrierGeneration,
   planCouncilFailed,
   planCouncilFinished,
   planCouncilForSession,
@@ -263,7 +261,7 @@ export class RuntimeSessionManager {
     cmdStopSubscription: (input, ctx) =>
       this.#scheduler.cmdStopSubscription(input, ctx),
     membraneCreateInput: (source, input) =>
-      this.#membraneCreateInput(source, input),
+      this.#membraneRequests.membraneCreateInput(source, input),
     reviewerBootstrapPrompt: () => reviewerBootstrapPrompt(this.#wf()),
     reviewerActivationNote: () => reviewerActivationNote(this.#wf()),
     coderActivationNote: () => coderActivationNote(this.#wf()),
@@ -335,7 +333,7 @@ export class RuntimeSessionManager {
     touch: () => this.#touch(),
     broadcast: (event) => this.#broadcast(event),
     getState: () => this.getState(),
-    membraneActor: (source) => this.#membraneActor(source),
+    membraneActor: (source) => this.#membraneRequests.membraneActor(source),
     cmdCreateSession: (input, ctx, options) =>
       this.#cmdCreateSession(input, ctx, options),
     startRun: (sessionId, request) =>
@@ -390,6 +388,24 @@ export class RuntimeSessionManager {
     cmdKillSession: (input, ctx) => this.#cmdKillSession(input, ctx),
     cmdArchiveSession: (input, ctx) => this.#cmdArchiveSession(input, ctx),
     applyFreeze: (input, ctx) => this.#applyFreeze(input, ctx),
+  })
+  #membraneRequests = new MembraneRequestRuntime({
+    state: () => this.#state,
+    dispatchCommand: (command) => this.dispatchCommand(command),
+    workflowKernel: () => this.#wf(),
+    workflowActorScopeId: (ctx, requestedScopeId) =>
+      this.#workflowActorScopeId(ctx, requestedScopeId),
+    inspectWorkflowScope: (input, source) =>
+      this.inspectWorkflowScope(input, source),
+    inspectWorkflowWakeups: (input, source) =>
+      this.inspectWorkflowWakeups(input, source),
+    explainWorkflow: (input, source) => this.explainWorkflow(input, source),
+    workflowProposal: (proposalId) =>
+      this.#proposals.workflowProposal(proposalId),
+    workflowProposalMembraneView: (proposal) =>
+      this.#proposals.workflowProposalMembraneView(proposal),
+    runExecution: (source) => this.#runContext.get(source)?.execution,
+    masterClusterId: (sessionId) => this.#masterClusterId(sessionId),
   })
   #commandRegistry = createKernelCommandRegistry({
     create_session: (input, ctx) => this.#cmdCreateSession(input, ctx),
@@ -2385,23 +2401,6 @@ export class RuntimeSessionManager {
     return requestedScopeId || 'global'
   }
 
-  #assertMembraneTargetInScope(source: string, target: string) {
-    if (this.#state.sessions[source]?.role !== 'master') return
-    const scopeId = this.#masterClusterId(source)
-    const cluster = scopeId ? this.#state.clusters[scopeId] : undefined
-    if (!cluster || (target !== source && !cluster.nodeIds.includes(target))) {
-      throw new Error(`Master ${source} cannot operate session ${target} outside its governed Scope.`)
-    }
-  }
-
-  #assertMembraneActivationInScope(source: string, slotKey: unknown) {
-    if (this.#state.sessions[source]?.role !== 'master') return
-    const key = optionalTrimmedString(slotKey)
-    const slot = key ? this.#state.pendingActivations?.[key] : undefined
-    if (!slot) throw new Error(`Unknown pending activation: ${key ?? ''}`)
-    this.#assertMembraneTargetInScope(source, slot.target)
-  }
-
   #workflowCapability(scopeId: string, options: JsonRecord = {}) {
     return this.#proposals.workflowCapability(scopeId, options)
   }
@@ -2412,17 +2411,15 @@ export class RuntimeSessionManager {
 
   inspectWorkflowWakeups(input: JsonRecord = {}, source?: string) {
     const scopeId = source
-      ? this.#workflowActorScopeId({ actor: this.#membraneActor(source) })
+      ? this.#workflowActorScopeId({
+          actor: this.#membraneRequests.membraneActor(source),
+        })
       : optionalTrimmedString(input.scopeId)
     return this.#governance.inspectWorkflowWakeups(input, scopeId)
   }
 
   #activeWorkflowPlan(workflowId: string) {
     return this.#proposals.activeWorkflowPlan(workflowId)
-  }
-
-  #workflowProposal(proposalId: unknown) {
-    return this.#proposals.workflowProposal(proposalId)
   }
 
   #storeWorkflowPlan(plan: JsonRecord) {
@@ -2473,419 +2470,8 @@ export class RuntimeSessionManager {
     return this.#proposals.explainWorkflow(input, source)
   }
 
-  #workflowProposalMembraneView(proposal: JsonRecord) {
-    return this.#proposals.workflowProposalMembraneView(proposal)
-  }
-
-  async handleMembraneRequest({ tool, source, input }: JsonRecord) {
-    if (!this.#state.sessions[source]) {
-      throw new Error(`Unknown membrane source session: ${source}`)
-    }
-
-    const actor = this.#membraneActor(source)
-    const request = isObject(input) ? input : {}
-
-    if (tool === 'inspect_scope') {
-      return this.inspectWorkflowScope(request, source)
-    }
-
-    if (tool === 'inspect_workflow_wakeups') {
-      return this.inspectWorkflowWakeups(request, source)
-    }
-
-    if (tool === 'acknowledge_workflow_wakeup') {
-      const wakeupId = optionalTrimmedString(request.wakeupId)
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId) ?? `ack-${wakeupId}-${source}`,
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey) ?? `ack:${wakeupId}:${source}`,
-        kind: 'acknowledge_workflow_wakeup',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return { wakeup: result.wakeup }
-    }
-
-    if (tool === 'advance_plan_council') {
-      if (actor.kind !== 'master') {
-        throw new Error('advance_plan_council is available only to a governing Master.')
-      }
-      const workflowId = optionalTrimmedString(request.workflowId)
-      const council = workflowId ? this.#state.planCouncils?.[workflowId] : undefined
-      if (!council) throw new Error(`Unknown Plan Council: ${workflowId ?? ''}`)
-      const activePlan = Object.values(this.#state.workflowPlans ?? {})
-        .flatMap((versions: JsonRecord) => Object.values(versions) as JsonRecord[])
-        .find(
-          (plan: JsonRecord) =>
-            plan.status === 'active' &&
-            plan.executionMapping?.productWorkflowId === workflowId,
-        ) as JsonRecord | undefined
-      if (!activePlan) {
-        throw new Error('Plan Council is not attached to an active governed Workflow Plan.')
-      }
-      this.#workflowActorScopeId({ actor }, activePlan.scopeId)
-      const gate = council.phase === 'ready-for-cross-review'
-        ? 'crossReview'
-        : council.phase === 'ready-for-synthesis'
-          ? 'synthesis'
-          : undefined
-      const requestedWakeupId = optionalTrimmedString(request.wakeupId)
-      const wakeup = requestedWakeupId
-        ? this.#state.workflowWakeups?.[requestedWakeupId]
-        : [...Object.values(this.#state.workflowWakeups ?? {}) as JsonRecord[]]
-            .reverse()
-            .find((candidate) =>
-              candidate.workflowId === activePlan.workflowId &&
-              candidate.kind === 'workflow-milestone' &&
-              ['pending', 'notified'].includes(candidate.status) &&
-              String(candidate.summary ?? '').includes(council.workflowId),
-            )
-      if (
-        requestedWakeupId &&
-        (!wakeup || wakeup.workflowId !== activePlan.workflowId ||
-          wakeup.kind !== 'workflow-milestone' ||
-          !String(wakeup.summary ?? '').includes(council.workflowId))
-      ) {
-        throw new Error(`Workflow wakeup ${requestedWakeupId} does not govern Plan Council ${council.workflowId}.`)
-      }
-      const wakeupGate = String(wakeup?.summary ?? '').includes('crossReview')
-        ? 'crossReview'
-        : String(wakeup?.summary ?? '').includes('synthesis')
-          ? 'synthesis'
-          : undefined
-      const acknowledgeGateWakeup = async (resolvedGate: string) => {
-        if (!wakeup || !['pending', 'notified'].includes(wakeup.status)) return
-        await this.dispatchCommand({
-          commandId: `ack-council-gate-${wakeup.wakeupId}-${source}`,
-          idempotencyKey: `ack-council-gate:${wakeup.wakeupId}:${source}`,
-          kind: 'acknowledge_workflow_wakeup',
-          actor,
-          reason: optionalTrimmedString(request.reason),
-          input: {
-            wakeupId: wakeup.wakeupId,
-            reason: optionalTrimmedString(request.reason) ?? `Advanced Plan Council ${resolvedGate}.`,
-          },
-        })
-      }
-      if (!gate) {
-        const alreadyAdvanced = wakeupGate === 'crossReview'
-          ? ['reviewing-peers', 'ready-for-synthesis', 'synthesizing', 'completed'].includes(council.phase)
-          : wakeupGate === 'synthesis'
-            ? ['synthesizing', 'completed'].includes(council.phase)
-            : false
-        if (alreadyAdvanced && wakeup && ['pending', 'notified'].includes(wakeup.status)) {
-          await acknowledgeGateWakeup(wakeupGate)
-          return { council: clone(council), wakeup: clone(wakeup) }
-        }
-        throw new Error(`Plan Council is ${council.phase}; no phase is waiting for advancement.`)
-      }
-      if (wakeupGate && wakeupGate !== gate) {
-        throw new Error(`Workflow wakeup ${wakeup.wakeupId} is for ${wakeupGate}, not ${gate}.`)
-      }
-      if ((council.advancement?.[gate] ?? 'human') !== 'master') {
-        throw new Error(`Plan Council ${gate} advancement is not delegated to Master.`)
-      }
-      const kind = gate === 'crossReview'
-        ? 'start_plan_council_cross_review'
-        : 'start_plan_council_synthesis'
-      const generation = nextCouncilBarrierGeneration(this.#wf(), 
-        council,
-        gate === 'crossReview' ? 'peer-review' : 'synthesis',
-      )
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId),
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey) ??
-          `council-master:${council.runId}:${gate}:g${generation}`,
-        kind,
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: { workflowId },
-      })
-      await acknowledgeGateWakeup(gate)
-      return { council: result.council, ...(wakeup ? { wakeup: clone(wakeup) } : {}) }
-    }
-
-    if (tool === 'explain_workflow') {
-      const explained = this.explainWorkflow(request, source)
-      return this.#workflowProposalMembraneView(
-        this.#workflowProposal(explained.proposalId),
-      )
-    }
-
-    if (tool === 'propose_workflow') {
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId),
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey),
-        kind: 'propose_workflow',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return this.#workflowProposalMembraneView(result.proposal)
-    }
-
-    if (tool === 'propose_workflow_patch') {
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId),
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey),
-        kind: 'propose_workflow_patch',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return this.#workflowProposalMembraneView(result.proposal)
-    }
-
-    if (tool === 'revise_workflow') {
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId),
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey),
-        kind: 'revise_workflow',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return this.#workflowProposalMembraneView(result.proposal)
-    }
-
-    if (tool === 'commit_workflow') {
-      const idempotencyKey = optionalTrimmedString(request.idempotencyKey)
-      if (!idempotencyKey) throw new Error('commit_workflow idempotencyKey is required')
-      const result = await this.dispatchCommand({
-        commandId: `workflow-commit-${idempotencyKey}`,
-        idempotencyKey,
-        kind: 'commit_workflow',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return this.#workflowProposalMembraneView(result.proposal)
-    }
-
-    if (tool === 'abort_workflow') {
-      const result = await this.dispatchCommand({
-        commandId: optionalTrimmedString(request.commandId),
-        idempotencyKey: optionalTrimmedString(request.idempotencyKey),
-        kind: 'abort_workflow_proposal',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: request,
-      })
-      return this.#workflowProposalMembraneView(result.proposal)
-    }
-
-    if (tool === 'create_session') {
-      if (actor.kind === 'master') {
-        throw new Error(
-          'Master sessions cannot create raw graph nodes. Use propose_workflow so capability checks, Graph Diff, approval, and atomic commit are enforced.',
-        )
-      }
-      const reviewRole = activeReviewPairRole(this.#wf(), source)
-      if (reviewRole) {
-        throw new Error(
-          `${reviewRole} is already assigned to an active Review until clean workflow. Do not create another session; continue your assigned work and finish so Orrery can advance the existing review pair.`,
-        )
-      }
-      const result = await this.dispatchCommand({
-        kind: 'create_session',
-        actor,
-        input: this.#membraneCreateInput(source, request),
-      })
-      return { sessionId: result.sessionId }
-    }
-
-    if (tool === 'resume_session') {
-      const target = optionalTrimmedString(request.sessionId)
-      if (!target) {
-        throw new Error('resume_session sessionId is required')
-      }
-      this.#assertMembraneTargetInScope(source, target)
-      const message = optionalTrimmedString(request.message)
-      if (!message) {
-        throw new Error('resume_session message is required')
-      }
-      await this.dispatchCommand({
-        kind: 'resume_session',
-        actor,
-        input: {
-          sessionId: target,
-          message,
-          context: request.context,
-          edgeSourceSessionId: source,
-          masterReason: request.masterReason,
-          reason: request.reason,
-        },
-      })
-      return { ok: true }
-    }
-
-    if (tool === 'deliver') {
-      const target = optionalTrimmedString(request.sessionId)
-      if (!target) {
-        throw new Error('deliver sessionId is required')
-      }
-      this.#assertMembraneTargetInScope(source, target)
-      const result = await this.dispatchCommand({
-        kind: 'deliver',
-        actor,
-        input: {
-          sessionId: target,
-          topic: request.topic,
-          note: request.note,
-          content: request.content,
-          filename: request.filename,
-        },
-      })
-      return { ok: true, delivery: result.delivery }
-    }
-
-    if (tool === 'activate') {
-      const target = optionalTrimmedString(request.sessionId)
-      if (!target) {
-        throw new Error('activate sessionId is required')
-      }
-      this.#assertMembraneTargetInScope(source, target)
-      await this.dispatchCommand({
-        kind: 'activate',
-        actor,
-        input: {
-          sessionId: target,
-          note: request.note,
-          edgeSourceSessionId: source,
-          masterReason: request.masterReason,
-          reason: request.reason,
-        },
-      })
-      return { ok: true }
-    }
-
-    if (tool === 'approve_activation') {
-      this.#assertMembraneActivationInScope(source, request.slotKey)
-      return this.dispatchCommand({
-        kind: 'approve_activation',
-        actor,
-        reason:
-          optionalTrimmedString(request.note) ??
-          optionalTrimmedString(request.reason),
-        input: {
-          slotKey: request.slotKey,
-          note: request.note,
-        },
-      })
-    }
-
-    if (tool === 'deny_activation') {
-      this.#assertMembraneActivationInScope(source, request.slotKey)
-      return this.dispatchCommand({
-        kind: 'deny_activation',
-        actor,
-        reason: optionalTrimmedString(request.reason),
-        input: {
-          slotKey: request.slotKey,
-          reason: request.reason,
-        },
-      })
-    }
-
-    if (tool === 'report') {
-      const execution = this.#runContext.get(source)?.execution
-      return this.dispatchCommand({
-        kind: 'report',
-        actor,
-        ...(validateExecutionEnvelope(execution) ? { execution: clone(execution) } : {}),
-        input: request,
-      })
-    }
-
-    if (tool === 'link_sessions') {
-      if (actor.kind === 'master') {
-        throw new Error(
-          'Master sessions cannot author raw relationship edges. Use propose_workflow and commit an approved Proposal.',
-        )
-      }
-      const target = optionalTrimmedString(request.sessionId)
-      if (!target) {
-        throw new Error('link_sessions sessionId is required')
-      }
-      const { edge } = await this.dispatchCommand({
-        kind: 'link_sessions',
-        actor,
-        input: {
-          source,
-          target,
-          label: request.label,
-          reason: request.reason,
-        },
-      })
-      return { ok: true, edgeId: edge.edgeId }
-    }
-
-    throw new Error(`Unknown membrane tool: ${tool}`)
-  }
-
-  #membraneActor(source) {
-    return {
-      kind:
-        this.#state.sessions[source]?.role === 'master' ? 'master' : 'agent',
-      ref: source,
-    }
-  }
-
-  // Maps a membrane create_session request onto the unified command input.
-  // Same-provider children inherit the exact instance/settings; cross-provider
-  // children use the target provider defaults so incompatible model/runtime
-  // knobs never leak across provider boundaries.
-  #membraneCreateInput(source, input: JsonRecord = {}) {
-    const prompt =
-      typeof input.prompt === 'string' && input.prompt.trim().length > 0
-        ? input.prompt.trim()
-        : undefined
-    if (!prompt) {
-      throw new Error('create_session prompt is required')
-    }
-
-    const sourceNode = this.#state.nodes.find(
-      (node) => node.sessionId === source,
-    )
-    const sourceSession = this.#state.sessions[source]
-    const requestedAgent = optionalTrimmedString(input.agent)
-    if (requestedAgent && !validProviderKinds.has(requestedAgent)) {
-      throw new Error(
-        `Unsupported membrane agent: ${requestedAgent}. Expected one of ${providerKinds.join(', ')}.`,
-      )
-    }
-    // Preserve the pre-provider membrane contract for internal callers that
-    // omitted agent; the MCP schema asks agents to choose explicitly.
-    const requestedKind = requestedAgent ?? 'claude-code'
-    const sameProvider = sourceSession?.providerKind === requestedKind
-    const cluster =
-      typeof input.cluster === 'string' && input.cluster.trim().length > 0
-        ? input.cluster.trim()
-        : sourceNode?.clusterId
-    const label = optionalTrimmedString(input.label)
-
-    return {
-      agent: providerMetadata[requestedKind].agent,
-      providerKind: requestedKind,
-      providerInstanceId:
-        sameProvider
-          ? sourceSession.providerInstanceId
-          : defaultProviderInstanceForKind(requestedKind).providerInstanceId,
-      prompt,
-      cwd: sourceSession?.cwd,
-      context: input.context,
-      contextTopic: input.contextTopic,
-      cluster,
-      label: input.label,
-      runtimeSettings:
-        sameProvider
-          ? sourceSession.runtimeSettings
-          : defaultProviderRuntimeSettings,
-      sourceSessionId: source,
-      linkLabel: label ? `create: ${label}` : 'create_session',
-      masterReason: input.masterReason,
-      reason: input.reason,
-    }
+  async handleMembraneRequest(request: JsonRecord) {
+    return this.#membraneRequests.handleRequest(request)
   }
 
   #updateNodeStatus(sessionId, status) {
