@@ -784,6 +784,7 @@ export class RuntimeSessionManager {
       expectedVersion,
       events: [],
       broadcasts: [],
+      stateBroadcastQueued: false,
       channelCheckpoints: new Map(),
       runSessionIdsBefore: new Set(this.#runs.keys()),
       deploymentFinalizations: [],
@@ -834,13 +835,7 @@ export class RuntimeSessionManager {
         this.#enqueueSchedulerEvent(event)
         this.#queueWorkflowWakeupsForKernelEvent(event)
       }
-      for (const deferred of transaction.broadcasts) {
-        this.#broadcast(
-          isObject(deferred) && 'state' in deferred
-            ? { ...deferred, state: this.getState() }
-            : deferred,
-        )
-      }
+      this.#broadcastDeferredEvents(transaction)
       if (
         transaction.outboxEffects.length > 0 &&
         this.#controlCommandCrashBeforeEffectDrain
@@ -903,13 +898,7 @@ export class RuntimeSessionManager {
           this.#enqueueSchedulerEvent(event)
           this.#queueWorkflowWakeupsForKernelEvent(event)
         }
-        for (const deferred of transaction.broadcasts) {
-          this.#broadcast(
-            isObject(deferred) && 'state' in deferred
-              ? { ...deferred, state: this.getState() }
-              : deferred,
-          )
-        }
+        this.#broadcastDeferredEvents(transaction)
         queueMicrotask(() => this.#drainWorkflowWakeups())
         throw error
       }
@@ -973,6 +962,7 @@ export class RuntimeSessionManager {
       actor,
       events: [],
       broadcasts: [],
+      stateBroadcastQueued: false,
       channelCheckpoints: new Map(),
       runSessionIdsBefore: new Set(this.#runs.keys()),
       deploymentFinalizations: [],
@@ -1602,10 +1592,7 @@ export class RuntimeSessionManager {
     }
     // gate === 'human' (or master with nobody to route to): the slot waits
     // for an approve/deny command from the UI/CLI.
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
   }
 
   #pendingRequestText(slot, subscription) {
@@ -1727,10 +1714,7 @@ export class RuntimeSessionManager {
       },
     )
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { ok: true, slotKey }
   }
 
@@ -1906,10 +1890,7 @@ export class RuntimeSessionManager {
       this.#syncLoopStateForSubscription(subscription, 'activated')
       this.#touch()
       await this.#stopSubscriptionAtMaxFirings(subscription, ctx)
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
+      this.#broadcastState()
     } catch (error) {
       console.error(
         `Approved activation ${slot.slotKey} failed to execute: ${error instanceof Error ? error.message : String(error)}`,
@@ -2069,7 +2050,7 @@ export class RuntimeSessionManager {
     }, ctx, { reason: group.reason })
     this.#touch()
     await this.#stopSubscriptionAtMaxFirings(subscription, ctx)
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcastState()
     return { group: clone(group) }
   }
 
@@ -2232,10 +2213,7 @@ export class RuntimeSessionManager {
     this.#syncLoopStateForSubscription(subscription, 'subscription.authored')
     this.#syncTimerForSubscription(subscription)
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return {
       subscription: clone(subscription),
       staticCheck: {
@@ -2359,10 +2337,7 @@ export class RuntimeSessionManager {
       break
     }
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { ok: true, subscription: clone(subscription) }
   }
 
@@ -2700,10 +2675,7 @@ export class RuntimeSessionManager {
     )
     this.#syncAdapterForSource(source)
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return {
       source: clone(source),
       ...(token ? { token } : {}),
@@ -2750,10 +2722,7 @@ export class RuntimeSessionManager {
       delete this.#state.sourceTokens[sourceId]
     }
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { ok: true, source: clone(source) }
   }
 
@@ -4026,10 +3995,7 @@ export class RuntimeSessionManager {
     this.#state.sessions[sessionId].archived = archived
     this.#appendKernelEvent('session.archived', { sessionId, archived }, ctx)
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { ok: true, state: this.getState() }
   }
 
@@ -4489,10 +4455,7 @@ export class RuntimeSessionManager {
       ctx,
     )
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { clusterId, state: this.getState() }
   }
 
@@ -4523,10 +4486,7 @@ export class RuntimeSessionManager {
       if (this.#state.sessions[cluster.masterSessionId]) {
         this.#assignMaster(clusterId, cluster.masterSessionId, ctx)
         this.#touch()
-        this.#broadcast({
-          type: 'runtime.state',
-          state: this.getState(),
-        })
+        this.#broadcastState()
         return {
           sessionId: cluster.masterSessionId,
           state: this.getState(),
@@ -4561,10 +4521,7 @@ export class RuntimeSessionManager {
     )
     this.#assignMaster(clusterId, result.sessionId, ctx)
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return {
       sessionId: result.sessionId,
       state: this.getState(),
@@ -4594,10 +4551,7 @@ export class RuntimeSessionManager {
 
     this.#assignMaster(clusterId, sessionId, ctx)
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { state: this.getState() }
   }
 
@@ -4626,10 +4580,7 @@ export class RuntimeSessionManager {
       ctx,
     )
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     return { state: this.getState() }
   }
 
@@ -4675,10 +4626,7 @@ export class RuntimeSessionManager {
 
     if (changed) {
       this.#touch()
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
+      this.#broadcastState()
     }
 
     return { state: this.getState() }
@@ -5217,7 +5165,7 @@ export class RuntimeSessionManager {
       { reason: optionalTrimmedString(input.reason) },
     )
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcastState()
     return { ok: true, results, removedDeliveries, removedBytes, state: this.getState() }
   }
 
@@ -5392,10 +5340,7 @@ export class RuntimeSessionManager {
           },
         )
         this.#touch()
-        this.#broadcast({
-          type: 'runtime.state',
-          state: this.getState(),
-        })
+        this.#broadcastState()
       }
       return { edge: clone(existing) }
     }
@@ -8066,10 +8011,7 @@ export class RuntimeSessionManager {
       status: 'running',
     })
     this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
+    this.#broadcastState()
     journalAutomaticDeploymentRunStarted(this.#wf(), sessionId)
 
     let run
@@ -8989,7 +8931,7 @@ export class RuntimeSessionManager {
     this.#releaseWorkspaceLease(runId, 'completed')
     this.#runContext.delete(sessionId)
     this.#touch()
-    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+    this.#broadcastState()
     return { ok: true, sessionId, kernelEventId: finishedEvent?.id, state: this.getState() }
   }
 
@@ -9865,6 +9807,35 @@ export class RuntimeSessionManager {
       this.#persistState()
     }, this.#snapshotPersistDelayMs)
     this.#snapshotPersistTimer.unref?.()
+  }
+
+  #broadcastState() {
+    const transaction = this.#controlCommandContext.getStore()
+    if (transaction && transaction.closed !== true) {
+      if (transaction.stateBroadcastQueued) return
+      transaction.stateBroadcastQueued = true
+      transaction.broadcasts.push({ type: 'runtime.state' })
+      return
+    }
+    this.#broadcast({ type: 'runtime.state', state: this.getState() })
+  }
+
+  #broadcastDeferredEvents(transaction: JsonRecord) {
+    const committedState = transaction.broadcasts.some(
+      (deferred) =>
+        isObject(deferred) &&
+        (deferred.type === 'runtime.state' || 'state' in deferred),
+    )
+      ? this.getState()
+      : undefined
+    for (const deferred of transaction.broadcasts) {
+      this.#broadcast(
+        isObject(deferred) &&
+          (deferred.type === 'runtime.state' || 'state' in deferred)
+          ? { ...deferred, state: committedState }
+          : deferred,
+      )
+    }
   }
 
   #broadcast(event) {

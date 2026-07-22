@@ -759,6 +759,44 @@ test('compiled RuntimeSessionManager persists provider instance settings', async
   }
 })
 
+test('runtime state broadcasts coalesce snapshot construction within a command', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-runtime-state-broadcast-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const sessionId = 'snapshot-coalesce-session'
+  fs.writeFileSync(
+    storageFile,
+    JSON.stringify(persistedStateWithSession(sessionId, tempRoot)),
+  )
+  const emittedEvents = []
+  const runtime = new RuntimeSessionManager({
+    storageFile,
+    broadcastRuntimeEvent: (event) => emittedEvents.push(event),
+  })
+  const originalGetState = runtime.getState.bind(runtime)
+  let snapshotCalls = 0
+  runtime.getState = (...args) => {
+    snapshotCalls += 1
+    return originalGetState(...args)
+  }
+
+  try {
+    const result = await runtime.dispatchCommand({
+      kind: 'archive_session',
+      actor: { kind: 'human' },
+      input: { sessionId },
+    })
+
+    assert.equal(snapshotCalls, 2)
+    const stateEvents = emittedEvents.filter((event) => event.type === 'runtime.state')
+    assert.equal(stateEvents.length, 1)
+    assert.equal(stateEvents[0].state.sessions[sessionId].archived, true)
+    assert.equal(result.state.sessions[sessionId].archived, true)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('old v8 state gains default-grok without rewriting existing sessions', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-grok-v8-normalize-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')
