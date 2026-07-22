@@ -1,4 +1,4 @@
-import { Bot, ClipboardCheck, CirclePlay, GitBranch, MessageSquarePlus, MessagesSquare, Orbit, Snowflake, Square } from 'lucide-react';
+import { Bot, ClipboardCheck, CirclePlay, GitBranch, LockKeyhole, MessageSquarePlus, MessagesSquare, Orbit, Snowflake, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { TermChip, TermLabel, termInputCls, termTextareaCls, termActionBtnCls } from '@/components/terminal';
@@ -7,7 +7,7 @@ import { loopPolicySummary, loopStateStatus } from '@/lib/graph-view';
 import { ProviderSegmentedControl, ProjectCwdField } from '@/components/new-chat-setup';
 import { compactId } from '@/lib/format';
 import { workflowStatusPillClassName, WorkflowStep, WorkflowSummaryRow } from '@/components/workflow';
-import { type Dispatch, type SetStateAction } from 'react';
+import { type Dispatch, type SetStateAction, useState } from 'react';
 import { type RailTab } from '@/lib/layout-prefs';
 import { type RuntimeCoreState } from '@/hooks/use-runtime-core';
 import { type NewChatSetupState } from '@/hooks/use-new-chat-setup';
@@ -25,9 +25,38 @@ type OrchestratePanelProps = {
 };
 
 export function OrchestratePanel({ core, newChat, actions, orchestration, setActiveTab, activeClusterId, setActiveClusterId }: OrchestratePanelProps) {
-  const { isRuntimeAvailable, runtimeState, setSelectedSessionId, selectedSession, selectedSessionFrozen, selectedSessionIsMaster } = core;
+  const {
+    isRuntimeAvailable,
+    runtimeApi,
+    runtimeState,
+    setRuntimeState,
+    setRuntimeError,
+    setSelectedSessionId,
+    selectedSession,
+    selectedSessionFrozen,
+    selectedSessionIsMaster,
+  } = core;
   const { newProviderKind, newCwd, setNewCwd, changeNewProviderKind, newCwdValidation } = newChat;
   const { setPendingLinkedSourceId } = actions;
+  const [isUpdatingWorkspacePolicy, setIsUpdatingWorkspacePolicy] = useState(false);
+  const serializeWorkspaceAccess = runtimeState.resourcePolicies?.global?.serializeWorkspaceAccess === true;
+  const setWorkspaceSerialization = async (enabled: boolean) => {
+    if (!runtimeApi || isUpdatingWorkspacePolicy) return;
+    setIsUpdatingWorkspacePolicy(true);
+    setRuntimeError(undefined);
+    try {
+      const result = await runtimeApi.dispatchCommand({
+        kind: 'set_resource_policy',
+        reason: enabled ? 'Enabled same-workspace session serialization.' : 'Enabled same-workspace session parallelism.',
+        input: { scopeId: 'global', serializeWorkspaceAccess: enabled },
+      });
+      setRuntimeState((result as { state: typeof runtimeState }).state);
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsUpdatingWorkspacePolicy(false);
+    }
+  };
   const {
     clusterLabel,
     setClusterLabel,
@@ -102,6 +131,49 @@ export function OrchestratePanel({ core, newChat, actions, orchestration, setAct
             <WorkflowStep key={step.title} index={index + 1} title={step.title} detail={step.detail} status={step.status} />
           ))}
         </div>
+      </section>
+
+      <section className="rounded-lg border border-ink-line bg-ink p-3 font-mono">
+        <div className="flex items-center gap-2">
+          <LockKeyhole className="size-3.5 text-term-cyan" />
+          <span className="text-[10px] uppercase tracking-[0.16em] text-term-dim2">Session scheduling</span>
+          <span
+            className={cn(
+              'ml-auto',
+              statePillBase,
+              serializeWorkspaceAccess ? 'border-term-amber/30 bg-term-amber/10 text-term-amber' : 'border-term-green/30 bg-term-green/10 text-term-green',
+            )}
+          >
+            {serializeWorkspaceAccess ? 'serialized' : 'parallel'}
+          </span>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={serializeWorkspaceAccess}
+          disabled={!isRuntimeAvailable || isUpdatingWorkspacePolicy}
+          className="mt-2.5 flex w-full items-center gap-3 rounded-md border border-ink-line bg-background/35 px-3 py-2 text-left transition hover:border-foreground/20 disabled:cursor-not-allowed disabled:opacity-60"
+          onClick={() => void setWorkspaceSerialization(!serializeWorkspaceAccess)}
+        >
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11.5px] text-term-name">Serialize same-workspace sessions</span>
+            <span className="mt-0.5 block text-[10px] leading-4 text-term-faint">Off by default. Agents sharing a project can run in parallel.</span>
+          </span>
+          <span
+            aria-hidden="true"
+            className={cn(
+              'relative h-5 w-9 shrink-0 rounded-full border transition',
+              serializeWorkspaceAccess ? 'border-term-amber/50 bg-term-amber/30' : 'border-ink-line bg-foreground/[0.08]',
+            )}
+          >
+            <span
+              className={cn(
+                'absolute top-0.5 size-3.5 rounded-full bg-foreground transition-transform',
+                serializeWorkspaceAccess ? 'translate-x-[18px]' : 'translate-x-0.5',
+              )}
+            />
+          </span>
+        </button>
       </section>
 
       <section className="space-y-2.5 rounded-lg border border-ink-line bg-ink p-3 font-mono">

@@ -62,6 +62,7 @@ export type RuntimeUsageFact = {
 export type RuntimeResourcePolicy = {
   scopeId: string
   consumptionEnforcement: 'off' | 'warn' | 'hard'
+  serializeWorkspaceAccess: boolean
   maxConcurrentSessions: number
   maxConcurrentPerProvider: number
   maxQueuedRuns: number
@@ -90,6 +91,7 @@ export type SchedulerBackpressureMetrics = {
 
 export const defaultRuntimeResourcePolicy = {
   consumptionEnforcement: 'off' as const,
+  serializeWorkspaceAccess: false,
   maxConcurrentSessions: 4,
   maxConcurrentPerProvider: 4,
   maxQueuedRuns: 100,

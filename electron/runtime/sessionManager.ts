@@ -7809,7 +7809,7 @@ export class RuntimeSessionManager {
     if (active.filter((lease) => lease.scopeId === resource.scopeId).length >= policy.maxConcurrentSessions) return 'scope-cap'
     if (active.filter((lease) => lease.providerInstanceId === resource.providerInstanceId).length >= globalPolicy.maxConcurrentPerProvider) return 'provider-cap'
     if (active.filter((lease) => lease.scopeId === resource.scopeId && lease.providerInstanceId === resource.providerInstanceId).length >= policy.maxConcurrentPerProvider) return 'provider-cap'
-    if (!leaseCompatible(this.#state.workspaceLeases ?? [], { ...resource, mode: resource.leaseMode })) return 'workspace-lease'
+    if (globalPolicy.serializeWorkspaceAccess && !leaseCompatible(this.#state.workspaceLeases ?? [], { ...resource, mode: resource.leaseMode })) return 'workspace-lease'
     return undefined
   }
 
@@ -8793,6 +8793,12 @@ export class RuntimeSessionManager {
       next.consumptionEnforcement = input.consumptionEnforcement
     } else if (runtimeConsumptionBudgetKeys.some((key) => input[key] !== undefined && input[key] !== null)) {
       next.consumptionEnforcement = 'hard'
+    }
+    if (input.serializeWorkspaceAccess !== undefined) {
+      if (typeof input.serializeWorkspaceAccess !== 'boolean') {
+        throw new Error('serializeWorkspaceAccess must be a boolean.')
+      }
+      next.serializeWorkspaceAccess = input.serializeWorkspaceAccess
     }
     for (const key of ['maxConcurrentSessions', 'maxConcurrentPerProvider', 'maxQueuedRuns', 'maxFanout']) {
       if (input[key] === undefined) continue

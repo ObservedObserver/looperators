@@ -369,6 +369,7 @@ export function normalizeResourcePolicies(value, diagnostics: JsonRecord[] = [])
       scopeId,
       ...defaultRuntimeResourcePolicy,
       consumptionEnforcement,
+      serializeWorkspaceAccess: candidate.serializeWorkspaceAccess === true,
       updatedAt: nonEmptyString(candidate.updatedAt) ? candidate.updatedAt : now(),
       updatedBy: candidate.updatedBy === 'human' ? 'human' : 'runtime',
       ...(nonEmptyString(candidate.budgetStartedAt) ? { budgetStartedAt: candidate.budgetStartedAt } : {}),

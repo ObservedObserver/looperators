@@ -45,6 +45,7 @@ test('consumption budgets are disabled by default while capacity governance rema
     assert.equal(policy.maxDurationPerTurnMs, undefined)
     assert.equal(policy.maxTokensPerTurn, undefined)
     assert.equal(policy.maxConcurrentSessions, 4)
+    assert.equal(policy.serializeWorkspaceAccess, false)
     assert.equal(runtime.getKernelEvents({ type: 'resource.budget-exhausted' }).events.length, 0)
   } finally { cleanup() }
 })
@@ -68,6 +69,7 @@ test('legacy policies without explicit enforcement migrate off regardless of who
     try {
       const policy = runtime.getState().resourcePolicies.global
       assert.equal(policy.consumptionEnforcement, expectedEnforcement)
+      assert.equal(policy.serializeWorkspaceAccess, false)
       assert.equal(policy.maxToolCallsPerTurn, expectedToolLimit)
     } finally {
       runtime.killAll()
@@ -163,6 +165,10 @@ test('duration enforcement is re-armed when a human changes policy during an act
 test('same-workspace writers serialize while readers run concurrently and usage is durable', async () => {
   const { runtime, adapter, cleanup } = harness('orrery-resource-')
   try {
+    await runtime.dispatchCommand({
+      commandId: 'enable-workspace-serialization', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: true },
+    })
     const writer = (label) => runtime.createSession({
       label, prompt: `ORRERY_SLEEP ${label}`, cwd: process.cwd(),
       runtimeSettings: { runtimeMode: 'approval-required', sandbox: 'workspace-write' },
@@ -191,6 +197,38 @@ test('same-workspace writers serialize while readers run concurrently and usage 
     assert.equal(reading.runQueue.length, 0)
     assert.equal(reading.workspaceLeases.filter((lease) => lease.status === 'active' && lease.mode === 'reader').length, 2)
     await waitFor('both readers complete', () => runtime.getState().sessions[readA.sessionId]?.status === 'idle' && runtime.getState().sessions[readB.sessionId]?.status === 'idle')
+  } finally { cleanup() }
+})
+
+test('same-workspace sessions run in parallel by default and disabling serialization drains queued work', async () => {
+  const { runtime, adapter, cleanup } = harness('orrery-workspace-parallel-')
+  const startWriter = (label) => runtime.createSession({
+    label, prompt: `ORRERY_SLEEP ${label}`, cwd: process.cwd(),
+    runtimeSettings: { runtimeMode: 'approval-required', sandbox: 'workspace-write' },
+  })
+  try {
+    const first = await startWriter('parallel-a')
+    const second = await startWriter('parallel-b')
+    assert.equal(runtime.getState().runQueue.length, 0)
+    assert.equal(adapter.startedTurns.length, 2)
+    await waitFor('default parallel writers complete', () =>
+      runtime.getState().sessions[first.sessionId]?.status === 'idle' &&
+      runtime.getState().sessions[second.sessionId]?.status === 'idle')
+
+    await runtime.dispatchCommand({
+      commandId: 'serialize-workspace', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: true },
+    })
+    await startWriter('serialized-owner')
+    const queued = await startWriter('serialized-waiter')
+    assert.equal(runtime.getState().runQueue.find((item) => item.sessionId === queued.sessionId)?.reason, 'workspace-lease')
+
+    await runtime.dispatchCommand({
+      commandId: 'allow-workspace-parallelism', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: false },
+    })
+    await waitFor('queued writer admitted after serialization disabled', () => adapter.startedTurns.length === 4)
+    assert.equal(runtime.getState().runQueue.length, 0)
   } finally { cleanup() }
 })
 
@@ -285,6 +323,10 @@ test('budget reservations prevent concurrent oversubscription and exhaustion com
 test('a Session cannot accumulate multiple generic admission queue entries', async () => {
   const { runtime, cleanup } = harness('orrery-session-reservation-')
   try {
+    await runtime.dispatchCommand({
+      commandId: 'serialize-session-reservation', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: true },
+    })
     await runtime.createSession({ prompt: 'ORRERY_SLEEP lease owner', cwd: process.cwd(), runtimeSettings: { sandbox: 'workspace-write' } })
     const queued = await runtime.createSession({ prompt: 'queued writer', cwd: process.cwd(), runtimeSettings: { sandbox: 'workspace-write' } })
     assert.equal(runtime.getState().runQueue.filter((item) => item.sessionId === queued.sessionId).length, 1)
@@ -357,6 +399,10 @@ test('durable queued run survives runtime restart without duplicate provider lau
   const firstAdapter = new DeterministicProviderAdapter()
   let runtime = new RuntimeSessionManager({ storageFile, providerAdapters: new Map([['claude-code', firstAdapter]]) })
   try {
+    await runtime.dispatchCommand({
+      commandId: 'serialize-queue-restart', kind: 'set_resource_policy', actor: { kind: 'human' },
+      input: { scopeId: 'global', serializeWorkspaceAccess: true },
+    })
     await runtime.createSession({ prompt: 'ORRERY_SLEEP owner', cwd: process.cwd(), runtimeSettings: { sandbox: 'workspace-write' } })
     const queued = await runtime.createSession({ prompt: 'queued after restart', cwd: process.cwd(), runtimeSettings: { sandbox: 'workspace-write' } })
     assert.equal(runtime.getState().runQueue.length, 1)
