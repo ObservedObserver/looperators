@@ -118,5 +118,6 @@ test('independent planner prompt forbids premature channel discovery', () => {
   const prompt = plannerPrompt('Plan a migration.', 'Crash safety.', 'Durability');
   assert.match(prompt, /No peer proposal has been delivered yet/);
   assert.match(prompt, /Never inspect Orrery channel\/inbox directories/);
-  assert.match(prompt, /Do not run shell commands/);
+  assert.match(prompt, /exactly one read-only file read or search command per tool call/);
+  assert.match(prompt, /never chain commands/);
 });

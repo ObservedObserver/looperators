@@ -246,6 +246,7 @@ const tools = [
       'Master-only. Create a durable, reviewable Workflow Proposal without creating sessions, relationships, or provider turns. ' +
       'Recipes: review input={coder,reviewer,blocking,maxLaps}; goal input={worker,goal,maxLaps,judgeProviderInstanceId?,judgeModel?}; ' +
       'handoff input={source,target,note}; plan-council input={objective,cwd,reviewFocus?,planners[2..8],synthesizer,reviewTopology?,coordinatorSessionId?}. ' +
+      'For Plan Council, planners contains only the requested independent planners; cross-review is a built-in phase derived from reviewTopology, so never add a reviewer or cross-review entry as another planner. ' +
       'Councils above 4 planners must set reviewTopology="hub-and-spoke".',
     inputSchema: {
       type: 'object',
@@ -254,7 +255,51 @@ const tools = [
         objective: { type: 'string', description: 'User-facing outcome this workflow should achieve.' },
         input: {
           type: 'object',
-          description: 'The selected recipe input. New participants may omit provider/model/cwd/runtime settings to inherit safe Master defaults; always include their role-specific prompt or instruction.',
+          description:
+            'The selected recipe input. New participants may omit provider/model/cwd/runtime settings to inherit safe Master defaults; always include their role-specific prompt or instruction. ' +
+            'For plan-council, put exactly the requested number of independent planners in planners. Do not represent cross-review as a participant: the runtime creates the cross-review phase and relationships automatically.',
+          properties: {
+            objective: { type: 'string' },
+            cwd: { type: 'string' },
+            reviewFocus: { type: 'string' },
+            planners: {
+              type: 'array',
+              minItems: 2,
+              maxItems: 8,
+              description:
+                'Independent Plan Council planners only. The array length must equal the number requested by the user; do not add cross-review or reviewer entries.',
+              items: {
+                type: 'object',
+                properties: {
+                  key: { type: 'string' },
+                  label: { type: 'string' },
+                  prompt: { type: 'string' },
+                  providerKind: { type: 'string', enum: ['claude-code', 'codex', 'grok'] },
+                  providerInstanceId: { type: 'string' },
+                  runtimeSettings: { type: 'object' },
+                },
+                required: ['prompt'],
+              },
+            },
+            synthesizer: {
+              type: 'object',
+              properties: {
+                key: { type: 'string' },
+                label: { type: 'string' },
+                prompt: { type: 'string' },
+                providerKind: { type: 'string', enum: ['claude-code', 'codex', 'grok'] },
+                providerInstanceId: { type: 'string' },
+                runtimeSettings: { type: 'object' },
+              },
+              required: ['prompt'],
+            },
+            reviewTopology: {
+              type: 'string',
+              enum: ['full-mesh', 'hub-and-spoke'],
+              description: 'Omit for the full-mesh default. Councils above four planners require hub-and-spoke.',
+            },
+            coordinatorSessionId: { type: 'string' },
+          },
         },
         reason: { type: 'string', description: 'Why this recipe and topology fit the user intent.' },
         expiresAt: { type: 'string', description: 'Optional ISO-8601 expiration time.' },

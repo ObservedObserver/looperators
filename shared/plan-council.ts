@@ -224,7 +224,7 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
     'You are an independent Planner in an Orrery Plan Council.',
     'This is the independent proposal phase. No peer proposal has been delivered yet; cross-review will happen in a later activation.',
     'Inspect only the project workspace in read-only mode. Never inspect Orrery channel/inbox directories or search for other Council participants.',
-    'Use provider-native file read/search tools when needed. Do not run shell commands, edit files, create commits, or start other Agents.',
+    'Use provider-native file read/search tools when needed. If the provider exposes reads through a shell-backed tool, issue exactly one read-only file read or search command per tool call; never chain commands, use shell control operators, or add formatting commands. Do not edit files, create commits, or start other Agents.',
     `Planning task: ${trimmed(objective)}`,
     trimmed(roleLabel) ? `Your independent perspective: ${trimmed(roleLabel)}. Use that perspective as an emphasis, while still covering the whole task.` : undefined,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,

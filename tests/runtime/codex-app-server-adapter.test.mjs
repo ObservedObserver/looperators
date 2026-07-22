@@ -347,6 +347,45 @@ test('membrane MCP server keeps the bootstrap file only when asked to', async ()
   }
 })
 
+test('membrane MCP server explains that Plan Council cross-review is not another planner', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const serverPath = path.resolve(
+    'dist-electron/electron/runtime/membraneMcpServer.js'
+  )
+  const input = [
+    {
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } },
+    },
+    { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+  ].map((message) => JSON.stringify(message)).join('\n') + '\n'
+
+  const result = spawnSync(process.execPath, [serverPath], {
+    input,
+    encoding: 'utf8',
+    timeout: 15000,
+  })
+  const messages = result.stdout.trim().split('\n').map((line) => JSON.parse(line))
+  const proposalTool = messages
+    .find((message) => message.id === 1)
+    ?.result.tools.find((tool) => tool.name === 'propose_workflow')
+
+  assert.ok(proposalTool)
+  assert.match(proposalTool.description, /cross-review is a built-in phase/i)
+  assert.match(proposalTool.description, /never add a reviewer or cross-review entry as another planner/i)
+  assert.match(proposalTool.inputSchema.properties.input.description, /exactly the requested number of independent planners/i)
+  assert.deepEqual(
+    proposalTool.inputSchema.properties.input.properties.reviewTopology.enum,
+    ['full-mesh', 'hub-and-spoke']
+  )
+  assert.equal(
+    proposalTool.inputSchema.properties.input.properties.reviewFocus.type,
+    'string'
+  )
+})
+
 function writeFakeCodexAppServer(dir, { exitAfterTurnStartMs, turnCompletion }) {
   const requestLog = path.join(dir, 'requests.jsonl')
   // The fake is the `codex` binary itself (shebang script), mirroring the
