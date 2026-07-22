@@ -29,6 +29,7 @@
 //   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
 //   control/commandRegistry.ts             command kind + handler/policy registry
 //   control/commandExecutor.ts             serialized transaction + effect authority
+//   clusters/clusterControlRuntime.ts      Scope/Master/Loop/freeze topology control
 //   scheduler/schedulerRuntime.ts           fact -> gate -> activation + timer lifecycle
 //   sessions/sessionRuntimeController.ts    admission + provider turn lifecycle
 //   reports/reportFormatting.ts            report/prompt render + payload validation
@@ -53,7 +54,6 @@ import path from 'node:path'
 import { createEmptyGraphState } from '../../shared/graph-state.js'
 import { providerKinds, providerMetadata } from '../../shared/provider-metadata.js'
 import { providerEnvKeyIsSensitive } from '../../shared/provider-setup.js'
-import { defaultCycleMaxFirings, loopsOf } from '../../shared/graph-core/index.js'
 import { ContextChannelStore, activationPreamble } from './contextChannel.js'
 import { ExternalIngestionService } from './external/externalIngestionService.js'
 import {
@@ -100,7 +100,6 @@ import {
 } from './sessions/sessionInteraction.js'
 import {
   loadLegacyJsonState,
-  normalizeLoopPolicy,
   normalizeState,
   withDiagnostics,
 } from './persistence/runtimeStateRecovery.js'
@@ -122,13 +121,13 @@ import {
   CommandExecutor,
   type RecoveryControlCommand,
 } from './control/commandExecutor.js'
+import { ClusterControlRuntime } from './clusters/clusterControlRuntime.js'
 import { SchedulerRuntime } from './scheduler/schedulerRuntime.js'
 import {
   SessionRuntimeController,
   type RuntimeRun,
 } from './sessions/sessionRuntimeController.js'
 import {
-  defaultMasterPrompt,
   masterReasonFromInput,
   normalizeReportPayload,
   reportSummary,
@@ -245,6 +244,40 @@ export class RuntimeSessionManager {
       this.#broadcast({ type: 'runtime.state', state: this.getState() }),
     stagePostCommitEffect: (label, run) =>
       this.#commandExecutor.stagePostCommitEffect({ label, run }),
+  })
+  #clusterControl = new ClusterControlRuntime({
+    state: () => this.#state,
+    humanCtx: () => this.#humanCtx(),
+    reviveDirectProviderRuntime: () => this.#reviveDirectProviderRuntime(),
+    getState: () => this.getState(),
+    appendKernelEvent: (type, payload, ctx, options) =>
+      this.#appendKernelEvent(type, payload, ctx, options),
+    touch: () => this.#touch(),
+    broadcast: (event) => this.#broadcast(event),
+    cmdCreateSession: (input, ctx, options) =>
+      this.#cmdCreateSession(input, ctx, options),
+    loopSubscriptionsForCluster: (clusterId) =>
+      this.#scheduler.loopSubscriptionsForCluster(clusterId),
+    cmdAuthorSubscription: (input, ctx, options) =>
+      this.#scheduler.cmdAuthorSubscription(input, ctx, options),
+    cmdStopSubscription: (input, ctx) =>
+      this.#scheduler.cmdStopSubscription(input, ctx),
+    membraneCreateInput: (source, input) =>
+      this.#membraneCreateInput(source, input),
+    reviewerBootstrapPrompt: () => reviewerBootstrapPrompt(this.#wf()),
+    reviewerActivationNote: () => reviewerActivationNote(this.#wf()),
+    coderActivationNote: () => coderActivationNote(this.#wf()),
+    enqueueSchedulerWork: (run, onError) =>
+      this.#scheduler.enqueueWork(run, onError),
+    createPendingActivation: (decision, event, ctx) =>
+      this.#scheduler.createPendingActivation(decision, event, ctx),
+    schedulerRuleContext: (subscriptionId, causeId) =>
+      this.#scheduler.ruleContext(subscriptionId, causeId),
+    hasRun: (sessionId) => this.#runs.has(sessionId),
+    cmdKillSession: (input, ctx) => this.#cmdKillSession(input, ctx),
+    kernelView: () => this.#queries.kernelView(),
+    createEnvelope: (source) => this.#createEnvelope(source),
+    addEdge: (input) => this.#addEdge(input),
   })
   #sessionRuntime = new SessionRuntimeController({
     state: () => this.#state,
@@ -1821,534 +1854,63 @@ export class RuntimeSessionManager {
   }
 
   upsertCluster(input: JsonRecord = {}) {
-    return this.#cmdUpsertCluster(input, this.#humanCtx())
+    return this.#clusterControl.upsertCluster(input)
   }
 
   #cmdUpsertCluster(input: JsonRecord = {}, ctx: JsonRecord) {
-    const nodeIds = this.#normalizeClusterNodeIds(input.nodeIds)
-    if (nodeIds.length === 0) {
-      throw new Error('Cluster requires at least one managed session node')
-    }
-
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : `cluster-${randomUUID().slice(0, 8)}`
-    const label =
-      typeof input.label === 'string' && input.label.trim().length > 0
-        ? input.label.trim()
-        : clusterId
-    const existing = this.#state.clusters[clusterId]
-
-    this.#state.clusters[clusterId] = {
-      ...(existing ?? {}),
-      clusterId,
-      label,
-      nodeIds,
-      loopPolicy:
-        input.loopPolicy !== undefined
-          ? normalizeLoopPolicy(input.loopPolicy)
-          : existing?.loopPolicy,
-    }
-
-    const masterSessionId = this.#state.clusters[clusterId].masterSessionId
-    for (const node of this.#state.nodes) {
-      if (
-        node.clusterId === clusterId &&
-        !nodeIds.includes(node.sessionId) &&
-        node.sessionId !== masterSessionId
-      ) {
-        node.clusterId = undefined
-      }
-      if (nodeIds.includes(node.sessionId)) {
-        node.clusterId = clusterId
-      }
-      if (node.sessionId === masterSessionId) {
-        node.clusterId = clusterId
-      }
-    }
-
-    for (const sessionId of nodeIds) {
-      this.#removeNodeFromOtherClusters(sessionId, clusterId)
-    }
-
-    this.#appendKernelEvent(
-      'scope.upserted',
-      { clusterId, label, nodeIds },
-      ctx,
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return { clusterId, state: this.getState() }
+    return this.#clusterControl.cmdUpsertCluster(input, ctx)
   }
 
-  async createMasterForCluster(input: JsonRecord = {}) {
-    this.#reviveDirectProviderRuntime()
-    return this.#cmdCreateMasterForCluster(input, this.#humanCtx())
+  createMasterForCluster(input: JsonRecord = {}) {
+    return this.#clusterControl.createMasterForCluster(input)
   }
 
-  async #cmdCreateMasterForCluster(input: JsonRecord = {}, ctx: JsonRecord) {
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : undefined
-    if (!clusterId || !this.#state.clusters[clusterId]) {
-      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
-    }
-
-    const cluster = this.#state.clusters[clusterId]
-    if (input.loopPolicy !== undefined) {
-      cluster.loopPolicy = normalizeLoopPolicy(input.loopPolicy)
-      this.#appendKernelEvent(
-        'loop.policy-set',
-        { clusterId, policy: clone(cluster.loopPolicy) },
-        ctx,
-      )
-    }
-
-    if (cluster.masterSessionId) {
-      if (this.#state.sessions[cluster.masterSessionId]) {
-        this.#assignMaster(clusterId, cluster.masterSessionId, ctx)
-        this.#touch()
-        this.#broadcast({
-          type: 'runtime.state',
-          state: this.getState(),
-        })
-        return {
-          sessionId: cluster.masterSessionId,
-          state: this.getState(),
-        }
-      }
-
-      delete cluster.masterSessionId
-    }
-
-    const prompt =
-      typeof input.prompt === 'string' && input.prompt.trim().length > 0
-        ? input.prompt.trim()
-        : defaultMasterPrompt(this.#state, clusterId)
-    const label =
-      typeof input.label === 'string' && input.label.trim().length > 0
-        ? input.label.trim()
-        : `${cluster.label} Master`
-
-    const result = await this.#cmdCreateSession(
-      {
-        agent: validProviderKinds.has(input.agent) ? input.agent : undefined,
-        providerKind: input.providerKind,
-        providerInstanceId: input.providerInstanceId,
-        prompt,
-        cwd: input.cwd,
-        label,
-        cluster: clusterId,
-        role: 'master',
-        runtimeSettings: input.runtimeSettings,
-      },
-      ctx,
-    )
-    this.#assignMaster(clusterId, result.sessionId, ctx)
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return {
-      sessionId: result.sessionId,
-      state: this.getState(),
-    }
+  #cmdCreateMasterForCluster(input: JsonRecord = {}, ctx: JsonRecord) {
+    return this.#clusterControl.cmdCreateMasterForCluster(input, ctx)
   }
 
   assignMasterToCluster(input: JsonRecord = {}) {
-    return this.#cmdAssignMaster(input, this.#humanCtx())
+    return this.#clusterControl.assignMasterToCluster(input)
   }
 
   #cmdAssignMaster(input: JsonRecord = {}, ctx: JsonRecord) {
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : undefined
-    const sessionId =
-      typeof input.sessionId === 'string' && input.sessionId.trim().length > 0
-        ? input.sessionId.trim()
-        : undefined
-
-    if (!clusterId || !this.#state.clusters[clusterId]) {
-      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
-    }
-    if (!sessionId || !this.#state.sessions[sessionId]) {
-      throw new Error(`Unknown session: ${sessionId ?? ''}`)
-    }
-
-    this.#assignMaster(clusterId, sessionId, ctx)
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return { state: this.getState() }
+    return this.#clusterControl.cmdAssignMaster(input, ctx)
   }
 
   setClusterLoopPolicy(input: JsonRecord = {}) {
-    return this.#cmdSetLoopPolicy(input, this.#humanCtx())
+    return this.#clusterControl.setClusterLoopPolicy(input)
   }
 
   #cmdSetLoopPolicy(input: JsonRecord = {}, ctx: JsonRecord) {
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : undefined
-    if (!clusterId || !this.#state.clusters[clusterId]) {
-      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
-    }
-
-    this.#state.clusters[clusterId].loopPolicy = normalizeLoopPolicy(
-      input.loopPolicy,
-    )
-    this.#appendKernelEvent(
-      'loop.policy-set',
-      {
-        clusterId,
-        policy: clone(this.#state.clusters[clusterId].loopPolicy),
-      },
-      ctx,
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'runtime.state',
-      state: this.getState(),
-    })
-    return { state: this.getState() }
+    return this.#clusterControl.cmdSetLoopPolicy(input, ctx)
   }
 
   updateNodePositions(input: JsonRecord = {}) {
-    return this.#cmdUpdateNodePositions(input, this.#humanCtx())
+    return this.#clusterControl.updateNodePositions(input)
   }
 
-  // Canvas layout is view-layer state, not a kernel fact: the command still
-  // flows through the unified channel, but no kernel event is appended.
-  #cmdUpdateNodePositions(input: JsonRecord = {}, _ctx: JsonRecord) {
-    const positions = Array.isArray(input.positions) ? input.positions : []
-    let changed = false
-
-    for (const item of positions) {
-      if (!isObject(item) || !isObject(item.position)) {
-        continue
-      }
-
-      const nodeId =
-        typeof item.nodeId === 'string' && item.nodeId.trim().length > 0
-          ? item.nodeId.trim()
-          : undefined
-      const x = item.position.x
-      const y = item.position.y
-      if (!nodeId || !Number.isFinite(x) || !Number.isFinite(y)) {
-        continue
-      }
-
-      const node = this.#state.nodes.find(
-        (candidate) => candidate.nodeId === nodeId,
-      )
-      if (!node) {
-        continue
-      }
-
-      if (node.position.x === x && node.position.y === y) {
-        continue
-      }
-
-      node.position = { x, y }
-      changed = true
-    }
-
-    if (changed) {
-      this.#touch()
-      this.#broadcast({
-        type: 'runtime.state',
-        state: this.getState(),
-      })
-    }
-
-    return { state: this.getState() }
+  #cmdUpdateNodePositions(input: JsonRecord = {}, ctx: JsonRecord) {
+    return this.#clusterControl.cmdUpdateNodePositions(input, ctx)
   }
 
   startMasterLoop(input: JsonRecord = {}) {
-    this.#reviveDirectProviderRuntime()
-    return this.#cmdStartLoop(input, this.#humanCtx())
+    return this.#clusterControl.startMasterLoop(input)
   }
 
-  // LoopPolicy is a preset (kernel doc §6.2): starting the loop compiles it
-  // into the two hero-loop subscriptions of §8.2 —
-  //   S1: coder finished        → deliver diff  + activate reviewer (gate master)
-  //   S2: reviewer verdict=issues → deliver review + activate coder  (gate master,
-  //       stop at whenReport verdict / maxFirings, onStop freeze-cluster)
-  // The runtime does the clerical work (matching, stop guards, deliveries,
-  // message assembly); the master only approves or denies each firing.
-  async #cmdStartLoop(input: JsonRecord = {}, ctx: JsonRecord) {
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : undefined
-    if (!clusterId || !this.#state.clusters[clusterId]) {
-      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
-    }
-
-    const cluster = this.#state.clusters[clusterId]
-    if (cluster.frozen) {
-      throw new Error(`Frozen cluster cannot run a loop: ${clusterId}`)
-    }
-
-    if (!cluster.loopPolicy) {
-      throw new Error(`Cluster has no LoopPolicy: ${clusterId}`)
-    }
-
-    const masterSessionId = cluster.masterSessionId
-    if (!masterSessionId || !this.#state.sessions[masterSessionId]) {
-      throw new Error(`Cluster has no master session: ${clusterId}`)
-    }
-
-    const coderSessionId = this.#loopCoderSessionId(cluster)
-    if (!coderSessionId) {
-      throw new Error(`Cluster has no managed worker session: ${clusterId}`)
-    }
-
-    if (
-      this.#scheduler.loopSubscriptionsForCluster(clusterId).some(
-        (subscription) => subscription.state === 'active',
-      )
-    ) {
-      throw new Error(`Cluster loop is already running: ${clusterId}`)
-    }
-
-    const ts = now()
-    const reason =
-      typeof input.reason === 'string' && input.reason.trim().length > 0
-        ? input.reason.trim()
-        : 'Loop started by user.'
-
-    // The reviewer exists up front (§8.2 subscriptions connect existing
-    // nodes; the in-subscription create action lands in a later version).
-    const reviewer = await this.#cmdCreateSession(
-      this.#membraneCreateInput(masterSessionId, {
-        agent: 'claude-code',
-        label: 'Reviewer',
-        cluster: clusterId,
-        prompt: reviewerBootstrapPrompt(this.#wf()),
-        masterReason: 'Loop preset created the reviewer.',
-      }),
-      ctx,
-    )
-    const reviewerSessionId = reviewer.sessionId
-
-    const policy = cluster.loopPolicy
-    const s1 = this.#scheduler.cmdAuthorSubscription(
-      {
-        label: 'S1',
-        preset: `hero-loop:${clusterId}`,
-        sourceSessionId: coderSessionId,
-        on: { on: 'finished' },
-        targetSessionId: reviewerSessionId,
-        action: {
-          kind: 'deliver+activate',
-          topic: 'diff',
-          note: reviewerActivationNote(this.#wf()),
-        },
-        gate: 'master',
-        concurrency: 'coalesce',
-      },
-      ctx,
-    )
-    const s2 = this.#scheduler.cmdAuthorSubscription(
-      {
-        label: 'S2',
-        preset: `hero-loop:${clusterId}`,
-        sourceSessionId: reviewerSessionId,
-        on: {
-          on: 'report',
-          match: { type: 'verdict', verdict: 'issues' },
-        },
-        targetSessionId: coderSessionId,
-        action: {
-          kind: 'deliver+activate',
-          topic: 'review',
-          note: coderActivationNote(this.#wf()),
-        },
-        gate: 'master',
-        concurrency: 'coalesce',
-        stop: {
-          ...(optionalTrimmedString(policy.until?.whenReport?.verdict)
-            ? {
-                whenReport: {
-                  verdict: policy.until.whenReport.verdict,
-                },
-              }
-            : {}),
-          maxFirings: policy.maxIterations ?? defaultCycleMaxFirings,
-        },
-        onStop: 'freeze-cluster',
-      },
-      ctx,
-    )
-
-    cluster.loopState = {
-      status: 'running',
-      iterations: 0,
-      coderSessionId,
-      reviewerSessionId,
-      lastEvent: { type: 'loop.started', ts },
-      reason,
-      startedAt: ts,
-      stoppedAt: undefined,
-    }
-
-    const startedEvent = this.#appendKernelEvent(
-      'loop.started',
-      {
-        clusterId,
-        coderSessionId,
-        reviewerSessionId,
-        subscriptionIds: [s1.subscription.id, s2.subscription.id],
-      },
-      ctx,
-      { reason: ctx.reason ?? reason },
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'loop.started',
-      clusterId,
-      state: this.getState(),
-      kernelEventId: startedEvent?.id,
-    })
-
-    // Kick the first review: if the coder already finished its work, the
-    // loop starts by reviewing the current state (same as the old wakeup).
-    const coder = this.#state.sessions[coderSessionId]
-    if (coder && coder.status === 'idle') {
-      const syntheticTrigger = {
-        id: startedEvent?.id,
-        type: 'loop.started',
-        payload: { sessionId: coderSessionId },
-      }
-      this.#scheduler.enqueueWork(
-        () =>
-          this.#scheduler.createPendingActivation(
-            {
-              kind: 'pend-activation',
-              subscriptionId: s1.subscription.id,
-              target: reviewerSessionId,
-              action: s1.subscription.action,
-              gate: s1.subscription.gate,
-              masterSessionId:
-                s1.subscription.gate === 'master' ? masterSessionId : undefined,
-              triggerEventId: startedEvent?.id,
-            },
-            syntheticTrigger,
-            this.#scheduler.ruleContext(s1.subscription.id, startedEvent?.id),
-          ),
-        (error) => {
-          console.error(
-            `Loop kick failed for ${clusterId}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        },
-      )
-    }
-
-    return { state: this.getState() }
+  #cmdStartLoop(input: JsonRecord = {}, ctx: JsonRecord) {
+    return this.#clusterControl.cmdStartLoop(input, ctx)
   }
 
   stopMasterLoop(input: JsonRecord = {}) {
-    return this.#cmdStopLoop(input, this.#humanCtx())
+    return this.#clusterControl.stopMasterLoop(input)
   }
 
   stopLoop(input: JsonRecord = {}) {
-    return this.#cmdStopLoop(input, this.#humanCtx())
+    return this.#clusterControl.stopLoop(input)
   }
 
   #cmdStopLoop(input: JsonRecord = {}, ctx: JsonRecord) {
-    const loopId = optionalTrimmedString(input.loopId)
-    if (loopId) {
-      const loop = loopsOf(this.#queries.kernelView()).find(
-        (candidate) => candidate.loopId === loopId,
-      )
-      if (!loop) {
-        throw new Error(`Unknown loop: ${loopId}`)
-      }
-      const reason =
-        optionalTrimmedString(input.reason) ??
-        'Stopped by user from Loop panel.'
-      for (const subscriptionId of loop.subscriptionIds) {
-        const subscription = this.#state.subscriptions?.[subscriptionId]
-        if (subscription?.state === 'active') {
-          this.#scheduler.cmdStopSubscription({ subscriptionId, reason }, ctx)
-        }
-      }
-      if (input.killRunning === true) {
-        for (const sessionId of loop.memberSessionIds) {
-          if (this.#runs.has(sessionId)) {
-            this.#cmdKillSession({ sessionId }, ctx)
-          }
-        }
-      }
-      return { state: this.getState() }
-    }
-
-    const clusterId =
-      typeof input.clusterId === 'string' && input.clusterId.trim().length > 0
-        ? input.clusterId.trim()
-        : undefined
-    if (!clusterId || !this.#state.clusters[clusterId]) {
-      throw new Error(`Unknown cluster: ${clusterId ?? ''}`)
-    }
-
-    const reason =
-      typeof input.reason === 'string' && input.reason.trim().length > 0
-        ? input.reason.trim()
-        : 'Loop stopped by user.'
-    this.#stopClusterLoopSubscriptions(clusterId, reason, ctx)
-
-    if (input.killRunning === true) {
-      const cluster = this.#state.clusters[clusterId]
-      const runningIds = [...cluster.nodeIds, cluster.masterSessionId].filter(
-        (sessionId) => this.#runs.has(sessionId),
-      )
-      for (const sessionId of runningIds) {
-        this.#cmdKillSession({ sessionId }, ctx)
-      }
-    }
-
-    return { state: this.getState() }
-  }
-
-  #stopClusterLoopSubscriptions(clusterId, reason, ctx) {
-    const active = this.#scheduler.loopSubscriptionsForCluster(clusterId).filter(
-      (subscription) => subscription.state === 'active',
-    )
-    for (const subscription of active) {
-      this.#scheduler.cmdStopSubscription(
-        { subscriptionId: subscription.id, reason },
-        ctx,
-      )
-    }
-    const cluster = this.#state.clusters[clusterId]
-    if (cluster?.loopState && active.length > 0) {
-      cluster.loopState = {
-        ...cluster.loopState,
-        status: 'stopped',
-        lastEvent: { type: 'loop.stopped', ts: now() },
-        reason,
-        stoppedAt: now(),
-      }
-      this.#appendKernelEvent('loop.stopped', { clusterId }, ctx, { reason })
-      this.#touch()
-      this.#broadcast({
-        type: 'loop.stopped',
-        clusterId,
-        reason,
-        state: this.getState(),
-      })
-    }
+    return this.#clusterControl.cmdStopLoop(input, ctx)
   }
 
   authorSubscription(input: JsonRecord = {}) {
@@ -2675,77 +2237,11 @@ export class RuntimeSessionManager {
   }
 
   #cmdFreeze(input: JsonRecord = {}, ctx: JsonRecord) {
-    const target =
-      typeof input.target === 'string' && input.target.trim().length > 0
-        ? input.target.trim()
-        : typeof input.targetId === 'string' && input.targetId.trim().length > 0
-          ? input.targetId.trim()
-          : undefined
-    if (!target) {
-      throw new Error('freeze target is required')
-    }
-
-    const reason =
-      typeof input.reason === 'string' && input.reason.trim().length > 0
-        ? input.reason.trim()
-        : 'Frozen by user.'
-    return this.#applyFreeze(
-      {
-        targetId: target,
-        reason,
-        source: input.source,
-        masterReason: input.masterReason,
-      },
-      ctx,
-    )
+    return this.#clusterControl.cmdFreeze(input, ctx)
   }
 
   #cmdUnfreeze(input: JsonRecord = {}, ctx: JsonRecord) {
-    const target = optionalTrimmedString(input.target ?? input.targetId)
-    if (!target) throw new Error('unfreeze target is required')
-    const cluster = this.#state.clusters[target]
-    const session = this.#state.sessions[target]
-    if (!cluster && !session) throw new Error(`Unknown unfreeze target: ${target}`)
-    if (session) {
-      const inheritedCluster = Object.values(this.#state.clusters as JsonRecord).find(
-        (candidate) =>
-          candidate.frozen === true && candidate.nodeIds.includes(session.sessionId),
-      )
-      if (inheritedCluster) {
-        throw new Error(
-          `Session ${session.sessionId} inherits freeze from cluster ${inheritedCluster.clusterId}; unfreeze the cluster.`,
-        )
-      }
-    }
-
-    const targetSessionIds = cluster ? [...cluster.nodeIds] : [session.sessionId]
-    if (cluster) {
-      cluster.frozen = false
-      delete cluster.freezeReason
-    }
-    for (const sessionId of targetSessionIds) {
-      const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-      if (!node) continue
-      node.frozen = false
-      delete node.freezeReason
-      delete node.masterReason
-    }
-    const reason = optionalTrimmedString(input.reason) ?? 'Unfrozen by user.'
-    const liftedEvent = this.#appendKernelEvent(
-      'freeze.lifted',
-      { targetId: target, targetSessionIds },
-      ctx,
-      { reason },
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'freeze.lifted',
-      targetId: target,
-      reason,
-      state: this.getState(),
-      kernelEventId: liftedEvent?.id,
-    })
-    return { ok: true, state: this.getState() }
+    return this.#clusterControl.cmdUnfreeze(input, ctx)
   }
 
   linkSessions(input: JsonRecord = {}) {
@@ -3393,189 +2889,31 @@ export class RuntimeSessionManager {
   }
 
   #updateNodeStatus(sessionId, status) {
-    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-    if (node) {
-      node.status = status
-    }
+    return this.#clusterControl.updateNodeStatus(sessionId, status)
   }
 
   #ensureCluster(clusterId) {
-    if (!this.#state.clusters[clusterId]) {
-      this.#state.clusters[clusterId] = {
-        clusterId,
-        label: clusterId,
-        nodeIds: [],
-      }
-    }
-
-    return this.#state.clusters[clusterId]
+    return this.#clusterControl.ensureCluster(clusterId)
   }
 
   #addNodeToCluster(sessionId, clusterId) {
-    if (typeof clusterId !== 'string' || clusterId.trim().length === 0) {
-      return
-    }
-
-    const normalizedClusterId = clusterId.trim()
-    const cluster = this.#ensureCluster(normalizedClusterId)
-    if (!cluster.nodeIds.includes(sessionId)) {
-      cluster.nodeIds.push(sessionId)
-    }
-  }
-
-  #removeNodeFromOtherClusters(sessionId, clusterId) {
-    for (const [candidateId, cluster] of Object.entries(
-      this.#state.clusters as JsonRecord,
-    )) {
-      if (candidateId === clusterId) {
-        continue
-      }
-      cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
-    }
+    return this.#clusterControl.addNodeToCluster(sessionId, clusterId)
   }
 
   #masterClusterId(sessionId) {
-    return Object.values(this.#state.clusters as JsonRecord).find(
-      (cluster) => cluster.masterSessionId === sessionId,
-    )?.clusterId
+    return this.#clusterControl.masterClusterId(sessionId)
   }
 
   #managedClusterId(sessionId) {
-    return Object.values(this.#state.clusters as JsonRecord).find((cluster) =>
-      cluster.nodeIds.includes(sessionId),
-    )?.clusterId
+    return this.#clusterControl.managedClusterId(sessionId)
   }
 
   #managingMasterSessionId(sessionId) {
-    const clusterId = this.#managedClusterId(sessionId)
-    if (!clusterId) {
-      return undefined
-    }
-
-    const masterSessionId = this.#state.clusters[clusterId]?.masterSessionId
-    return masterSessionId && this.#state.sessions[masterSessionId]
-      ? masterSessionId
-      : undefined
+    return this.#clusterControl.managingMasterSessionId(sessionId)
   }
 
   #isSessionFrozen(sessionId) {
-    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-    const clusterId = this.#managedClusterId(sessionId)
-    return (
-      node?.frozen === true || this.#state.clusters[clusterId]?.frozen === true
-    )
-  }
-
-  #syncSessionRoleAndCluster(sessionId) {
-    const session = this.#state.sessions[sessionId]
-    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-    if (!session || !node) {
-      return
-    }
-
-    const masterClusterId = this.#masterClusterId(sessionId)
-    if (masterClusterId) {
-      session.role = 'master'
-      node.role = 'master'
-      node.clusterId = masterClusterId
-      session.updatedAt = now()
-      return
-    }
-
-    session.role = 'worker'
-    node.role = 'worker'
-    node.clusterId = this.#managedClusterId(sessionId)
-    session.updatedAt = now()
-  }
-
-  #normalizeClusterNodeIds(nodeIds) {
-    if (!Array.isArray(nodeIds)) {
-      return []
-    }
-
-    const seen = new Set()
-    const normalized = []
-    for (const nodeId of nodeIds) {
-      if (typeof nodeId !== 'string' || nodeId.trim().length === 0) {
-        continue
-      }
-
-      const sessionId = nodeId.trim()
-      if (seen.has(sessionId)) {
-        continue
-      }
-
-      const session = this.#state.sessions[sessionId]
-      if (!session || session.role === 'master') {
-        continue
-      }
-
-      seen.add(sessionId)
-      normalized.push(sessionId)
-    }
-
-    return normalized
-  }
-
-  #assignMaster(clusterId, sessionId, ctx: JsonRecord = undefined) {
-    const cluster = this.#ensureCluster(clusterId)
-    const session = this.#state.sessions[sessionId]
-    const node = this.#state.nodes.find((item) => item.sessionId === sessionId)
-
-    if (!session || !node) {
-      throw new Error(`Unknown master session: ${sessionId}`)
-    }
-
-    const alreadyAssigned = cluster.masterSessionId === sessionId
-
-    const staleMasterIds = new Set()
-    if (cluster.masterSessionId && cluster.masterSessionId !== sessionId) {
-      staleMasterIds.add(cluster.masterSessionId)
-    }
-
-    for (const [candidateClusterId, candidateCluster] of Object.entries(
-      this.#state.clusters as JsonRecord,
-    )) {
-      candidateCluster.nodeIds = candidateCluster.nodeIds.filter(
-        (nodeId) => nodeId !== sessionId,
-      )
-
-      if (
-        candidateClusterId !== clusterId &&
-        candidateCluster.masterSessionId === sessionId
-      ) {
-        delete candidateCluster.masterSessionId
-      }
-    }
-
-    for (const candidateNode of this.#state.nodes) {
-      if (
-        candidateNode.clusterId === clusterId &&
-        candidateNode.role === 'master' &&
-        candidateNode.sessionId !== sessionId
-      ) {
-        staleMasterIds.add(candidateNode.sessionId)
-      }
-    }
-
-    cluster.masterSessionId = sessionId
-    cluster.nodeIds = cluster.nodeIds.filter((nodeId) => nodeId !== sessionId)
-    session.role = 'master'
-    session.updatedAt = now()
-    node.role = 'master'
-    node.clusterId = clusterId
-
-    for (const staleMasterId of staleMasterIds) {
-      this.#syncSessionRoleAndCluster(staleMasterId)
-    }
-
-    if (!alreadyAssigned) {
-      this.#appendKernelEvent(
-        'role.assigned',
-        { clusterId, masterSessionId: sessionId },
-        ctx ?? { actor: { kind: 'runtime' } },
-      )
-    }
+    return this.#clusterControl.isSessionFrozen(sessionId)
   }
 
   // Restart recovery for the intent layer: subscriptions and pending slots
@@ -3597,96 +2935,8 @@ export class RuntimeSessionManager {
     this.#broadcast(event)
   }
 
-  #loopCoderSessionId(cluster) {
-    const existing = cluster.loopState?.coderSessionId
-    if (
-      existing &&
-      cluster.nodeIds.includes(existing) &&
-      this.#state.sessions[existing]
-    ) {
-      return existing
-    }
-
-    return cluster.nodeIds.find((sessionId) => {
-      const session = this.#state.sessions[sessionId]
-      return session && session.role !== 'master'
-    })
-  }
-
-  #applyFreeze(
-    { targetId, reason, source, masterReason }: JsonRecord,
-    ctx: JsonRecord,
-  ) {
-    const cluster = this.#state.clusters[targetId]
-    const session = this.#state.sessions[targetId]
-    const sourceSessionId =
-      typeof source === 'string' && this.#state.sessions[source]
-        ? source
-        : undefined
-    const finalReason = reason ?? masterReason ?? 'Frozen.'
-
-    let targetSessionIds = []
-    if (cluster) {
-      cluster.frozen = true
-      cluster.freezeReason = finalReason
-      this.#stopClusterLoopSubscriptions(cluster.clusterId, finalReason, ctx)
-      targetSessionIds = [...cluster.nodeIds]
-    } else if (session) {
-      targetSessionIds = [session.sessionId]
-      const clusterId =
-        this.#managedClusterId(session.sessionId) ??
-        this.#masterClusterId(session.sessionId)
-      if (clusterId) {
-        this.#stopClusterLoopSubscriptions(clusterId, finalReason, ctx)
-      }
-    } else {
-      throw new Error(`Unknown freeze target: ${targetId}`)
-    }
-
-    const envelope = sourceSessionId
-      ? this.#createEnvelope(sourceSessionId)
-      : undefined
-    for (const targetSessionId of targetSessionIds) {
-      const node = this.#state.nodes.find(
-        (item) => item.sessionId === targetSessionId,
-      )
-      if (node) {
-        node.frozen = true
-        node.freezeReason = finalReason
-        node.masterReason =
-          typeof masterReason === 'string' && masterReason.trim().length > 0
-            ? masterReason.trim()
-            : node.masterReason
-      }
-
-      if (envelope && this.#state.sessions[targetSessionId]) {
-        this.#addEdge({
-          source: sourceSessionId,
-          target: targetSessionId,
-          kind: 'freeze',
-          envelope: { ...envelope, callId: randomUUID() },
-          label: 'freeze',
-          frozen: true,
-          freezeReason: finalReason,
-          masterReason,
-        })
-      }
-    }
-
-    this.#appendKernelEvent(
-      'freeze.applied',
-      { targetId, targetSessionIds, sourceSessionId },
-      ctx,
-      { reason: finalReason },
-    )
-    this.#touch()
-    this.#broadcast({
-      type: 'freeze.applied',
-      targetId,
-      reason: finalReason,
-      state: this.getState(),
-    })
-    return { ok: true, state: this.getState() }
+  #applyFreeze(input: JsonRecord, ctx: JsonRecord) {
+    return this.#clusterControl.applyFreeze(input, ctx)
   }
 
   #cmdReport(input: JsonRecord = {}, ctx: JsonRecord) {
