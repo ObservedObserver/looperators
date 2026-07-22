@@ -216,14 +216,15 @@ setTimeout(() => process.exit(0), 25)
   }
 })
 
-test('Codex membrane thread params mount the handoff server under the mcp__ name', () => {
+test('Codex membrane thread params use the raw server name for one model-facing mcp__ prefix', () => {
   const membrane = { bridgeUrl: 'http://127.0.0.1:9999', token: 'unit-token' }
   const handoff = createMcpHandoff(membrane, { keepBootstrap: true })
 
   try {
     const params = codexMembraneThreadParamsForTest(handoff)
-    const server = params.config.mcp_servers.mcp__orrery_membrane
-    assert.ok(server, 'membrane server is registered under mcp__orrery_membrane')
+    const server = params.config.mcp_servers.orrery_membrane
+    assert.ok(server, 'membrane server is registered under the raw orrery_membrane name')
+    assert.equal(params.config.mcp_servers.mcp__orrery_membrane, undefined)
     assert.equal(server.command, process.execPath)
     assert.match(server.args[0], /membraneMcpServer\.js$/)
     assert.equal(
@@ -247,10 +248,10 @@ test('Codex elicitation responses gate MCP tool approvals by server and mode', (
   const membraneApproval = {
     method: 'mcpServer/elicitation/request',
     params: {
-      serverName: 'mcp__orrery_membrane',
+      serverName: 'orrery_membrane',
       mode: 'form',
       _meta: { codex_approval_kind: 'mcp_tool_call' },
-      message: 'Allow the mcp__orrery_membrane MCP server to run tool "report"?',
+      message: 'Allow the orrery_membrane MCP server to run tool "report"?',
       requestedSchema: { type: 'object', properties: {} },
     },
   }
@@ -289,7 +290,7 @@ test('Codex elicitation responses gate MCP tool approvals by server and mode', (
   const trueElicitation = {
     method: 'mcpServer/elicitation/request',
     params: {
-      serverName: 'mcp__orrery_membrane',
+      serverName: 'orrery_membrane',
       mode: 'form',
       message: 'Fill in this form',
       requestedSchema: { type: 'object', properties: { name: { type: 'string' } } },
@@ -447,7 +448,7 @@ test('Codex run mounts the membrane per thread and settles when the app-server d
     assert.equal(turnStart.params.sandboxPolicy.type, 'workspaceWrite')
     assert.equal(turnStart.params.approvalsReviewer, 'auto_review')
     const membraneServer =
-      threadStart.params.config.mcp_servers.mcp__orrery_membrane
+      threadStart.params.config.mcp_servers.orrery_membrane
     assert.ok(membraneServer, 'thread/start carries the membrane mcp server')
     assert.equal(membraneServer.env.ORRERY_MEMBRANE_BOOTSTRAP_KEEP, '1')
     assert.equal(threadStart.params.developerInstructions, membraneSystemPrompt())
