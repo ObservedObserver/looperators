@@ -1,7 +1,7 @@
 {
   "name": "orrery",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A loop-native desktop tool for agent workflows.",
   "author": "ObservedObserver",
   "type": "module",
