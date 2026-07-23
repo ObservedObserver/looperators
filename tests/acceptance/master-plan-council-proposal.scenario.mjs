@@ -50,6 +50,7 @@ export async function run({ orrery, provider, modelPreset, workDir, log }) {
       'On this first turn, inspect your Scope and turn this one request into a durable Workflow Proposal:',
       '"Use two independent planners to inspect README.md and src/queue.js, compare crash-durable queue designs, cross-review each other once, and synthesize one staged implementation plan."',
       'Choose Plan Council, inherit your current provider and workspace for all participants, and use a stable idempotency key.',
+      'The planners array must contain exactly two independent planners and reviewTopology must be "full-mesh". Cross-review is a built-in Plan Council phase; do not add a reviewer or cross-review entry as a third planner.',
       'Create the Proposal only. Do not commit it, do not create raw sessions, and stop after reporting the proposal id and any warnings.',
     ].join('\n'),
   });
@@ -74,6 +75,7 @@ export async function run({ orrery, provider, modelPreset, workDir, log }) {
   assert.equal(proposed.status, 'proposed');
   assert.equal(proposed.validation.errors.length, 0);
   assert.equal(proposed.validation.requiresHumanApproval, true);
+  assert.equal(proposed.proposedPlan.recipeInput.input.reviewTopology, 'full-mesh');
   assert.equal(proposed.proposedPlan.participants.filter((item) => item.role === 'Planner').length, 2);
   assert.ok(proposed.proposedPlan.participants.every((item) => item.workspace.access === 'read'));
   assert.ok(

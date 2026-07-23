@@ -289,22 +289,22 @@ test('Scope capability rejects cross-scope participants and cumulative session e
   }
 })
 
-test('Review Proposal and execution keep the Reviewer read-only on every authoring entry', async () => {
+test('Review Proposal keeps writable defaults native-auto and the Reviewer read-only', async () => {
   const { runtime, cleanup } = harness('orrery-workflow-review-safety-')
   try {
-    await masterScope(runtime)
+    const { masterSessionId } = await masterScope(runtime)
     const endpoint = (label, prompt, runtimeMode) => ({
       kind: 'new', label, prompt, cwd: process.cwd(), workMode: 'local',
       providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
-      runtimeSettings: { runtimeMode },
+      ...(runtimeMode ? { runtimeSettings: { runtimeMode } } : {}),
     })
     const proposed = await runtime.dispatchCommand({
       commandId: 'standalone-review-propose', idempotencyKey: 'standalone-review-propose',
-      kind: 'propose_workflow', actor: { kind: 'human' },
+      kind: 'propose_workflow', actor: { kind: 'master', ref: masterSessionId },
       input: {
         proposalId: 'proposal-review-safety', scopeId: 'scope-1', recipe: 'review', objective: 'Implement and review safely.',
         input: {
-          coder: endpoint('Coder', 'Implement the change.', 'auto-accept-edits'),
+          coder: endpoint('Coder', 'Implement the change.'),
           reviewer: {
             kind: 'new', label: 'Reviewer', instruction: 'Review correctness.',
             providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
@@ -314,7 +314,10 @@ test('Review Proposal and execution keep the Reviewer read-only on every authori
         },
       },
     })
+    const coderPlan = proposed.proposal.proposedPlan.participants.find((item) => item.key === 'coder')
     const reviewerPlan = proposed.proposal.proposedPlan.participants.find((item) => item.key === 'reviewer')
+    assert.equal(coderPlan.workspace.access, 'write')
+    assert.equal(coderPlan.endpoint.runtimeSettings.runtimeMode, 'auto')
     assert.equal(reviewerPlan.workspace.access, 'read')
     assert.equal(reviewerPlan.endpoint.runtimeSettings.runtimeMode, 'approval-required')
     assert.equal(reviewerPlan.endpoint.runtimeSettings.sandbox, 'read-only')
@@ -328,7 +331,9 @@ test('Review Proposal and execution keep the Reviewer read-only on every authori
       kind: 'commit_workflow', actor: { kind: 'human' },
       input: { proposalId: 'proposal-review-safety', expectedBaseVersion: 0 },
     })
+    const coderSessionId = committed.executionMapping.participantSessionIds.coder
     const reviewerSessionId = committed.executionMapping.participantSessionIds.reviewer
+    assert.equal(runtime.getState().sessions[coderSessionId].runtimeSettings.runtimeMode, 'auto')
     assert.equal(runtime.getState().sessions[reviewerSessionId].runtimeSettings.runtimeMode, 'approval-required')
     assert.equal(runtime.getState().sessions[reviewerSessionId].runtimeSettings.sandbox, 'read-only')
   } finally {

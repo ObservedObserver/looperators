@@ -208,6 +208,33 @@ test('validation: timer/schedule pairing, minimum interval, and action shape', a
   }
 })
 
+test('a schedule beyond the Node timeout limit stays parked instead of overflowing into an immediate tick', async () => {
+  const { manager, cleanup } = harness('orrery-timer-long-delay-')
+  try {
+    const runtime = manager()
+    const target = await createIdleSession(runtime, 'Long Delay Target')
+    const authored = authorTimer(runtime, target, {
+      on: { on: 'schedule', everySeconds: 3_000_000 },
+    })
+
+    await delay(100)
+
+    assert.equal(
+      eventsOfType(runtime, 'external.timer').filter(
+        (event) => event.payload.subscriptionId === authored.subscription.id
+      ).length,
+      0,
+      'setTimeout overflow must not turn a multi-day schedule into an immediate tick'
+    )
+    assert.equal(
+      runtime.getState().subscriptions[authored.subscription.id].state,
+      'active'
+    )
+  } finally {
+    cleanup()
+  }
+})
+
 test('freeze gates scheduled activation; the coalesced slot is the dirty flag', async () => {
   const { manager, cleanup } = harness('orrery-timer-freeze-')
   try {

@@ -5,7 +5,10 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { RuntimeSessionManager as BaseRuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
-import { deterministicRuntimeSessionManager } from './support/deterministic-provider.mjs'
+import {
+  DeterministicProviderAdapter,
+  deterministicRuntimeSessionManager,
+} from './support/deterministic-provider.mjs'
 
 const RuntimeSessionManager = deterministicRuntimeSessionManager(BaseRuntimeSessionManager)
 
@@ -886,6 +889,54 @@ test('hero loop preset compiles to S1/S2 and walks the §12.5 sequence', async (
         (edge) => edge.kind === 'resume-session' && edge.source === master.sessionId
       )
     assert.ok(masterEdges.length >= 3, 'each approved firing drew a master edge')
+  } finally {
+    cleanup()
+  }
+})
+
+test('hero loop reviewer inherits the governing Master provider instance and model', async () => {
+  const { manager, cleanup, storageFile } = harness('orrery-subs-reviewer-provider-')
+  try {
+    const runtime = manager({
+      storageFile,
+      providerAdapters: new Map([
+        ['claude-code', new DeterministicProviderAdapter()],
+        ['codex', new DeterministicProviderAdapter({ kind: 'codex' })],
+      ]),
+    })
+    const coder = await createIdleSession(runtime, 'Coder')
+    runtime.upsertCluster({
+      clusterId: 'c1',
+      label: 'Provider inheritance',
+      nodeIds: [coder],
+      loopPolicy: {
+        until: { whenReport: { verdict: 'clean' } },
+        onStop: 'freeze',
+        maxIterations: 2,
+      },
+    })
+    const master = await runtime.createMasterForCluster({
+      clusterId: 'c1',
+      prompt: 'master bootstrap',
+      label: 'Codex Master',
+      cwd: process.cwd(),
+      providerKind: 'codex',
+      providerInstanceId: 'default-codex',
+      runtimeSettings: { runtimeMode: 'auto', model: 'codex-test-model' },
+    })
+    await waitFor(
+      'Codex master idle',
+      () => runtime.getState().sessions[master.sessionId]?.status === 'idle'
+    )
+
+    await runtime.startMasterLoop({ clusterId: 'c1' })
+    const s1 = Object.values(runtime.getState().subscriptions).find(
+      (subscription) => subscription.label === 'S1'
+    )
+    const reviewer = runtime.getState().sessions[s1.target.sessionId]
+    assert.equal(reviewer.providerKind, 'codex')
+    assert.equal(reviewer.providerInstanceId, 'default-codex')
+    assert.equal(reviewer.runtimeSettings.model, 'codex-test-model')
   } finally {
     cleanup()
   }

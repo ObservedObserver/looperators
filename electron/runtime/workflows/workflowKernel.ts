@@ -8,6 +8,7 @@
 // grow, that is a design signal — prefer routing new needs through existing
 // command entries (cmd*) over adding raw state access.
 import type { AsyncLocalStorage } from 'node:async_hooks'
+import type { ControlTransaction } from '../control/controlTransaction.js'
 import type { JsonRecord } from '../runtimeCommon.js'
 
 export type WorkflowKernel = {
@@ -15,7 +16,7 @@ export type WorkflowKernel = {
   readonly state: JsonRecord
   readonly kernelStore: any
   readonly channelStore: any
-  readonly controlCommandContext: AsyncLocalStorage<JsonRecord>
+  readonly controlCommandContext: AsyncLocalStorage<ControlTransaction>
   readonly classicWorkflowInFlight: Set<string>
   readonly planCouncilInFlight: Set<string>
   readonly goalLoopInFlight: Set<string>

@@ -12,11 +12,11 @@ import {
   membraneSystemPrompt,
 } from '../claudeRuntimeShared.js'
 
-// Codex qualifies MCP tools as `<server>__<tool>`, so registering the bridge
-// server under this name yields model-facing tool names identical to the
-// Claude adapters' (`mcp__orrery_membrane__report`, ...) — every membrane
-// prompt in the runtime works verbatim across providers.
-export const codexMembraneServerName = 'mcp__orrery_membrane'
+// Codex qualifies MCP tools as `mcp__<server>__<tool>`. Register the raw
+// server name here so the model-facing tools match the Claude adapters'
+// (`mcp__orrery_membrane__report`, ...). Including `mcp__` in this name would
+// double-prefix every tool and make the cross-provider membrane prompts lie.
+export const codexMembraneServerName = 'orrery_membrane'
 
 type RuntimeSettings = Record<string, any>
 

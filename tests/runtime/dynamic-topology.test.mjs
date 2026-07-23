@@ -23,7 +23,7 @@ async function idle(runtime, label) {
   await waitFor(`${label} idle`, () => runtime.getState().sessions[result.sessionId]?.status === 'idle')
   return result.sessionId
 }
-function createAction(maxFanOut = 2) {
+function createAction(maxFanOut = 2, workspaceAccess = 'read-only') {
   return {
     kind: 'create',
     forEach: { kind: 'report-issues' },
@@ -31,12 +31,40 @@ function createAction(maxFanOut = 2) {
       templateId: 'bounded-triage-v1', labelPrefix: 'Triage', role: 'triage',
       prompt: 'Investigate the assigned issue. ORRERY_DELAY',
       providerKind: 'claude-code', providerInstanceId: 'default-claude-sdk',
-      workspace: { access: 'read-only', workMode: 'local' },
+      workspace: {
+        access: workspaceAccess,
+        workMode: workspaceAccess === 'workspace-write' ? 'worktree' : 'local',
+      },
       retention: 'archive-on-stop',
     },
     limits: { maxGenerationDepth: 2, maxSessions: 8, maxFanOut, maxPlanVersions: 10 },
   }
 }
+
+test('writable dynamic participants use provider-native auto mode', async () => {
+  const runtime = new RuntimeSessionManager()
+  try {
+    const source = await idle(runtime, 'Writable spawn reporter')
+    const target = await idle(runtime, 'Writable spawn owner')
+    runtime.authorSubscription({
+      id: 'spawn-writable-triage', sourceSessionId: source,
+      on: { on: 'report', match: { verdict: 'issues' } }, targetSessionId: target,
+      action: createAction(1, 'workspace-write'), gate: 'auto', concurrency: 'queue', stop: { maxFirings: 1 },
+    })
+    await runtime.handleMembraneRequest({
+      tool: 'report', source,
+      input: { type: 'verdict', verdict: 'issues', issues: [{ id: 'write-one', message: 'Fix it' }] },
+    })
+    const group = await waitFor('writable dynamic spawn', () =>
+      Object.values(runtime.getState().dynamicSpawnGroups ?? {})[0],
+    )
+    const child = runtime.getState().sessions[group.children[0].sessionId]
+    assert.equal(child.runtimeSettings.runtimeMode, 'auto')
+    assert.equal(child.runtimeSettings.sandbox, 'workspace-write')
+  } finally {
+    runtime.killAll()
+  }
+})
 
 test('typed issues spawn bounded triage participants in the inherited Scope and survive restart without duplication', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-dynamic-topology-'))

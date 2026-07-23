@@ -52,6 +52,13 @@ export async function run({ orrery, provider, workDir, log }) {
     },
     { timeoutMs: 240_000 }
   )
+
+  // Freeze as soon as the coverage threshold is reached. A real provider turn
+  // can take longer than the 15s timer interval, so waiting for idle while the
+  // schedule remains active can continuously drain a coalesced next beat.
+  // Freezing first lets the in-flight turn settle without admitting another.
+  const { latestSeq: freezeSeq } = await orrery.kernelEvents({ limit: 1 })
+  await orrery.freeze({ target: target.sessionId, reason: 'Acceptance freeze mid-schedule' })
   await orrery.waitForIdle(target.sessionId)
 
   // Causal chains: every pending activation of this edge chains to a tick
@@ -87,10 +94,8 @@ export async function run({ orrery, provider, workDir, log }) {
     `the summarizer must answer the beats, got ${beatReplies.length} beat replies`
   )
 
-  // Freeze the target mid-schedule: beats keep landing in the log, but no
-  // new activation executes — the approved slot parks as the dirty flag.
-  const { latestSeq: freezeSeq } = await orrery.kernelEvents({ limit: 1 })
-  await orrery.freeze({ target: target.sessionId, reason: 'Acceptance freeze mid-schedule' })
+  // While frozen, beats keep landing in the log, but no new activation
+  // executes — the approved slot parks as the dirty flag.
   log('target frozen; waiting for a beat to land while frozen')
   await orrery.waitFor(
     'a tick fact while frozen',
@@ -157,10 +162,12 @@ export async function run({ orrery, provider, workDir, log }) {
     },
     { timeoutMs: 90_000 }
   )
+  // Stop future ticks before waiting for the drained real turn to settle;
+  // otherwise a slower provider can continuously pick up the next beat.
+  await orrery.stopSubscription(sub.id, { reason: 'scenario cleanup' })
   await orrery.waitForIdle(target.sessionId)
   log('unfreeze lifted the durable gate and drained the parked beat into a real Agent turn')
 
-  await orrery.stopSubscription(sub.id, { reason: 'scenario cleanup' })
   const state = await orrery.state()
   for (const session of Object.values(state.sessions)) {
     assert.equal(

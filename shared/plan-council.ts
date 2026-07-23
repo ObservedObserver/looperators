@@ -224,7 +224,7 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
     'You are an independent Planner in an Orrery Plan Council.',
     'This is the independent proposal phase. No peer proposal has been delivered yet; cross-review will happen in a later activation.',
     'Inspect only the project workspace in read-only mode. Never inspect Orrery channel/inbox directories or search for other Council participants.',
-    'Use provider-native file read/search tools when needed. Do not run shell commands, edit files, create commits, or start other Agents.',
+    'Use provider-native file read/search tools when needed. If the provider exposes reads through a shell-backed tool, issue exactly one read-only file read or search command per tool call; never chain commands, use shell control operators, or add formatting commands. Do not edit files, create commits, or start other Agents.',
     `Planning task: ${trimmed(objective)}`,
     trimmed(roleLabel) ? `Your independent perspective: ${trimmed(roleLabel)}. Use that perspective as an emphasis, while still covering the whole task.` : undefined,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
@@ -235,7 +235,7 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
 export function crossReviewPrompt(reviewFocus?: string) {
   return [
     'Cross-review the other planners\' proposals delivered in your context channel.',
-    'Do not revise your original proposal and do not edit files.',
+    'Use only the delivered proposal context. Do not inspect the project workspace, run shell commands, revise your original proposal, or edit files.',
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'For each peer proposal, cite at least one specific claim or design choice. Identify agreements, conflicts, missing constraints, and recommended changes. Finish with the decisions a synthesizer should make. Keep the response under 900 words, then stop.',
   ].filter(Boolean).join('\n\n')
@@ -247,6 +247,7 @@ export function synthesizerPrompt(objective: string, reviewFocus?: string) {
     `Original planning task: ${trimmed(objective)}`,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'Read every proposal and peer review delivered in your context channel.',
+    'Use only the delivered proposal and peer-review context. Do not inspect the project workspace or run shell commands; all required evidence has already been delivered.',
     'Produce one final plan with: consensus, material disagreements, explicit choices and reasons, rejected alternatives, staged implementation tasks, risks, and a concrete verification plan. Keep the response under 1,800 words. Do not edit files, then stop.',
   ].filter(Boolean).join('\n\n')
 }

@@ -36,7 +36,8 @@ export async function run({ orrery, provider, workDir, log }) {
       masterSessionId: master.sessionId, recipe: 'review', objective: 'Check the Queue API once.',
       input: {
         coder: {
-          kind: 'new', label: 'Queue Coder', prompt: 'Read README.md and queue.js, make no changes, summarize the current API, then stop.',
+          kind: 'new', label: 'Queue Coder',
+          prompt: 'Read README.md and queue.js, make no changes, summarize the current API, then stop. If reads use a shell-backed tool, issue exactly one sed or rg file-read command per tool call; do not use shell control operators, formatting commands, checksums, stat, or git status.',
           cwd: workDir, workMode: 'local', ...provider, providerInstanceId,
           runtimeSettings: { runtimeMode: 'approval-required' },
         },
@@ -63,6 +64,10 @@ export async function run({ orrery, provider, workDir, log }) {
   const baseMapping = base.executionMapping;
   await orrery.waitForIdle(baseMapping.participantSessionIds.coder, { timeoutMs: 300_000 });
   await orrery.waitForIdle(baseMapping.participantSessionIds.reviewer, { timeoutMs: 300_000 });
+  // Reaching the base Review lap cap emits a Governor wakeup and can activate
+  // the Master while the Reviewer is still finishing. Do not race that
+  // governed turn with the explicit patch-authoring instruction below.
+  await orrery.waitForIdle(master.sessionId, { timeoutMs: 300_000 });
   const beforePatch = await orrery.state();
   const beforeSessionCount = Object.keys(beforePatch.sessions).length;
 
@@ -71,6 +76,8 @@ export async function run({ orrery, provider, workDir, log }) {
       `Inspect your Scope and active Workflow ${base.plan.workflowId} v1.`,
       'Propose, but do not commit, one versioned Workflow Patch that adds a read-only specialist verifier named security-verifier observing the coder.',
       'The verifier should inspect queue.js for unsafe input handling. Inherit your current provider and workspace.',
+      'You must actually call mcp__orrery_membrane__propose_workflow_patch exactly once. Printing or describing a JSON patch is not a Proposal.',
+      'Use operations=[{op:"add-verifier", verifier:{key:"security-verifier", label:"security-verifier", prompt:"Inspect queue.js for unsafe input handling."}, observes:["coder"]}]. Keep all verifier fields nested under verifier; the operation discriminator is op, not type.',
       'Use reason "Add an independent security check" and idempotencyKey "m2-real-add-verifier".',
       'Do not mutate raw sessions or relationships. Stop after reporting the Patch impact and rollback.',
     ].join('\n'),
