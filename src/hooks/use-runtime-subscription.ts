@@ -2,13 +2,18 @@ import { type Dispatch, type SetStateAction, useEffect } from 'react';
 
 import type { GraphState, KernelEvent, RuntimeTerminal } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
-import { applyLightweightRuntimeEvent, preferRuntimeSnapshot } from '../../shared/runtime-state-patch';
+import {
+  applyLightweightRuntimeEvent,
+  applyNodePositionUpdates,
+  preferRuntimeSnapshot,
+} from '../../shared/runtime-state-patch';
 
 const streamRenderBatchMs = 50;
 
 export function useRuntimeSubscription({
   runtimeApi,
   setRuntimeState,
+  applyRuntimeStreamEvents,
   setSelectedSessionId,
   setRuntimeError,
   syncTerminalFromEvent,
@@ -17,6 +22,7 @@ export function useRuntimeSubscription({
 }: {
   runtimeApi: RuntimeApi | undefined;
   setRuntimeState: Dispatch<SetStateAction<GraphState>>;
+  applyRuntimeStreamEvents: (events: Parameters<typeof applyLightweightRuntimeEvent>[1][]) => void;
   setSelectedSessionId: Dispatch<SetStateAction<string | null | undefined>>;
   setRuntimeError: Dispatch<SetStateAction<string | undefined>>;
   syncTerminalFromEvent: (terminal: RuntimeTerminal) => void;
@@ -47,7 +53,7 @@ export function useRuntimeSubscription({
       if (events.length === 0) {
         return;
       }
-      setRuntimeState((current) => events.reduce<GraphState>((next, event) => applyLightweightRuntimeEvent(next, event) as GraphState, current));
+      applyRuntimeStreamEvents(events);
     };
 
     const enqueueStreamEvent = (event: Parameters<typeof applyLightweightRuntimeEvent>[1]) => {
@@ -90,6 +96,14 @@ export function useRuntimeSubscription({
         setRuntimeState((current) => preferRuntimeSnapshot(current, event.state) as GraphState);
       } else if (event.type === 'provider.runtime' || event.type === 'session.stream') {
         enqueueStreamEvent(event);
+      } else if (event.type === 'node.positions.updated') {
+        setRuntimeState((current) =>
+          applyNodePositionUpdates(
+            current,
+            event.positions,
+            event.updatedAt,
+          ) as GraphState
+        );
       }
       if ('terminal' in event) {
         syncTerminalFromEvent(event.terminal);
@@ -104,5 +118,14 @@ export function useRuntimeSubscription({
       discardPendingStreamEvents();
       unsubscribe();
     };
-  }, [ingestKernelEvents, restoreCwdFallback, runtimeApi, setRuntimeError, setRuntimeState, setSelectedSessionId, syncTerminalFromEvent]);
+  }, [
+    applyRuntimeStreamEvents,
+    ingestKernelEvents,
+    restoreCwdFallback,
+    runtimeApi,
+    setRuntimeError,
+    setRuntimeState,
+    setSelectedSessionId,
+    syncTerminalFromEvent,
+  ]);
 }

@@ -25,6 +25,9 @@ import type { RuntimeQueries } from '../queries/runtimeQueries.js'
 import {
   type JsonRecord,
   clone,
+  compactProviderRuntimeEvent,
+  compactRuntimeItem,
+  compactRuntimePlan,
   isObject,
   nonEmptyString,
   now,
@@ -823,7 +826,9 @@ export class SessionRuntimeController {
     }
     session.nativeEvents.push(nativeEvent)
     this.providerService.recordNativeEvent(nativeEvent)
-    truncateEvents(session.nativeEvents)
+    if (session.nativeEvents.length > 40) {
+      session.nativeEvents.splice(0, session.nativeEvents.length - 40)
+    }
   }
 
   private recordProviderSession(sessionId, event) {
@@ -832,12 +837,27 @@ export class SessionRuntimeController {
       return
     }
 
-    session.providerSessionId = event.providerSessionId
-    session.backendSessionId = event.providerSessionId
-    if (nonEmptyString(event.resumeCursor)) {
-      session.providerResumeCursor = event.resumeCursor
+    const providerSessionId = event.providerSessionId.trim()
+    const resumeCursor = nonEmptyString(event.resumeCursor)
+      ? event.resumeCursor
+      : undefined
+    if (
+      session.providerSessionId === providerSessionId &&
+      session.backendSessionId === providerSessionId &&
+      (resumeCursor === undefined ||
+        session.providerResumeCursor === resumeCursor)
+    ) {
+      return
     }
+
+    session.providerSessionId = providerSessionId
+    session.backendSessionId = providerSessionId
+    if (resumeCursor !== undefined) session.providerResumeCursor = resumeCursor
     session.updatedAt = now()
+    // The first upstream handle must survive an immediate app crash so the
+    // provider can resume. Adapter/controller deduplication guarantees this
+    // synchronous durability boundary runs once per distinct binding, not
+    // once per streamed SDK message.
     this.touch()
   }
 
@@ -852,18 +872,21 @@ export class SessionRuntimeController {
       ...event,
       sessionId,
     }
-    this.appendProviderRuntimeEvent(sessionId, normalizedEvent)
-
-    if (normalizedEvent.type === 'content.delta') {
-      this.appendContentDeltaMessage(sessionId, normalizedEvent)
+    const compactEvent = this.appendProviderRuntimeEvent(sessionId, normalizedEvent)
+    if (!compactEvent) {
+      return
     }
 
-    session.updatedAt = normalizedEvent.ts ?? now()
+    if (compactEvent.type === 'content.delta') {
+      this.appendContentDeltaMessage(sessionId, compactEvent)
+    }
+
+    session.updatedAt = compactEvent.ts ?? now()
     this.touchDeferred()
     this.broadcast({
       type: 'provider.runtime',
       sessionId,
-      providerEvent: normalizedEvent,
+      providerEvent: compactEvent,
     })
     if (normalizedEvent.type === 'item.started') {
       const context = this.runContext.get(sessionId)
@@ -932,78 +955,81 @@ export class SessionRuntimeController {
   appendProviderRuntimeEvent(sessionId, event) {
     const session = this.state.sessions[sessionId]
     if (!session) {
-      return
+      return undefined
     }
 
-    session.runtimeEvents ??= []
-    session.runtimeEvents.push(event)
+    // Log the lossless provider event, but only place its compact semantic
+    // projection in the hot state and renderer transport.
     this.providerService.recordRuntimeEvent(sessionId, event)
+    const compactEvent = compactProviderRuntimeEvent(event)
+    session.runtimeEvents ??= []
+    session.runtimeEvents.push(compactEvent)
     const removedEvents = truncateEvents(session.runtimeEvents)
     const removedDiffEvent = removedEvents.some(
       (removedEvent) => removedEvent.type === 'turn.diff.updated',
     )
-    if (event.type === 'turn.diff.updated' || removedDiffEvent) {
+    if (compactEvent.type === 'turn.diff.updated' || removedDiffEvent) {
       pruneTurnCheckpointRefs(this.checkpointHost(), sessionId)
     }
 
-    if (event.type === 'runtime.configured') {
+    if (compactEvent.type === 'runtime.configured') {
       session.effectiveRuntimeConfig = normalizeProviderEffectiveRuntimeConfig(
-        event.effectiveRuntimeConfig,
+        compactEvent.effectiveRuntimeConfig,
         session.providerKind,
         session.runtimeSettings,
       )
-      return
+      return compactEvent
     }
 
     if (
-      event.type === 'item.started' ||
-      event.type === 'item.updated' ||
-      event.type === 'item.completed'
+      compactEvent.type === 'item.started' ||
+      compactEvent.type === 'item.updated' ||
+      compactEvent.type === 'item.completed'
     ) {
-      this.upsertRuntimeActivity(session, event.item)
-      return
+      this.upsertRuntimeActivity(session, compactEvent.item)
+      return compactEvent
     }
 
-    if (event.type === 'request.opened') {
+    if (compactEvent.type === 'request.opened') {
       session.runtimeRequests ??= []
-      const existing = session.runtimeRequests.find((item) => item.id === event.request.id)
+      const existing = session.runtimeRequests.find((item) => item.id === compactEvent.request.id)
       if (existing) {
-        Object.assign(existing, event.request)
+        Object.assign(existing, compactEvent.request)
       } else {
-        session.runtimeRequests.push(event.request)
-        if (event.request.kind === 'permission' || event.request.kind === 'confirmation') {
+        session.runtimeRequests.push(compactEvent.request)
+        if (compactEvent.request.kind === 'permission' || compactEvent.request.kind === 'confirmation') {
           this.appendKernelEvent(
             'permission.requested',
             {
               sessionId,
-              requestId: event.request.id,
-              requestKind: event.request.kind,
-              title: truncateForLog(String(event.request.title ?? event.request.body ?? ''), 200),
+              requestId: compactEvent.request.id,
+              requestKind: compactEvent.request.kind,
+              title: truncateForLog(String(compactEvent.request.title ?? compactEvent.request.body ?? ''), 200),
             },
             { actor: { kind: 'provider', ref: session.providerInstanceId } },
           )
         }
       }
       truncateActivities(session.runtimeRequests)
-      return
+      return compactEvent
     }
 
-    if (event.type === 'request.resolved') {
+    if (compactEvent.type === 'request.resolved') {
       session.runtimeRequests ??= []
-      const request = session.runtimeRequests.find((item) => item.id === event.requestId)
+      const request = session.runtimeRequests.find((item) => item.id === compactEvent.requestId)
       if (request) {
-        request.status = event.status ?? 'resolved'
-        request.resolvedAt = event.ts
+        request.status = compactEvent.status ?? 'resolved'
+        request.resolvedAt = compactEvent.ts
       }
-      return
+      return compactEvent
     }
 
-    if (event.type === 'user-input.requested') {
+    if (compactEvent.type === 'user-input.requested') {
       session.runtimeUserInputRequests ??= []
-      const existing = session.runtimeUserInputRequests.find((item) => item.id === event.request.id)
+      const existing = session.runtimeUserInputRequests.find((item) => item.id === compactEvent.request.id)
       const nextRequest = {
         status: 'open',
-        ...event.request,
+        ...compactEvent.request,
       }
       if (existing) {
         Object.assign(existing, nextRequest)
@@ -1011,41 +1037,43 @@ export class SessionRuntimeController {
         session.runtimeUserInputRequests.push(nextRequest)
       }
       truncateActivities(session.runtimeUserInputRequests)
-      return
+      return compactEvent
     }
 
-    if (event.type === 'user-input.answered') {
+    if (compactEvent.type === 'user-input.answered') {
       session.runtimeUserInputRequests ??= []
-      const request = session.runtimeUserInputRequests.find((item) => item.id === event.requestId)
+      const request = session.runtimeUserInputRequests.find((item) => item.id === compactEvent.requestId)
       if (request) {
         request.status = 'answered'
-        request.answeredAt = event.ts
-        request.answer = event.answer
-        request.answers = event.answers
+        request.answeredAt = compactEvent.ts
+        request.answer = compactEvent.answer
+        request.answers = compactEvent.answers
       }
-      return
+      return compactEvent
     }
 
-    if (event.type === 'user-input.resolved') {
+    if (compactEvent.type === 'user-input.resolved') {
       session.runtimeUserInputRequests ??= []
-      const request = session.runtimeUserInputRequests.find((item) => item.id === event.requestId)
+      const request = session.runtimeUserInputRequests.find((item) => item.id === compactEvent.requestId)
       if (request) {
-        request.status = event.status ?? 'resolved'
-        request.answeredAt = event.ts
+        request.status = compactEvent.status ?? 'resolved'
+        request.answeredAt = compactEvent.ts
       }
-      return
+      return compactEvent
     }
 
-    if (event.type === 'plan.updated') {
+    if (compactEvent.type === 'plan.updated') {
       session.runtimePlans ??= []
-      const index = session.runtimePlans.findIndex((plan) => plan.id === event.plan.id)
+      const plan = compactRuntimePlan(compactEvent.plan)
+      const index = session.runtimePlans.findIndex((candidate) => candidate.id === plan.id)
       if (index >= 0) {
-        session.runtimePlans[index] = event.plan
+        session.runtimePlans[index] = plan
       } else {
-        session.runtimePlans.push(event.plan)
+        session.runtimePlans.push(plan)
       }
       truncateActivities(session.runtimePlans)
     }
+    return compactEvent
   }
 
   cancelOpenRuntimeInteractions(sessionId, ts) {
@@ -1107,6 +1135,7 @@ export class SessionRuntimeController {
   }
 
   private upsertRuntimeActivity(session, item) {
+    item = compactRuntimeItem(item)
     session.runtimeActivities ??= []
     const existing = session.runtimeActivities.find((activity) => activity.id === item.id)
     const next = {
@@ -1206,7 +1235,7 @@ export class SessionRuntimeController {
       }
     }
     session.updatedAt = now()
-    this.touch()
+    this.touchDeferred()
   }
 
   private markRunProducedOutput(sessionId) {
@@ -1753,8 +1782,7 @@ export class SessionRuntimeController {
     this.releaseWorkspaceLease(runId, 'completed')
     this.runContext.delete(sessionId)
     this.touch()
-    this.broadcast({ type: 'runtime.state', state: this.getState() })
-    return { ok: true, sessionId, kernelEventId: finishedEvent?.id, state: this.getState() }
+    return { ok: true, sessionId, kernelEventId: finishedEvent?.id }
   }
 
   failSession(sessionId, error, ctx: JsonRecord = undefined) {

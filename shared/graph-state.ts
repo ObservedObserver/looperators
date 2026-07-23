@@ -517,6 +517,8 @@ export const graphStateSchema = {
       input: {
         positions: '{ nodeId: NodeId, position: { x: number, y: number } }[]',
       },
+      output:
+        '{ ok: boolean, positions: { nodeId: NodeId, position: { x: number, y: number } }[], updatedAt: string }',
     },
   },
   runtimeEvents: [
@@ -526,6 +528,7 @@ export const graphStateSchema = {
     'session.resumed',
     'session.stream',
     'provider.runtime',
+    'node.positions.updated',
     'session.finished',
     'session.failed',
     'session.killed',

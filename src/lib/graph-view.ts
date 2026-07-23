@@ -691,32 +691,6 @@ export function nodePositionUpdatesFromFlowNodes(nodes: Node[]): NodePositionUpd
   });
 }
 
-export function applyNodePositionUpdates(state: GraphState, updates: NodePositionUpdate[]) {
-  if (updates.length === 0) {
-    return state;
-  }
-
-  const updateById = new Map(updates.map((update) => [update.nodeId, update]));
-  let changed = false;
-  const nextNodes = state.nodes.map((node) => {
-    const update = updateById.get(node.nodeId);
-    if (!update || (node.position.x === update.position.x && node.position.y === update.position.y)) {
-      return node;
-    }
-
-    changed = true;
-    return {
-      ...node,
-      position: {
-        x: update.position.x,
-        y: update.position.y,
-      },
-    };
-  });
-
-  return changed ? { ...state, nodes: nextNodes } : state;
-}
-
 export function applyFlowNodePositionUpdates(nodes: Node[], updates: NodePositionUpdate[]) {
   if (updates.length === 0) {
     return nodes;

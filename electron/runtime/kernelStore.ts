@@ -46,8 +46,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
   ts TEXT NOT NULL,
   state TEXT NOT NULL
 );
--- M0B control-plane authority. snapshots remains a compatibility mirror
--- during migration; new command commits update both rows in one transaction.
+-- M0B control-plane authority. snapshots remains a throttled compatibility
+-- fallback for pre-runtime_state databases; runtime_state is authoritative.
 CREATE TABLE IF NOT EXISTS runtime_state (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   version INTEGER NOT NULL,
@@ -249,6 +249,7 @@ export class KernelStore {
   // previous owner are dropped instead of clobbering the newer snapshot.
   #epoch = randomUUID()
   #staleSnapshotWarned = false
+  readonly #compatibilitySnapshotIntervalMs = 30_000
   databaseFile: string | undefined
   diagnostics: JsonRecord[] = []
 
@@ -271,6 +272,31 @@ export class KernelStore {
     } catch {
       // Ownership is best-effort; snapshot writes fall back to last-writer-wins.
     }
+  }
+
+  #refreshCompatibilitySnapshot(
+    seq: number,
+    ts: string,
+    serializedState: string,
+  ) {
+    const currentTime = Date.parse(ts) || Date.now()
+    const compatibilitySnapshot = this.#db
+      .prepare('SELECT ts FROM snapshots ORDER BY seq DESC LIMIT 1')
+      .get() as JsonRecord | undefined
+    const previousSnapshotAt = compatibilitySnapshot
+      ? Date.parse(String(compatibilitySnapshot.ts)) || 0
+      : 0
+    if (
+      previousSnapshotAt > 0 &&
+      currentTime - previousSnapshotAt <
+        this.#compatibilitySnapshotIntervalMs
+    ) {
+      return
+    }
+    this.#db.prepare('DELETE FROM snapshots').run()
+    this.#db
+      .prepare('INSERT INTO snapshots (seq, ts, state) VALUES (?, ?, ?)')
+      .run(seq, ts, serializedState)
   }
 
   // Constructor-time corruption that survived a successful open (page-level
@@ -511,9 +537,11 @@ export class KernelStore {
            updated_at = excluded.updated_at,
            state = excluded.state`,
       ).run(committedVersion, committedEventSeq, committedAt, serializedState)
-      this.#db.prepare('DELETE FROM snapshots').run()
-      this.#db.prepare('INSERT INTO snapshots (seq, ts, state) VALUES (?, ?, ?)')
-        .run(committedEventSeq, committedAt, serializedState)
+      this.#refreshCompatibilitySnapshot(
+        committedEventSeq,
+        committedAt,
+        serializedState,
+      )
       for (const finalization of deploymentFinalizations) {
         const deployment = this.getWorkflowDeployment(finalization.deploymentId)
         if (!deployment) {
@@ -860,10 +888,7 @@ export class KernelStore {
            updated_at = excluded.updated_at,
            state = excluded.state`,
       ).run(version, seq, ts, serialized)
-      this.#db.prepare('DELETE FROM snapshots').run()
-      this.#db
-        .prepare('INSERT INTO snapshots (seq, ts, state) VALUES (?, ?, ?)')
-        .run(seq, ts, serialized)
+      this.#refreshCompatibilitySnapshot(seq, ts, serialized)
       this.#db.exec('COMMIT')
     } catch (error) {
       this.#db.exec('ROLLBACK')
@@ -874,6 +899,15 @@ export class KernelStore {
   loadSnapshot(): { seq: number; ts: string; state: JsonRecord } | undefined {
     if (this.#closed) {
       return undefined
+    }
+
+    const durable = this.loadDurableState()
+    if (durable) {
+      return {
+        seq: durable.eventSeq,
+        ts: durable.updatedAt,
+        state: durable.state,
+      }
     }
 
     let row: JsonRecord | undefined
@@ -905,7 +939,11 @@ export class KernelStore {
       return false
     }
 
-    const row = this.#db.prepare('SELECT COUNT(*) AS count FROM snapshots').get() as
+    const row = this.#db.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM runtime_state) +
+         (SELECT COUNT(*) FROM snapshots) AS count`,
+    ).get() as
       | JsonRecord
       | undefined
     return Number(row?.count ?? 0) > 0

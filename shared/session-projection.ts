@@ -2,6 +2,8 @@
 // as graph-state). Keep the projection logic in both files identical; the
 // parity test in tests/runtime compares their outputs.
 
+const runtimeEventRetentionLimit = 2000
+
 function clone(value) {
   return structuredClone(value)
 }
@@ -186,10 +188,12 @@ function assistantMessageKey(event) {
 function projectedAssistantMessages(session, events) {
   const assistantByKey = new Map()
   const sawTextDeltaByKey = new Set()
+  const completedMessageKeys = new Set()
 
   for (const event of events) {
     if (event.type === 'message.completed' && event.message.role === 'assistant') {
       const key = event.message.providerItemId ?? event.message.runId ?? event.message.id
+      completedMessageKeys.add(key)
       const existing = assistantByKey.get(key)
       assistantByKey.set(key, {
         id: existing?.id ?? event.message.id,
@@ -257,13 +261,102 @@ function projectedAssistantMessages(session, events) {
     phase: message.phase,
     status: message.runId && completedTurns.has(message.runId) ? 'complete' : message.status,
   }))
-  const projectedRunIds = new Set(projectedMessages.map((message) => message.runId))
-  const persistedMessages = session.messages
-    .filter((message) => message.role === 'assistant')
+
+  const persistedAssistantMessages = session.messages.filter(
+    (message) => message.role === 'assistant'
+  )
+  const retainedProjectedMessages =
+    events.length < runtimeEventRetentionLimit
+      ? projectedMessages
+      : mergeCappedAssistantMessages(
+          projectedMessages,
+          persistedAssistantMessages,
+          completedMessageKeys
+        )
+  const projectedRunIds = new Set(
+    retainedProjectedMessages.map((message) => message.runId)
+  )
+  const projectedMessageIds = new Set(
+    retainedProjectedMessages.map((message) => message.id)
+  )
+  const persistedMessages = persistedAssistantMessages
+    .filter((message) => !projectedMessageIds.has(message.id))
     .filter((message) => !message.runId || !projectedRunIds.has(message.runId))
     .map((message) => clone(message))
 
-  return [...persistedMessages, ...projectedMessages]
+  return [...persistedMessages, ...retainedProjectedMessages]
+}
+
+function mergeCappedAssistantMessages(
+  projectedMessages,
+  persistedMessages,
+  completedMessageKeys
+) {
+  const projectedCountByRun = new Map()
+  for (const message of projectedMessages) {
+    if (message.runId) {
+      projectedCountByRun.set(
+        message.runId,
+        (projectedCountByRun.get(message.runId) ?? 0) + 1
+      )
+    }
+  }
+
+  const usedPersistedIds = new Set()
+  return projectedMessages.map((projected) => {
+    const projectedKey =
+      projected.providerItemId ?? projected.runId ?? projected.id
+    if (completedMessageKeys.has(projectedKey)) {
+      return projected
+    }
+
+    const exact = persistedMessages.find(
+      (persisted) =>
+        !usedPersistedIds.has(persisted.id) &&
+        (persisted.id === projected.id ||
+          Boolean(
+            projected.providerItemId &&
+              persisted.providerItemId &&
+              projected.providerItemId === persisted.providerItemId
+          ))
+    )
+    const persistedRunCandidates =
+      projected.runId && projectedCountByRun.get(projected.runId) === 1
+        ? persistedMessages.filter(
+            (persisted) =>
+              !usedPersistedIds.has(persisted.id) &&
+              persisted.runId === projected.runId
+          )
+        : []
+    const sameRun =
+      exact ??
+      (persistedRunCandidates.length === 1
+        ? persistedRunCandidates[0]
+        : undefined)
+    if (
+      !sameRun ||
+      sameRun.content.length <= projected.content.length ||
+      !sameRun.content.endsWith(projected.content)
+    ) {
+      return projected
+    }
+
+    usedPersistedIds.add(sameRun.id)
+    return {
+      id: sameRun.id,
+      sessionId: sameRun.sessionId,
+      role: 'assistant',
+      content: sameRun.content,
+      ts: projected.ts,
+      runId: sameRun.runId ?? projected.runId,
+      providerItemId: sameRun.providerItemId ?? projected.providerItemId,
+      phase: sameRun.phase ?? projected.phase,
+      status:
+        projected.status === 'complete'
+          ? 'complete'
+          : sameRun.status ?? projected.status,
+    }
+  })
 }
 
 function messageTimelineEntry(message) {

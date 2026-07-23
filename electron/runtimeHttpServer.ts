@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { URL } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
+import { createBatchedRuntimeEventEmitter } from './runtime/runtimeEventDelivery.js'
 
 const loopbackHost = '127.0.0.1'
 const defaultPort = 48274
@@ -809,13 +810,15 @@ export function createRuntimeHttpServer(
     defaultStorageFile()
   const allowedOrigins = new Set(options.corsOrigins ?? corsOriginsFromEnv())
 
-  const broadcastRuntimeEvent = (event: JsonRecord) => {
+  const sendRuntimeEvent = (event: JsonRecord) => {
     const eventId = nextEventId
     nextEventId += 1
     for (const client of clients.values()) {
       writeSseEvent(client, eventId, event)
     }
   }
+  const broadcastRuntimeEvent =
+    createBatchedRuntimeEventEmitter(sendRuntimeEvent)
 
   const runtime =
     options.runtime ??
@@ -942,18 +945,20 @@ export function createRuntimeHttpServer(
       }),
     close: () =>
       new Promise((resolve, reject) => {
+        broadcastRuntimeEvent.dispose()
         for (const client of clients.values()) {
           clearInterval(client.keepAlive)
           client.response.end()
         }
         clients.clear()
         server.close((error) => {
-          runtime.killAll()
-          if (error) {
-            reject(error)
-            return
-          }
-          resolve()
+          void Promise.resolve(runtime.killAll()).then(() => {
+            if (error) {
+              reject(error)
+              return
+            }
+            resolve()
+          }, reject)
         })
       }),
   }

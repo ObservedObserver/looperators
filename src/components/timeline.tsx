@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, type CSSProperties } from 'react';
 import { Check, ClipboardCheck, FileText, Image as ImageIcon, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -10,6 +10,11 @@ import { type ChatAttachment, type RuntimeActivity, type RuntimePlan, type Sessi
 import { formatFileSize, formatClock, formatClockSeconds } from '@/lib/format';
 import { termActionBtnCls } from '@/components/terminal';
 import { requestKindLabels } from '@/components/runtime-interaction-panel';
+
+const timelineRowContainmentStyle: CSSProperties = {
+  contentVisibility: 'auto',
+  containIntrinsicSize: 'auto 96px',
+};
 
 export function assistantLabel(agent?: string) {
   const value = agent?.toLowerCase() ?? '';
@@ -75,6 +80,7 @@ export const ChatMessage = memo(
       <div
         className={cn('border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0', isCommentary ? 'bg-ink-soft/25 text-term-dim' : undefined)}
         data-message-phase={message.phase}
+        style={isStreaming ? undefined : timelineRowContainmentStyle}
       >
         <div className="mb-1.5 flex items-center gap-2">
           {isUser ? (
@@ -100,7 +106,11 @@ export const ChatMessage = memo(
           <>
             {hasText || isStreaming ? (
               <div className={cn('text-[13px] leading-6', isCommentary ? 'text-term-dim' : 'text-term-name')}>
-                <AgentMarkdown text={message.content} streaming={isStreaming} />
+                {isStreaming ? (
+                  <span className="whitespace-pre-wrap break-words">{message.content}</span>
+                ) : (
+                  <AgentMarkdown text={message.content} />
+                )}
                 {isStreaming ? <span className="orrery-caret ml-1" /> : null}
               </div>
             ) : null}
@@ -124,9 +134,9 @@ export const ChatMessage = memo(
   },
 );
 
-export function TurnBoundaryRow({ entry }: { entry: Extract<SessionTimelineEntry, { kind: 'turn' }> }) {
+export const TurnBoundaryRow = memo(function TurnBoundaryRow({ entry }: { entry: Extract<SessionTimelineEntry, { kind: 'turn' }> }) {
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <div className="flex items-center gap-2 text-[10.5px] uppercase tracking-[0.12em] text-term-faint">
         <span className="h-px flex-1 bg-ink-line" />
         <span>{entry.status === 'started' ? 'Turn started' : 'Turn completed'}</span>
@@ -135,9 +145,9 @@ export function TurnBoundaryRow({ entry }: { entry: Extract<SessionTimelineEntry
       </div>
     </div>
   );
-}
+});
 
-export function ActivityTimelineRow({ activity }: { activity: RuntimeActivity }) {
+export const ActivityTimelineRow = memo(function ActivityTimelineRow({ activity }: { activity: RuntimeActivity }) {
   const hasDetails =
     Boolean(activity.output && activity.output.trim().length > 0) ||
     Boolean(activity.error && activity.error.trim().length > 0) ||
@@ -151,7 +161,7 @@ export function ActivityTimelineRow({ activity }: { activity: RuntimeActivity })
   const command = activity.command ?? activity.title;
 
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <div className="grid grid-cols-[16px_minmax(0,1fr)_auto] items-start gap-2.5">
         <span className={cn('text-center text-[11px] leading-6', statusMarker.cls)}>{statusMarker.char}</span>
         <span className="min-w-0 text-[12px] leading-6">
@@ -186,17 +196,17 @@ export function ActivityTimelineRow({ activity }: { activity: RuntimeActivity })
       ) : null}
     </div>
   );
-}
+});
 
-export function ToolRunTimelineRow({ turn, agent }: { turn: ToolTurn; agent?: string }) {
+export const ToolRunTimelineRow = memo(function ToolRunTimelineRow({ turn, agent }: { turn: ToolTurn; agent?: string }) {
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <ToolRunFeed turn={turn} agent={agent} />
     </div>
   );
-}
+});
 
-export function PlanTimelineRow({
+export const PlanTimelineRow = memo(function PlanTimelineRow({
   plan,
   onContinue,
   onRevise,
@@ -208,7 +218,7 @@ export function PlanTimelineRow({
   canAct: boolean;
 }) {
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <div className="flex min-w-0 items-center gap-2">
         <ClipboardCheck className="size-3.5 shrink-0 text-term-cyan" />
         <span className="text-[10px] uppercase tracking-[0.14em] text-term-cyan">plan</span>
@@ -245,9 +255,9 @@ export function PlanTimelineRow({
       </div>
     </div>
   );
-}
+});
 
-export function RequestTimelineRow({
+export const RequestTimelineRow = memo(function RequestTimelineRow({
   entry,
 }: {
   entry: Extract<SessionTimelineEntry, { kind: 'request' }> | Extract<SessionTimelineEntry, { kind: 'user-input' }>;
@@ -258,7 +268,7 @@ export function RequestTimelineRow({
   const status = entry.request.status;
 
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <div className="flex min-w-0 items-center gap-2">
         <TriangleAlert className="size-3.5 shrink-0 text-term-amber" />
         <span className="text-[10px] uppercase tracking-[0.14em] text-term-amber">{isUserInput ? 'input' : requestKindLabels[entry.request.kind]}</span>
@@ -273,14 +283,14 @@ export function RequestTimelineRow({
       <div className="mt-1 pl-[26px] text-[10.5px] uppercase tracking-[0.08em] text-term-faint">{formatClock(entry.ts)}</div>
     </div>
   );
-}
+});
 
-export function TurnDiffTimelineRow({ diff, onOpen }: { diff: TurnDiffSummary; onOpen: (turnId: string) => void }) {
+export const TurnDiffTimelineRow = memo(function TurnDiffTimelineRow({ diff, onOpen }: { diff: TurnDiffSummary; onOpen: (turnId: string) => void }) {
   const hasChanges = diff.totals.files > 0;
   const diffTone = diff.error ? 'text-term-amber' : 'text-term-green';
 
   return (
-    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0">
+    <div className="border-t border-ink-line-2 px-4 py-2.5 font-mono first:border-t-0" style={timelineRowContainmentStyle}>
       <div className="flex min-w-0 items-center gap-2">
         <FileText className={cn('size-3.5 shrink-0', diffTone)} />
         <span className={cn('text-[10px] uppercase tracking-[0.14em]', diffTone)}>diff</span>
@@ -336,15 +346,16 @@ export function TurnDiffTimelineRow({ diff, onOpen }: { diff: TurnDiffSummary; o
       )}
     </div>
   );
-}
+});
 
-export function SessionTimeline({
+export const SessionTimeline = memo(function SessionTimeline({
   entries,
   agent,
   canActOnPlan,
   onContinuePlan,
   onRevisePlan,
   onOpenTurnDiff,
+  activities,
 }: {
   entries: SessionTimelineEntry[];
   agent?: string;
@@ -352,11 +363,12 @@ export function SessionTimeline({
   onContinuePlan: (plan: RuntimePlan) => void;
   onRevisePlan: (plan: RuntimePlan) => void;
   onOpenTurnDiff: (turnId: string) => void;
+  activities?: RuntimeActivity[];
 }) {
   const toolTurnsByTurnId = useMemo(() => {
-    const activities = entries.flatMap((entry) => (entry.kind === 'activity' ? [entry.activity] : []));
-    return toolTurnsFromRuntimeActivities(activities);
-  }, [entries]);
+    const runtimeActivities = activities ?? entries.flatMap((entry) => (entry.kind === 'activity' ? [entry.activity] : []));
+    return toolTurnsFromRuntimeActivities(runtimeActivities);
+  }, [activities, entries]);
   const renderedToolTurnIds = new Set<string>();
 
   return (
@@ -390,4 +402,4 @@ export function SessionTimeline({
       })}
     </>
   );
-}
+});

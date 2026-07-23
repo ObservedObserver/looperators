@@ -50,7 +50,7 @@ test('command registry keeps journal, version, and post-commit policy canonical'
     kernelCommandKinds.filter(
       (kind) => kernelCommandPolicies[kind].affectsControlVersion === false,
     ),
-    ['provider_complete_run'],
+    ['update_node_positions', 'provider_complete_run'],
   )
   assert.deepEqual(
     kernelCommandKinds.filter(

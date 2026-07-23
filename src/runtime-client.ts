@@ -123,7 +123,7 @@ export type RuntimeApi = {
   createMasterForCluster: (input: CreateMasterForClusterInput) => Promise<{ sessionId: SessionId; state: GraphState }>;
   assignMasterToCluster: (input: AssignMasterToClusterInput) => Promise<{ state: GraphState }>;
   setClusterLoopPolicy: (input: SetClusterLoopPolicyInput) => Promise<{ state: GraphState }>;
-  updateNodePositions: (input: UpdateNodePositionsInput) => Promise<{ state: GraphState }>;
+  updateNodePositions: (input: UpdateNodePositionsInput) => Promise<{ ok: boolean; positions: UpdateNodePositionsInput['positions']; updatedAt: string }>;
   startMasterLoop: (input: StartMasterLoopInput) => Promise<{ state: GraphState }>;
   stopMasterLoop: (input: StopMasterLoopInput) => Promise<{ state: GraphState }>;
   stopLoop: (input: StopLoopInput) => Promise<{ state: GraphState }>;
@@ -213,6 +213,7 @@ const runtimeEventTypes: RuntimeEvent['type'][] = [
   'session.resumed',
   'session.stream',
   'provider.runtime',
+  'node.positions.updated',
   'session.finished',
   'session.failed',
   'session.killed',
@@ -387,7 +388,7 @@ class HttpRuntimeApi implements RuntimeApi {
   }
 
   updateNodePositions(input: UpdateNodePositionsInput) {
-    return this.#post<{ state: GraphState }>('node-positions', input);
+    return this.#post<{ ok: boolean; positions: UpdateNodePositionsInput['positions']; updatedAt: string }>('node-positions', input);
   }
 
   startMasterLoop(input: StartMasterLoopInput) {

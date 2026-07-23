@@ -1005,13 +1005,14 @@ export class RuntimeSessionManager {
     // Source adapters likewise: construction restarts them from the
     // persisted registry (ExternalIngestionService.recoverSourceAnchors).
     this.#externalIngestion.suspendAdapters()
-    this.#providerService?.closeAll?.()
+    const providerShutdown = this.#providerService?.closeAll?.()
     this.#bridge?.close()
     // The kernel store intentionally stays open: killAll is revivable (the
     // bridge and provider service relaunch lazily), and a closed store would
     // silently drop later kernel events. If a newer runtime takes over the
     // same store, this connection's snapshot writes are dropped by the
     // snapshot-owner check instead of clobbering the newer state.
+    return providerShutdown
   }
 
   respondRuntimeRequest(input: JsonRecord = {}) {

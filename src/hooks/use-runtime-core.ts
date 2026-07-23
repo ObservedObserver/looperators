@@ -1,25 +1,40 @@
 import { type Dispatch, type SetStateAction, useCallback, useMemo, useState } from 'react';
 
 import { createEmptyGraphState, type GraphState, type KernelEvent } from '@/shared/graph-state';
-import { projectSession } from '@/shared/session-projection';
+import { projectSession, projectSessionIncrementally } from '@/shared/session-projection';
 import { createDemoGraphState } from '@/shared/demo-state';
 import { useRuntimeClient } from '@/runtime-client';
 import { demoMode } from '@/lib/workspace';
 import { invalidCwdsFromDiagnostics, sessionRecoveryState } from '@/lib/diagnostics';
 import { sessionSort } from '@/lib/session-display';
 import { activityEvents } from '@/lib/graph-view';
-import { preferRuntimeSnapshot } from '../../shared/runtime-state-patch';
+import { createRuntimeStateStore } from '../../shared/runtime-state-store';
 
 export function useRuntimeCore() {
-  const [runtimeState, setRuntimeStateRaw] = useState<GraphState>(demoMode ? createDemoGraphState : createEmptyGraphState);
+  const [runtimeStateStore] = useState(() => {
+    const initialState = demoMode ? createDemoGraphState() : createEmptyGraphState();
+    return createRuntimeStateStore(initialState, {
+      projectSession: projectSessionIncrementally,
+    });
+  });
+  const [runtimeState, setRuntimeStateRaw] = useState<GraphState>(() => runtimeStateStore.getState());
   const setRuntimeState = useCallback<Dispatch<SetStateAction<GraphState>>>((update) => {
-    setRuntimeStateRaw((current) => {
-      const incoming = typeof update === 'function'
+    const next = runtimeStateStore.setState((current) => {
+      return typeof update === 'function'
         ? update(current)
         : update;
-      return preferRuntimeSnapshot(current, incoming) as GraphState;
     });
-  }, []);
+    setRuntimeStateRaw((current) => (current === next ? current : next));
+  }, [runtimeStateStore]);
+  const applyRuntimeStreamEvents = useCallback(
+    (events: Parameters<typeof runtimeStateStore.applyStreamEvents>[0]) => {
+      const result = runtimeStateStore.applyStreamEvents(events);
+      if (result.requiresRootRender) {
+        setRuntimeStateRaw((current) => (current === result.state ? current : result.state));
+      }
+    },
+    [runtimeStateStore],
+  );
   const [selectedSessionId, setSelectedSessionId] = useState<string | null | undefined>(demoMode ? 'sess-p1-accept' : undefined);
   const [runtimeError, setRuntimeError] = useState<string>();
   const runtimeClient = useRuntimeClient({ disabled: demoMode });
@@ -122,7 +137,9 @@ export function useRuntimeCore() {
     runtimeStatusText,
     runtimeUnavailableText,
     runtimeState,
+    runtimeStateStore,
     setRuntimeState,
+    applyRuntimeStreamEvents,
     runtimeError,
     setRuntimeError,
     selectedSessionId,

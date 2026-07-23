@@ -1331,13 +1331,18 @@ export type RuntimeEvent =
   | {
       type: 'session.stream';
       sessionId: SessionId;
-      chunk: AgentStreamChunk;
+      chunk?: AgentStreamChunk;
       providerEvents?: ProviderRuntimeEvent[];
     }
   | {
       type: 'provider.runtime';
       sessionId: SessionId;
       providerEvent: ProviderRuntimeEvent;
+    }
+  | {
+      type: 'node.positions.updated';
+      positions: UpdateNodePositionsInput['positions'];
+      updatedAt: string;
     }
   | { type: 'session.finished'; sessionId: SessionId; state: GraphState }
   | {

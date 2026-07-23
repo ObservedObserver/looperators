@@ -972,7 +972,11 @@ class ClaudeAgentSdkSessionController {
     try {
       while (!this.#closed && !this.#current && this.#pending.length > 0) {
         const turn = this.#pending.shift()
-        this.#current = turn
+        this.#current = {
+          ...turn,
+          providerSessionId: undefined,
+          sawTextDelta: false,
+        }
         try {
           await this.#queryReady
           await this.#configureRuntimeForTurn(turn)
@@ -1089,11 +1093,14 @@ class ClaudeAgentSdkSessionController {
     }
 
     const { input, run } = current
-    const providerSessionId =
-      typeof message?.session_id === 'string'
-        ? message.session_id
-        : input.sessionId
-    if (providerSessionId) {
+    const providerSessionId = nonEmptyString(message?.session_id)
+      ? message.session_id.trim()
+      : undefined
+    if (
+      providerSessionId &&
+      current.providerSessionId !== providerSessionId
+    ) {
+      current.providerSessionId = providerSessionId
       run.emit('providerSession', { providerSessionId })
     }
 
@@ -1115,11 +1122,19 @@ class ClaudeAgentSdkSessionController {
       turnId: input.turnId,
       ts,
       message: sdkMessageForRuntimeMapper(message),
+      sawTextDelta: current.sawTextDelta,
       rawSource: 'claude.sdk',
     })
 
     for (const event of events) {
       run.emit('providerEvent', event)
+      if (
+        event.type === 'content.delta' &&
+        event.streamKind === 'assistant_text' &&
+        event.isSnapshot !== true
+      ) {
+        current.sawTextDelta = true
+      }
     }
 
     if (message?.type === 'result') {

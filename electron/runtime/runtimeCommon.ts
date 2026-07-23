@@ -150,6 +150,40 @@ export function truncateActivities(activities) {
   }
 }
 
+// Full provider envelopes are already retained in the per-session NDJSON
+// logs. Keeping the same payload on canonical events and their derived
+// activities multiplies the hot GraphState size, which in turn makes every
+// durable snapshot and Electron IPC state boundary expensive.
+export function compactRuntimeItem(value) {
+  if (!isObject(value)) {
+    return value
+  }
+  const { raw: _raw, ...item } = value
+  return item
+}
+
+export function compactRuntimePlan(value) {
+  if (!isObject(value)) {
+    return value
+  }
+  const { raw: _raw, ...plan } = value
+  return plan
+}
+
+export function compactProviderRuntimeEvent(value) {
+  if (!isObject(value)) {
+    return value
+  }
+  const { raw: _raw, ...event } = value
+  if (isObject(event.item)) {
+    event.item = compactRuntimeItem(event.item)
+  }
+  if (isObject(event.plan)) {
+    event.plan = compactRuntimePlan(event.plan)
+  }
+  return event
+}
+
 export function isObject(value): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

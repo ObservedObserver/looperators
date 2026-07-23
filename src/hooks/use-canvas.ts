@@ -5,7 +5,6 @@ import type { GraphState, Report } from '@/shared/graph-state';
 import type { RuntimeApi } from '@/runtime-client';
 import {
   applyFlowNodePositionUpdates,
-  applyNodePositionUpdates,
   clusterBoundaryNodes,
   edgeSummary,
   loopBadgeNodes,
@@ -16,6 +15,7 @@ import {
   subscriptionUntilSummary,
   timerNodes,
 } from '@/lib/graph-view';
+import { applyNodePositionUpdates } from '../../shared/runtime-state-patch';
 import { latestReportForSession, reportIssueCount, reportSummary } from '@/lib/reports';
 import { lastMessagePreview, sessionDisplayLabel, sessionProviderLabel, shortAgentName } from '@/lib/session-display';
 import { isProviderKind } from '@/components/brand-icons';
@@ -208,7 +208,13 @@ export function useCanvas({
       }
 
       setCanvasNodes((current) => applyFlowNodePositionUpdates(current, updates));
-      setRuntimeState((current) => applyNodePositionUpdates(current, updates));
+      setRuntimeState((current) =>
+        applyNodePositionUpdates(
+          current,
+          updates,
+          new Date().toISOString(),
+        ) as GraphState
+      );
 
       if (!runtimeApi) {
         return;
@@ -216,7 +222,6 @@ export function useCanvas({
 
       runtimeApi
         .updateNodePositions({ positions: updates })
-        .then((result) => setRuntimeState(result.state))
         .catch((error: unknown) => {
           setRuntimeError(error instanceof Error ? error.message : String(error));
         });

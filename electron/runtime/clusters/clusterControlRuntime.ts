@@ -279,7 +279,7 @@ export class ClusterControlRuntime {
   // flows through the unified channel, but no kernel event is appended.
   cmdUpdateNodePositions(input: JsonRecord = {}, _ctx: JsonRecord) {
     const positions = Array.isArray(input.positions) ? input.positions : []
-    let changed = false
+    const appliedPositions: JsonRecord[] = []
 
     for (const item of positions) {
       if (!isObject(item) || !isObject(item.position)) {
@@ -308,18 +308,28 @@ export class ClusterControlRuntime {
       }
 
       node.position = { x, y }
-      changed = true
-    }
-
-    if (changed) {
-      this.#host.touch()
-      this.#host.broadcast({
-        type: 'runtime.state',
-        state: this.#host.getState(),
+      appliedPositions.push({
+        nodeId,
+        position: { x, y },
       })
     }
 
-    return { state: this.#host.getState() }
+    if (appliedPositions.length > 0) {
+      this.#host.touch()
+      const updatedAt = this.#host.state().updatedAt
+      this.#host.broadcast({
+        type: 'node.positions.updated',
+        positions: appliedPositions,
+        updatedAt,
+      })
+      return { ok: true, positions: appliedPositions, updatedAt }
+    }
+
+    return {
+      ok: true,
+      positions: appliedPositions,
+      updatedAt: this.#host.state().updatedAt,
+    }
   }
 
   startMasterLoop(input: JsonRecord = {}) {

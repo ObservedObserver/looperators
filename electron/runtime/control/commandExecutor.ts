@@ -315,6 +315,7 @@ export class CommandExecutor {
         deploymentFinalizations: transaction.deploymentFinalizations,
         outboxEffects: transaction.outboxEffects,
       })
+      this.#clearSnapshotPersistTimer()
       transaction.closed = true
       this.#host.getState().controlVersion =
         committed.record.committedVersion
@@ -382,6 +383,7 @@ export class CommandExecutor {
           },
           deploymentFinalizations: failureFinalizations,
         })
+        this.#clearSnapshotPersistTimer()
         this.#host.getState().controlVersion =
           committed.record.committedVersion
         this.#committedStateDuringCommand = undefined
@@ -462,6 +464,7 @@ export class CommandExecutor {
         command: { commandId, idempotencyKey, kind, actor },
         result,
       })
+      this.#clearSnapshotPersistTimer()
       transaction.closed = true
       this.#host.getState().controlVersion =
         committed.record.committedVersion
@@ -792,10 +795,13 @@ export class CommandExecutor {
   }
 
   persistState() {
-    if (this.#snapshotPersistTimer) {
-      clearTimeout(this.#snapshotPersistTimer)
-      this.#snapshotPersistTimer = undefined
-    }
+    this.#clearSnapshotPersistTimer()
     this.#kernelStore.saveSnapshot(this.#host.getState())
+  }
+
+  #clearSnapshotPersistTimer() {
+    if (!this.#snapshotPersistTimer) return
+    clearTimeout(this.#snapshotPersistTimer)
+    this.#snapshotPersistTimer = undefined
   }
 }

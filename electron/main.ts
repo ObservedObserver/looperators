@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
+import { createBatchedRuntimeEventEmitter } from './runtime/runtimeEventDelivery.js'
 import { AppUpdateController } from './appUpdater.js'
 import type { AppUpdateState } from '../shared/app-update.js'
 
@@ -9,12 +10,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 let runtime: RuntimeSessionManager | undefined
 let updates: AppUpdateController | undefined
+let quitFlushStarted = false
+let quitFlushComplete = false
 
-function broadcastRuntimeEvent(event) {
+function sendRuntimeEvent(event) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('orrery:runtime-event', event)
   }
 }
+
+const broadcastRuntimeEvent = createBatchedRuntimeEventEmitter(sendRuntimeEvent)
 
 function broadcastUpdateState(state: AppUpdateState) {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -256,13 +261,33 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  runtime?.killAll()
+  void runtime?.killAll()
 
   if (process.platform !== 'darwin') {
     app.quit()
   }
 })
 
-app.on('will-quit', () => {
+app.on('will-quit', (event) => {
+  broadcastRuntimeEvent.dispose()
   updates?.dispose()
+  if (quitFlushComplete) {
+    return
+  }
+
+  event.preventDefault()
+  if (quitFlushStarted) {
+    return
+  }
+  quitFlushStarted = true
+  void Promise.resolve(runtime?.killAll())
+    .catch((error: unknown) => {
+      console.error(
+        `Failed to flush provider logs during shutdown: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
+    .finally(() => {
+      quitFlushComplete = true
+      app.quit()
+    })
 })

@@ -133,6 +133,7 @@ function App() {
   useRuntimeSubscription({
     runtimeApi,
     setRuntimeState,
+    applyRuntimeStreamEvents: core.applyRuntimeStreamEvents,
     setSelectedSessionId,
     setRuntimeError,
     syncTerminalFromEvent,

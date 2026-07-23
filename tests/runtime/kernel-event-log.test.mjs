@@ -337,7 +337,7 @@ test('control command atomically commits durable state, audit events, and idempo
     assert.equal(durable.eventSeq, committed.events[0].seq)
     assert.equal(durable.state.controlVersion, 1)
     assert.equal(durable.state.marker, 'committed')
-    assert.equal(store.loadSnapshot().state.marker, 'committed', 'legacy snapshot mirrors the same transaction')
+    assert.equal(store.loadSnapshot().state.marker, 'committed', 'snapshot reads resolve the durable authority')
     assert.deepEqual(
       store.getCommandRecord({ idempotencyKey: 'scope-create-1' }).result,
       { clusterId: 'scope-1' },
@@ -584,6 +584,17 @@ test('legacy snapshot state is promoted to the durable runtime_state authority o
     )
     runtime.killAll()
     const database = new DatabaseSync(storageFile.replace(/\.json$/, '.sqlite'))
+    const durableBeforeMigration = database
+      .prepare('SELECT event_seq, updated_at, state FROM runtime_state WHERE singleton = 1')
+      .get()
+    database.prepare('DELETE FROM snapshots').run()
+    database
+      .prepare('INSERT INTO snapshots (seq, ts, state) VALUES (?, ?, ?)')
+      .run(
+        durableBeforeMigration.event_seq,
+        durableBeforeMigration.updated_at,
+        durableBeforeMigration.state,
+      )
     database.prepare('DELETE FROM runtime_state').run()
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM runtime_state').get().count, 0)
     database.close()

@@ -36,7 +36,7 @@ export const kernelCommandPolicies = defineKernelCommandPolicies({
   create_master: {},
   assign_master: {},
   set_loop_policy: {},
-  update_node_positions: {},
+  update_node_positions: { affectsControlVersion: false },
   start_loop: {},
   stop_loop: {},
   freeze: {},

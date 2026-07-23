@@ -8,9 +8,9 @@ import { OpenWorkspaceSplitButton, NewChatSetupBar } from '@/components/new-chat
 import { compactPath, compactId } from '@/lib/format';
 import { RecoveryNotice } from '@/components/recovery';
 import { SessionTerminalPanel } from '@/components/session-terminal-panel';
-import { SessionTimeline } from '@/components/timeline';
+import { LiveSessionTimeline } from '@/components/live-session-timeline';
 import { RuntimeInteractionPanel } from '@/components/runtime-interaction-panel';
-import { ProviderEventDrawer } from '@/components/provider-event-drawer';
+import { LiveProviderEventDrawer } from '@/components/live-provider-event-drawer';
 import { ProviderSetupDiagnostics } from '@/components/provider-settings';
 import { ComposerAttachmentPill } from '@/components/composer-attachment-pill';
 import { type Dispatch, type SetStateAction, useEffect, useState } from 'react';
@@ -76,10 +76,10 @@ export function ChatDetail({
     runtimeUnavailableText,
     runtimeError,
     runtimeState,
+    runtimeStateStore,
     setRuntimeState,
     setRuntimeError,
     selectedSession,
-    selectedSessionProjection,
     openRuntimeRequests,
     openUserInputRequests,
     providerInstances,
@@ -405,7 +405,7 @@ export function ChatDetail({
           />
         ) : showRawEvents ? (
           selectedSession ? (
-            <ProviderEventDrawer session={selectedSession} />
+            <LiveProviderEventDrawer runtimeStateStore={runtimeStateStore} sessionId={selectedSession.sessionId} />
           ) : (
             <ProviderSetupDiagnostics
               isRuntimeAvailable={isRuntimeAvailable}
@@ -443,24 +443,15 @@ export function ChatDetail({
               onOpen={() => onOpenPlanCouncil(selectedPlanCouncil.workflowId)}
             />
           ) : null}
-          <div className="sticky top-0 z-10 flex items-center gap-2.5 border-b border-ink-line-2 bg-ink px-4 py-2.5">
-            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-term-dim2">Timeline</span>
-            <span className="ml-auto font-mono text-[10.5px] tabular-nums text-term-faint">{selectedSessionProjection?.timeline.length ?? 0} entries</span>
-          </div>
-          {selectedSessionProjection?.timeline.length ? (
-            <SessionTimeline
-              entries={selectedSessionProjection.timeline}
-              agent={selectedSession?.agent ?? 'claude-code'}
-              canActOnPlan={canActOnPlan}
-              onContinuePlan={continueRuntimePlan}
-              onRevisePlan={reviseRuntimePlan}
-              onOpenTurnDiff={openTurnDiff}
-            />
-          ) : (
-            <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">
-              {selectedSession ? 'No messages yet.' : 'New Chat'}
-            </div>
-          )}
+          <LiveSessionTimeline
+            runtimeStateStore={runtimeStateStore}
+            sessionId={selectedSession?.sessionId}
+            agent={selectedSession?.agent}
+            canActOnPlan={canActOnPlan}
+            onContinuePlan={continueRuntimePlan}
+            onRevisePlan={reviseRuntimePlan}
+            onOpenTurnDiff={openTurnDiff}
+          />
         </div>
 
         {isTerminalPanelOpen && selectedTerminal ? (

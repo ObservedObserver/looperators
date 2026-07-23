@@ -24,6 +24,9 @@ import {
 import {
   type JsonRecord,
   clone,
+  compactProviderRuntimeEvent,
+  compactRuntimeItem,
+  compactRuntimePlan,
   diagnostic,
   isObject,
   nonEmptyString,
@@ -754,9 +757,11 @@ export function normalizeSession(
           sessionId,
         }),
     nativeEvents: Array.isArray(value.nativeEvents)
-      ? value.nativeEvents.map((event) =>
-          normalizeNativeProviderEvent(sessionId, providerKind, event),
-        )
+      ? value.nativeEvents
+          .slice(-40)
+          .map((event) =>
+            normalizeNativeProviderEvent(sessionId, providerKind, event),
+          )
       : [],
     runtimeEvents: Array.isArray(value.runtimeEvents)
       ? value.runtimeEvents.map((event) =>
@@ -785,7 +790,7 @@ export function normalizeSession(
         )
       : [],
     runtimePlans: Array.isArray(value.runtimePlans)
-      ? value.runtimePlans.filter(isObject)
+      ? value.runtimePlans.filter(isObject).map(compactRuntimePlan)
       : [],
     runtimeSettings,
     effectiveRuntimeConfig: isObject(value.effectiveRuntimeConfig)
@@ -912,13 +917,13 @@ export function normalizeNativeProviderEvent(sessionId, providerKind, value) {
 
 export function normalizeProviderRuntimeEvent(sessionId, value) {
   const event = isObject(value) ? value : {}
-  return {
+  return compactProviderRuntimeEvent({
     ...event,
     id: nonEmptyString(event.id) ? event.id : randomUUID(),
     ts: nonEmptyString(event.ts) ? event.ts : now(),
     type: nonEmptyString(event.type) ? event.type : 'session.state',
     sessionId,
-  }
+  })
 }
 
 export function normalizeRuntimeActivity(sessionId, value) {
@@ -929,7 +934,7 @@ export function normalizeRuntimeActivity(sessionId, value) {
       ? 'completed'
       : 'running'
 
-  return {
+  return compactRuntimeItem({
     ...activity,
     id: nonEmptyString(activity.id) ? activity.id : randomUUID(),
     sessionId,
@@ -955,7 +960,7 @@ export function normalizeRuntimeActivity(sessionId, value) {
     sublines: Array.isArray(activity.sublines)
       ? activity.sublines.filter(isObject)
       : [],
-  }
+  })
 }
 
 export function normalizeRuntimeRequests(
