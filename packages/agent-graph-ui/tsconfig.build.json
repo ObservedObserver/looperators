@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "declarationMap": false,
+    "rootDir": "./src",
+    "outDir": "./dist/types"
+  },
+  "include": [
+    "src/index.ts",
+    "src/graph-model.ts",
+    "src/fixtures.ts",
+    "src/agent-node.tsx",
+    "src/relationship-edge.tsx",
+    "src/loop-status.tsx",
+    "src/agent-loop-graph.tsx",
+    "src/inline.ts",
+    "src/inline-agent-loop-graph.ts"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/definition-v1.json",
+  "title": "looperators Loop Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "definitionId",
+    "runId",
+    "requestId",
+    "requestDigest",
+    "recipe",
+    "goal",
+    "implementerInstructions",
+    "reviewerInstructions",
+    "lapCap",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "definitionId": {
+      "type": "string",
+      "pattern": "^definition_[a-f0-9]{64}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run_[a-f0-9]{64}$"
+    },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "recipe": { "const": "review-until-clean" },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 8192 },
+    "implementerInstructions": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "reviewerInstructions": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "lapCap": { "type": "integer", "minimum": 1, "maximum": 6 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}

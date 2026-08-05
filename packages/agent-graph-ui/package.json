@@ -1,0 +1,59 @@
+{
+  "name": "@looperators/agent-graph-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": [
+    "*.css"
+  ],
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/library/agent-graph-ui.js",
+  "module": "./dist/library/agent-graph-ui.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/library/agent-graph-ui.js"
+    },
+    "./styles.css": "./dist/library/agent-graph-ui.css",
+    "./inline": {
+      "types": "./dist/types/inline.d.ts",
+      "import": "./dist/inline/agent-graph-ui-inline.js"
+    },
+    "./inline.css": "./dist/inline/agent-graph-ui-inline.css",
+    "./fixtures": {
+      "types": "./dist/types/fixtures.d.ts",
+      "import": "./dist/library/agent-graph-ui.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 48311 --strictPort",
+    "build": "npm run clean && npm run typecheck && npm run build:types && npm run build:library && npm run build:inline && npm run build:embed",
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build:library": "vite build --config vite.library.config.ts",
+    "build:inline": "vite build --config vite.inline.config.ts",
+    "build:embed": "vite build --config vite.embed.config.ts && node scripts/build-embed-harness.mjs",
+    "preview:embed": "vite preview --host 127.0.0.1 --port 48312 --strictPort --outDir dist/embed",
+    "preview": "vite preview --host 127.0.0.1 --port 48312 --strictPort",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "peerDependencies": {
+    "@xyflow/react": "^12.11.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "@xyflow/react": "^12.11.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.0"
+  }
+}

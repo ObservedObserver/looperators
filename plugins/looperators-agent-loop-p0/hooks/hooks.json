@@ -1,0 +1,90 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Recording looperators session start"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Recording looperators prompt boundary"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Recording looperators tool start"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Recording looperators tool result"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Recording looperators subagent start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Applying looperators subagent lap policy"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/collect-event.mjs\" --lane primary",
+            "timeout": 5,
+            "statusMessage": "Applying looperators root lap policy"
+          }
+        ]
+      }
+    ]
+  }
+}

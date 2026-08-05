@@ -1,0 +1,441 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/graph-projection-v3.json",
+  "title": "looperators Agent Loop Graph Projection v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "storeVersion",
+    "projectionVersion",
+    "runId",
+    "revision",
+    "status",
+    "recipe",
+    "currentLap",
+    "lapCap",
+    "continuationLease",
+    "cancelRequested",
+    "needsHuman",
+    "integrity",
+    "eventWatermark",
+    "nodes",
+    "edges",
+    "counts",
+    "timeline",
+    "projectionDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "storeVersion": { "const": 1 },
+    "projectionVersion": { "const": 3 },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "running",
+        "paused",
+        "succeeded",
+        "capped",
+        "cancelled",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "recipe": { "const": "review-until-clean" },
+    "currentLap": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "lapCap": { "type": "integer", "minimum": 1, "maximum": 6 },
+    "continuationLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["granted", "consumed"],
+      "properties": {
+        "granted": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "consumed": { "type": "integer", "minimum": 0, "maximum": 6 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "granted": { "const": 0 },
+            "consumed": { "type": "integer", "maximum": 0 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 1 },
+            "consumed": { "type": "integer", "maximum": 1 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 2 },
+            "consumed": { "type": "integer", "maximum": 2 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 3 },
+            "consumed": { "type": "integer", "maximum": 3 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 4 },
+            "consumed": { "type": "integer", "maximum": 4 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 5 },
+            "consumed": { "type": "integer", "maximum": 5 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 6 },
+            "consumed": { "type": "integer", "maximum": 6 }
+          }
+        }
+      ]
+    },
+    "cancelRequested": { "type": "boolean" },
+    "needsHuman": { "type": "boolean" },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "verifiedRevision"],
+      "properties": {
+        "status": { "const": "verified" },
+        "verifiedRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "eventWatermark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventCount"],
+      "properties": {
+        "eventCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "lastEventId": {
+          "type": "string",
+          "pattern": "^evt_[a-f0-9]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "eventCount": { "const": 0 } } },
+          "then": { "properties": { "lastEventId": false } },
+          "else": {
+            "properties": {
+              "lastEventId": {
+                "type": "string",
+                "pattern": "^evt_[a-f0-9]{64}$"
+              }
+            },
+            "required": ["lastEventId"]
+          }
+        }
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/node" },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "root" } }
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "role:implementer" } }
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "const": "role:reviewer" } }
+          }
+        }
+      ]
+    },
+    "edges": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "pending": { "$ref": "#/$defs/pending" },
+    "latestReport": { "$ref": "#/$defs/latestReport" },
+    "recovery": { "$ref": "#/$defs/recovery" },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "reports",
+        "transitions",
+        "operations",
+        "governorDecisions",
+        "recoveries",
+        "diagnostics",
+        "conflicts",
+        "corrupt"
+      ],
+      "properties": {
+        "events": { "$ref": "#/$defs/count" },
+        "reports": { "$ref": "#/$defs/count" },
+        "transitions": { "$ref": "#/$defs/count" },
+        "operations": { "$ref": "#/$defs/count" },
+        "governorDecisions": { "$ref": "#/$defs/count" },
+        "recoveries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "diagnostics": { "$ref": "#/$defs/count" },
+        "conflicts": { "$ref": "#/$defs/count" },
+        "corrupt": { "const": 0 }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/timelineItem" }
+    },
+    "projectionDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "role": { "enum": ["implementer", "reviewer"] },
+    "nodeId": {
+      "enum": ["root", "role:implementer", "role:reviewer"]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "state"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nodeId" },
+        "kind": { "enum": ["root", "worker-role"] },
+        "role": { "$ref": "#/$defs/role" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "state": {
+          "enum": ["active", "waiting", "bound", "unbound", "terminal"]
+        },
+        "nativeAgentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "nativeAgentType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "dependentRequired": {
+        "nativeAgentType": ["nativeAgentId"]
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "id": { "const": "root" },
+            "kind": { "const": "root" },
+            "role": false,
+            "nativeAgentId": false,
+            "nativeAgentType": false
+          }
+        },
+        {
+          "properties": {
+            "id": { "const": "role:implementer" },
+            "kind": { "const": "worker-role" },
+            "role": { "const": "implementer" }
+          },
+          "required": ["role"]
+        },
+        {
+          "properties": {
+            "id": { "const": "role:reviewer" },
+            "kind": { "const": "worker-role" },
+            "role": { "const": "reviewer" }
+          },
+          "required": ["role"]
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source",
+        "target",
+        "kind",
+        "active",
+        "reportCount"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "source": { "$ref": "#/$defs/nodeId" },
+        "target": { "$ref": "#/$defs/nodeId" },
+        "kind": {
+          "enum": ["governs", "handoff", "feedback", "verdict"]
+        },
+        "active": { "type": "boolean" },
+        "reportCount": { "$ref": "#/$defs/count" }
+      }
+    },
+    "pending": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transitionId", "kind", "role", "lap"],
+      "properties": {
+        "transitionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "kind": {
+          "enum": ["activate-implementer", "activate-reviewer"]
+        },
+        "role": { "$ref": "#/$defs/role" },
+        "lap": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "kind": { "const": "activate-implementer" },
+            "role": { "const": "implementer" }
+          }
+        },
+        {
+          "properties": {
+            "kind": { "const": "activate-reviewer" },
+            "role": { "const": "reviewer" }
+          }
+        }
+      ]
+    },
+    "latestReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reportId", "fromRole", "type", "issueCount"],
+      "properties": {
+        "reportId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "fromRole": { "$ref": "#/$defs/role" },
+        "type": { "enum": ["info", "verdict"] },
+        "verdict": { "enum": ["issues", "clean"] },
+        "issueCount": { "type": "integer", "minimum": 0, "maximum": 200 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "verdict" } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "verdict": { "enum": ["issues", "clean"] }
+            },
+            "required": ["verdict"]
+          },
+          "else": { "properties": { "verdict": false } }
+        },
+        {
+          "if": {
+            "properties": { "verdict": { "const": "clean" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": { "issueCount": { "const": 0 } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "verdict": { "const": "issues" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "issueCount": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recoveryId", "reason"],
+      "properties": {
+        "recoveryId": {
+          "type": "string",
+          "pattern": "^recovery_[a-f0-9]{64}$"
+        },
+        "reason": {
+          "const": "legacy-history-quarantined"
+        }
+      }
+    },
+    "timelineItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "at", "label"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "event",
+            "report",
+            "transition",
+            "governor-decision",
+            "recovery"
+          ]
+        },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "at": { "type": "string", "format": "date-time" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "role": { "$ref": "#/$defs/role" }
+      }
+    }
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "storeVersion": 1,
+  "projectionVersion": 3,
+  "runId": "run-projection-fixture",
+  "revision": 0,
+  "status": "draft",
+  "recipe": "review-until-clean",
+  "currentLap": 0,
+  "lapCap": 3,
+  "continuationLease": {
+    "granted": 3,
+    "consumed": 0
+  },
+  "cancelRequested": false,
+  "needsHuman": false,
+  "integrity": {
+    "status": "verified",
+    "verifiedRevision": 0
+  },
+  "eventWatermark": {
+    "eventCount": 0
+  },
+  "nodes": [
+    {
+      "id": "root",
+      "kind": "root",
+      "label": "Governor",
+      "state": "active"
+    },
+    {
+      "id": "role:implementer",
+      "kind": "worker-role",
+      "role": "implementer",
+      "label": "Implementer",
+      "state": "unbound"
+    },
+    {
+      "id": "role:reviewer",
+      "kind": "worker-role",
+      "role": "reviewer",
+      "label": "Reviewer",
+      "state": "unbound"
+    }
+  ],
+  "edges": [
+    {
+      "id": "root-governs-implementer",
+      "source": "root",
+      "target": "role:implementer",
+      "kind": "governs",
+      "active": false,
+      "reportCount": 0
+    },
+    {
+      "id": "implementer-handoff-reviewer",
+      "source": "role:implementer",
+      "target": "role:reviewer",
+      "kind": "handoff",
+      "active": false,
+      "reportCount": 0
+    },
+    {
+      "id": "reviewer-feedback-implementer",
+      "source": "role:reviewer",
+      "target": "role:implementer",
+      "kind": "feedback",
+      "active": false,
+      "reportCount": 0
+    },
+    {
+      "id": "reviewer-verdict-root",
+      "source": "role:reviewer",
+      "target": "root",
+      "kind": "verdict",
+      "active": false,
+      "reportCount": 0
+    }
+  ],
+  "counts": {
+    "events": 0,
+    "reports": 0,
+    "transitions": 0,
+    "operations": 0,
+    "governorDecisions": 0,
+    "recoveries": 0,
+    "diagnostics": 0,
+    "conflicts": 0,
+    "corrupt": 0
+  },
+  "timeline": [],
+  "projectionDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

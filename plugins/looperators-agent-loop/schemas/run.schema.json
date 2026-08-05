@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/run-v1.json",
+  "title": "looperators Loop Run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "rootSessionId",
+    "originatingTurnId",
+    "scope",
+    "masterNode",
+    "recipe",
+    "status",
+    "currentLap",
+    "continuationLease",
+    "cancelRequested",
+    "revision",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "rootSessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "originatingTurnId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "task" } }
+    },
+    "masterNode": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "recipe": { "const": "review-until-clean" },
+    "status": {
+      "enum": [
+        "draft",
+        "running",
+        "paused",
+        "succeeded",
+        "capped",
+        "cancelled",
+        "failed",
+        "interrupted"
+      ]
+    },
+    "currentLap": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "continuationLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["granted", "consumed"],
+      "properties": {
+        "granted": { "type": "integer", "minimum": 0, "maximum": 6 },
+        "consumed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "granted": { "const": 0 },
+            "consumed": { "type": "integer", "maximum": 0 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 1 },
+            "consumed": { "type": "integer", "maximum": 1 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 2 },
+            "consumed": { "type": "integer", "maximum": 2 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 3 },
+            "consumed": { "type": "integer", "maximum": 3 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 4 },
+            "consumed": { "type": "integer", "maximum": 4 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 5 },
+            "consumed": { "type": "integer", "maximum": 5 }
+          }
+        },
+        {
+          "properties": {
+            "granted": { "const": 6 },
+            "consumed": { "type": "integer", "maximum": 6 }
+          }
+        }
+      ]
+    },
+    "pendingTransitionId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "cancelRequested": { "type": "boolean" },
+    "latestReportId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "latestOperationId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "latestGovernorDecisionId": {
+      "type": "string",
+      "pattern": "^decision_[a-f0-9]{64}$"
+    },
+    "latestRecoveryId": {
+      "type": "string",
+      "pattern": "^recovery_[a-f0-9]{64}$"
+    },
+    "needsHuman": { "type": "boolean" },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  }
+}

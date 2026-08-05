@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "operationId": "op_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "runId": "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestId": "request-report",
+  "requestDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "kind": "report",
+  "actorKind": "worker",
+  "actorId": "agent-reviewer",
+  "fromRevision": 1,
+  "toRevision": 2,
+  "reportId": "report-1",
+  "transitionId": "transition-1",
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}

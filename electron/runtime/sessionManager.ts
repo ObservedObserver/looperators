@@ -14,41 +14,6 @@
 //      - workflow proposals, wakeups, barriers
 //      - resource policy, run queue, launchRun, provider event stream
 //      - checkpoints/diffs, reports, persistence triggers
-//
-// Split-out knowledge domains (import, don't re-add here):
-//   runtimeCommon.ts                      shared value helpers + validation sets
-//   workspace/gitWorkspace.ts             git/worktree/branch/checkpoint-ref/diff
-//   workspace/workspaceFiles.ts           workspace file tree + open-in-app
-//   workspace/workspaceService.ts         public workspace reads + open facade
-//   providers/providerConfigNormalize.ts  provider instance/runtime config
-//   sessions/sessionInteraction.ts        attachments + request/input normalization
-//   persistence/runtimeStateRecovery.ts   state load/normalize/migrate/repair
-//   terminal/terminalService.ts           embedded terminal subsystem
-//   subscriptionAuthoring.ts              author_subscription input validation
-//   workspace/sessionCheckpoints.ts       per-turn git checkpoints + diffs
-//   providers/providerSetupStatus.ts      provider CLI/model-catalog probing
-//   control/commandRegistry.ts             command kind + handler/policy registry
-//   control/commandExecutor.ts             serialized transaction + effect authority
-//   clusters/clusterControlRuntime.ts      Scope/Master/Loop/freeze topology control
-//   membrane/membraneRequestRuntime.ts     sanctioned agent control-surface dispatch
-//   scheduler/schedulerRuntime.ts           fact -> gate -> activation + timer lifecycle
-//   sessions/sessionRuntimeController.ts    admission + provider turn lifecycle
-//   sessions/sessionCommandRuntime.ts       session commands + channel/interaction adapters
-//   reports/reportFormatting.ts            report/prompt render + payload validation
-//   queries/runtimeQueries.ts               read-only state/kernel projections
-//   external/externalIngestionService.ts    source registry, adapters + ingestion
-//   workflows/workflowKernel.ts           the explicit kernel surface below
-//   workflows/governanceRuntime.ts        wakeup + Barrier state machines
-//   workflows/proposalRuntime.ts          Proposal/Patch authoring + commit
-//   workflows/classicWorkflows.ts         draft/handoff/goal/connect + deployments
-//   workflows/planCouncil.ts              plan council orchestration
-//   workflows/reviewWorkflow.ts           review ring composer
-//   workflows/goalTemplates.ts            goal loop + template library
-//   workflows/workflowShared.ts           workflow resource compensation
-//
-// Growth stopline: new product workflows must not add new knowledge domains
-// to this class; register the domain here and put the implementation in its
-// own module (see design-docs/session-manager-split-plan.md).
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'

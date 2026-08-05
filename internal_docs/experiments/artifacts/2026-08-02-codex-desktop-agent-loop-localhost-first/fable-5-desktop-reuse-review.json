@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-02",
+  "reviewer": {
+    "client": "Claude Code 2.1.218",
+    "model": "claude-fable-5",
+    "mode": "read-only",
+    "subagentsAllowed": false,
+    "webAllowed": false
+  },
+  "initialVerdict": "GO_WITH_AMENDMENTS",
+  "blocking": [],
+  "acceptedAmendments": [
+    "The shared package extraction scope is determined by the Desktop interaction parity matrix, not by the sidecar's current minimum needs.",
+    "The parity matrix is a required artifact with Desktop source references and classification reasons, and the shared package must pass an independent checkpoint before Plugin import."
+  ],
+  "finalReview": {
+    "verdict": "GO",
+    "amendmentsClosed": true,
+    "blocking": [],
+    "consensus": "Desktop graph components and interactions are the authority baseline. Extract and independently accept the shared package first, integrate it into the Plugin second, and change Desktop imports only after Plugin acceptance."
+  }
+}

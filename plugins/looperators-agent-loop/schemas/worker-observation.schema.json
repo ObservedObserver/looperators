@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/worker-observation-v1.json",
+  "title": "looperators Worker Observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "observationId",
+    "runId",
+    "requestId",
+    "requestDigest",
+    "rootSessionId",
+    "role",
+    "spawnToolUseIds",
+    "subagentStartEventIds",
+    "bindingIds",
+    "observationDigest",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "observationId": {
+      "type": "string",
+      "pattern": "^observation_[a-f0-9]{64}$"
+    },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "rootSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "role": { "enum": ["implementer", "reviewer"] },
+    "spawnToolUseIds": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "subagentStartEventIds": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^evt_[a-f0-9]{64}$"
+      }
+    },
+    "bindingIds": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^binding_[a-f0-9]{64}$"
+      }
+    },
+    "observationDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}

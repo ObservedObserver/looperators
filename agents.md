@@ -4,16 +4,12 @@ Branding boundary: the customer-facing product name is `looperators`. `Orrery` /
 remains the internal codename and technical namespace; do not rename code symbols, IPC/MCP
 names, environment variables, storage paths, CLI files, or historical records solely for rebranding.
 
-For project vision and designs, please check the documentation under the `design-docs/`.
+`agents.md` is a protected repository policy file. Modify it only when the user explicitly
+authorizes changes to this file while knowing that `agents.md` itself will be edited; general
+permission to edit code or documentation is not authorization.
 
-- Vision / initial idea: `design-docs/reactive-agent-session-graph.md` — why looperators manages agents as a graph instead of a session list.
-- Design (current source of truth for development): `design-docs/orrery-design.md` — the concrete control model (Skills membrane, Master Agent, scopes/clusters), UI shape, v1 scope, and the §12 Skill API.
-- v1 plan: `design-docs/v1-implementation-plan.md` — phased implementation plan (critical path P0–P3 + parallel workstreams A–C), with goals and acceptance criteria.
-- Internal implementation roadmap / current post-P4 baseline: `design-docs/internal_docs/plans/master-agent-plan-council-implementation-plan.md` — Master-as-Intent-Compiler/Governor/Replanner, Plan Council as the first high-frequency workflow, reliability convergence, correlation/barriers, dynamic topology, and concurrency/safety. Its rationale and discussion replay live in `design-docs/internal_docs/commit-log/2026-07-12-master-agent-plan-council-direction.md`. This roadmap supersedes the old priority of expanding manual canvas authoring first; existing kernel semantics remain governed by `design-docs/session-graph-kernel.md` until each migration phase lands.
-
-- Verification: headless-first, three tiers — `npm run test:kernel` (kernel unit tests, fake providers allowed), `npm run acceptance:headless` (real-scenario acceptance on real providers with the cheap model preset, artifacts in `output/acceptance/`), then final UI acceptance. Commands are documented below; scenario-authoring rules live in `design-docs/AGENTS.md`.
-
-For development and technical planning, follow the design doc and the v1 plan.
+For project vision, design decisions, plans, and other internal context, consult the local,
+Git-ignored `internal_docs/` directory and read only the documents relevant to the current task.
 
 ## Current product surface
 
@@ -126,14 +122,13 @@ npm run acceptance:membrane
 ```
 
 Read the failed run's artifacts before rerunning. Scenario-authoring contracts,
-workspace isolation rules, and evidence requirements are in
-`design-docs/AGENTS.md` and `design-docs/headless-acceptance-harness.md`.
+workspace isolation rules, and evidence requirements are kept in the local internal documentation.
 
 ### 3. Final UI acceptance
 
 UI acceptance is the final, low-frequency tier after kernel and headless
 acceptance pass. Follow the Browser/Computer Use assignment and model rules in
-`design-docs/AGENTS.md`; do not turn UI clicking into the daily test loop.
+the local internal documentation; do not turn UI clicking into the daily test loop.
 
 ## Provider setup notes
 
@@ -169,4 +164,4 @@ npm run cli -- graph
 ```
 
 The full CLI debugging loop, programmatic orchestration client, and browser
-preview setup are documented in `design-docs/AGENTS.md`.
+preview setup are documented in the local internal documentation.

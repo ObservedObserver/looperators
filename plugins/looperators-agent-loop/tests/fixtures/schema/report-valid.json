@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "reportId": "report-schema-valid",
+  "runId": "run-p1a",
+  "fromNode": "agent-reviewer",
+  "receiver": "root-master",
+  "type": "verdict",
+  "verdict": "clean",
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}

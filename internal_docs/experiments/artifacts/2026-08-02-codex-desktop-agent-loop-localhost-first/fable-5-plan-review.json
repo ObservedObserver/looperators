@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-02",
+  "reviewer": {
+    "client": "Claude Code 2.1.218",
+    "model": "claude-fable-5",
+    "mode": "read-only",
+    "tools": [
+      "Read"
+    ],
+    "subagentsAllowed": false,
+    "webAllowed": false
+  },
+  "run": {
+    "result": "completed",
+    "verdict": "GO_WITH_AMENDMENTS",
+    "budgetUsd": 4,
+    "costUsd": 1.721317,
+    "durationApiMs": 118095
+  },
+  "blocking": [],
+  "acceptedAmendments": [
+    "Move interrupted recovery from SessionStart hooks to MCP process/action epochs and root-authorized reconciliation.",
+    "Specify capability validity and revocation across pause, resume, cancel, cap, and restart recovery.",
+    "Bind each browser session cookie to exactly one run instead of all runs served by the MCP process.",
+    "Distinguish host click routing from the ability of the Codex built-in Browser to render the localhost surface.",
+    "Return a safe actionable expiry page for consumed, expired, or old-process login tickets."
+  ],
+  "keep": [
+    "Versioned store, canonical JSON, projection digest, typed reports and transitions.",
+    "Idempotent requestId mutation handling.",
+    "Platform data-root resolution.",
+    "The full ReactFlow agent graph package for the localhost surface.",
+    "The existing loopback, token, cookie, Host and Origin, CSP, bounded SSE, watcher, and backpressure controls.",
+    "Preview, start, report, pause, resume, and cancel domain semantics."
+  ],
+  "removeFromDefaultDistribution": [
+    "All seven plugin hook declarations and hook collector entrypoints.",
+    "Hook readiness and HOOKS_NOT_READY start gates.",
+    "Stop and SubagentStop continuation governor.",
+    "Native agent observation and prepare, poll, and bind tools.",
+    "Identity and shared-root probe tools.",
+    "Inline render tool from the default MCP surface.",
+    "Unpublished-version legacy recovery and quarantine tools."
+  ],
+  "scopeGuards": [
+    "After Gate B, decide whether to delete or retain the existing inline code; do not implement a new inline surface in this plan.",
+    "Treat a self-contained signed cross-platform runtime as a future release gate; this delivery only validates and documents the macOS Node prerequisite."
+  ],
+  "consensusSummary": "The localhost-first, hook-free default architecture is sound and honestly describes cooperative governance. No blocking issue remains after adding MCP-owned restart reconciliation, precise capability revocation, run-scoped browser sessions, Browser acceptance attribution, and expired-ticket behavior.",
+  "finalConsensusReview": {
+    "result": "completed",
+    "verdict": "GO",
+    "costUsd": 0.774847,
+    "durationApiMs": 36835,
+    "allAmendmentsClosed": true,
+    "blocking": [],
+    "scopeDrift": [],
+    "summary": "All five amendments are closed at the specification level. Start implementation with Gate A and Gate B as the only acceptance gates."
+  }
+}

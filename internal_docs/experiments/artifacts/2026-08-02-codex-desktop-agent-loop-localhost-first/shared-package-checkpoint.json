@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "checkpoint": "desktop-to-shared-agent-graph-ui",
+  "status": "passed",
+  "date": "2026-08-02",
+  "package": "@looperators/agent-graph-ui",
+  "commands": [
+    "npm run typecheck -w @looperators/agent-graph-ui",
+    "npm test -w @looperators/agent-graph-ui",
+    "npm run dev -w @looperators/agent-graph-ui",
+    "npm run preview:embed -w @looperators/agent-graph-ui"
+  ],
+  "automatedTests": {
+    "passed": 6,
+    "failed": 0
+  },
+  "browser": {
+    "engine": "Chromium via Playwright CLI",
+    "dev": {
+      "nodesVisible": 3,
+      "edgesVisible": 4,
+      "miniMapVisible": true,
+      "zoomChangedViewport": true,
+      "dragChangedNodePosition": true,
+      "keyboardSelection": true,
+      "relationshipInspector": true,
+      "loopPanel": true,
+      "stopConfirmation": true,
+      "wideOrientation": "horizontal",
+      "narrowOrientation": "vertical",
+      "darkTheme": true,
+      "lightTheme": true,
+      "consoleErrorsAfterFix": 0,
+      "consoleWarningsAfterFix": 0
+    },
+    "productionEmbed": {
+      "nodesVisible": 3,
+      "edgesVisible": 4,
+      "miniMapVisible": true,
+      "consoleErrors": 0,
+      "consoleWarnings": 0,
+      "externalResourceRequests": 0
+    }
+  },
+  "failuresCaught": [
+    {
+      "code": "CONTROLLED_NODE_MEASUREMENT_DROPPED",
+      "symptom": "React Flow nodes stayed hidden and edges were absent",
+      "resolution": "Persist complete NodeChange state instead of positions only"
+    },
+    {
+      "code": "DUPLICATE_DIMENSION_CHANGE_LOOP",
+      "symptom": "ResizeObserver warning storm after panel and resize interactions",
+      "resolution": "Ignore dimension changes identical to the current measured dimensions"
+    }
+  ],
+  "screenshots": [
+    "output/playwright/agent-graph-ui-shared-checkpoint/graph-wide.png",
+    "output/playwright/agent-graph-ui-shared-checkpoint/graph-narrow.png",
+    "output/playwright/agent-graph-ui-shared-checkpoint/graph-light.png",
+    "output/playwright/agent-graph-ui-shared-checkpoint/loop-panel-wide.png",
+    "output/playwright/agent-graph-ui-shared-checkpoint/production-embed.png"
+  ]
+}

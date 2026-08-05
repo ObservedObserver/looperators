@@ -1,0 +1,60 @@
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.lag-demo {
+  min-height: 100vh;
+  background: #f8fafc;
+  padding: 24px;
+}
+
+.lag-demo[data-mode="dark"] {
+  --background: #07090a;
+  --foreground: #e5e7eb;
+  --card: #0d120e;
+  --muted: #0f1511;
+  --muted-foreground: #9ca3af;
+  --border: rgba(255, 255, 255, 0.11);
+  --term-accent-hi: #a3e635;
+  --term-emerald: #6ee7b7;
+  --term-cyan: #67e8f9;
+  --term-amber: #fcd34d;
+  --term-rose: #fb7185;
+  background: #07090a;
+}
+
+.lag-demo-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  max-width: 1120px;
+  margin: 0 auto 14px;
+  color: var(--foreground, #171a1f);
+  font: 12px/1.4 ui-sans-serif, system-ui, sans-serif;
+}
+
+.lag-demo-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lag-demo > .looperators-agent-graph {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+@media (max-width: 719px) {
+  .lag-demo {
+    padding: 12px;
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-03T07:34:24.000Z",
+  "codex": {
+    "lane": "desktop-bundled-headless",
+    "version": "codex-cli 0.146.0-alpha.9.2",
+    "userConfigLoaded": false,
+    "pluginsFeatureLoaded": false,
+    "multiAgentEnabled": true
+  },
+  "plugin": {
+    "version": "0.3.2+codex.20260803073424",
+    "defaultHooks": false,
+    "protocol": "cooperative-typed-mcp",
+    "reviewSurface": "mcp-owned-127.0.0.1-sidecar"
+  },
+  "run": {
+    "runId": "run_d19f85e9e12f20e88104fdd9e968a42428b385559863ad83402e1137be30a6b6",
+    "status": "succeeded",
+    "revision": 5,
+    "currentLap": 1,
+    "lapCap": 2,
+    "nativeSubagentCount": 2,
+    "rootThreadId": "019fc685-4648-7df3-aee1-b90d46b49745",
+    "nativeSubagents": [
+      {
+        "role": "implementer",
+        "threadId": "019fc685-d665-7351-b9fd-0ad07ec51c4f",
+        "depth": 1,
+        "reportCalls": 2
+      },
+      {
+        "role": "reviewer",
+        "threadId": "019fc686-9fdf-7c31-a6ca-b24d7a4d6828",
+        "depth": 1,
+        "reportCalls": 2
+      }
+    ],
+    "reportSequence": [
+      {
+        "role": "implementer",
+        "type": "info",
+        "status": "done",
+        "fromRevision": 1,
+        "toRevision": 2
+      },
+      {
+        "role": "reviewer",
+        "type": "verdict",
+        "verdict": "issues",
+        "issueCount": 1,
+        "fromRevision": 2,
+        "toRevision": 3
+      },
+      {
+        "role": "implementer",
+        "type": "info",
+        "status": "done",
+        "fromRevision": 3,
+        "toRevision": 4
+      },
+      {
+        "role": "reviewer",
+        "type": "verdict",
+        "verdict": "clean",
+        "issueCount": 0,
+        "fromRevision": 4,
+        "toRevision": 5
+      }
+    ],
+    "fixtureTests": {
+      "passed": 2,
+      "failed": 0
+    },
+    "reviewOrigin": "http://127.0.0.1:58094",
+    "reviewOriginAliveAfterMcpExit": false
+  },
+  "crossProcessCapability": {
+    "originalFailure": "root-issued HMAC token was scoped to one MCP process and worker reports were rejected",
+    "fix": "opaque action token with durable SHA-256 digest and action identity",
+    "plaintextPersisted": false,
+    "threeStdioMcpProcessesPassed": true,
+    "governorRestartRotatesToken": true,
+    "preRotationTokenRejectedAfterRotation": true
+  },
+  "privacy": {
+    "capabilityTokensIncluded": false,
+    "fullPromptsIncluded": false,
+    "rawRolloutsIncluded": false
+  },
+  "passed": true
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "reportId": "report-schema-valid-product",
+  "runId": "run-p1b",
+  "requestId": "request-report",
+  "requestDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "fromRevision": 1,
+  "toRevision": 2,
+  "fromNode": "agent-reviewer",
+  "receiver": "root-master",
+  "type": "verdict",
+  "verdict": "clean",
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}
