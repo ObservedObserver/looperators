@@ -164,4 +164,4 @@ internal_docs/
 acceptance-screenshots/
 
 # Generated output and acceptance artifacts
-output/
+/output/
