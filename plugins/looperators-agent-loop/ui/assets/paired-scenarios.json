@@ -1,0 +1,1411 @@
+[
+  {
+    "name": "draft",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-draft",
+        "revision": 0,
+        "projectionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "integrity": "verified"
+      },
+      "status": "draft",
+      "currentLap": 0,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "active"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "unbound"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "unbound"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "timeline": []
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-draft",
+      "revision": 0,
+      "status": "draft",
+      "recipe": "review-until-clean",
+      "currentLap": 0,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 0
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "active"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "unbound",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "unbound",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "counts": {
+        "events": 0,
+        "reports": 0,
+        "transitions": 0,
+        "operations": 0,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [],
+      "projectionDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  },
+  {
+    "name": "implementer-active",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-implementer-active",
+        "revision": 1,
+        "projectionDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "integrity": "verified"
+      },
+      "status": "running",
+      "currentLap": 0,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "waiting"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "active",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "unbound",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": true,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "pending": {
+        "role": "implementer",
+        "kind": "activate-implementer",
+        "lap": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-implementer-active",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-implementer",
+          "kind": "transition",
+          "role": "implementer"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-implementer-active",
+      "revision": 1,
+      "status": "running",
+      "recipe": "review-until-clean",
+      "currentLap": 0,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 1
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "waiting"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "active",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "unbound",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": true,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "pending": {
+        "transitionId": "transition-implementer-active",
+        "role": "implementer",
+        "kind": "activate-implementer",
+        "lap": 0
+      },
+      "counts": {
+        "events": 0,
+        "reports": 0,
+        "transitions": 1,
+        "operations": 1,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-implementer-active",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-implementer",
+          "kind": "transition",
+          "role": "implementer"
+        }
+      ],
+      "projectionDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "name": "reviewer-issues",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-reviewer-issues",
+        "revision": 4,
+        "projectionDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "integrity": "verified"
+      },
+      "status": "running",
+      "currentLap": 1,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 1
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "waiting"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "waiting",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "active",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": true,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "pending": {
+        "role": "implementer",
+        "kind": "activate-implementer",
+        "lap": 1
+      },
+      "latestReport": {
+        "fromRole": "reviewer",
+        "type": "verdict",
+        "verdict": "issues",
+        "issueCount": 2
+      },
+      "timeline": [
+        {
+          "id": "transition-reviewer-issues",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-implementer",
+          "kind": "transition",
+          "role": "implementer"
+        },
+        {
+          "id": "report-reviewer-issues",
+          "at": "2026-07-28T18:00:01.000Z",
+          "label": "reviewer verdict: issues",
+          "kind": "report",
+          "role": "reviewer"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-reviewer-issues",
+      "revision": 4,
+      "status": "running",
+      "recipe": "review-until-clean",
+      "currentLap": 1,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 1
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 4
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "waiting"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "waiting",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "active",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": true,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "pending": {
+        "transitionId": "transition-reviewer-issues",
+        "role": "implementer",
+        "kind": "activate-implementer",
+        "lap": 1
+      },
+      "latestReport": {
+        "reportId": "report-reviewer-issues",
+        "fromRole": "reviewer",
+        "type": "verdict",
+        "verdict": "issues",
+        "issueCount": 2
+      },
+      "counts": {
+        "events": 0,
+        "reports": 1,
+        "transitions": 1,
+        "operations": 4,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-reviewer-issues",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-implementer",
+          "kind": "transition",
+          "role": "implementer"
+        },
+        {
+          "id": "report-reviewer-issues",
+          "at": "2026-07-28T18:00:01.000Z",
+          "label": "reviewer verdict: issues",
+          "kind": "report",
+          "role": "reviewer"
+        }
+      ],
+      "projectionDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  {
+    "name": "paused-needs-human",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-paused-needs-human",
+        "revision": 5,
+        "projectionDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "integrity": "verified"
+      },
+      "status": "paused",
+      "currentLap": 1,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 2
+      },
+      "cancelRequested": false,
+      "needsHuman": true,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "active"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "bound",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "bound",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "timeline": [
+        {
+          "id": "transition-paused-needs-human",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "paused",
+          "kind": "transition"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-paused-needs-human",
+      "revision": 5,
+      "status": "paused",
+      "recipe": "review-until-clean",
+      "currentLap": 1,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 2
+      },
+      "cancelRequested": false,
+      "needsHuman": true,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 5
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "active"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "bound",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "bound",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "counts": {
+        "events": 0,
+        "reports": 0,
+        "transitions": 1,
+        "operations": 5,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-paused-needs-human",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "paused",
+          "kind": "transition"
+        }
+      ],
+      "projectionDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  {
+    "name": "succeeded-clean",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-succeeded-clean",
+        "revision": 7,
+        "projectionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "integrity": "verified"
+      },
+      "status": "succeeded",
+      "currentLap": 2,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 2
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": true,
+          "reportCount": 1
+        }
+      ],
+      "latestReport": {
+        "fromRole": "reviewer",
+        "type": "verdict",
+        "verdict": "clean",
+        "issueCount": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-succeeded-clean",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-verdict",
+          "kind": "transition"
+        },
+        {
+          "id": "report-succeeded-clean",
+          "at": "2026-07-28T18:00:01.000Z",
+          "label": "reviewer verdict: clean",
+          "kind": "report",
+          "role": "reviewer"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-succeeded-clean",
+      "revision": 7,
+      "status": "succeeded",
+      "recipe": "review-until-clean",
+      "currentLap": 2,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 2
+      },
+      "cancelRequested": false,
+      "needsHuman": false,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 7
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 1
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": true,
+          "reportCount": 1
+        }
+      ],
+      "latestReport": {
+        "reportId": "report-succeeded-clean",
+        "fromRole": "reviewer",
+        "type": "verdict",
+        "verdict": "clean",
+        "issueCount": 0
+      },
+      "counts": {
+        "events": 0,
+        "reports": 1,
+        "transitions": 1,
+        "operations": 7,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-succeeded-clean",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "activate-verdict",
+          "kind": "transition"
+        },
+        {
+          "id": "report-succeeded-clean",
+          "at": "2026-07-28T18:00:01.000Z",
+          "label": "reviewer verdict: clean",
+          "kind": "report",
+          "role": "reviewer"
+        }
+      ],
+      "projectionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  },
+  {
+    "name": "capped",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-capped",
+        "revision": 6,
+        "projectionDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "integrity": "verified"
+      },
+      "status": "capped",
+      "currentLap": 3,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 3
+      },
+      "cancelRequested": false,
+      "needsHuman": true,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "timeline": [
+        {
+          "id": "transition-capped",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "capped",
+          "kind": "transition"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-capped",
+      "revision": 6,
+      "status": "capped",
+      "recipe": "review-until-clean",
+      "currentLap": 3,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 3
+      },
+      "cancelRequested": false,
+      "needsHuman": true,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 6
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 2
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "counts": {
+        "events": 0,
+        "reports": 0,
+        "transitions": 1,
+        "operations": 6,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-capped",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "capped",
+          "kind": "transition"
+        }
+      ],
+      "projectionDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  },
+  {
+    "name": "cancelled",
+    "expectedModel": {
+      "identity": {
+        "runId": "run-cancelled",
+        "revision": 2,
+        "projectionDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "integrity": "verified"
+      },
+      "status": "cancelled",
+      "currentLap": 0,
+      "lapCap": 3,
+      "lease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": true,
+      "needsHuman": false,
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "role": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "role": "implementer",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "role": "reviewer",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "timeline": [
+        {
+          "id": "transition-cancelled",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "cancelled",
+          "kind": "transition"
+        }
+      ]
+    },
+    "projection": {
+      "schemaVersion": 1,
+      "storeVersion": 1,
+      "projectionVersion": 3,
+      "runId": "run-cancelled",
+      "revision": 2,
+      "status": "cancelled",
+      "recipe": "review-until-clean",
+      "currentLap": 0,
+      "lapCap": 3,
+      "continuationLease": {
+        "granted": 3,
+        "consumed": 0
+      },
+      "cancelRequested": true,
+      "needsHuman": false,
+      "integrity": {
+        "status": "verified",
+        "verifiedRevision": 2
+      },
+      "eventWatermark": {
+        "eventCount": 0
+      },
+      "nodes": [
+        {
+          "id": "root",
+          "kind": "root",
+          "label": "Governor",
+          "state": "terminal"
+        },
+        {
+          "id": "role:implementer",
+          "kind": "worker-role",
+          "label": "Implementer",
+          "state": "terminal",
+          "nativeAgentId": "native-implementer-fixture",
+          "nativeAgentType": "worker",
+          "role": "implementer"
+        },
+        {
+          "id": "role:reviewer",
+          "kind": "worker-role",
+          "label": "Reviewer",
+          "state": "terminal",
+          "nativeAgentId": "native-reviewer-fixture",
+          "nativeAgentType": "worker",
+          "role": "reviewer"
+        }
+      ],
+      "edges": [
+        {
+          "id": "root-governs-implementer",
+          "source": "root",
+          "target": "role:implementer",
+          "kind": "governs",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "implementer-handoff-reviewer",
+          "source": "role:implementer",
+          "target": "role:reviewer",
+          "kind": "handoff",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-feedback-implementer",
+          "source": "role:reviewer",
+          "target": "role:implementer",
+          "kind": "feedback",
+          "active": false,
+          "reportCount": 0
+        },
+        {
+          "id": "reviewer-verdict-root",
+          "source": "role:reviewer",
+          "target": "root",
+          "kind": "verdict",
+          "active": false,
+          "reportCount": 0
+        }
+      ],
+      "counts": {
+        "events": 0,
+        "reports": 0,
+        "transitions": 1,
+        "operations": 2,
+        "governorDecisions": 0,
+        "recoveries": 0,
+        "diagnostics": 0,
+        "conflicts": 0,
+        "corrupt": 0
+      },
+      "timeline": [
+        {
+          "id": "transition-cancelled",
+          "at": "2026-07-28T18:00:00.000Z",
+          "label": "cancelled",
+          "kind": "transition"
+        }
+      ],
+      "projectionDigest": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  }
+]

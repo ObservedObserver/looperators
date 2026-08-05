@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/operation-v1.json",
+  "title": "looperators Loop Operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "operationId",
+    "runId",
+    "requestId",
+    "requestDigest",
+    "kind",
+    "actorKind",
+    "actorId",
+    "fromRevision",
+    "toRevision",
+    "transitionId",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "operationId": {
+      "type": "string",
+      "pattern": "^op_[a-f0-9]{64}$"
+    },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "kind": {
+      "enum": ["start", "report", "pause", "resume", "cancel", "interrupt"]
+    },
+    "actorKind": { "enum": ["root", "worker"] },
+    "actorId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "fromRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "toRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "reportId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "transitionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "report" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "reportId": true },
+        "required": ["reportId"]
+      }
+    }
+  ]
+}

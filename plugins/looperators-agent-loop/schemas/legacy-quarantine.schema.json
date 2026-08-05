@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/legacy-quarantine-v1.json",
+  "title": "looperators Legacy Quarantine Receipt v1",
+  "$comment": "JSON Schema validates each revision field independently. The invariant toRevision === fromRevision + 1 is enforced by validateLegacyQuarantineReceipt and covered by the runtime-semantic fixture lane.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "recoveryVersion",
+    "recoveryId",
+    "runId",
+    "requestId",
+    "requestDigest",
+    "actorKind",
+    "actorId",
+    "reason",
+    "evidenceDigest",
+    "legacyFactCount",
+    "priorStateDigest",
+    "terminalStateDigest",
+    "fromRevision",
+    "toRevision",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "recoveryVersion": { "const": 1 },
+    "recoveryId": {
+      "type": "string",
+      "pattern": "^recovery_[a-f0-9]{64}$"
+    },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "actorKind": { "const": "root" },
+    "actorId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "reason": { "const": "unsupported-native-target-history" },
+    "evidenceDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "legacyFactCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "priorStateDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "terminalStateDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "fromRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "toRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}

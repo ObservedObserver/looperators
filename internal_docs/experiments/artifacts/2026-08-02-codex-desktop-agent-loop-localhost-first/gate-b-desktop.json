@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "gate": "B",
+  "verdict": "GO",
+  "date": "2026-08-03",
+  "environment": {
+    "codexDesktopVersion": "26.727.51351",
+    "codexDesktopBuild": "6119",
+    "codexCliVersion": "0.146.0-alpha.9.2",
+    "pluginVersion": "0.3.2+codex.20260803073424"
+  },
+  "loop": {
+    "threadId": "019fc7b9-aa76-77d1-ac72-e4c3855772a8",
+    "runId": "run_6fc56d7d04232a324a59cd132a18b8246db045adc291eb3a2540f8746f9f22cc",
+    "projectionDigest": "bef9a9a2541d8c3a60dde9bc3170010dbdf4d8e38aa3870564a3cae385e3ef16",
+    "status": "succeeded",
+    "implementerReports": 1,
+    "reviewerReports": 1,
+    "reviewerVerdict": "clean"
+  },
+  "browser": {
+    "surface": "codex-in-app-browser",
+    "verified": true,
+    "live": true,
+    "nodes": ["Governor", "Implementer", "Reviewer"],
+    "relationships": ["governs", "handoff", "feedback", "verdict"],
+    "reactFlowControls": true,
+    "miniMap": true
+  },
+  "controlRoundTrip": {
+    "threadId": "019fc7c0-3a1f-7733-a0c7-88b01d291053",
+    "runId": "run_5b9e832b226b7a2312ef9a6d633ec6b4fcd4f72d18932b18503c3e70f9b79bb4",
+    "projectionDigest": "cee9cc4df8fd12acae291635df4f2f596c4779a9b8e5609fe9192bc63ec11b31",
+    "action": "pause",
+    "source": "localhost-ui",
+    "domStatus": "paused",
+    "mcpStatus": "paused",
+    "subagentCount": 0,
+    "workerReportCount": 0
+  },
+  "artifacts": {
+    "browserScreenshot": {
+      "path": "gate-b-desktop-right-browser.png",
+      "sha256": "5a1cf867ba74795501868100437b77298c6baf14d49affb1205c8c92fb97b4df"
+    }
+  },
+  "security": {
+    "defaultHooks": false,
+    "loopbackOnly": true,
+    "ticketPersisted": false,
+    "capabilityTokenPersisted": false,
+    "transcriptProtocol": false
+  }
+}

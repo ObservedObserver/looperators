@@ -1,0 +1,20 @@
+{
+  "name": "looperators-p0",
+  "interface": {
+    "displayName": "Looperators P0"
+  },
+  "plugins": [
+    {
+      "name": "looperators-agent-loop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/looperators-agent-loop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Developer"
+    }
+  ]
+}

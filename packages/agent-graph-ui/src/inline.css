@@ -1,0 +1,407 @@
+.looperators-inline-agent-graph,
+.looperators-inline-agent-graph * {
+  box-sizing: border-box;
+}
+
+.looperators-inline-agent-graph {
+  --lagi-background: var(--background, #f8fafc);
+  --lagi-card: var(--card, #ffffff);
+  --lagi-muted-card: var(--muted, #f1f3f5);
+  --lagi-foreground: var(--foreground, #171a1f);
+  --lagi-muted: var(--muted-foreground, #606772);
+  --lagi-border: var(--border, rgba(23, 26, 31, 0.16));
+  --lagi-accent: var(--term-accent-hi, #65a30d);
+  --lagi-governor: var(--term-amber, #b45309);
+  --lagi-worker: var(--term-cyan, #0e7490);
+  --lagi-success: var(--term-emerald, #047857);
+  --lagi-danger: var(--term-rose, #e11d48);
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  color: var(--lagi-foreground);
+  font: 14px/1.45 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+.lag-inline-header,
+.lag-inline-badges,
+.lag-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.lag-inline-header {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lag-inline-header h2,
+.lag-inline-inspector h3 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.lag-inline-eyebrow {
+  margin: 0 0 2px;
+  color: var(--lagi-muted);
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.lag-inline-badges {
+  justify-content: flex-end;
+}
+
+.lag-inline-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--lagi-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lagi-card) 88%, transparent);
+  padding: 2px 8px;
+  color: var(--lagi-muted);
+  font: 10px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+  white-space: nowrap;
+}
+
+.lag-inline-badge[data-tone="active"] {
+  border-color: color-mix(in srgb, var(--lagi-accent) 50%, var(--lagi-border));
+  color: var(--lagi-accent);
+}
+
+.lag-inline-badge[data-tone="success"],
+.lag-inline-verified {
+  border-color: color-mix(in srgb, var(--lagi-success) 45%, var(--lagi-border));
+  color: var(--lagi-success);
+}
+
+.lag-inline-badge[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--lagi-governor) 50%, var(--lagi-border));
+  color: var(--lagi-governor);
+}
+
+.lag-inline-badge[data-tone="danger"] {
+  border-color: color-mix(in srgb, var(--lagi-danger) 45%, var(--lagi-border));
+  color: var(--lagi-danger);
+}
+
+.lag-inline-alert {
+  margin: 0;
+  border: 1px solid
+    color-mix(in srgb, var(--lagi-governor) 45%, var(--lagi-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--lagi-governor) 8%, var(--lagi-card));
+  padding: 8px 10px;
+  color: var(--lagi-governor);
+  font-size: 12px;
+}
+
+.lag-inline-error {
+  border-color: color-mix(in srgb, var(--lagi-danger) 45%, var(--lagi-border));
+  color: var(--lagi-danger);
+}
+
+.lag-inline-stage {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--lagi-border);
+  border-radius: 14px;
+  background: var(--lagi-background);
+}
+
+.lag-inline-stage svg {
+  display: block;
+  width: 100%;
+  min-width: 620px;
+  height: auto;
+  min-height: 250px;
+  max-height: 420px;
+}
+
+.lag-inline-grid {
+  fill: url("#lag-grid");
+}
+
+.lag-inline-grid-dot {
+  fill: color-mix(in srgb, var(--lagi-muted) 30%, transparent);
+}
+
+.lag-inline-node,
+.lag-inline-edge {
+  cursor: pointer;
+  outline: none;
+}
+
+.lag-inline-node-card {
+  fill: color-mix(in srgb, var(--lagi-card) 96%, transparent);
+  stroke: var(--lagi-border);
+  filter: drop-shadow(0 9px 12px rgba(0, 0, 0, 0.08));
+}
+
+.lag-inline-node[data-role="root"] .lag-inline-node-card {
+  stroke: color-mix(in srgb, var(--lagi-governor) 55%, var(--lagi-border));
+}
+
+.lag-inline-node[data-role="implementer"] .lag-inline-node-card,
+.lag-inline-node[data-role="reviewer"] .lag-inline-node-card {
+  stroke: color-mix(in srgb, var(--lagi-worker) 48%, var(--lagi-border));
+}
+
+.lag-inline-node[data-state="terminal"] {
+  opacity: 0.72;
+}
+
+.lag-inline-node[data-selected="true"] .lag-inline-node-card,
+.lag-inline-node:focus-visible .lag-inline-node-card {
+  stroke: var(--lagi-accent);
+  stroke-width: 3;
+}
+
+.lag-inline-glyph-box,
+.lag-inline-description-box,
+.lag-inline-state-box {
+  fill: color-mix(in srgb, var(--lagi-muted-card) 76%, transparent);
+  stroke: var(--lagi-border);
+}
+
+.lag-inline-glyph,
+.lag-inline-node-title,
+.lag-inline-state,
+.lag-inline-node-subtitle,
+.lag-inline-description,
+.lag-inline-node-id,
+.lag-inline-node-binding,
+.lag-inline-edge-label {
+  dominant-baseline: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.lag-inline-glyph {
+  fill: var(--lagi-worker);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.lag-inline-node[data-role="root"] .lag-inline-glyph {
+  fill: var(--lagi-governor);
+}
+
+.lag-inline-node-title {
+  fill: var(--lagi-foreground);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.lag-inline-node-subtitle,
+.lag-inline-state,
+.lag-inline-description,
+.lag-inline-node-id,
+.lag-inline-node-binding,
+.lag-inline-edge-label {
+  fill: var(--lagi-muted);
+}
+
+.lag-inline-node-subtitle,
+.lag-inline-state {
+  font-size: 9px;
+}
+
+.lag-inline-description {
+  font-size: 10px;
+}
+
+.lag-inline-node-id,
+.lag-inline-node-binding,
+.lag-inline-edge-label {
+  font-size: 8.5px;
+}
+
+.lag-inline-node-separator {
+  stroke: var(--lagi-border);
+}
+
+.lag-inline-edge-path {
+  fill: none;
+  stroke: var(--lagi-muted);
+  stroke-width: 2;
+}
+
+.lag-inline-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+}
+
+.lag-inline-edge[data-kind="governs"] .lag-inline-edge-path {
+  stroke: var(--lagi-governor);
+}
+
+.lag-inline-edge[data-kind="handoff"] .lag-inline-edge-path {
+  stroke: var(--lagi-success);
+}
+
+.lag-inline-edge[data-kind="feedback"] .lag-inline-edge-path {
+  stroke: var(--lagi-governor);
+  stroke-dasharray: 7 5;
+}
+
+.lag-inline-edge[data-kind="verdict"] .lag-inline-edge-path {
+  stroke: var(--lagi-worker);
+  stroke-dasharray: 3 4;
+}
+
+.lag-inline-edge[data-active="false"] {
+  opacity: 0.62;
+}
+
+.lag-inline-edge[data-selected="true"] .lag-inline-edge-path,
+.lag-inline-edge:focus-visible .lag-inline-edge-path {
+  stroke: var(--lagi-accent);
+  stroke-width: 4;
+}
+
+.lag-inline-arrow {
+  fill: var(--lagi-muted);
+}
+
+.lag-inline-edge-label-box {
+  fill: color-mix(in srgb, var(--lagi-card) 94%, transparent);
+  stroke: var(--lagi-border);
+}
+
+.lag-inline-edge[data-active="true"] .lag-inline-edge-label-box {
+  stroke: var(--lagi-accent);
+}
+
+.lag-inline-inspector {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 12px 18px;
+  border: 1px solid var(--lagi-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--lagi-card) 92%, transparent);
+  padding: 11px 12px;
+}
+
+.lag-inline-detail,
+.lag-inline-follow-up {
+  margin: 4px 0 0;
+  color: var(--lagi-muted);
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+}
+
+.lag-inline-actions {
+  justify-content: flex-end;
+}
+
+.lag-inline-actions button {
+  min-height: 31px;
+  border: 1px solid var(--lagi-border);
+  border-radius: 9px;
+  background: var(--lagi-card);
+  padding: 5px 9px;
+  color: var(--lagi-foreground);
+  font: 10px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  cursor: pointer;
+}
+
+.lag-inline-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.lag-inline-actions button:focus-visible,
+.lag-inline-timeline summary:focus-visible {
+  outline: 2px solid var(--lagi-accent);
+  outline-offset: 2px;
+}
+
+.lag-inline-follow-up {
+  grid-column: 1 / -1;
+}
+
+.lag-inline-timeline {
+  border: 1px solid var(--lagi-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--lagi-card) 90%, transparent);
+}
+
+.lag-inline-timeline summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  color: var(--lagi-foreground);
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+  cursor: pointer;
+}
+
+.lag-inline-timeline ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0 12px 12px 32px;
+}
+
+.lag-inline-timeline li,
+.lag-inline-footer {
+  color: var(--lagi-muted);
+  font-size: 10px;
+}
+
+.lag-inline-timeline li time {
+  margin-right: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.lag-inline-timeline li small {
+  margin-left: 6px;
+  color: var(--lagi-worker);
+}
+
+.lag-inline-footer {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+@media (max-width: 719px) {
+  .lag-inline-stage {
+    overflow-x: auto;
+  }
+
+  .lag-inline-inspector {
+    grid-template-columns: 1fr;
+  }
+
+  .lag-inline-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .looperators-inline-agent-graph {
+    --lagi-background: var(--background, #07090a);
+    --lagi-card: var(--card, #0d120e);
+    --lagi-muted-card: var(--muted, #0f1511);
+    --lagi-foreground: var(--foreground, #e5e7eb);
+    --lagi-muted: var(--muted-foreground, #9ca3af);
+    --lagi-border: var(--border, rgba(255, 255, 255, 0.12));
+    --lagi-accent: var(--term-accent-hi, #a3e635);
+    --lagi-governor: var(--term-amber, #fcd34d);
+    --lagi-worker: var(--term-cyan, #67e8f9);
+    --lagi-success: var(--term-emerald, #6ee7b7);
+    --lagi-danger: var(--term-rose, #fb7185);
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "looperators-agent-loop-p0": {
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "LOOPERATORS_P0_ARTIFACT_DIR"
+      ]
+    }
+  }
+}

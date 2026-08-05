@@ -1,6 +1,4 @@
 // graph-core: the pure, IO-free logic of the session graph kernel.
-// Baseline design: design-docs/session-graph-kernel.md (§2 math model,
-// §6 operators, §7 schemas). Wired into the runtime in G3.
 
 export * from './types.js'
 export { applyEvent, fold } from './fold.js'

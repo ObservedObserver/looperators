@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "evidenceVersion": 1,
+  "runId": "legacy-run",
+  "stateRevision": 1,
+  "historyDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+  "entries": [
+    {
+      "factKind": "transition",
+      "factId": "transition-legacy",
+      "factDigest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "field": "routedToNode",
+      "role": "implementer",
+      "bindingId": "binding_3333333333333333333333333333333333333333333333333333333333333333",
+      "bindingDigest": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "evidenceDigest": "d3cb0dd4c8d3670eccd30792890d20231aa38cac17b4d6f316f12975c565da3d"
+}

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "looperators-agent-loop": {
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "LOOPERATORS_DATA_DIR",
+        "HOME",
+        "XDG_DATA_HOME",
+        "LOCALAPPDATA"
+      ]
+    }
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/governor-decision-v1.json",
+  "title": "looperators Governor Decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "decisionId",
+    "runId",
+    "obligationId",
+    "originEventId",
+    "hookEvent",
+    "rootSessionId",
+    "action",
+    "reasonCode",
+    "pendingTransitionId",
+    "fromRevision",
+    "toRevision",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "decisionId": {
+      "type": "string",
+      "pattern": "^decision_[a-f0-9]{64}$"
+    },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "obligationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "originEventId": {
+      "type": "string",
+      "pattern": "^evt_[a-f0-9]{64}$"
+    },
+    "hookEvent": {
+      "enum": ["Stop", "SubagentStop", "SessionStart"]
+    },
+    "rootSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "action": { "enum": ["block", "cap", "interrupt"] },
+    "reasonCode": {
+      "enum": [
+        "pending-root-transition",
+        "pending-worker-report",
+        "lease-exhausted",
+        "resume-in-flight"
+      ]
+    },
+    "pendingTransitionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "fromRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "toRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "leaseEpoch": { "type": "integer", "minimum": 1, "maximum": 6 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "hookEvent": { "const": "SubagentStop" } },
+        "required": ["hookEvent"]
+      },
+      "then": {
+        "properties": { "agentId": true },
+        "required": ["agentId"]
+      },
+      "else": {
+        "not": {
+          "properties": { "agentId": true },
+          "required": ["agentId"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "hookEvent": { "enum": ["Stop", "SubagentStop"] }
+        },
+        "required": ["hookEvent"]
+      },
+      "then": {
+        "properties": { "turnId": true },
+        "required": ["turnId"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "action": { "const": "block" } },
+        "required": ["action"]
+      },
+      "then": {
+        "required": ["leaseEpoch"],
+        "properties": {
+          "leaseEpoch": true,
+          "hookEvent": { "enum": ["Stop", "SubagentStop"] }
+        }
+      },
+      "else": {
+        "not": {
+          "properties": { "leaseEpoch": true },
+          "required": ["leaseEpoch"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "action": { "const": "cap" } },
+        "required": ["action"]
+      },
+      "then": {
+        "properties": {
+          "hookEvent": { "enum": ["Stop", "SubagentStop"] },
+          "reasonCode": { "const": "lease-exhausted" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "action": { "const": "interrupt" } },
+        "required": ["action"]
+      },
+      "then": {
+        "properties": {
+          "hookEvent": { "const": "SessionStart" },
+          "reasonCode": { "const": "resume-in-flight" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "hookEvent": { "const": "Stop" } },
+        "required": ["hookEvent", "action"]
+      },
+      "then": {
+        "if": {
+          "properties": { "action": { "const": "block" } },
+          "required": ["action"]
+        },
+        "then": {
+          "properties": {
+            "reasonCode": { "const": "pending-root-transition" }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "hookEvent": { "const": "SubagentStop" } },
+        "required": ["hookEvent", "action"]
+      },
+      "then": {
+        "if": {
+          "properties": { "action": { "const": "block" } },
+          "required": ["action"]
+        },
+        "then": {
+          "properties": {
+            "reasonCode": { "const": "pending-worker-report" }
+          }
+        }
+      }
+    }
+  ]
+}

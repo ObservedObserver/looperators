@@ -1,5 +1,4 @@
 // graph-core: pure, IO-free types for the session graph kernel.
-// Baseline: design-docs/session-graph-kernel.md §7 (schema drafts).
 // This package is the single source of truth for kernel-level shapes;
 // the runtime (kernelStore, sessionManager) imports from here.
 

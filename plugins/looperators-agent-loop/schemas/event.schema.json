@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/event-v1.json",
+  "title": "looperators Normalized Hook Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "semanticKeyVersion",
+    "eventId",
+    "semanticKey",
+    "sessionId",
+    "event",
+    "observedAt",
+    "payloadDigest",
+    "conflictEligible"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "semanticKeyVersion": { "const": 1 },
+    "eventId": { "type": "string", "pattern": "^evt_[a-f0-9]{64}$" },
+    "semanticKey": { "type": "string", "pattern": "^sem-v1:[a-f0-9]{64}$" },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "event": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "agentType": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "toolUseId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "stopHookActive": { "type": "boolean" },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "payloadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "payloadSummary": { "type": "object" },
+    "causeRef": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "conflictEligible": { "type": "boolean" }
+  }
+}

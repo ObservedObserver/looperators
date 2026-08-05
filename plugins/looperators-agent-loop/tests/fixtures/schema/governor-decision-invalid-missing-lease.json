@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "decisionId": "decision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "run-p1a",
+  "obligationId": "transition-pending",
+  "originEventId": "evt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "hookEvent": "SubagentStop",
+  "rootSessionId": "session-root",
+  "turnId": "turn-worker",
+  "agentId": "agent-implementer",
+  "action": "block",
+  "reasonCode": "pending-worker-report",
+  "pendingTransitionId": "transition-pending",
+  "fromRevision": 1,
+  "toRevision": 2,
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}

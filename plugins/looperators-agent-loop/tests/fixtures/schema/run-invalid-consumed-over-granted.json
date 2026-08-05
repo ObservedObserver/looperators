@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "runId": "run-p1a",
+  "rootSessionId": "session-root",
+  "originatingTurnId": "turn-root",
+  "scope": {
+    "kind": "task"
+  },
+  "masterNode": "session-root",
+  "recipe": "review-until-clean",
+  "status": "running",
+  "currentLap": 0,
+  "continuationLease": {
+    "granted": 1,
+    "consumed": 2
+  },
+  "cancelRequested": false,
+  "revision": 0,
+  "createdAt": "2026-07-26T00:00:00.000Z",
+  "updatedAt": "2026-07-26T00:00:00.000Z"
+}

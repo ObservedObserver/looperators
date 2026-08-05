@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Until Clean"
+  short_description: "Run a bounded implementer-reviewer loop"
+  default_prompt: "Use $review-until-clean to preview a bounded implementer-reviewer loop for this task."

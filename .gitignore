@@ -153,14 +153,15 @@ release
 *.sln
 *.sw?
 
-# Local project vision and design notes
+# Internal project documentation (keep the legacy path blocked)
 design-docs/
 internal_docs/
 
+# Local browser automation state
+.playwright-cli/
+
 # Local verification screenshots
 acceptance-screenshots/
-output/demo-screenshots/
 
-# Headless acceptance run artifacts
-output/acceptance/
-output/ui-acceptance/
+# Generated output and acceptance artifacts
+/output/

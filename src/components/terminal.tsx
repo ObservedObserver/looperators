@@ -5,10 +5,10 @@ import { cn } from '@/lib/utils';
 /**
  * Shared terminal / ink primitives.
  *
- * Design rule (see design-docs/terminal-redesign/HANDOFF.md): the chrome flips
- * light/dark, but ink "stages" (input fields, console surfaces) stay dark in
- * BOTH themes. Field surfaces below use the constant `ink` palette; labels and
- * command-line chrome use the flipping tokens so they read on warm paper too.
+ * The chrome flips light/dark, but ink "stages" (input fields, console surfaces)
+ * stay dark in BOTH themes. Field surfaces below use the constant `ink` palette;
+ * labels and command-line chrome use the flipping tokens so they read on warm
+ * paper too.
  */
 
 /** A command-line section header, e.g. `❯ orrery session new --prompt`. */

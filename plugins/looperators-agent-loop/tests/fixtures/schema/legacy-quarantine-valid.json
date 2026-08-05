@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "recoveryVersion": 1,
+  "recoveryId": "recovery_5fb0eab389aac38caf7f0c9a9ef2d00404a1c540a83e3a493a80a1e7e64d9033",
+  "runId": "legacy-run",
+  "requestId": "recover-1",
+  "requestDigest": "e83fc4b2cf275e27553459c66931301d38b0f254cbd7ff00cb2834f18e67bc50",
+  "actorKind": "root",
+  "actorId": "root-session",
+  "reason": "unsupported-native-target-history",
+  "evidenceDigest": "5555555555555555555555555555555555555555555555555555555555555555",
+  "legacyFactCount": 1,
+  "priorStateDigest": "6666666666666666666666666666666666666666666666666666666666666666",
+  "terminalStateDigest": "7777777777777777777777777777777777777777777777777777777777777777",
+  "fromRevision": 1,
+  "toRevision": 2,
+  "createdAt": "2026-07-26T12:00:00.000Z"
+}

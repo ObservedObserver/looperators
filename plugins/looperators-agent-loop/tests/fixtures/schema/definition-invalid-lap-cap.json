@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "definitionId": "definition_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "run_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "requestId": "request-preview",
+  "requestDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "recipe": "review-until-clean",
+  "goal": "Keep the review loop bounded.",
+  "implementerInstructions": "Address the current review findings.",
+  "reviewerInstructions": "Report issues or a clean verdict.",
+  "lapCap": 7,
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}

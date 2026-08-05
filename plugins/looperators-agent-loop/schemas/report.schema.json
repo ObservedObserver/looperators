@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/report-v1.json",
+  "title": "looperators Loop Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "reportId",
+    "runId",
+    "fromNode",
+    "receiver",
+    "type",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "reportId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "fromRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "toRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "fromNode": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "receiver": { "enum": ["root-master", "human"] },
+    "routedToNode": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "type": { "enum": ["verdict", "info", "relationship"] },
+    "status": { "const": "done" },
+    "verdict": { "enum": ["clean", "issues"] },
+    "issues": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+          "file": { "type": "string", "minLength": 1, "maxLength": 2000 },
+          "line": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "severity": { "enum": ["info", "warn", "error"] }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "originEventId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "type": { "const": "verdict" } },
+        "required": ["type"]
+      },
+      "then": {
+        "properties": { "verdict": true },
+        "required": ["verdict"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "verdict": { "const": "issues" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "issues": {
+            "type": "array",
+            "minItems": 1
+          }
+        },
+        "required": ["issues"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "verdict": { "const": "clean" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "issues": {
+            "type": "array",
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "requestId": true },
+        "required": ["requestId"]
+      },
+      "then": {
+        "properties": {
+          "requestDigest": true,
+          "fromRevision": true,
+          "toRevision": true
+        },
+        "required": ["requestDigest", "fromRevision", "toRevision"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "requestDigest": true },
+        "required": ["requestDigest"]
+      },
+      "then": {
+        "properties": {
+          "requestId": true,
+          "fromRevision": true,
+          "toRevision": true
+        },
+        "required": ["requestId", "fromRevision", "toRevision"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "fromRevision": true },
+        "required": ["fromRevision"]
+      },
+      "then": {
+        "properties": {
+          "requestId": true,
+          "requestDigest": true,
+          "toRevision": true
+        },
+        "required": ["requestId", "requestDigest", "toRevision"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "toRevision": true },
+        "required": ["toRevision"]
+      },
+      "then": {
+        "properties": {
+          "requestId": true,
+          "requestDigest": true,
+          "fromRevision": true
+        },
+        "required": ["requestId", "requestDigest", "fromRevision"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://looperators.local/schemas/agent-loop/identity-binding-v1.json",
+  "title": "looperators Identity Binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "bindingId",
+    "runId",
+    "agentId",
+    "rootSessionId",
+    "method",
+    "createdAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "bindingId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "runId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "agentId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "rootSessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "method": { "enum": ["host-metadata-v1", "capability-token-v1"] },
+    "role": { "enum": ["implementer", "reviewer"] },
+    "requestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "requestDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "observationId": {
+      "type": "string",
+      "pattern": "^observation_[a-f0-9]{64}$"
+    },
+    "originEventId": {
+      "type": "string",
+      "pattern": "^evt_[a-f0-9]{64}$"
+    },
+    "tokenDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "hostIdentityDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "revokedAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "method": { "const": "capability-token-v1" } },
+        "required": ["method"]
+      },
+      "then": {
+        "properties": { "tokenDigest": true },
+        "required": ["tokenDigest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "method": { "const": "host-metadata-v1" } },
+        "required": ["method"]
+      },
+      "then": {
+        "properties": { "hostIdentityDigest": true },
+        "required": ["hostIdentityDigest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "requestId": true },
+        "required": ["requestId"]
+      },
+      "then": {
+        "properties": { "requestDigest": true },
+        "required": ["requestDigest"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "requestDigest": true },
+        "required": ["requestDigest"]
+      },
+      "then": {
+        "properties": { "requestId": true },
+        "required": ["requestId"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "observationId": true },
+        "required": ["observationId"]
+      },
+      "then": {
+        "properties": { "originEventId": true },
+        "required": ["originEventId"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "originEventId": true },
+        "required": ["originEventId"]
+      },
+      "then": {
+        "properties": { "observationId": true },
+        "required": ["observationId"]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": { "requestId": true },
+            "required": ["requestId"]
+          },
+          {
+            "properties": { "requestDigest": true },
+            "required": ["requestDigest"]
+          },
+          {
+            "properties": { "observationId": true },
+            "required": ["observationId"]
+          },
+          {
+            "properties": { "originEventId": true },
+            "required": ["originEventId"]
+          }
+        ]
+      },
+      "then": {
+        "required": [
+          "role",
+          "requestId",
+          "requestDigest",
+          "observationId",
+          "originEventId"
+        ]
+      }
+    }
+  ]
+}

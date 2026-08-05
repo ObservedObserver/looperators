@@ -1,6 +1,10 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "ignorePatterns": ["dist/**", "dist-electron/**"],
+  "ignorePatterns": [
+    "dist/**",
+    "dist-electron/**",
+    "plugins/looperators-agent-loop/ui/assets/**"
+  ],
   "plugins": ["react", "typescript", "oxc"],
   "rules": {
     "react/rules-of-hooks": "error",

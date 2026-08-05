@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "bindingId": "binding-schema-valid",
+  "runId": "run-p1a",
+  "agentId": "agent-reviewer",
+  "rootSessionId": "session-root",
+  "method": "capability-token-v1",
+  "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "createdAt": "2026-07-26T00:00:00.000Z"
+}

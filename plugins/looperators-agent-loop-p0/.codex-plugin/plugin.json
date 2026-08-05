@@ -1,0 +1,23 @@
+{
+  "name": "looperators-agent-loop-p0",
+  "version": "0.1.0+codex.20260726175228",
+  "description": "P0 compatibility probe for looperators Agent Loop hooks, inline views, and MCP Apps.",
+  "author": {
+    "name": "looperators"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Looperators Agent Loop P0",
+    "shortDescription": "Probe and visualize a local Agent Loop.",
+    "longDescription": "A deliberately small compatibility experiment for collecting Codex hook events, rendering a thread-scoped inline graph, and exposing the same graph through an MCP App.",
+    "developerName": "looperators",
+    "category": "Productivity",
+    "capabilities": [
+      "Agent Loop hook collection",
+      "Thread-scoped inline visualization",
+      "MCP App graph resource"
+    ],
+    "defaultPrompt": "Use $agent-loop-visualization to normalize the local P0 hook log and render the looperators Agent Loop graph."
+  },
+  "mcpServers": "./.mcp.json"
+}
