@@ -314,7 +314,7 @@ export const graphStateSchema = {
         providerInstanceId: 'string?; provider instance selected in provider settings',
         cwd: 'string?; optional project cwd to validate against provider access',
       },
-      output: 'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
+      output: 'ProviderSetupStatus; resolved executable, version, readiness, auth/account, models, cwd, and MCP setup diagnostics',
     },
     upsertProviderInstance: {
       input: {
@@ -1050,6 +1050,22 @@ export type ProjectContext = {
 
 export type ProviderSetupCheckStatus = 'ok' | 'warning' | 'error' | 'unknown';
 
+export type ProviderReadiness = 'ready' | 'needs-attention' | 'unavailable' | 'unknown';
+
+export type ProviderAuthStatus = 'authenticated' | 'external' | 'not-required' | 'unauthenticated' | 'unknown';
+
+export type ProviderSetupAuth = {
+  status: ProviderAuthStatus;
+  accountLabel?: string;
+  method?: string;
+};
+
+export type ProviderSetupCommand = {
+  requested: string;
+  resolved?: string;
+  source: 'profile' | 'environment' | 'path' | 'unresolved';
+};
+
 export type ProviderSetupCheck = {
   id: string;
   label: string;
@@ -1072,6 +1088,11 @@ export type ProviderSetupStatus = {
   providerKind: ProviderKind;
   providerInstanceId?: string;
   generatedAt: string;
+  readiness?: ProviderReadiness;
+  installed?: boolean;
+  version?: string;
+  command?: ProviderSetupCommand;
+  auth?: ProviderSetupAuth;
   models?: ProviderModelCatalog;
   checks: ProviderSetupCheck[];
 };

@@ -28,6 +28,7 @@ import { useCanvas } from '@/hooks/use-canvas';
 import { useOrchestration } from '@/hooks/use-orchestration';
 import { useDraftGraph } from '@/hooks/use-draft-graph';
 import { PlanCouncilWorkbench } from '@/components/plan-council-workbench';
+import { AgentSettingsPanel } from '@/components/agent-settings-panel';
 import { preferRuntimeSnapshot } from '../shared/runtime-state-patch';
 
 function App() {
@@ -237,6 +238,7 @@ function App() {
       newProviderInstance,
     },
   });
+  const showGraphSurface = activeTab !== 'agents';
 
   return (
     <TooltipProvider>
@@ -257,8 +259,8 @@ function App() {
 
         {/* ===== Detail: selected chat or orchestrate ===== */}
         <section
-          className={cn('relative flex min-h-0 flex-col overflow-hidden bg-background', effectiveGraphCollapsed ? 'flex-1' : 'shrink-0')}
-          style={effectiveGraphCollapsed ? undefined : { width: chatPanelWidth, minWidth: chatPanelMinWidth }}
+          className={cn('relative flex min-h-0 flex-col overflow-hidden bg-background', effectiveGraphCollapsed || !showGraphSurface ? 'flex-1' : 'shrink-0')}
+          style={effectiveGraphCollapsed || !showGraphSurface ? undefined : { width: chatPanelWidth, minWidth: chatPanelMinWidth }}
         >
           {runtimeError ? (
             <div className="app-region-no-drag mx-3 mb-2 flex shrink-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 font-mono text-[11.5px] leading-5 text-destructive">
@@ -299,13 +301,26 @@ function App() {
                   setOpenPlanCouncilId(workflowId);
                   setGraphCollapsed(false);
                 }}
+                onOpenAgentSettings={() => setActiveTab('agents')}
+              />
+            ) : null}
+            {activeTab === 'agents' ? (
+              <AgentSettingsPanel
+                runtimeApi={runtimeApi}
+                isRuntimeAvailable={isRuntimeAvailable}
+                runtimeStatusText={core.runtimeStatusText}
+                providerInstances={providerInstances}
+                cwd={newCwd}
+                savingProviderInstanceId={newChat.savingProviderInstanceId}
+                providerInstanceError={newChat.providerInstanceError}
+                onSaveProviderInstance={newChat.saveProviderInstance}
               />
             ) : null}
           </div>
         </section>
 
         {/* ===== Resize handle (chat width) — only when graph visible ===== */}
-        {effectiveGraphCollapsed ? null : (
+        {effectiveGraphCollapsed || !showGraphSurface ? null : (
           <div
             role="separator"
             aria-orientation="vertical"
@@ -336,7 +351,7 @@ function App() {
         )}
 
         {/* ===== Session graph (collapsible) ===== */}
-        {effectiveGraphCollapsed ? (
+        {!showGraphSurface ? null : effectiveGraphCollapsed ? (
           <div className="flex h-dvh shrink-0 flex-col items-center gap-3 border-l border-border bg-background px-1.5 py-3">
             <Tooltip>
               <TooltipTrigger asChild>

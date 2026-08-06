@@ -486,7 +486,7 @@ export const graphStateSchema = {
         cwd: 'string?; optional project cwd to validate against provider access',
       },
       output:
-        'ProviderSetupStatus; binary/cwd/auth/account/MCP setup diagnostics for the selected provider',
+        'ProviderSetupStatus; resolved executable, version, readiness, auth/account, models, cwd, and MCP setup diagnostics',
     },
     upsertProviderInstance: {
       input: {

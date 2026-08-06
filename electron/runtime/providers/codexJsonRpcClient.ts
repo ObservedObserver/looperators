@@ -1,63 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
-import os from 'node:os'
-
-function codexCommand() {
-  return process.env.ORRERY_CODEX_BIN || 'codex'
-}
-
-function buildPath() {
-  const currentPath = process.env.PATH ?? ''
-  return [
-    currentPath,
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    '/bin',
-  ]
-    .filter(Boolean)
-    .join(':')
-}
-
-function nonEmptyString(value) {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
-function expandHomePath(value) {
-  if (!nonEmptyString(value)) {
-    return undefined
-  }
-
-  const trimmed = value.trim()
-  if (trimmed === '~') {
-    return os.homedir()
-  }
-  if (trimmed.startsWith('~/')) {
-    return `${os.homedir()}/${trimmed.slice(2)}`
-  }
-  return trimmed
-}
-
-function launchArgs(providerInstance) {
-  return Array.isArray(providerInstance?.launchArgs)
-    ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
-    : []
-}
-
-function codexEnv(providerInstance) {
-  const homePath = expandHomePath(providerInstance?.homePath)
-  const shadowHomePath = expandHomePath(providerInstance?.shadowHomePath)
-  return {
-    ...process.env,
-    ...(providerInstance?.env ?? {}),
-    PATH: buildPath(),
-    NO_COLOR: '1',
-    ...(homePath ? { ORRERY_CODEX_SHARED_HOME: homePath } : {}),
-    ...(shadowHomePath || homePath
-      ? { CODEX_HOME: shadowHomePath ?? homePath }
-      : {}),
-  }
-}
+import { resolveProviderLaunch } from './providerLaunch.js'
 
 export class CodexJsonRpcClient extends EventEmitter {
   #child
@@ -74,15 +17,13 @@ export class CodexJsonRpcClient extends EventEmitter {
     providerInstance?: any
   } = {}) {
     super()
-    const command = nonEmptyString(providerInstance?.binaryPath)
-      ? providerInstance.binaryPath.trim()
-      : codexCommand()
+    const launch = resolveProviderLaunch('codex', providerInstance)
     this.#child = spawn(
-      command,
-      ['app-server', '--listen', 'stdio://', ...launchArgs(providerInstance)],
+      launch.command,
+      ['app-server', '--listen', 'stdio://', ...launch.launchArgs],
       {
         cwd,
-        env: codexEnv(providerInstance),
+        env: launch.env,
         stdio: ['pipe', 'pipe', 'pipe'],
       }
     )
@@ -129,6 +70,14 @@ export class CodexJsonRpcClient extends EventEmitter {
 
     this.#child.stdin.write(`${JSON.stringify({ id, result })}\n`)
     this.emit('sent', { id, result })
+  }
+
+  notify(method, params = {}) {
+    if (this.#closed) return false
+    const payload = { method, params }
+    this.#child.stdin.write(`${JSON.stringify(payload)}\n`)
+    this.emit('sent', payload)
+    return true
   }
 
   close() {

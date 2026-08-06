@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { buildPath } from '../claudeRuntimeShared.js'
+import { resolveProviderLaunch } from './providerLaunch.js'
 import type {
   GrokAcpId,
   GrokAcpMessage,
@@ -19,22 +19,6 @@ const stderrLineMaxLength = 16 * 1024
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function launchArgs(providerInstance?: GrokAcpProviderInstance) {
-  return Array.isArray(providerInstance?.launchArgs)
-    ? providerInstance.launchArgs.filter(nonEmptyString).map((arg) => arg.trim())
-    : []
-}
-
-function grokEnv(providerInstance?: GrokAcpProviderInstance) {
-  return {
-    ...process.env,
-    ...(providerInstance?.env ?? {}),
-    PATH: buildPath(),
-    NO_COLOR: '1',
-    GROK_OAUTH2_REFERRER: 'orrery',
-  }
 }
 
 function errorMessage(error: unknown) {
@@ -163,10 +147,8 @@ export class GrokAcpClient extends EventEmitter {
     this.#closePromise = new Promise((resolve) => {
       this.#resolveClose = resolve
     })
-    const command = nonEmptyString(providerInstance?.binaryPath)
-      ? providerInstance.binaryPath.trim()
-      : process.env.ORRERY_GROK_BIN || 'grok'
-    const childEnv = grokEnv(providerInstance)
+    const launch = resolveProviderLaunch('grok', providerInstance)
+    const childEnv = launch.env
     this.#stderrState = {
       buffer: '',
       discardingLine: false,
@@ -174,8 +156,8 @@ export class GrokAcpClient extends EventEmitter {
       tail: [],
     }
     this.#child = spawn(
-      command,
-      [...globalArgs, 'agent', ...launchArgs(providerInstance), ...agentArgs, 'stdio'],
+      launch.command,
+      [...globalArgs, 'agent', ...launch.launchArgs, ...agentArgs, 'stdio'],
       {
         cwd,
         env: childEnv,

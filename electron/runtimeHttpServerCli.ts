@@ -1,5 +1,7 @@
 import { startRuntimeHttpServer } from './runtimeHttpServer.js'
+import { hydrateProcessEnvironment } from './runtime/hostEnvironment.js'
 
+await hydrateProcessEnvironment()
 const runtimeServer = await startRuntimeHttpServer()
 const { host, port } = runtimeServer
 

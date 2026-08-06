@@ -1,6 +1,8 @@
 import { CodexJsonRpcClient } from './codexJsonRpcClient.js';
 
 const inFlight = new Map<string, Promise<any>>();
+const cache = new Map<string, { result: any; checkedAt: number }>();
+const probeTtlMs = 60_000;
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -54,7 +56,13 @@ function probeKey(providerInstance: any, cwd: string) {
   ]);
 }
 
-async function executeCodexModelCatalogProbe({
+function codexAccountLabel(account: any) {
+  if (nonEmptyString(account?.email)) return account.email.trim();
+  if (nonEmptyString(account?.type)) return account.type.trim();
+  return undefined;
+}
+
+async function executeCodexProviderProbe({
   providerInstance,
   cwd,
   totalTimeoutMs = 15_000,
@@ -71,7 +79,7 @@ async function executeCodexModelCatalogProbe({
   client.on('error', () => {});
   const remaining = () => Math.max(1, deadline - Date.now());
   try {
-    await client.request(
+    const initialize: any = await client.request(
       'initialize',
       {
         clientInfo: { name: 'orrery', title: 'Orrery', version: '0.0.0' },
@@ -79,34 +87,90 @@ async function executeCodexModelCatalogProbe({
       },
       { timeoutMs: remaining() },
     );
+    client.notify('initialized');
+
+    let accountResponse: any;
+    let accountError: string | undefined;
+    try {
+      accountResponse = await client.request(
+        'account/read',
+        { refreshToken: false },
+        { timeoutMs: remaining() },
+      );
+    } catch (error) {
+      accountError = error instanceof Error ? error.message : String(error);
+    }
+
+    const account = accountResponse?.account;
+    const requiresOpenaiAuth = accountResponse?.requiresOpenaiAuth;
+    const auth = account
+      ? {
+          status: 'authenticated' as const,
+          ...(codexAccountLabel(account) ? { accountLabel: codexAccountLabel(account) } : {}),
+          ...(nonEmptyString(account?.type) ? { method: account.type.trim() } : {}),
+        }
+      : requiresOpenaiAuth === false
+        ? {
+            status: 'not-required' as const,
+            method: 'custom-provider',
+          }
+        : requiresOpenaiAuth === true
+          ? { status: 'unauthenticated' as const }
+          : { status: 'unknown' as const };
 
     const availableModels: any[] = [];
-    let cursor: string | null | undefined;
-    do {
-      const response: any = await client.request('model/list', { ...(cursor ? { cursor } : {}), includeHidden: false }, { timeoutMs: remaining() });
-      for (const raw of Array.isArray(response?.data) ? response.data : []) {
-        const model = normalizeCodexCatalogModel(raw);
-        if (model) availableModels.push(model);
+    let modelError: string | undefined;
+    if (auth.status !== 'unauthenticated') {
+      try {
+        let cursor: string | null | undefined;
+        do {
+          const response: any = await client.request('model/list', { ...(cursor ? { cursor } : {}), includeHidden: false }, { timeoutMs: remaining() });
+          for (const raw of Array.isArray(response?.data) ? response.data : []) {
+            const model = normalizeCodexCatalogModel(raw);
+            if (model) availableModels.push(model);
+          }
+          cursor = nonEmptyString(response?.nextCursor) ? response.nextCursor.trim() : undefined;
+        } while (cursor);
+      } catch (error) {
+        modelError = error instanceof Error ? error.message : String(error);
       }
-      cursor = nonEmptyString(response?.nextCursor) ? response.nextCursor.trim() : undefined;
-    } while (cursor);
+    }
 
     const defaultModelId = availableModels.find((model) => model.isDefault)?.modelId;
     return {
-      ...(defaultModelId ? { defaultModelId, currentModelId: defaultModelId } : {}),
-      availableModels,
-      setupCreatesSession: false as const,
+      version: nonEmptyString(initialize?.userAgent) ? initialize.userAgent.trim() : undefined,
+      auth,
+      ...(accountError ? { accountError } : {}),
+      ...(modelError ? { modelError } : {}),
+      catalog: {
+        ...(defaultModelId ? { defaultModelId, currentModelId: defaultModelId } : {}),
+        availableModels,
+        setupCreatesSession: false as const,
+      },
     };
   } finally {
     client.close();
   }
 }
 
-export function probeCodexModelCatalog(input: { providerInstance?: any; cwd: string; totalTimeoutMs?: number }) {
+export function probeCodexModelCatalog(input: { providerInstance?: any; cwd: string; totalTimeoutMs?: number; forceRefresh?: boolean }) {
+  return probeCodexProvider(input).then((result) => result.catalog);
+}
+
+export function probeCodexProvider(input: { providerInstance?: any; cwd: string; totalTimeoutMs?: number; forceRefresh?: boolean }) {
   const key = probeKey(input.providerInstance, input.cwd);
+  const cached = cache.get(key);
+  if (!input.forceRefresh && cached && Date.now() - cached.checkedAt < probeTtlMs) {
+    return Promise.resolve(cached.result);
+  }
   const active = inFlight.get(key);
   if (active) return active;
-  const promise = executeCodexModelCatalogProbe(input).finally(() => inFlight.delete(key));
+  const promise = executeCodexProviderProbe(input)
+    .then((result) => {
+      cache.set(key, { result, checkedAt: Date.now() });
+      return result;
+    })
+    .finally(() => inFlight.delete(key));
   inFlight.set(key, promise);
   return promise;
 }

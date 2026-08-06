@@ -1,18 +1,17 @@
 // Provider instance/config normalization: CLI command resolution, launch
 // args/env normalization, provider runtime settings and effective runtime
 // config. Split out of sessionManager.ts (move-only).
-import { execFileSync } from 'node:child_process'
-import fs from 'node:fs'
-import path from 'node:path'
 import {
   defaultProviderInstances,
   providerMetadata,
 } from '../../../shared/provider-metadata.js'
 import { providerEnvKeyIsSensitive } from '../../../shared/provider-setup.js'
-import { buildPath } from '../claudeRuntimeShared.js'
+import {
+  requestedProviderCommand,
+  resolveExecutable,
+} from './providerLaunch.js'
 import {
   type JsonRecord,
-  diagnostic,
   isObject,
   nonEmptyString,
   optionalTrimmedString,
@@ -74,16 +73,11 @@ export function providerConfig(
 }
 
 export function defaultCommandForProvider(providerKind) {
-  const metadata = providerMetadata[providerKind]
-  return process.env[metadata.commandEnv] || metadata.defaultCommand
+  return requestedProviderCommand(providerKind)
 }
 
 export function commandForProviderInstance(providerKind, providerInstance) {
-  if (nonEmptyString(providerInstance?.binaryPath)) {
-    return providerInstance.binaryPath.trim()
-  }
-
-  return defaultCommandForProvider(providerKind)
+  return requestedProviderCommand(providerKind, providerInstance)
 }
 
 export function commandExists(command) {
@@ -91,37 +85,13 @@ export function commandExists(command) {
     return { ok: false, detail: 'No binary configured.' }
   }
 
-  if (command.includes(path.sep)) {
-    try {
-      fs.accessSync(command, fs.constants.X_OK)
-      return { ok: true, detail: command }
-    } catch (error) {
-      return {
+  const resolved = resolveExecutable(command)
+  return resolved
+    ? { ok: true, detail: resolved }
+    : {
         ok: false,
-        detail: error instanceof Error ? error.message : String(error),
+        detail: `Could not find ${command} on the desktop runtime PATH.`,
       }
-    }
-  }
-
-  try {
-    const resolved = execFileSync('which', [command], {
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: buildPath(),
-      },
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    return {
-      ok: resolved.length > 0,
-      detail: resolved || command,
-    }
-  } catch {
-    return {
-      ok: false,
-      detail: `Could not find ${command} on PATH.`,
-    }
-  }
 }
 
 export function providerSetupErrorDiagnostic(providerKind, diagnostics = []) {

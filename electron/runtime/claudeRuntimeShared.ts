@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { mergePathValues } from './hostEnvironment.js'
+export { expandHomePath } from './providers/providerLaunch.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const packagedMembraneServerPath = process.resourcesPath
@@ -12,22 +14,8 @@ const membraneServerPath =
     ? packagedMembraneServerPath
     : path.join(__dirname, 'membraneMcpServer.js')
 
-const commonCliPaths = [
-  '/opt/homebrew/bin',
-  '/usr/local/bin',
-  '/usr/bin',
-  '/bin',
-]
-
-function nonEmptyString(value) {
-  return typeof value === 'string' && value.trim().length > 0
-}
-
 export function buildPath() {
-  const currentPath = process.env.PATH ?? ''
-  // Respect the user's configured runtime first. Common GUI-app fallback
-  // paths come afterwards so they cannot shadow a newer CLI already on PATH.
-  return [currentPath, ...commonCliPaths].filter(Boolean).join(path.delimiter)
+  return mergePathValues([process.env.PATH])
 }
 
 export function claudeCommand() {
@@ -119,18 +107,4 @@ export function cleanupMcpHandoff(handoff) {
   if (handoff) {
     fs.rmSync(handoff.dir, { recursive: true, force: true })
   }
-}
-
-export function expandHomePath(value) {
-  if (!nonEmptyString(value)) {
-    return undefined
-  }
-  const trimmed = value.trim()
-  if (trimmed === '~') {
-    return os.homedir()
-  }
-  if (trimmed.startsWith('~/')) {
-    return path.join(os.homedir(), trimmed.slice(2))
-  }
-  return trimmed
 }

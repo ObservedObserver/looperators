@@ -2,15 +2,13 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import {
-  buildPath,
-  claudeCommand,
   cleanupMcpHandoff,
   createMcpHandoff,
-  expandHomePath,
   membraneSystemPrompt,
   membraneToolNames,
 } from '../claudeRuntimeShared.js'
 import { claudeRuntimeEventsFromMessage } from './claudeRuntimeMapper.js'
+import { resolveProviderLaunch } from './providerLaunch.js'
 
 /**
  * @typedef {'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'} ClaudePermissionMode
@@ -67,20 +65,11 @@ export function providerExtraArgs(providerInstance) {
 }
 
 export function providerEnv(providerInstance) {
-  const homePath = expandHomePath(providerInstance?.homePath)
-  return {
-    ...process.env,
-    ...(providerInstance?.env ?? {}),
-    PATH: buildPath(),
-    NO_COLOR: '1',
-    ...(homePath ? { HOME: homePath } : {}),
-  }
+  return resolveProviderLaunch('claude-code', providerInstance).env
 }
 
 export function providerClaudeCommand(providerInstance) {
-  return nonEmptyString(providerInstance?.binaryPath)
-    ? providerInstance.binaryPath.trim()
-    : claudeCommand()
+  return resolveProviderLaunch('claude-code', providerInstance).command
 }
 
 /**

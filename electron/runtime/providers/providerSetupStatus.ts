@@ -11,14 +11,13 @@ import {
 } from '../runtimeCommon.js'
 import { isValidCwd, safeCwd } from '../workspace/gitWorkspace.js'
 import {
-  commandExists,
-  commandForProviderInstance,
   defaultProviderInstanceForKind,
   providerSetupErrorDiagnostic,
 } from './providerConfigNormalize.js'
 import { probeGrokProvider } from './grokAcpProbeService.js'
-import { probeCodexModelCatalog } from './codexModelCatalogService.js'
-import { probeClaudeModelCatalog } from './claudeModelCatalogService.js'
+import { probeCodexProvider } from './codexModelCatalogService.js'
+import { probeClaudeProvider } from './claudeModelCatalogService.js'
+import { resolveProviderLaunch } from './providerLaunch.js'
 import { fallbackProviderModelCatalog } from '../../../shared/provider-model-catalog.js'
 
 const providerModelCatalogTtlMs = 5 * 60 * 1000
@@ -64,8 +63,8 @@ input: JsonRecord = {},
     host.state.providerInstances.find(
       (instance) => instance.kind === providerKind,
     )
-  const command = commandForProviderInstance(providerKind, providerInstance)
-  const binary = commandExists(command)
+  const launch = resolveProviderLaunch(providerKind, providerInstance)
+  const binary = { ok: launch.available, detail: launch.detail }
   const cwd = nonEmptyString(request.cwd)
     ? safeCwd(request.cwd)
     : process.cwd()
@@ -74,17 +73,39 @@ input: JsonRecord = {},
     providerKind,
     host.state.diagnostics ?? [],
   )
-  const grokProbe =
-    providerKind === 'grok' && binary.ok && cwdValid
-      ? await probeGrokProvider({
-          providerInstance,
-          cwd,
-          totalTimeoutMs:
-            typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-              ? request.timeoutMs
-              : 15_000,
-        })
-      : undefined
+  const timeoutMs =
+    typeof request.timeoutMs === 'number' && request.timeoutMs > 0
+      ? request.timeoutMs
+      : 15_000
+  let providerProbe: any
+  let providerProbeError: string | undefined
+  if (binary.ok && cwdValid) {
+    try {
+      providerProbe =
+        providerKind === 'codex'
+          ? await probeCodexProvider({
+              providerInstance,
+              cwd,
+              totalTimeoutMs: timeoutMs,
+              forceRefresh: request.forceRefresh === true,
+            })
+          : providerKind === 'claude-code'
+            ? await probeClaudeProvider({
+                providerInstance,
+                cwd,
+                totalTimeoutMs: timeoutMs,
+                forceRefresh: request.forceRefresh === true,
+              })
+            : await probeGrokProvider({
+                providerInstance,
+                cwd,
+                totalTimeoutMs: timeoutMs,
+              })
+    } catch (error) {
+      providerProbeError = error instanceof Error ? error.message : String(error)
+    }
+  }
+  const grokProbe = providerKind === 'grok' ? providerProbe : undefined
   const grokReady = grokProbe?.status === 'ready'
   const providerInstanceId =
     providerInstance?.providerInstanceId ??
@@ -104,36 +125,17 @@ input: JsonRecord = {},
   let modelDiscoveryError
 
   if (binary.ok && cwdValid && !previousIsFresh) {
-    try {
-      const discovered =
-        providerKind === 'codex'
-          ? await probeCodexModelCatalog({
-              providerInstance,
-              cwd,
-              totalTimeoutMs:
-                typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-                  ? request.timeoutMs
-                  : 15_000,
-            })
-          : providerKind === 'claude-code'
-            ? await probeClaudeModelCatalog({
-                providerInstance,
-                cwd,
-                totalTimeoutMs:
-                  typeof request.timeoutMs === 'number' && request.timeoutMs > 0
-                    ? request.timeoutMs
-                    : 15_000,
-              })
-            : grokProbe?.catalog
-
-      if (!discovered) {
-        throw new Error(
-          grokProbe?.message ?? `${providerKind} returned no model catalog.`,
-        )
-      }
-      if (discovered.availableModels.length === 0) {
-        throw new Error(`${providerKind} returned an empty model catalog.`)
-      }
+    const discovered = providerProbe?.catalog
+    modelDiscoveryError =
+      providerProbeError ??
+      providerProbe?.protocolError ??
+      providerProbe?.modelError ??
+      (!discovered
+        ? grokProbe?.message ?? `${providerKind} returned no model catalog.`
+        : discovered.availableModels.length === 0
+          ? `${providerKind} returned an empty model catalog.`
+          : undefined)
+    if (!modelDiscoveryError && discovered) {
       models = {
         ...discovered,
         providerKind,
@@ -142,9 +144,7 @@ input: JsonRecord = {},
         source: 'live',
         stale: false,
       }
-    } catch (error) {
-      modelDiscoveryError =
-        error instanceof Error ? error.message : String(error)
+    } else {
       models = previousCatalog?.availableModels?.length
         ? {
             ...previousCatalog,
@@ -160,7 +160,7 @@ input: JsonRecord = {},
     }
   } else if (!models) {
     const reason = !binary.ok
-      ? `Provider binary is not available: ${command}.`
+      ? `Provider binary is not available: ${launch.requestedCommand}.`
       : !cwdValid
         ? `Workspace is not available: ${cwd}.`
         : undefined
@@ -181,17 +181,49 @@ input: JsonRecord = {},
   host.touchDeferred()
   host.broadcast({ type: 'runtime.state', state: host.getState() })
 
+  const auth = providerProbe?.auth ??
+    (grokReady
+      ? { status: 'authenticated', method: 'provider-cli' }
+      : { status: 'unknown' })
+  const protocolError =
+    providerProbeError ??
+    providerProbe?.protocolError ??
+    (grokProbe && !grokReady ? grokProbe.message : undefined)
+  const protocolChecked = providerProbe?.protocolChecked !== false
+  const authProbeError = providerProbe?.authError ?? providerProbe?.accountError
+  const readiness = !binary.ok
+    ? 'unavailable'
+    : auth.status === 'unauthenticated'
+      ? 'needs-attention'
+      : protocolError
+        ? 'unavailable'
+        : !cwdValid
+          ? 'unknown'
+          : auth.status === 'unknown'
+            ? 'needs-attention'
+            : 'ready'
+  const version = providerProbe?.version
+
   return {
     providerKind,
     providerInstanceId,
     generatedAt: now(),
+    readiness,
+    installed: binary.ok,
+    ...(version ? { version } : {}),
+    command: {
+      requested: launch.requestedCommand,
+      ...(launch.resolvedCommand ? { resolved: launch.resolvedCommand } : {}),
+      source: launch.commandSource,
+    },
+    auth,
     models,
     checks: [
       {
         id: 'runtime',
         label: 'Runtime',
         status: 'ok',
-        message: 'Orrery runtime is connected.',
+        message: 'looperators runtime is connected.',
       },
       {
         id: 'provider-instance',
@@ -207,9 +239,20 @@ input: JsonRecord = {},
         label: 'Binary',
         status: binary.ok ? 'ok' : 'error',
         message: binary.ok
-          ? `Using ${command}.`
-          : `Provider binary is not available: ${command}.`,
+          ? `Resolved ${launch.requestedCommand} from ${launch.commandSource}.`
+          : `Provider binary is not available: ${launch.requestedCommand}.`,
         detail: binary.detail,
+      },
+      {
+        id: 'version',
+        label: 'Version',
+        status: version ? 'ok' : binary.ok ? 'warning' : 'unknown',
+        message: version
+          ? `Provider reported ${version}.`
+          : providerProbe?.versionError ??
+            (binary.ok
+              ? 'The executable was found, but its version could not be read.'
+              : 'Version was not checked because the executable is unavailable.'),
       },
       {
         id: 'models',
@@ -235,26 +278,44 @@ input: JsonRecord = {},
         id: 'auth',
         label: 'Auth/account',
         status:
-          providerKind === 'grok'
-            ? grokReady
-              ? 'ok'
-              : grokProbe
-                ? 'error'
-                : 'unknown'
-            : providerDiagnostic
-              ? 'warning'
-              : 'unknown',
+          auth.status === 'authenticated' || auth.status === 'external' || auth.status === 'not-required'
+            ? 'ok'
+            : auth.status === 'unauthenticated'
+              ? 'error'
+              : providerDiagnostic
+                ? 'warning'
+                : 'unknown',
         message:
-          providerKind === 'grok'
-            ? grokProbe?.message ??
-              'Grok auth was not probed because the binary or project folder is unavailable.'
-            : providerDiagnostic
-              ? providerDiagnostic.message
-              : 'Provider auth and account status are managed by the local CLI; start a chat to verify.',
-        detail:
-          providerKind === 'grok'
-            ? grokProbe?.detail
-            : providerDiagnostic?.type,
+          auth.status === 'authenticated'
+            ? `Authenticated${auth.accountLabel ? ` as ${auth.accountLabel}` : ''}.`
+            : auth.status === 'external'
+              ? `Authentication is provided by ${auth.method ?? 'an external provider'}.`
+              : auth.status === 'not-required'
+                ? 'The configured model provider does not require OpenAI authentication.'
+                : auth.status === 'unauthenticated'
+                  ? `Sign in with the local ${providerKind === 'claude-code' ? 'Claude Code' : providerKind === 'codex' ? 'Codex' : 'Grok'} CLI.`
+                  : authProbeError ?? providerDiagnostic?.message ?? 'Authentication status could not be confirmed.',
+        detail: auth.method ?? authProbeError ?? providerDiagnostic?.type,
+      },
+      {
+        id: 'protocol',
+        label: 'Provider protocol',
+        status: protocolError
+          ? 'error'
+          : providerProbe && protocolChecked
+            ? 'ok'
+            : 'unknown',
+        message: protocolError
+          ? protocolError
+          : providerProbe && protocolChecked
+            ? providerKind === 'codex'
+              ? 'Codex app-server initialized successfully.'
+              : providerKind === 'claude-code'
+                ? 'Claude Agent SDK initialized successfully without starting a turn.'
+                : grokProbe?.message ?? 'Provider protocol initialized successfully.'
+            : auth.status === 'unauthenticated'
+              ? 'Provider protocol was not checked because sign-in is required.'
+              : 'Provider protocol was not checked.',
       },
       ...(providerKind === 'grok'
         ? [
@@ -277,15 +338,14 @@ input: JsonRecord = {},
       {
         id: 'mcp',
         label: 'MCP / tools',
-        status: 'ok',
+        status: 'unknown',
         message:
           providerKind === 'codex'
-            ? 'Orrery membrane MCP bridge is mounted per-thread for Codex sessions.'
+            ? 'The looperators membrane will be mounted when a Codex thread starts.'
             : providerKind === 'grok'
-              ? 'Orrery membrane MCP bridge will be injected into Grok ACP sessions.'
-              : 'Orrery membrane MCP bridge is available for Claude sessions.',
+              ? 'The looperators membrane will be injected when a Grok ACP session starts.'
+              : 'The looperators membrane will be mounted when a Claude session starts.',
       },
     ],
   }
 }
-

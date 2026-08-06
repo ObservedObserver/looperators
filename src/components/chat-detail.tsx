@@ -47,6 +47,7 @@ type ChatDetailProps = {
   isWorkspacePanelOpen: boolean;
   setIsWorkspacePanelOpen: Dispatch<SetStateAction<boolean>>;
   onOpenPlanCouncil: (workflowId: string) => void;
+  onOpenAgentSettings: () => void;
 };
 
 export function ChatDetail({
@@ -65,6 +66,7 @@ export function ChatDetail({
   isWorkspacePanelOpen,
   setIsWorkspacePanelOpen,
   onOpenPlanCouncil,
+  onOpenAgentSettings,
 }: ChatDetailProps) {
   const {
     runtimeClient,
@@ -222,6 +224,19 @@ export function ChatDetail({
   } = actions;
   const { userInputDrafts, setUserInputDraft, pendingInteractionIds, respondToRuntimeRequest, answerRuntimeUserInput } = interactions;
   const { openTurnDiff } = diff;
+  const providerBlockingCheck = !selectedSession
+    ? providerSetupStatus?.checks.find(
+        (check) =>
+          check.status === 'error' &&
+          ['binary', 'auth', 'protocol'].includes(check.id),
+      )
+    : undefined;
+  const newProviderBlocked = Boolean(
+    !selectedSession &&
+      (providerSetupStatus?.readiness === 'unavailable' ||
+        providerSetupStatus?.auth?.status === 'unauthenticated' ||
+        providerBlockingCheck),
+  );
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -485,6 +500,17 @@ export function ChatDetail({
                   <span className="min-w-0">Folder picker is unavailable in web runtime. Enter a project path manually.</span>
                 </div>
               ) : null}
+              {isRuntimeAvailable && !isLoadingProviderSetupStatus && newProviderBlocked ? (
+                <div className="app-region-no-drag mb-2 flex items-center gap-2 rounded-lg border border-term-rose/35 bg-term-rose/10 px-3 py-2 font-mono text-[11px] leading-4 text-term-rose">
+                  <TriangleAlert className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    {providerBlockingCheck?.message ?? `${providerOption(newProviderKind).label} needs setup before it can start a chat.`}
+                  </span>
+                  <Button className="h-7 shrink-0 font-mono text-[10px] uppercase tracking-[0.07em]" variant="outline" size="sm" onClick={onOpenAgentSettings}>
+                    Agent settings
+                  </Button>
+                </div>
+              ) : null}
               <NewChatSetupBar
                 projects={newChatProjects}
                 projectCwd={newCwd}
@@ -573,7 +599,7 @@ export function ChatDetail({
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                     event.preventDefault();
-                    void sendChatMessage();
+                    if (!newProviderBlocked) void sendChatMessage();
                   }
                 }}
               />
@@ -621,7 +647,7 @@ export function ChatDetail({
                         className="size-8 shrink-0 rounded-full"
                         size="icon-sm"
                         disabled={
-                          !isRuntimeAvailable || (selectedSession ? !canResume || isResuming : isCreating || !newCwdValidation.ok) || !composerHasPayload
+                          !isRuntimeAvailable || (selectedSession ? !canResume || isResuming : isCreating || !newCwdValidation.ok || newProviderBlocked) || !composerHasPayload
                         }
                         aria-label={!selectedSession && pendingLinkedSource ? 'Create Agent' : 'Send'}
                         onClick={sendChatMessage}

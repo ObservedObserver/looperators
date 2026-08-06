@@ -1,4 +1,4 @@
-import { Archive, MessagesSquare, Orbit, type LucideIcon, ArchiveRestore, FileText, GitBranch, MessageSquarePlus, Search, Workflow, X } from 'lucide-react';
+import { Archive, Bot, MessagesSquare, Orbit, type LucideIcon, ArchiveRestore, FileText, GitBranch, MessageSquarePlus, Search, Workflow, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -22,6 +22,7 @@ import { AppUpdateNotice } from '@/components/app-update-notice';
 
 const railTabs: { id: RailTab; label: string; icon: LucideIcon }[] = [
   { id: 'chat', label: 'Chat', icon: MessagesSquare },
+  { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'orchestrate', label: 'Advanced', icon: Orbit },
 ];
 
@@ -361,7 +362,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
         </Button>
       </div>
       <div className="app-region-no-drag shrink-0 px-3 pb-3 pt-1">
-        <div className="grid grid-cols-2 gap-1 rounded-xl border border-border bg-background/60 p-1">
+        <div className="grid grid-cols-3 gap-1 rounded-xl border border-border bg-background/60 p-1">
           {railTabs.map((tab) => {
             const isActive = activeTab === tab.id;
             const TabIcon = tab.icon;

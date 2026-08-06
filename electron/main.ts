@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { RuntimeSessionManager } from './runtime/sessionManager.js'
 import { createBatchedRuntimeEventEmitter } from './runtime/runtimeEventDelivery.js'
+import { hydrateProcessEnvironment } from './runtime/hostEnvironment.js'
 import { AppUpdateController } from './appUpdater.js'
 import type { AppUpdateState } from '../shared/app-update.js'
 
@@ -56,7 +57,11 @@ function createMainWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Finder-launched desktop apps do not inherit the user's login-shell PATH.
+  // Hydrate it before provider instances, probes, or adapters are created so
+  // discovery and real sessions resolve the same executables.
+  await hydrateProcessEnvironment()
   updates = new AppUpdateController({ broadcast: broadcastUpdateState })
   runtime = new RuntimeSessionManager({
     storageFile:
