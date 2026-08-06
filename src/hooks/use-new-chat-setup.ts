@@ -32,6 +32,9 @@ export function useNewChatSetup({
   selectedSession: AgentSession | undefined;
 }) {
   const [newProviderKind, setNewProviderKind] = useState<ProviderKind>('claude-code');
+  const [newProviderInstanceId, setNewProviderInstanceId] = useState(
+    () => providerInstanceForKind(providerInstances, 'claude-code').providerInstanceId,
+  );
   const [newCwd, setNewCwd] = useState(defaultWorkspaceCwd);
   const [newWorkMode, setNewWorkMode] = useState<WorkMode>('local');
   const [newBranch, setNewBranch] = useState('');
@@ -46,11 +49,19 @@ export function useNewChatSetup({
   const projectContextSeqRef = useRef(0);
   const providerSetupSeqRef = useRef(0);
 
-  const newProviderInstance = providerInstanceForKind(providerInstances, newProviderKind);
+  const newProviderInstance =
+    providerInstances.find(
+      (instance) =>
+        instance.kind === newProviderKind &&
+        instance.providerInstanceId === newProviderInstanceId,
+    ) ?? providerInstanceForKind(providerInstances, newProviderKind);
   const newProviderInstanceSetupKey = providerSetupProfileFingerprint(newProviderInstance);
 
   const changeNewProviderKind = useCallback((providerKind: ProviderKind) => {
     setNewProviderKind(providerKind);
+    setNewProviderInstanceId(
+      providerInstanceForKind(providerInstances, providerKind).providerInstanceId,
+    );
     setNewModel('');
     const reasoningEfforts = providerReasoningEfforts(providerKind);
     if (reasoningEfforts.length > 0) {
@@ -62,7 +73,25 @@ export function useNewChatSetup({
     }
     const runtimeModes = providerCapability(providerKind).runtimeModes;
     setNewRuntimeMode((current) => (providerRuntimeModeCapability(providerKind, current) ? current : (runtimeModes[0]?.id ?? defaultProviderRuntimeSettings.runtimeMode)));
-  }, []);
+  }, [providerInstances]);
+
+  const changeNewProviderInstanceId = useCallback((providerInstanceId: string) => {
+    const instance = providerInstances.find(
+      (candidate) =>
+        candidate.kind === newProviderKind &&
+        candidate.providerInstanceId === providerInstanceId,
+    );
+    if (!instance) return;
+    setNewProviderInstanceId(instance.providerInstanceId);
+    setNewModel('');
+  }, [newProviderKind, providerInstances]);
+
+  useEffect(() => {
+    if (newProviderInstance.providerInstanceId !== newProviderInstanceId) {
+      setNewProviderInstanceId(newProviderInstance.providerInstanceId);
+      setNewModel('');
+    }
+  }, [newProviderInstance.providerInstanceId, newProviderInstanceId]);
 
   const newCwdValidation = useMemo(() => validateProjectCwd(newCwd), [newCwd]);
   const newChatProjects = useMemo(
@@ -95,7 +124,7 @@ export function useNewChatSetup({
     async (providerInstance: ProviderInstance) => {
       if (!runtimeApi) {
         setProviderInstanceError(runtimeUnavailableText);
-        return;
+        return false;
       }
 
       setSavingProviderInstanceId(providerInstance.providerInstanceId);
@@ -103,8 +132,10 @@ export function useNewChatSetup({
       try {
         const result = await runtimeApi.upsertProviderInstance(providerInstance);
         setRuntimeState(result.state);
+        return true;
       } catch (error) {
         setProviderInstanceError(error instanceof Error ? error.message : String(error));
+        return false;
       } finally {
         setSavingProviderInstanceId(undefined);
       }
@@ -213,6 +244,8 @@ export function useNewChatSetup({
           setProviderSetupStatus({
             providerKind: newProviderKind,
             providerInstanceId: newProviderInstance.providerInstanceId,
+            profileFingerprint: newProviderInstanceSetupKey,
+            cwd: newCwd.trim(),
             generatedAt: new Date().toISOString(),
             checks: [
               {
@@ -245,6 +278,7 @@ export function useNewChatSetup({
 
   return {
     newProviderKind,
+    newProviderInstanceId: newProviderInstance.providerInstanceId,
     newCwd,
     setNewCwd,
     newWorkMode,
@@ -264,6 +298,7 @@ export function useNewChatSetup({
     providerInstanceError,
     newProviderInstance,
     changeNewProviderKind,
+    changeNewProviderInstanceId,
     newCwdValidation,
     newChatProjects,
     chooseNewChatProject,

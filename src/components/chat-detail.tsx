@@ -118,6 +118,7 @@ export function ChatDetail({
   } = composer;
   const {
     newProviderKind,
+    newProviderInstanceId,
     newCwd,
     setNewCwd,
     newWorkMode,
@@ -135,6 +136,7 @@ export function ChatDetail({
     savingProviderInstanceId,
     providerInstanceError,
     changeNewProviderKind,
+    changeNewProviderInstanceId,
     newCwdValidation,
     newChatProjects,
     chooseNewChatProject,
@@ -231,9 +233,25 @@ export function ChatDetail({
           ['binary', 'auth', 'protocol'].includes(check.id),
       )
     : undefined;
+  const providerSetupMatchesSelection = Boolean(
+    providerSetupStatus &&
+      providerSetupStatus.providerKind === newProviderKind &&
+      providerSetupStatus.providerInstanceId === newProviderInstanceId &&
+      providerSetupStatus.profileFingerprint ===
+        providerSetupProfileFingerprint(
+          selectProviderSetupProfile(
+            providerInstances,
+            newProviderKind,
+            newProviderInstanceId,
+          ),
+        ) &&
+      providerSetupStatus.cwd === newCwd.trim(),
+  );
   const newProviderBlocked = Boolean(
     !selectedSession &&
-      (providerSetupStatus?.readiness === 'unavailable' ||
+      (isLoadingProviderSetupStatus ||
+        !providerSetupMatchesSelection ||
+        providerSetupStatus?.readiness === 'unavailable' ||
         providerSetupStatus?.auth?.status === 'unauthenticated' ||
         providerBlockingCheck),
   );
@@ -363,6 +381,10 @@ export function ChatDetail({
               <>
                 <span className="shrink-0 text-foreground/75">{providerOption(newProviderKind).label}</span>
                 <span className="shrink-0 text-term-faint">·</span>
+                <span className="max-w-28 shrink-0 truncate text-foreground/55" title={providerInstances.find((instance) => instance.providerInstanceId === newProviderInstanceId)?.label}>
+                  {providerInstances.find((instance) => instance.providerInstanceId === newProviderInstanceId)?.label ?? newProviderInstanceId}
+                </span>
+                <span className="shrink-0 text-term-faint">·</span>
                 <span className="shrink-0 text-foreground/55">
                   {runtimeConfigSummary(newProviderKind, {
                     runtimeMode: newRuntimeMode,
@@ -426,6 +448,7 @@ export function ChatDetail({
               isRuntimeAvailable={isRuntimeAvailable}
               runtimeStatusText={runtimeStatusText}
               providerKind={newProviderKind}
+              providerInstanceId={newProviderInstanceId}
               providerInstances={providerInstances}
               runtimeError={runtimeError}
               setupStatus={providerSetupStatus}
@@ -516,6 +539,8 @@ export function ChatDetail({
                 projectCwd={newCwd}
                 validation={newCwdValidation}
                 providerKind={newProviderKind}
+                providerInstanceId={newProviderInstanceId}
+                providerInstances={providerInstances}
                 workMode={newWorkMode}
                 branch={newBranch}
                 runtimeMode={newRuntimeMode}
@@ -528,6 +553,7 @@ export function ChatDetail({
                 onProjectChange={setNewCwd}
                 onChooseProject={chooseNewChatProject}
                 onProviderKindChange={changeNewProviderKind}
+                onProviderInstanceIdChange={changeNewProviderInstanceId}
                 onWorkModeChange={setNewWorkMode}
                 onBranchChange={setNewBranch}
                 onRuntimeModeChange={setNewRuntimeMode}

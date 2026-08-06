@@ -13,6 +13,7 @@ import {
   resolveExecutable,
   resolveProviderLaunch,
 } from '../../dist-electron/electron/runtime/providers/providerLaunch.js'
+import { providerSetupStatusFromSnapshot } from '../../dist-electron/shared/provider-setup.js'
 
 function completedExecFile(outputForCommand) {
   return (command, args, options, callback) => {
@@ -179,4 +180,21 @@ test('provider resolver normalizes relative and home PATH entries to absolute co
 
 test('home expansion is deterministic for provider profile paths', () => {
   assert.equal(expandHomePath('~/bin/codex', '/tmp/profile-home'), '/tmp/profile-home/bin/codex')
+})
+
+test('durable provider snapshots become stale exactly at their expiry boundary', () => {
+  const snapshot = {
+    profileFingerprint: 'profile',
+    cwd: '/workspace',
+    checkedAt: '2026-08-06T00:00:00.000Z',
+    expiresAt: '2026-08-06T00:05:00.000Z',
+    status: { readiness: 'ready', source: 'live', stale: false },
+  }
+  assert.equal(
+    providerSetupStatusFromSnapshot(snapshot, Date.parse('2026-08-06T00:04:59.999Z')).stale,
+    false,
+  )
+  const stale = providerSetupStatusFromSnapshot(snapshot, Date.parse(snapshot.expiresAt))
+  assert.equal(stale.stale, true)
+  assert.equal(stale.source, 'snapshot')
 })

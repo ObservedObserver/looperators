@@ -70,6 +70,7 @@ import {
   normalizeProviderRuntimeSettings,
 } from '../providers/providerConfigNormalize.js'
 import { normalizeChatAttachments } from '../sessions/sessionInteraction.js'
+import { providerSetupStatusForSnapshot } from '../../../shared/provider-setup.js'
 
 const storageBackupSuffix = '.bak'
 function backupFileFor(storageFile) {
@@ -404,6 +405,57 @@ export function normalizeState(
       `Unsupported Orrery graph state version: ${String(source.version)}. Expected ${graphStateVersion}. Clear the local Orrery runtime data before starting this build.`,
     )
   }
+  const providerInstances = normalizeProviderInstances(source.providerInstances)
+  const providerInstanceIds = new Set(
+    providerInstances.map((instance) => instance.providerInstanceId),
+  )
+  const providerInstanceKinds = new Map(
+    providerInstances.map((instance) => [instance.providerInstanceId, instance.kind]),
+  )
+  const providerSetupSnapshots = isObject(source.providerSetupSnapshots)
+    ? Object.fromEntries(
+        Object.entries(source.providerSetupSnapshots).flatMap(
+          ([providerInstanceId, snapshot]) => {
+            const valid =
+              providerInstanceIds.has(providerInstanceId) &&
+              isObject(snapshot) &&
+              nonEmptyString(snapshot.profileFingerprint) &&
+              nonEmptyString(snapshot.cwd) &&
+              nonEmptyString(snapshot.checkedAt) &&
+              nonEmptyString(snapshot.expiresAt) &&
+              isObject(snapshot.status) &&
+              snapshot.status.providerInstanceId === providerInstanceId &&
+              snapshot.status.profileFingerprint === snapshot.profileFingerprint &&
+              snapshot.status.cwd === snapshot.cwd &&
+              validProviderKinds.has(snapshot.status.providerKind) &&
+              snapshot.status.providerKind === providerInstanceKinds.get(providerInstanceId) &&
+              nonEmptyString(snapshot.status.generatedAt) &&
+              Array.isArray(snapshot.status.checks) &&
+              snapshot.status.checks.every(
+                (check) =>
+                  isObject(check) &&
+                  nonEmptyString(check.id) &&
+                  nonEmptyString(check.label) &&
+                  nonEmptyString(check.status) &&
+                  nonEmptyString(check.message),
+              ) &&
+              (!snapshot.status.models ||
+                (isObject(snapshot.status.models) &&
+                  Array.isArray(snapshot.status.models.availableModels))) &&
+              (!snapshot.status.diagnostics ||
+                (isObject(snapshot.status.diagnostics) &&
+                  isObject(snapshot.status.diagnostics.hostEnvironment) &&
+                  isObject(snapshot.status.diagnostics.profile)))
+            return valid
+              ? [[providerInstanceId, {
+                  ...snapshot,
+                  status: providerSetupStatusForSnapshot(snapshot.status),
+                }]]
+              : []
+          },
+        ),
+      )
+    : {}
   const state: JsonRecord = {
     ...fallback,
     ...source,
@@ -416,7 +468,8 @@ export function normalizeState(
       ? source.edges.map((edge) => normalizeEdge(edge))
       : [],
     sessions: {},
-    providerInstances: normalizeProviderInstances(source.providerInstances),
+    providerInstances,
+    providerSetupSnapshots,
     clusters: isObject(source.clusters)
       ? normalizeClusters(source.clusters)
       : {},

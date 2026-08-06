@@ -9,6 +9,8 @@ import {
   optionalTrimmedString,
   validProviderKinds,
 } from '../runtimeCommon.js'
+import path from 'node:path'
+import { hostEnvironmentSnapshot } from '../hostEnvironment.js'
 import { isValidCwd, safeCwd } from '../workspace/gitWorkspace.js'
 import {
   defaultProviderInstanceForKind,
@@ -19,8 +21,19 @@ import { probeCodexProvider } from './codexModelCatalogService.js'
 import { probeClaudeProvider } from './claudeModelCatalogService.js'
 import { resolveProviderLaunch } from './providerLaunch.js'
 import { fallbackProviderModelCatalog } from '../../../shared/provider-model-catalog.js'
+import {
+  providerSetupProfileFingerprint,
+  providerSetupStatusForSnapshot,
+  providerSetupStatusFromSnapshot,
+} from '../../../shared/provider-setup.js'
 
 const providerModelCatalogTtlMs = 5 * 60 * 1000
+const providerSetupSnapshotTtlMs = 5 * 60 * 1000
+const latestProbeScopes = new WeakMap<
+  ProviderSetupHost,
+  Map<string, { scope: string; token: number }>
+>()
+let nextProbeToken = 0
 
 // The minimal manager surface the setup-status probe needs.
 export type ProviderSetupHost = {
@@ -34,6 +47,7 @@ export async function getProviderSetupStatus(
 host: ProviderSetupHost,
 input: JsonRecord = {},
 ) {
+  const startedAt = Date.now()
   const request = isObject(input) ? input : {}
   const requestedProviderKind = request.providerKind ?? 'claude-code'
   if (!validProviderKinds.has(requestedProviderKind)) {
@@ -69,6 +83,34 @@ input: JsonRecord = {},
     ? safeCwd(request.cwd)
     : process.cwd()
   const cwdValid = isValidCwd(cwd)
+  const providerInstanceId =
+    providerInstance?.providerInstanceId ??
+    defaultProviderInstanceForKind(providerKind).providerInstanceId
+  const profileFingerprint = providerSetupProfileFingerprint(
+    providerInstance ?? defaultProviderInstanceForKind(providerKind),
+  )
+  const probeScope = `${profileFingerprint}\0${cwd}`
+  const probeToken = nextProbeToken + 1
+  nextProbeToken = probeToken
+  const scopesForHost = latestProbeScopes.get(host) ?? new Map()
+  scopesForHost.set(providerInstanceId, { scope: probeScope, token: probeToken })
+  latestProbeScopes.set(host, scopesForHost)
+  const cachedSnapshot = isObject(
+    host.state.providerSetupSnapshots?.[providerInstanceId],
+  )
+    ? host.state.providerSetupSnapshots[providerInstanceId]
+    : undefined
+  if (
+    request.forceRefresh !== true &&
+    cachedSnapshot?.profileFingerprint === profileFingerprint &&
+    cachedSnapshot?.cwd === cwd &&
+    isObject(cachedSnapshot?.status)
+  ) {
+    const cachedStatus = providerSetupStatusFromSnapshot(cachedSnapshot as any)
+    if (!cachedStatus.stale) {
+      return structuredClone(cachedStatus)
+    }
+  }
   const providerDiagnostic = providerSetupErrorDiagnostic(
     providerKind,
     host.state.diagnostics ?? [],
@@ -100,16 +142,34 @@ input: JsonRecord = {},
                 providerInstance,
                 cwd,
                 totalTimeoutMs: timeoutMs,
+                force: request.forceRefresh === true,
               })
     } catch (error) {
       providerProbeError = error instanceof Error ? error.message : String(error)
     }
   }
+  const latestProbe = latestProbeScopes.get(host)?.get(providerInstanceId)
+  const ownsProbeState = latestProbe?.token === probeToken
+  if (!ownsProbeState && latestProbe?.scope !== probeScope) {
+    throw new Error(
+      'A newer readiness check for this provider profile superseded this result.',
+    )
+  }
+  const currentProviderInstance = host.state.providerInstances.find(
+    (instance) => instance.providerInstanceId === providerInstanceId,
+  )
+  if (
+    !currentProviderInstance ||
+    currentProviderInstance.kind !== providerKind ||
+    providerSetupProfileFingerprint(currentProviderInstance) !==
+      profileFingerprint
+  ) {
+    throw new Error(
+      'Provider profile changed while its readiness check was running. Run the check again.',
+    )
+  }
   const grokProbe = providerKind === 'grok' ? providerProbe : undefined
   const grokReady = grokProbe?.status === 'ready'
-  const providerInstanceId =
-    providerInstance?.providerInstanceId ??
-    defaultProviderInstanceForKind(providerKind).providerInstanceId
   const previousCatalog = isObject(
     host.state.providerModelCatalogs?.[providerInstanceId],
   )
@@ -172,14 +232,14 @@ input: JsonRecord = {},
     modelDiscoveryError = reason
   }
 
-  host.state.providerModelCatalogs = {
-    ...(isObject(host.state.providerModelCatalogs)
-      ? host.state.providerModelCatalogs
-      : {}),
-    [providerInstanceId]: models,
+  if (ownsProbeState) {
+    host.state.providerModelCatalogs = {
+      ...(isObject(host.state.providerModelCatalogs)
+        ? host.state.providerModelCatalogs
+        : {}),
+      [providerInstanceId]: models,
+    }
   }
-  host.touchDeferred()
-  host.broadcast({ type: 'runtime.state', state: host.getState() })
 
   const auth = providerProbe?.auth ??
     (grokReady
@@ -203,13 +263,24 @@ input: JsonRecord = {},
             ? 'needs-attention'
             : 'ready'
   const version = providerProbe?.version
+  const generatedAt = now()
+  const expiresAt = new Date(
+    Date.parse(generatedAt) + providerSetupSnapshotTtlMs,
+  ).toISOString()
+  const environment = hostEnvironmentSnapshot()
 
-  return {
+  const status = {
     providerKind,
     providerInstanceId,
-    generatedAt: now(),
+    profileFingerprint,
+    cwd,
+    generatedAt,
     readiness,
     installed: binary.ok,
+    source: 'live',
+    stale: false,
+    expiresAt,
+    durationMs: Date.now() - startedAt,
     ...(version ? { version } : {}),
     command: {
       requested: launch.requestedCommand,
@@ -218,6 +289,26 @@ input: JsonRecord = {},
     },
     auth,
     models,
+    diagnostics: {
+      hostEnvironment: {
+        source: environment.source,
+        ...(environment.shell ? { shell: environment.shell } : {}),
+        pathEntryCount: environment.path
+          .split(path.delimiter)
+          .filter(Boolean).length,
+      },
+      profile: {
+        label:
+          providerInstance?.label ??
+          defaultProviderInstanceForKind(providerKind).label,
+        commandSource: launch.commandSource,
+        binaryOverride: Boolean(providerInstance?.binaryPath),
+        homeOverride: Boolean(providerInstance?.homePath),
+        shadowHomeOverride: Boolean(providerInstance?.shadowHomePath),
+        launchArgumentCount: launch.launchArgs.length,
+        environmentKeys: Object.keys(providerInstance?.env ?? {}).sort(),
+      },
+    },
     checks: [
       {
         id: 'runtime',
@@ -336,6 +427,12 @@ input: JsonRecord = {},
           ]
         : []),
       {
+        id: 'readiness-cache',
+        label: 'Readiness cache',
+        status: 'ok',
+        message: `Live check completed in ${Date.now() - startedAt} ms; reusable until ${expiresAt}.`,
+      },
+      {
         id: 'mcp',
         label: 'MCP / tools',
         status: 'unknown',
@@ -348,4 +445,22 @@ input: JsonRecord = {},
       },
     ],
   }
+
+  if (ownsProbeState) {
+    host.state.providerSetupSnapshots = {
+      ...(isObject(host.state.providerSetupSnapshots)
+        ? host.state.providerSetupSnapshots
+        : {}),
+      [providerInstanceId]: {
+        profileFingerprint,
+        cwd,
+        checkedAt: generatedAt,
+        expiresAt,
+        status: providerSetupStatusForSnapshot(status),
+      },
+    }
+    host.touchDeferred()
+    host.broadcast({ type: 'runtime.state', state: host.getState() })
+  }
+  return status
 }

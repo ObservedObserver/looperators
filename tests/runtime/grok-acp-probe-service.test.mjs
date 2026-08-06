@@ -8,6 +8,7 @@ import {
   clearGrokProbeCacheForTest,
   probeGrokProvider,
 } from '../../dist-electron/electron/runtime/providers/grokAcpProbeService.js'
+import { RuntimeSessionManager } from '../../dist-electron/electron/runtime/sessionManager.js'
 
 const fakeGrok = path.resolve('tests/runtime/fixtures/fake-grok-agent.mjs')
 
@@ -54,6 +55,34 @@ test('Grok readiness probe merges concurrent calls, caches success, and preserve
     await probeGrokProvider(input)
     assert.equal(wire(logFile).filter((entry) => entry.startup).length, 1)
   } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('Grok force refresh from provider setup bypasses the successful readiness cache', async () => {
+  clearGrokProbeCacheForTest()
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'looperators-grok-setup-force-'))
+  const logFile = path.join(tempRoot, 'wire.jsonl')
+  const runtime = new RuntimeSessionManager({ storageFile: path.join(tempRoot, 'state.json') })
+  const providerInstance = {
+    ...provider('probe-models', logFile),
+    kind: 'grok',
+    label: 'Grok force fixture',
+  }
+  try {
+    runtime.upsertProviderInstance(providerInstance)
+    const input = {
+      providerKind: 'grok',
+      providerInstanceId: providerInstance.providerInstanceId,
+      cwd: tempRoot,
+      timeoutMs: 1000,
+      forceRefresh: true,
+    }
+    await runtime.getProviderSetupStatus(input)
+    await runtime.getProviderSetupStatus(input)
+    assert.equal(wire(logFile).filter((entry) => entry.startup).length, 2)
+  } finally {
+    await runtime.killAll()
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })

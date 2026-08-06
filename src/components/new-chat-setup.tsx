@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 import { type OpenWorkspaceTarget, type ProviderSetupModel, type WorkMode } from '@/shared/graph-state';
 import {
   type ProviderKind,
+  type ProviderInstance,
   type ProviderReasoningEffort,
   type ProviderRuntimeMode,
   providerCapability,
@@ -392,6 +393,8 @@ export function NewChatSetupBar({
   projectCwd,
   validation,
   providerKind,
+  providerInstanceId,
+  providerInstances,
   workMode,
   branch,
   runtimeMode,
@@ -404,6 +407,7 @@ export function NewChatSetupBar({
   onProjectChange,
   onChooseProject,
   onProviderKindChange,
+  onProviderInstanceIdChange,
   onWorkModeChange,
   onBranchChange,
   onRuntimeModeChange,
@@ -414,6 +418,8 @@ export function NewChatSetupBar({
   projectCwd: string;
   validation: ProjectCwdValidation;
   providerKind: ProviderKind;
+  providerInstanceId: string;
+  providerInstances: ProviderInstance[];
   workMode: WorkMode;
   branch: string;
   runtimeMode: ProviderRuntimeMode;
@@ -426,6 +432,7 @@ export function NewChatSetupBar({
   onProjectChange: (cwd: string) => void;
   onChooseProject: () => void;
   onProviderKindChange: (providerKind: ProviderKind) => void;
+  onProviderInstanceIdChange: (providerInstanceId: string) => void;
   onWorkModeChange: (workMode: WorkMode) => void;
   onBranchChange: (branch: string) => void;
   onRuntimeModeChange: (runtimeMode: ProviderRuntimeMode) => void;
@@ -508,6 +515,22 @@ export function NewChatSetupBar({
           onChange={(next) => {
             onProviderKindChange(next as ProviderKind);
           }}
+        />
+
+        <NewChatSetupPill
+          icon={Bot}
+          label="Profile"
+          hint="Provider profile"
+          value={providerInstanceId}
+          options={providerInstances
+            .filter((instance) => instance.kind === providerKind)
+            .map((instance) => ({
+              value: instance.providerInstanceId,
+              label: instance.label,
+            }))}
+          disabled={disabled}
+          className="w-36"
+          onChange={onProviderInstanceIdChange}
         />
 
         <ModelPickerPill

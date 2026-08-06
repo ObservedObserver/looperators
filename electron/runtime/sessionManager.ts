@@ -873,6 +873,11 @@ export class RuntimeSessionManager {
         providerInstance.providerInstanceId
       ]
     }
+    if (isObject(this.#state.providerSetupSnapshots)) {
+      delete this.#state.providerSetupSnapshots[
+        providerInstance.providerInstanceId
+      ]
+    }
     this.#providerService.registerProviderInstance(providerInstance)
     this.#appendKernelEvent(
       'provider.instance-upserted',

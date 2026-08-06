@@ -310,6 +310,7 @@ function App() {
                 isRuntimeAvailable={isRuntimeAvailable}
                 runtimeStatusText={core.runtimeStatusText}
                 providerInstances={providerInstances}
+                providerSetupSnapshots={runtimeState.providerSetupSnapshots}
                 cwd={newCwd}
                 savingProviderInstanceId={newChat.savingProviderInstanceId}
                 providerInstanceError={newChat.providerInstanceError}

@@ -69,6 +69,8 @@ export const graphStateSchema = {
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
     providerInstances: 'ProviderInstance[]; local provider runtime profiles',
+    providerSetupSnapshots:
+      'Record<providerInstanceId, ProviderSetupSnapshot>; durable sanitized readiness cache with profile/cwd invalidation',
     clusters:
       'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
@@ -484,9 +486,10 @@ export const graphStateSchema = {
         providerInstanceId:
           'string?; provider instance selected in provider settings',
         cwd: 'string?; optional project cwd to validate against provider access',
+        forceRefresh: 'boolean?; bypass durable and in-memory readiness caches',
       },
       output:
-        'ProviderSetupStatus; resolved executable, version, readiness, auth/account, models, cwd, and MCP setup diagnostics',
+        'ProviderSetupStatus; live/snapshot source, expiry, timing, resolved executable, version, readiness, auth/account, models, cwd, sanitized host/profile diagnostics, and MCP setup checks',
     },
     upsertProviderInstance: {
       input: {
@@ -598,6 +601,7 @@ export function createEmptyGraphState() {
       ...instance,
     })),
     providerModelCatalogs: {},
+    providerSetupSnapshots: {},
     clusters: {},
     reports: [],
     subscriptions: {},

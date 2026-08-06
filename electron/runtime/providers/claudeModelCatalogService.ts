@@ -176,8 +176,8 @@ export async function probeClaudeAuthStatus({
     throw new Error('Claude Code auth status returned invalid JSON.');
   }
   const auth = normalizeClaudeAuthStatus(payload, launch.env);
-  if (result.code !== 0 && auth.status === 'unknown') {
-    throw new Error(output || `Claude Code auth status exited with code ${result.code}.`);
+  if (result.code !== 0 && auth.status !== 'unauthenticated') {
+    throw new Error(`Claude Code auth status exited with code ${result.code}.`);
   }
   return auth;
 }

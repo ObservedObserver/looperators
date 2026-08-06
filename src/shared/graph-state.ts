@@ -74,6 +74,7 @@ export const graphStateSchema = {
     edges: 'GraphEdge[]',
     sessions: 'Record<SessionId, AgentSession>',
     providerInstances: 'ProviderInstance[]; local provider runtime profiles',
+    providerSetupSnapshots: 'Record<providerInstanceId, ProviderSetupSnapshot>; durable sanitized readiness cache with profile/cwd invalidation',
     clusters: 'Record<ClusterId, Cluster>; Cluster.nodeIds are the managed scope nodes',
     reports: 'Report[]',
     subscriptions: 'Record<SubscriptionId, Subscription>; intent-layer edges (v7, kernel doc §7.3)',
@@ -313,8 +314,9 @@ export const graphStateSchema = {
         providerKind: 'ProviderKind; provider selected in the chat setup UI',
         providerInstanceId: 'string?; provider instance selected in provider settings',
         cwd: 'string?; optional project cwd to validate against provider access',
+        forceRefresh: 'boolean?; bypass durable and in-memory readiness caches',
       },
-      output: 'ProviderSetupStatus; resolved executable, version, readiness, auth/account, models, cwd, and MCP setup diagnostics',
+      output: 'ProviderSetupStatus; live/snapshot source, expiry, timing, resolved executable, version, readiness, auth/account, models, cwd, sanitized host/profile diagnostics, and MCP setup checks',
     },
     upsertProviderInstance: {
       input: {
@@ -988,6 +990,7 @@ export type GraphState = {
   sessions: Record<SessionId, AgentSession>;
   providerInstances: ProviderInstance[];
   providerModelCatalogs?: Record<string, ProviderModelCatalog>;
+  providerSetupSnapshots?: Record<string, ProviderSetupSnapshot>;
   clusters: Record<ClusterId, Cluster>;
   reports: Report[];
   subscriptions?: Record<string, Subscription>;
@@ -1087,6 +1090,8 @@ export type ProviderSetupModel = ProviderModel;
 export type ProviderSetupStatus = {
   providerKind: ProviderKind;
   providerInstanceId?: string;
+  profileFingerprint?: string;
+  cwd?: string;
   generatedAt: string;
   readiness?: ProviderReadiness;
   installed?: boolean;
@@ -1094,7 +1099,35 @@ export type ProviderSetupStatus = {
   command?: ProviderSetupCommand;
   auth?: ProviderSetupAuth;
   models?: ProviderModelCatalog;
+  source?: 'live' | 'snapshot';
+  stale?: boolean;
+  expiresAt?: string;
+  durationMs?: number;
+  diagnostics?: {
+    hostEnvironment: {
+      source: 'login-shell' | 'launchctl' | 'inherited';
+      shell?: string;
+      pathEntryCount: number;
+    };
+    profile: {
+      label: string;
+      commandSource: ProviderSetupCommand['source'];
+      binaryOverride: boolean;
+      homeOverride: boolean;
+      shadowHomeOverride: boolean;
+      launchArgumentCount: number;
+      environmentKeys: string[];
+    };
+  };
   checks: ProviderSetupCheck[];
+};
+
+export type ProviderSetupSnapshot = {
+  profileFingerprint: string;
+  cwd: string;
+  checkedAt: string;
+  expiresAt: string;
+  status: ProviderSetupStatus;
 };
 
 export type UpsertProviderInstanceInput = ProviderInstance;
@@ -1434,6 +1467,7 @@ export function createEmptyGraphState(): GraphState {
       ...instance,
     })),
     providerModelCatalogs: {},
+    providerSetupSnapshots: {},
     clusters: {},
     reports: [],
     subscriptions: {},
