@@ -111,6 +111,39 @@ test('snapshot deltas replace until a real delta arrives and completion wins', (
   assert.equal(state.sessions.alpha.messages[0].status, 'complete');
 });
 
+test('completed assistant items in the same turn remain separate messages', () => {
+  let state = stateWithSessions();
+  for (const [itemId, content] of [
+    ['message-1', 'first'],
+    ['message-2', 'second'],
+  ]) {
+    state = applyProviderRuntimeEventToState(state, 'alpha', {
+      id: `completed-${itemId}`,
+      ts: '2026-07-10T10:00:05.000Z',
+      type: 'message.completed',
+      sessionId: 'alpha',
+      message: {
+        id: `alpha:${itemId}:assistant`,
+        sessionId: 'alpha',
+        role: 'assistant',
+        content,
+        ts: '2026-07-10T10:00:05.000Z',
+        runId: 'turn-1',
+        providerItemId: itemId,
+        status: 'complete',
+      },
+    });
+  }
+
+  assert.deepEqual(
+    state.sessions.alpha.messages.map((message) => [message.providerItemId, message.content]),
+    [
+      ['message-1', 'first'],
+      ['message-2', 'second'],
+    ],
+  );
+});
+
 test('provider runtime events carry normalized provider events without a state snapshot', () => {
   const state = stateWithSessions();
   const event = {

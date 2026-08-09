@@ -673,6 +673,9 @@ export class SessionRuntimeController {
           runKind === 'resume'
             ? (session.providerSessionId ?? session.backendSessionId)
             : undefined,
+        providerFork: session.providerFork
+          ? clone(session.providerFork)
+          : undefined,
         providerResumeCursor: session.providerResumeCursor,
         sessionId,
         runtimeSettings: session.runtimeSettings,
@@ -853,6 +856,12 @@ export class SessionRuntimeController {
     session.providerSessionId = providerSessionId
     session.backendSessionId = providerSessionId
     if (resumeCursor !== undefined) session.providerResumeCursor = resumeCursor
+    if (
+      session.providerFork &&
+      providerSessionId !== session.providerFork.sourceProviderSessionId
+    ) {
+      delete session.providerFork
+    }
     session.updatedAt = now()
     // The first upstream handle must survive an immediate app crash so the
     // provider can resume. Adapter/controller deduplication guarantees this
@@ -922,7 +931,7 @@ export class SessionRuntimeController {
       return
     }
 
-    const message = this.ensureAssistantMessage(session, context)
+    const message = this.ensureAssistantMessage(session, context, event)
     if (event.isSnapshot) {
       if (!context.sawTextDelta || message.content.trim().length === 0) {
         message.content = event.text
@@ -978,6 +987,37 @@ export class SessionRuntimeController {
         session.providerKind,
         session.runtimeSettings,
       )
+      return compactEvent
+    }
+
+    if (compactEvent.type === 'message.completed') {
+      const completed = {
+        ...compactEvent.message,
+        sessionId,
+        status: 'complete',
+      }
+      const context = this.runContext.get(sessionId)
+      const key = completed.providerItemId ?? completed.runId ?? completed.id
+      const mappedId = context?.assistantMessageIds?.[key]
+      const existing = session.messages.find(
+        (message) =>
+          message.id === completed.id ||
+          message.id === mappedId ||
+          Boolean(
+            completed.providerItemId &&
+            message.providerItemId === completed.providerItemId,
+          ),
+      )
+      if (existing) {
+        Object.assign(existing, completed, { id: existing.id })
+      } else {
+        session.messages.push(completed)
+      }
+      if (context) {
+        context.assistantMessageIds ??= {}
+        context.assistantMessageIds[key] = existing?.id ?? completed.id
+        context.assistantMessageId = existing?.id ?? completed.id
+      }
       return compactEvent
     }
 
@@ -1170,9 +1210,12 @@ export class SessionRuntimeController {
     }
   }
 
-  private ensureAssistantMessage(session, context) {
-    let message = context.assistantMessageId
-      ? session.messages.find((item) => item.id === context.assistantMessageId)
+  private ensureAssistantMessage(session, context, event) {
+    const key = event.itemId ?? event.turnId ?? context.runId
+    context.assistantMessageIds ??= {}
+    const messageId = context.assistantMessageIds[key]
+    let message = messageId
+      ? session.messages.find((item) => item.id === messageId)
       : undefined
 
     if (!message) {
@@ -1183,11 +1226,14 @@ export class SessionRuntimeController {
         content: '',
         ts: now(),
         runId: context.runId,
+        providerItemId: event.itemId,
         status: 'streaming',
       }
       session.messages.push(message)
-      context.assistantMessageId = message.id
+      context.assistantMessageIds[key] = message.id
     }
+
+    context.assistantMessageId = message.id
 
     return message
   }
@@ -1228,7 +1274,15 @@ export class SessionRuntimeController {
     session.result = typeof event.result === 'string' ? event.result : undefined
     if (session.result) {
       if (context) {
-        const message = this.ensureAssistantMessage(session, context)
+        const message =
+          (context.assistantMessageId
+            ? session.messages.find(
+                (item) => item.id === context.assistantMessageId,
+              )
+            : undefined) ??
+          this.ensureAssistantMessage(session, context, {
+            turnId: context.runId,
+          })
         if (!context.sawTextDelta || message.content.trim().length === 0) {
           message.content = session.result
         }

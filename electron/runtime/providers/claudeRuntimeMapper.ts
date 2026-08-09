@@ -245,6 +245,7 @@ export function claudeRuntimeEventsFromMessage({
       ...eventBase,
       type: 'content.delta',
       turnId,
+      ...(typeof event.uuid === 'string' ? { itemId: event.uuid } : {}),
       streamKind: 'assistant_text',
       text: event.event.delta.text,
     })
@@ -252,20 +253,25 @@ export function claudeRuntimeEventsFromMessage({
   }
 
   if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+    const textBlocks = []
     for (const block of event.message.content) {
       if (!block || typeof block !== 'object') {
         continue
       }
 
-      if (block.type === 'text' && typeof block.text === 'string' && !sawTextDelta) {
-        events.push({
-          ...providerEvent(base, raw),
-          type: 'content.delta',
-          turnId,
-          streamKind: 'assistant_text',
-          text: block.text,
-          isSnapshot: true,
-        })
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textBlocks.push(block.text)
+        if (!sawTextDelta) {
+          events.push({
+            ...providerEvent(base, raw),
+            type: 'content.delta',
+            turnId,
+            ...(typeof event.uuid === 'string' ? { itemId: event.uuid } : {}),
+            streamKind: 'assistant_text',
+            text: block.text,
+            isSnapshot: true,
+          })
+        }
       }
 
       if (block.type === 'tool_use') {
@@ -276,6 +282,22 @@ export function claudeRuntimeEventsFromMessage({
           item,
         })
       }
+    }
+    if (textBlocks.length > 0 && typeof event.uuid === 'string') {
+      events.push({
+        ...providerEvent(base, raw),
+        type: 'message.completed',
+        message: {
+          id: `${sessionId}:${event.uuid}:assistant`,
+          sessionId,
+          role: 'assistant',
+          content: textBlocks.join(''),
+          ts,
+          runId: turnId,
+          providerItemId: event.uuid,
+          status: 'complete',
+        },
+      })
     }
     return events
   }

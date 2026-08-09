@@ -324,6 +324,19 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/fork$/,
+      handler: async (request, params) => {
+        const body = await readJsonBody(request)
+        return notFoundOnUnknownSession(() =>
+          humanCommand('fork_session', {
+            ...body,
+            sessionId: params.sessionId,
+          }),
+        )
+      },
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/sessions\/([^/]+)\/resume$/,
       handler: async (request, params) =>
         humanCommand('resume_session', {

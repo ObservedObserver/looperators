@@ -171,6 +171,33 @@ function threadStartParams({ cwd, runtimeSettings, mcpHandoff }) {
   }
 }
 
+export function codexThreadForkParams({
+  cwd,
+  runtimeSettings,
+  mcpHandoff,
+  providerFork,
+}) {
+  if (
+    typeof providerFork?.sourceProviderSessionId !== 'string' ||
+    providerFork.sourceProviderSessionId.trim().length === 0 ||
+    typeof providerFork?.sourceTurnId !== 'string' ||
+    providerFork.sourceTurnId.trim().length === 0
+  ) {
+    throw new Error('Codex session fork metadata is incomplete.')
+  }
+  const {
+    sessionStartSource: _sessionStartSource,
+    serviceName: _serviceName,
+    ...shared
+  } = threadStartParams({ cwd, runtimeSettings, mcpHandoff })
+  return {
+    ...shared,
+    threadId: providerFork.sourceProviderSessionId.trim(),
+    lastTurnId: providerFork.sourceTurnId.trim(),
+    deferGoalContinuation: true,
+  }
+}
+
 function codexAttachmentText(attachment) {
   const header = [
     `Attachment: ${attachment.name}`,
@@ -394,6 +421,7 @@ export class CodexAppServerRun extends EventEmitter {
   #turnError
   #pendingRequests = new Map()
   #providerInstance
+  #providerFork
   #mcpHandoff
   #runtimeSettings
 
@@ -401,6 +429,7 @@ export class CodexAppServerRun extends EventEmitter {
     prompt,
     cwd,
     backendSessionId,
+    providerFork,
     sessionId,
     turnId,
     runtimeSettings,
@@ -410,6 +439,7 @@ export class CodexAppServerRun extends EventEmitter {
   }) {
     super()
     this.#threadId = backendSessionId
+    this.#providerFork = providerFork
     this.#orreryTurnId = turnId
     this.#sessionId = sessionId
     this.#providerInstance = providerInstance
@@ -484,7 +514,7 @@ export class CodexAppServerRun extends EventEmitter {
             title: 'Orrery',
             version: '0.0.0',
           },
-          capabilities: null,
+          capabilities: { experimentalApi: true },
         },
         { timeoutMs: 15000 }
       )
@@ -496,8 +526,19 @@ export class CodexAppServerRun extends EventEmitter {
         effectiveRuntimeConfig: effectiveCodexRuntimeConfig(runtimeSettings),
       })
 
-      const threadResult = this.#threadId
+      const threadResult = this.#providerFork
         ? await this.#client.request(
+            'thread/fork',
+            codexThreadForkParams({
+              cwd,
+              runtimeSettings,
+              mcpHandoff: this.#mcpHandoff,
+              providerFork: this.#providerFork,
+            }),
+            { timeoutMs: 90000 }
+          )
+        : this.#threadId
+          ? await this.#client.request(
             'thread/resume',
             {
               ...threadStartParams({
@@ -509,17 +550,17 @@ export class CodexAppServerRun extends EventEmitter {
             },
             { timeoutMs: 60000 }
           )
-        : await this.#client.request(
-            'thread/start',
-            threadStartParams({
-              cwd,
-              runtimeSettings,
-              mcpHandoff: this.#mcpHandoff,
-            }),
-            {
-              timeoutMs: 90000,
-            }
-          )
+          : await this.#client.request(
+              'thread/start',
+              threadStartParams({
+                cwd,
+                runtimeSettings,
+                mcpHandoff: this.#mcpHandoff,
+              }),
+              {
+                timeoutMs: 90000,
+              }
+            )
 
       this.#threadId = threadResult?.thread?.id ?? this.#threadId
       if (this.#threadId) {

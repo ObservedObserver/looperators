@@ -1,12 +1,20 @@
 import { memo, useMemo, type CSSProperties } from 'react';
-import { Check, ClipboardCheck, FileText, Image as ImageIcon, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Check, ClipboardCheck, FileText, GitFork, Image as ImageIcon, RefreshCw, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { AgentMarkdown } from '@/components/agent-markdown';
 import { ToolRunFeed } from '@/components/tool-run-feed';
 import { toolTurnsFromRuntimeActivities, type ToolTurn } from '@/shared/tool-feed';
 import { type AgentMessage } from '@/shared/graph-state';
-import { type ChatAttachment, type RuntimeActivity, type RuntimePlan, type SessionTimelineEntry, type TurnDiffSummary } from '@/shared/provider-runtime';
+import {
+  type ChatAttachment,
+  type ProviderKind,
+  type RuntimeActivity,
+  type RuntimePlan,
+  type SessionTimelineEntry,
+  type TurnDiffSummary,
+} from '@/shared/provider-runtime';
 import { formatFileSize, formatClock, formatClockSeconds } from '@/lib/format';
 import { termActionBtnCls } from '@/components/terminal';
 import { requestKindLabels } from '@/components/runtime-interaction-panel';
@@ -60,7 +68,63 @@ export function MessageAttachmentStrip({ attachments }: { attachments?: ChatAtta
   );
 }
 
-type ChatMessageProps = { message: AgentMessage; agent?: string };
+type ChatMessageProps = {
+  message: AgentMessage;
+  agent?: string;
+  providerKind?: ProviderKind;
+  providerSessionReady?: boolean;
+  sourceSessionIdle?: boolean;
+  managedWorktree?: boolean;
+  latestForkableMessageId?: string;
+  sessionForkedAt?: string;
+  canForkSession?: boolean;
+  forking?: boolean;
+  onFork?: (message: AgentMessage) => void;
+};
+
+function forkUnavailableReason({
+  message,
+  providerKind,
+  providerSessionReady,
+  sourceSessionIdle,
+  managedWorktree,
+  latestForkableMessageId,
+  canForkSession,
+  sessionForkedAt,
+}: Pick<
+  ChatMessageProps,
+  | 'message'
+  | 'providerKind'
+  | 'providerSessionReady'
+  | 'sourceSessionIdle'
+  | 'managedWorktree'
+  | 'latestForkableMessageId'
+  | 'canForkSession'
+  | 'sessionForkedAt'
+>) {
+  if (!canForkSession) return 'Fork is unavailable while the runtime is disconnected.';
+  if (managedWorktree) return 'Forking a managed-worktree chat requires an independent workspace and is not supported yet.';
+  if (!sourceSessionIdle) return 'Wait for the source chat to finish before forking it.';
+  if (message.status === 'failed') return 'Failed assistant messages cannot be forked.';
+  if (message.id !== latestForkableMessageId) {
+    return 'Fork the latest completed reply; historical workspace rewind is not supported yet.';
+  }
+  if (!providerSessionReady) return 'This chat has no provider session to fork yet.';
+  if (providerKind === 'grok') return 'Grok does not expose independent session forks yet.';
+  if (providerKind === 'claude-code' && !message.providerItemId) {
+    return 'This older Claude reply has no message-level fork metadata.';
+  }
+  if (providerKind === 'claude-code' && sessionForkedAt && message.ts.localeCompare(sessionForkedAt) <= 0) {
+    return 'Fork copied Claude history from its source chat; fork a reply created in this chat instead.';
+  }
+  if (providerKind === 'codex' && message.phase === 'commentary') {
+    return 'Fork from the completed Codex response at the end of this turn.';
+  }
+  if (providerKind === 'codex' && !message.runId) {
+    return 'This Codex reply has no completed turn to fork from.';
+  }
+  return undefined;
+}
 
 function sameMessageAttachments(left: AgentMessage, right: AgentMessage) {
   const leftAttachments = left.attachments ?? [];
@@ -69,12 +133,35 @@ function sameMessageAttachments(left: AgentMessage, right: AgentMessage) {
 }
 
 export const ChatMessage = memo(
-  function ChatMessage({ message, agent }: ChatMessageProps) {
+  function ChatMessage({
+    message,
+    agent,
+    providerKind,
+    providerSessionReady,
+    sourceSessionIdle,
+    managedWorktree,
+    latestForkableMessageId,
+    sessionForkedAt,
+    canForkSession,
+    forking,
+    onFork,
+  }: ChatMessageProps) {
     const isUser = message.role === 'user';
+    const isAssistant = message.role === 'assistant';
     const isStreaming = message.status === 'streaming';
     const hasText = message.content.trim().length > 0;
     const senderLabel = assistantLabel(agent);
     const isCommentary = message.phase === 'commentary';
+    const forkReason = forkUnavailableReason({
+      message,
+      providerKind,
+      providerSessionReady,
+      sourceSessionIdle,
+      managedWorktree,
+      latestForkableMessageId,
+      sessionForkedAt,
+      canForkSession,
+    });
 
     return (
       <div
@@ -114,6 +201,27 @@ export const ChatMessage = memo(
                 {isStreaming ? <span className="orrery-caret ml-1" /> : null}
               </div>
             ) : null}
+            {isAssistant && !isStreaming ? (
+              <div className="mt-1.5 flex min-h-6 items-center gap-1" aria-label="Message actions">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span>
+                      <Button
+                        className="size-6 text-term-dim2 hover:text-term-name"
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={Boolean(forkReason) || forking || !onFork}
+                        aria-label="Fork from this message"
+                        onClick={() => onFork?.(message)}
+                      >
+                        {forking ? <RefreshCw className="size-3.5 animate-spin" /> : <GitFork className="size-3.5" />}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{forkReason ?? 'Fork chat from this message'}</TooltipContent>
+                </Tooltip>
+              </div>
+            ) : null}
           </>
         )}
       </div>
@@ -124,6 +232,15 @@ export const ChatMessage = memo(
     const right = next.message;
     return (
       previous.agent === next.agent &&
+      previous.providerKind === next.providerKind &&
+      previous.providerSessionReady === next.providerSessionReady &&
+      previous.sourceSessionIdle === next.sourceSessionIdle &&
+      previous.managedWorktree === next.managedWorktree &&
+      previous.latestForkableMessageId === next.latestForkableMessageId &&
+      previous.sessionForkedAt === next.sessionForkedAt &&
+      previous.canForkSession === next.canForkSession &&
+      previous.forking === next.forking &&
+      previous.onFork === next.onFork &&
       left.id === right.id &&
       left.content === right.content &&
       left.status === right.status &&
@@ -356,6 +473,15 @@ export const SessionTimeline = memo(function SessionTimeline({
   onRevisePlan,
   onOpenTurnDiff,
   activities,
+  providerKind,
+  providerSessionReady,
+  sourceSessionIdle,
+  managedWorktree,
+  latestForkableMessageId,
+  sessionForkedAt,
+  canForkSession,
+  forkingMessageId,
+  onForkMessage,
 }: {
   entries: SessionTimelineEntry[];
   agent?: string;
@@ -364,6 +490,15 @@ export const SessionTimeline = memo(function SessionTimeline({
   onRevisePlan: (plan: RuntimePlan) => void;
   onOpenTurnDiff: (turnId: string) => void;
   activities?: RuntimeActivity[];
+  providerKind?: ProviderKind;
+  providerSessionReady?: boolean;
+  sourceSessionIdle?: boolean;
+  managedWorktree?: boolean;
+  latestForkableMessageId?: string;
+  sessionForkedAt?: string;
+  canForkSession?: boolean;
+  forkingMessageId?: string;
+  onForkMessage?: (message: AgentMessage) => void;
 }) {
   const toolTurnsByTurnId = useMemo(() => {
     const runtimeActivities = activities ?? entries.flatMap((entry) => (entry.kind === 'activity' ? [entry.activity] : []));
@@ -378,7 +513,22 @@ export const SessionTimeline = memo(function SessionTimeline({
           return <TurnBoundaryRow key={entry.id} entry={entry} />;
         }
         if (entry.kind === 'message') {
-          return <ChatMessage key={entry.id} message={entry.message} agent={agent} />;
+          return (
+            <ChatMessage
+              key={entry.id}
+              message={entry.message}
+              agent={agent}
+              providerKind={providerKind}
+              providerSessionReady={providerSessionReady}
+              sourceSessionIdle={sourceSessionIdle}
+              managedWorktree={managedWorktree}
+              latestForkableMessageId={latestForkableMessageId}
+              sessionForkedAt={sessionForkedAt}
+              canForkSession={canForkSession}
+              forking={forkingMessageId === entry.message.id}
+              onFork={onForkMessage}
+            />
+          );
         }
         if (entry.kind === 'activity') {
           const turnId = entry.activity.turnId;

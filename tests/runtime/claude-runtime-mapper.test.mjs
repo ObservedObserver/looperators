@@ -35,6 +35,24 @@ test('Claude mapper emits text deltas and suppresses a later text snapshot', () 
   assert.deepEqual(snapshot, [])
 })
 
+test('Claude mapper preserves the assistant UUID needed for message-level forks', () => {
+  const events = claudeRuntimeEventsFromMessage({
+    ...base,
+    sawTextDelta: true,
+    message: {
+      type: 'assistant',
+      uuid: 'assistant-message-1',
+      message: { content: [{ type: 'text', text: 'completed answer' }] },
+    },
+  })
+
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'message.completed')
+  assert.equal(events[0].message.providerItemId, 'assistant-message-1')
+  assert.equal(events[0].message.runId, base.turnId)
+  assert.equal(events[0].message.content, 'completed answer')
+})
+
 test('Claude mapper pairs tool start and tool result by provider id', () => {
   const started = claudeRuntimeEventsFromMessage({
     ...base,

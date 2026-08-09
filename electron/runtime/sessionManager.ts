@@ -394,6 +394,8 @@ export class RuntimeSessionManager {
   #commandRegistry = createKernelCommandRegistry({
     create_session: (input, ctx) =>
       this.#sessionCommands.cmdCreateSession(input, ctx),
+    fork_session: (input, ctx) =>
+      this.#sessionCommands.cmdForkSession(input, ctx),
     resume_session: (input, ctx) =>
       this.#sessionCommands.cmdResumeSession(input, ctx),
     deliver: (input, ctx) => this.#sessionCommands.cmdDeliver(input, ctx),
@@ -900,6 +902,10 @@ export class RuntimeSessionManager {
 
   async createSession(input: JsonRecord = {}) {
     return this.#sessionCommands.createSession(input)
+  }
+
+  forkSession(input: JsonRecord = {}) {
+    return this.#sessionCommands.forkSession(input)
   }
 
 

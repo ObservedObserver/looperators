@@ -291,6 +291,71 @@ test('resume decomposes into deliver + activate; plain resumes stay verbatim', a
   }
 })
 
+test('fork rejects context-channel history before creating a child', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-fork-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const runtime = new RuntimeSessionManager({ storageFile })
+  setProviderBinary(runtime, '/usr/bin/true')
+
+  try {
+    const source = await runtime.createSession({
+      prompt: 'fork source with context channel history',
+      label: 'Fork Source',
+      cwd: process.cwd(),
+    })
+    await waitForIdle(runtime, source.sessionId)
+    await runtime.resumeSession({
+      sessionId: source.sessionId,
+      message: 'use the delivered context',
+      context: 'CONTEXT-CHANNEL-FORK-PAYLOAD',
+    })
+    await waitForIdle(runtime, source.sessionId)
+
+    const channelStore = new ContextChannelStore({
+      root: path.join(tempRoot, 'channels'),
+    })
+    const manifest = channelStore.manifest(source.sessionId)
+    assert.equal(manifest.length, 1)
+    assert.equal(manifest[0].readAt !== undefined, true)
+    assert.equal(fs.existsSync(manifest[0].files[0]), true)
+
+    const assistant = runtime
+      .getSessionView({ sessionId: source.sessionId, view: 'transcript' })
+      .projection.messages.filter(
+        (message) =>
+          message.role === 'assistant' && message.status === 'complete'
+      )
+      .at(-1)
+    assert.ok(assistant)
+
+    const before = runtime.getState()
+    const sessionCount = Object.keys(before.sessions).length
+    const nodeCount = before.nodes.length
+    const edgeCount = before.edges.length
+    await assert.rejects(
+      runtime.dispatchCommand({
+        kind: 'fork_session',
+        actor: { kind: 'human' },
+        input: {
+          sessionId: source.sessionId,
+          messageId: assistant.id,
+        },
+      }),
+      /context-channel history is not supported yet/
+    )
+
+    const after = runtime.getState()
+    assert.equal(Object.keys(after.sessions).length, sessionCount)
+    assert.equal(after.nodes.length, nodeCount)
+    assert.equal(after.edges.length, edgeCount)
+    assert.equal(channelStore.manifest(source.sessionId).length, 1)
+    assert.equal(fs.existsSync(manifest[0].files[0]), true)
+  } finally {
+    runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('create_session pre-seeds the channel with handoff context (§8.1)', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-channel-create-'))
   const storageFile = path.join(tempRoot, 'runtime-state.json')

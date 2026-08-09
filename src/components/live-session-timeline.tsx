@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { RuntimePlan } from '@/shared/provider-runtime';
+import type { AgentMessage, AgentSession } from '@/shared/graph-state';
 import { SessionTimeline } from '@/components/timeline';
 import { useRuntimeSessionProjection } from '@/hooks/use-runtime-session-view';
 import type { RuntimeStateStore } from '@shared/runtime-state-store';
@@ -7,24 +8,35 @@ import type { RuntimeStateStore } from '@shared/runtime-state-store';
 type LiveSessionTimelineProps = {
   runtimeStateStore: RuntimeStateStore;
   sessionId: string | null | undefined;
+  session?: AgentSession;
   agent?: string;
   canActOnPlan: boolean;
   onContinuePlan: (plan: RuntimePlan) => void;
   onRevisePlan: (plan: RuntimePlan) => void;
   onOpenTurnDiff: (turnId: string) => void;
+  forkingMessageId?: string;
+  canForkSession: boolean;
+  onForkMessage: (message: AgentMessage) => void;
 };
 
 export const LiveSessionTimeline = memo(function LiveSessionTimeline({
   runtimeStateStore,
   sessionId,
+  session,
   agent,
   canActOnPlan,
   onContinuePlan,
   onRevisePlan,
   onOpenTurnDiff,
+  forkingMessageId,
+  canForkSession,
+  onForkMessage,
 }: LiveSessionTimelineProps) {
   const projection = useRuntimeSessionProjection(runtimeStateStore, sessionId);
   const timeline = projection?.timeline ?? [];
+  const latestForkableMessageId = projection?.messages.findLast(
+    (message) => message.role === 'assistant' && message.status !== 'streaming' && message.status !== 'failed',
+  )?.id;
 
   return (
     <>
@@ -41,6 +53,15 @@ export const LiveSessionTimeline = memo(function LiveSessionTimeline({
           onContinuePlan={onContinuePlan}
           onRevisePlan={onRevisePlan}
           onOpenTurnDiff={onOpenTurnDiff}
+          providerKind={session?.providerKind}
+          providerSessionReady={Boolean(session?.providerSessionId ?? session?.backendSessionId)}
+          sourceSessionIdle={session?.status === 'idle'}
+          managedWorktree={session?.project?.workMode === 'worktree'}
+          latestForkableMessageId={latestForkableMessageId}
+          sessionForkedAt={session?.forkedFrom?.createdAt}
+          canForkSession={canForkSession}
+          forkingMessageId={forkingMessageId}
+          onForkMessage={onForkMessage}
         />
       ) : (
         <div className="m-3.5 rounded-lg border border-dashed border-ink-line p-5 text-center font-mono text-sm text-term-dim2">

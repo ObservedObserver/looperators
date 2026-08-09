@@ -10,6 +10,8 @@ import type {
   CreateMasterForClusterInput,
   CreateRuntimeSessionInput,
   CreateRuntimeSessionResult,
+  ForkRuntimeSessionInput,
+  ForkRuntimeSessionResult,
   FreezeInput,
   UnfreezeInput,
   GetTerminalInput,
@@ -114,6 +116,7 @@ export type RuntimeApi = {
   upsertProviderInstance: (input: UpsertProviderInstanceInput) => Promise<{ providerInstance: ProviderInstance; state: GraphState }>;
   chooseProjectFolder: () => Promise<{ canceled: boolean; cwd?: string }>;
   createSession: (input: CreateRuntimeSessionInput) => Promise<CreateRuntimeSessionResult>;
+  forkSession: (input: ForkRuntimeSessionInput) => Promise<ForkRuntimeSessionResult>;
   resumeSession: (input: ResumeRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
   archiveSession: (input: ArchiveRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
   killSession: (sessionId: SessionId) => Promise<{ ok: boolean; state: GraphState }>;
@@ -349,6 +352,10 @@ class HttpRuntimeApi implements RuntimeApi {
 
   createSession(input: CreateRuntimeSessionInput) {
     return this.#post<CreateRuntimeSessionResult>('sessions', input);
+  }
+
+  forkSession(input: ForkRuntimeSessionInput) {
+    return this.#post<ForkRuntimeSessionResult>(`sessions/${encodeURIComponent(input.sessionId)}/fork`, input);
   }
 
   resumeSession(input: ResumeRuntimeSessionInput) {

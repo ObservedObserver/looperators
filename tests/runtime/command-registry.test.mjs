@@ -16,7 +16,7 @@ function completeHandlers() {
 test('command registry is exhaustive and joins handlers to transaction policy', async () => {
   const registry = createKernelCommandRegistry(completeHandlers())
 
-  assert.equal(kernelCommandKinds.length, 68)
+  assert.equal(kernelCommandKinds.length, 69)
   assert.deepEqual(Object.keys(registry), kernelCommandKinds)
   assert.deepEqual(Object.keys(kernelCommandPolicies), kernelCommandKinds)
   assert.equal(Object.isFrozen(registry), true)
@@ -34,6 +34,7 @@ test('command registry keeps journal, version, and post-commit policy canonical'
   )
   assert.deepEqual(automaticallyJournaled, [
     'create_session',
+    'fork_session',
     'resume_session',
     'activate',
     'commit_workflow',

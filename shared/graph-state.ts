@@ -288,6 +288,16 @@ export const graphStateSchema = {
           'ProviderRuntimeSettings?; runtime mode, model, reasoning effort, sandbox/approval policy hints',
       },
     },
+    forkSession: {
+      input: {
+        sessionId: 'SessionId; source chat',
+        messageId:
+          'string; latest completed assistant message in an idle, local-workspace source chat',
+        label: 'string?; defaults to "<source label> (fork)"',
+      },
+      output:
+        '{ sessionId, state }; creates an idle local mirror and forks the provider session on first resume; historical workspace rewind and managed worktrees are not yet supported',
+    },
     getProjectContext: {
       input: {
         cwd: 'string?; project cwd selected by the UI',

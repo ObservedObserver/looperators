@@ -656,6 +656,37 @@ export function withDiagnostics(state, diagnostics) {
   }
 }
 
+function normalizeSessionForkOrigin(value) {
+  if (!isObject(value)) return undefined
+  const sessionId = optionalTrimmedString(value.sessionId)
+  const messageId = optionalTrimmedString(value.messageId)
+  if (!sessionId || !messageId) return undefined
+  return {
+    sessionId,
+    messageId,
+    turnId: optionalTrimmedString(value.turnId),
+    providerTurnId: optionalTrimmedString(value.providerTurnId),
+    providerItemId: optionalTrimmedString(value.providerItemId),
+    createdAt: optionalTrimmedString(value.createdAt) ?? now(),
+  }
+}
+
+function normalizePendingProviderFork(value) {
+  if (!isObject(value)) return undefined
+  const sourceProviderSessionId = optionalTrimmedString(
+    value.sourceProviderSessionId,
+  )
+  if (!sourceProviderSessionId) return undefined
+  const sourceTurnId = optionalTrimmedString(value.sourceTurnId)
+  const sourceMessageId = optionalTrimmedString(value.sourceMessageId)
+  if (!sourceTurnId && !sourceMessageId) return undefined
+  return {
+    sourceProviderSessionId,
+    sourceTurnId,
+    sourceMessageId,
+  }
+}
+
 export function normalizeSession(
   storageKey,
   value,
@@ -785,6 +816,8 @@ export function normalizeSession(
     providerResumeCursor: nonEmptyString(value.providerResumeCursor)
       ? value.providerResumeCursor
       : undefined,
+    forkedFrom: normalizeSessionForkOrigin(value.forkedFrom),
+    providerFork: normalizePendingProviderFork(value.providerFork),
     agent: nonEmptyString(value.agent)
       ? value.agent
       : providerMetadata[providerKind].agent,

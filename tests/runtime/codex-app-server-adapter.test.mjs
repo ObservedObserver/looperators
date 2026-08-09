@@ -9,6 +9,7 @@ import {
   codexElicitationResponseForTest,
   codexInputItemsForTest,
   codexMembraneThreadParamsForTest,
+  codexThreadForkParams,
   codexUserInputResponseForTest,
 } from '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
 import { CodexJsonRpcClient } from '../../dist-electron/electron/runtime/providers/codexJsonRpcClient.js'
@@ -18,6 +19,25 @@ import {
   createMcpHandoff,
   membraneSystemPrompt,
 } from '../../dist-electron/electron/runtime/claudeRuntimeShared.js'
+
+test('Codex fork parameters branch through the selected completed turn', () => {
+  const params = codexThreadForkParams({
+    cwd: '/tmp/project',
+    runtimeSettings: { runtimeMode: 'auto', model: 'gpt-test' },
+    providerFork: {
+      sourceProviderSessionId: 'source-thread',
+      sourceTurnId: 'turn-2',
+    },
+  })
+
+  assert.equal(params.threadId, 'source-thread')
+  assert.equal(params.lastTurnId, 'turn-2')
+  assert.equal(params.deferGoalContinuation, true)
+  assert.equal(params.cwd, '/tmp/project')
+  assert.equal(params.model, 'gpt-test')
+  assert.equal('sessionStartSource' in params, false)
+  assert.equal('serviceName' in params, false)
+})
 
 test('Codex app-server input uses provider-native image attachment payloads', () => {
   const dataUrl = 'data:image/png;base64,aW1hZ2U='
@@ -492,8 +512,10 @@ test('Codex run mounts the membrane per thread and settles when the app-server d
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line))
+    const initialize = requests.find((message) => message.method === 'initialize')
     const threadStart = requests.find((message) => message.method === 'thread/start')
     const turnStart = requests.find((message) => message.method === 'turn/start')
+    assert.deepEqual(initialize.params.capabilities, { experimentalApi: true })
     assert.equal(threadStart.params.approvalPolicy, 'on-request')
     assert.equal(threadStart.params.sandbox, 'workspace-write')
     assert.equal(threadStart.params.approvalsReviewer, 'auto_review')

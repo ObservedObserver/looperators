@@ -208,6 +208,14 @@ export const graphStateSchema = {
         effectiveRuntimeConfig: 'ProviderEffectiveRuntimeConfig?; provider-native runtime config actually applied by the adapter',
       },
     },
+    forkSession: {
+      input: {
+        sessionId: 'SessionId; source chat',
+        messageId: 'string; latest completed assistant message in an idle, local-workspace source chat',
+        label: 'string?; defaults to "<source label> (fork)"',
+      },
+      output: '{ sessionId, state }; creates an idle local mirror and forks the provider session on first resume; historical workspace rewind and managed worktrees are not yet supported',
+    },
     getProjectContext: {
       input: {
         cwd: 'string?; project cwd selected by the UI',
@@ -541,9 +549,25 @@ export type AgentMessage = {
   attachments?: ChatAttachment[];
   ts: string;
   runId?: string;
+  providerTurnId?: string;
   providerItemId?: string;
   phase?: string;
   status?: 'streaming' | 'complete' | 'failed';
+};
+
+export type SessionForkOrigin = {
+  sessionId: SessionId;
+  messageId: string;
+  turnId?: string;
+  providerTurnId?: string;
+  providerItemId?: string;
+  createdAt: string;
+};
+
+export type PendingProviderFork = {
+  sourceProviderSessionId: string;
+  sourceTurnId?: string;
+  sourceMessageId?: string;
 };
 
 export type AgentSession = {
@@ -555,6 +579,8 @@ export type AgentSession = {
   providerInstanceId: string;
   providerSessionId?: string;
   providerResumeCursor?: string;
+  forkedFrom?: SessionForkOrigin;
+  providerFork?: PendingProviderFork;
   agent: string;
   label: string;
   prompt: string;
@@ -1033,6 +1059,17 @@ export type CreateRuntimeSessionInput = {
 };
 
 export type CreateRuntimeSessionResult = {
+  sessionId: SessionId;
+  state: GraphState;
+};
+
+export type ForkRuntimeSessionInput = {
+  sessionId: SessionId;
+  messageId: string;
+  label?: string;
+};
+
+export type ForkRuntimeSessionResult = {
   sessionId: SessionId;
   state: GraphState;
 };

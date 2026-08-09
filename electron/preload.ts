@@ -75,6 +75,7 @@ contextBridge.exposeInMainWorld('orrery', {
       ipcRenderer.invoke('orrery:choose-project-folder'),
     createSession: (input) =>
       ipcRenderer.invoke('orrery:create-session', input),
+    forkSession: (input) => ipcRenderer.invoke('orrery:fork-session', input),
     resumeSession: (input) =>
       ipcRenderer.invoke('orrery:resume-session', input),
     archiveSession: (input) =>

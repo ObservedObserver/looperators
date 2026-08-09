@@ -45,6 +45,7 @@ import {
 } from '../workflows/classicWorkflows.js'
 import { planCouncilFailed } from '../workflows/planCouncil.js'
 import type { RuntimeRun } from './sessionRuntimeController.js'
+import { createSessionFork } from './sessionFork.js'
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
@@ -113,6 +114,93 @@ export class SessionCommandRuntime {
   async createSession(input: JsonRecord = {}) {
     this.#host.reviveDirectProviderRuntime()
     return this.cmdCreateSession(input, this.#host.humanCtx())
+  }
+
+  forkSession(input: JsonRecord = {}) {
+    return this.cmdForkSession(input, this.#host.humanCtx())
+  }
+
+  cmdForkSession(input: JsonRecord = {}, ctx: JsonRecord) {
+    if (ctx.actor?.kind !== 'human') {
+      throw new Error('Only a human can fork an agent session.')
+    }
+    const sourceSessionId = optionalTrimmedString(input.sessionId)
+    const source = sourceSessionId
+      ? this.#host.state().sessions[sourceSessionId]
+      : undefined
+    if (!source) throw new Error(`Unknown session: ${sourceSessionId ?? ''}`)
+
+    const channelStore = this.#host.channelStore()
+    const sourceChannelDir = channelStore.channelDir(sourceSessionId)
+    const hasChannelHistory = channelStore.manifest(sourceSessionId).length > 0
+    const transcriptReferencesChannel = Array.isArray(source.messages)
+      ? source.messages.some(
+          (message) =>
+            typeof message?.content === 'string' &&
+            message.content.includes(sourceChannelDir),
+        )
+      : false
+    if (hasChannelHistory || transcriptReferencesChannel) {
+      throw new Error(
+        'Forking a chat with context-channel history is not supported yet because its provider-visible file paths cannot be safely remapped.',
+      )
+    }
+
+    const sourceNode = this.#host
+      .state()
+      .nodes.find((node) => node.sessionId === sourceSessionId)
+    const siblingCount = this.#host
+      .state()
+      .edges.filter(
+        (edge) =>
+          edge.source === sourceSessionId &&
+          edge.kind === 'create-session' &&
+          edge.label === 'fork',
+      ).length
+    const position = sourceNode
+      ? {
+          x: sourceNode.position.x + 280,
+          y: sourceNode.position.y + siblingCount * 96,
+        }
+      : {
+          x: 96 + (this.#host.state().nodes.length % 4) * 280,
+          y: 96 + Math.floor(this.#host.state().nodes.length / 4) * 180,
+        }
+    const fork = createSessionFork(source, input, position)
+
+    this.#host.state().sessions[fork.sessionId] = fork.session
+    this.#host.state().nodes.push(fork.node)
+    const envelope = this.#host.createEnvelope(sourceSessionId)
+    this.#host.addEdge({
+      source: sourceSessionId,
+      target: fork.sessionId,
+      kind: 'create-session',
+      envelope,
+      label: 'fork',
+      summary: `Forked from assistant message ${fork.forkedFrom.messageId}`,
+    })
+    this.#host.appendKernelEvent(
+      'session.created',
+      {
+        sessionId: fork.sessionId,
+        label: fork.session.label,
+        role: fork.session.role,
+        providerKind: fork.session.providerKind,
+        agent: fork.session.agent,
+        sourceSessionId,
+        forkedFrom: clone(fork.forkedFrom),
+        cwd: fork.session.cwd,
+      },
+      ctx,
+      { reason: ctx.reason ?? 'Forked from an assistant message.' },
+    )
+    this.#host.touch()
+    this.#host.broadcast({
+      type: 'session.created',
+      sessionId: fork.sessionId,
+      state: this.#host.getState(),
+    })
+    return { sessionId: fork.sessionId, state: this.#host.getState() }
   }
 
   async cmdCreateSession(

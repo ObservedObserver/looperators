@@ -195,6 +195,7 @@ function projectedAssistantMessages(session: AgentSession, events: ProviderRunti
       content: string;
       ts: string;
       runId?: string;
+      providerTurnId?: string;
       providerItemId?: string;
       phase?: string;
       status: AgentMessage['status'];
@@ -213,6 +214,7 @@ function projectedAssistantMessages(session: AgentSession, events: ProviderRunti
         content: event.message.content,
         ts: event.message.ts,
         runId: event.message.runId,
+        providerTurnId: event.message.providerTurnId,
         providerItemId: event.message.providerItemId,
         phase: event.message.phase,
         status: 'complete',
@@ -262,6 +264,7 @@ function projectedAssistantMessages(session: AgentSession, events: ProviderRunti
     content: message.content,
     ts: message.ts,
     runId: message.runId,
+    providerTurnId: message.providerTurnId,
     providerItemId: message.providerItemId,
     phase: message.phase,
     status: message.runId && completedTurns.has(message.runId) ? ('complete' as const) : message.status,
@@ -334,6 +337,7 @@ function mergeCappedAssistantMessages(
       content: sameRun.content,
       ts: projected.ts,
       runId: sameRun.runId ?? projected.runId,
+      providerTurnId: sameRun.providerTurnId ?? projected.providerTurnId,
       providerItemId: sameRun.providerItemId ?? projected.providerItemId,
       phase: sameRun.phase ?? projected.phase,
       status: projected.status === 'complete' ? ('complete' as const) : sameRun.status ?? projected.status,
@@ -521,6 +525,7 @@ function sameMessage(left: AgentMessage, right: AgentMessage) {
     left.content === right.content &&
     left.ts === right.ts &&
     left.runId === right.runId &&
+    left.providerTurnId === right.providerTurnId &&
     left.providerItemId === right.providerItemId &&
     left.phase === right.phase &&
     left.status === right.status &&

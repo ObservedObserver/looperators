@@ -5,9 +5,27 @@ import {
   ClaudeAgentSdkTurnRun,
   automaticClaudePermissionResult,
   claudePermissionModeForRuntime,
+  claudeSessionContinuationOptions,
   claudeRuntimeOptions,
   effectiveClaudeRuntimeConfig,
 } from '../../dist-electron/electron/runtime/providers/claudeAgentSdkAdapter.js'
+
+test('Claude continuation options materialize a pending message-level fork', () => {
+  assert.deepEqual(
+    claudeSessionContinuationOptions(undefined, {
+      sourceProviderSessionId: 'source-session',
+      sourceMessageId: 'assistant-message',
+    }),
+    {
+      resume: 'source-session',
+      forkSession: true,
+      resumeSessionAt: 'assistant-message',
+    },
+  )
+  assert.deepEqual(claudeSessionContinuationOptions('existing-session'), {
+    resume: 'existing-session',
+  })
+})
 
 function testRun() {
   const controller = {

@@ -213,6 +213,7 @@ export function ChatDetail({
   const {
     isCreating,
     isResuming,
+    forkingMessageId,
     pendingLinkedSource,
     openingWorkspaceTarget,
     composerDisabled,
@@ -220,6 +221,7 @@ export function ChatDetail({
     startLinkedChat,
     sendChatMessage,
     killSelectedSession,
+    forkSessionFromMessage,
     openSelectedWorkspace,
     continueRuntimePlan,
     reviseRuntimePlan,
@@ -484,11 +486,15 @@ export function ChatDetail({
           <LiveSessionTimeline
             runtimeStateStore={runtimeStateStore}
             sessionId={selectedSession?.sessionId}
+            session={selectedSession}
             agent={selectedSession?.agent}
             canActOnPlan={canActOnPlan}
             onContinuePlan={continueRuntimePlan}
             onRevisePlan={reviseRuntimePlan}
             onOpenTurnDiff={openTurnDiff}
+            forkingMessageId={forkingMessageId}
+            canForkSession={isRuntimeAvailable}
+            onForkMessage={forkSessionFromMessage}
           />
         </div>
 

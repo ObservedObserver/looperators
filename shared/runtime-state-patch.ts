@@ -111,7 +111,9 @@ function applyAssistantEvent(session: RuntimeRecord, event: RuntimeRecord, previ
     const index = messages.findIndex(
       (message) =>
         message.role === 'assistant' &&
-        ((completed.providerItemId && message.providerItemId === completed.providerItemId) || (completed.runId && message.runId === completed.runId)),
+        (completed.providerItemId
+          ? message.providerItemId === completed.providerItemId
+          : completed.runId && message.runId === completed.runId),
     );
     if (index >= 0) {
       messages[index] = { ...messages[index], ...completed, status: 'complete' };

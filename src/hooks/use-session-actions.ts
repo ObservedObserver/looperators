@@ -1,6 +1,6 @@
 import { type Dispatch, type RefObject, type SetStateAction, useCallback, useState } from 'react';
 
-import type { AgentSession, GraphState, OpenWorkspaceTarget, WorkMode } from '@/shared/graph-state';
+import type { AgentMessage, AgentSession, GraphState, OpenWorkspaceTarget, WorkMode } from '@/shared/graph-state';
 import type { ChatAttachment, ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode, RuntimePlan } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { defaultWorkspaceCwd, latestSessionCwd, validateProjectCwd } from '@/lib/workspace';
@@ -79,6 +79,7 @@ export function useSessionActions({
 
   const [isCreating, setIsCreating] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [forkingMessageId, setForkingMessageId] = useState<string>();
   const [pendingLinkedSourceId, setPendingLinkedSourceId] = useState<string | null>(null);
   const [openingWorkspaceTarget, setOpeningWorkspaceTarget] = useState<OpenWorkspaceTarget>();
 
@@ -288,6 +289,46 @@ export function useSessionActions({
     }
   }, [runtimeApi, selectedSessionId, setRuntimeError, setRuntimeState]);
 
+  const forkSessionFromMessage = useCallback(
+    async (assistantMessage: AgentMessage) => {
+      if (!runtimeApi || !selectedSessionId || !selectedSession) {
+        setRuntimeError(runtimeUnavailableText);
+        return;
+      }
+
+      setForkingMessageId(assistantMessage.id);
+      setRuntimeError(undefined);
+      try {
+        const result = await runtimeApi.forkSession({
+          sessionId: selectedSessionId,
+          messageId: assistantMessage.id,
+        });
+        setRuntimeState(result.state);
+        setSelectedSessionId(result.sessionId);
+        setPendingLinkedSourceId(null);
+        setActiveTab('chat');
+        setShowRawEvents(false);
+        clearComposer();
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setForkingMessageId(undefined);
+      }
+    },
+    [
+      clearComposer,
+      runtimeApi,
+      runtimeUnavailableText,
+      selectedSession,
+      selectedSessionId,
+      setActiveTab,
+      setRuntimeError,
+      setRuntimeState,
+      setSelectedSessionId,
+      setShowRawEvents,
+    ],
+  );
+
   const openSelectedWorkspace = useCallback(
     async (target: OpenWorkspaceTarget) => {
       if (!runtimeApi) {
@@ -356,6 +397,7 @@ export function useSessionActions({
   return {
     isCreating,
     isResuming,
+    forkingMessageId,
     pendingLinkedSourceId,
     setPendingLinkedSourceId,
     pendingLinkedSource,
@@ -367,6 +409,7 @@ export function useSessionActions({
     createSessionFromPrompt,
     sendChatMessage,
     killSelectedSession,
+    forkSessionFromMessage,
     openSelectedWorkspace,
     continueRuntimePlan,
     reviseRuntimePlan,

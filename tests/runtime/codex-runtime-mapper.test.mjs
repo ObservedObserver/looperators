@@ -10,6 +10,7 @@ test('codex mapper emits completed agentMessage as an authoritative message with
     message: {
       method: 'item/completed',
       params: {
+        turnId: 'provider-turn-1',
         completedAtMs: Date.parse('2026-07-08T00:00:00.000Z'),
         item: {
           id: 'codex-message-1',
@@ -28,6 +29,7 @@ test('codex mapper emits completed agentMessage as an authoritative message with
   assert.equal(events[0].message.content, 'final answer')
   assert.equal(events[0].message.phase, 'final_answer')
   assert.equal(events[0].message.runId, 'turn-1')
+  assert.equal(events[0].message.providerTurnId, 'provider-turn-1')
 })
 
 test('codex mapper keeps reasoning transcript items out of generic activity', () => {

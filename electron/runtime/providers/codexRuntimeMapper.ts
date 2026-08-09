@@ -490,6 +490,9 @@ export function codexRuntimeEventsFromMessage({
               content: agentMessageText(params.item),
               ts: completedTs,
               runId: turnId,
+              ...(typeof params.turnId === 'string'
+                ? { providerTurnId: params.turnId }
+                : {}),
               providerItemId,
               ...(typeof params.item.phase === 'string'
                 ? { phase: params.item.phase }

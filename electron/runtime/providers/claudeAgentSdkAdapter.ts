@@ -72,6 +72,28 @@ export function providerClaudeCommand(providerInstance) {
   return resolveProviderLaunch('claude-code', providerInstance).command
 }
 
+export function claudeSessionContinuationOptions(
+  backendSessionId,
+  providerFork,
+) {
+  if (providerFork) {
+    if (
+      !nonEmptyString(providerFork.sourceProviderSessionId) ||
+      !nonEmptyString(providerFork.sourceMessageId)
+    ) {
+      throw new Error('Claude session fork metadata is incomplete.')
+    }
+    return {
+      resume: providerFork.sourceProviderSessionId.trim(),
+      forkSession: true,
+      resumeSessionAt: providerFork.sourceMessageId.trim(),
+    }
+  }
+  return nonEmptyString(backendSessionId)
+    ? { resume: backendSessionId.trim() }
+    : {}
+}
+
 /**
  * @returns {ClaudePermissionMode}
  */
@@ -197,6 +219,7 @@ function sdkMessageForRuntimeMapper(message) {
     return {
       type: 'stream_event',
       event: message.event,
+      uuid: message.uuid,
       session_id: message.session_id,
     }
   }
@@ -875,6 +898,7 @@ class ClaudeAgentSdkSessionController {
   async #initialize({
     cwd,
     backendSessionId,
+    providerFork,
     membrane,
     providerInstance,
     runtimeSettings,
@@ -886,7 +910,7 @@ class ClaudeAgentSdkSessionController {
       /** @type {any} */
       const sdkOptions = {
         cwd,
-        resume: backendSessionId,
+        ...claudeSessionContinuationOptions(backendSessionId, providerFork),
         // The session's own context-channel inbox (runtime-owned data plane):
         // reading delivered files must not stall on a permission prompt.
         ...(nonEmptyString(channelDir)

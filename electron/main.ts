@@ -176,6 +176,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('orrery:create-session', (_event, input) =>
     humanCommand('create_session', input),
   )
+  ipcMain.handle('orrery:fork-session', (_event, input) =>
+    humanCommand('fork_session', input),
+  )
   ipcMain.handle('orrery:resume-session', (_event, input) =>
     humanCommand('resume_session', input),
   )

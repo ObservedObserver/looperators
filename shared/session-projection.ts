@@ -200,6 +200,7 @@ function projectedAssistantMessages(session, events) {
         content: event.message.content,
         ts: event.message.ts,
         runId: event.message.runId,
+        providerTurnId: event.message.providerTurnId,
         providerItemId: event.message.providerItemId,
         phase: event.message.phase,
         status: 'complete',
@@ -257,6 +258,7 @@ function projectedAssistantMessages(session, events) {
     content: message.content,
     ts: message.ts,
     runId: message.runId,
+    providerTurnId: message.providerTurnId,
     providerItemId: message.providerItemId,
     phase: message.phase,
     status: message.runId && completedTurns.has(message.runId) ? 'complete' : message.status,
@@ -349,6 +351,8 @@ function mergeCappedAssistantMessages(
       content: sameRun.content,
       ts: projected.ts,
       runId: sameRun.runId ?? projected.runId,
+      providerTurnId:
+        sameRun.providerTurnId ?? projected.providerTurnId,
       providerItemId: sameRun.providerItemId ?? projected.providerItemId,
       phase: sameRun.phase ?? projected.phase,
       status:

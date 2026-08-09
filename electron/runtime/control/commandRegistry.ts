@@ -25,6 +25,7 @@ function defineKernelCommandPolicies<
 // cannot silently skip workflow journaling or version semantics.
 export const kernelCommandPolicies = defineKernelCommandPolicies({
   create_session: { automaticallyJournaledWorkflow: true },
+  fork_session: { automaticallyJournaledWorkflow: true },
   resume_session: { automaticallyJournaledWorkflow: true },
   deliver: {},
   activate: { automaticallyJournaledWorkflow: true },

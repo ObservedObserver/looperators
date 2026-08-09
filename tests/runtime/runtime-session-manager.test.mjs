@@ -494,6 +494,151 @@ test('compiled RuntimeSessionManager creates, resumes, persists, and validates r
   }
 })
 
+test('compiled RuntimeSessionManager forks a completed Codex turn into an independent idle session', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-session-fork-test-'))
+  const storageFile = path.join(tempRoot, 'runtime-state.json')
+  const sourceAdapter = new DeterministicProviderAdapter({ kind: 'codex' })
+  const runtimes = []
+
+  try {
+    const runtime = new BaseRuntimeSessionManager({
+      storageFile,
+      providerAdapters: new Map([['codex', sourceAdapter]]),
+    })
+    runtimes.push(runtime)
+    const created = await runtime.createSession({
+      prompt: 'fork source turn',
+      cwd: tempRoot,
+      providerKind: 'codex',
+      agent: 'codex',
+      label: 'Fork Source',
+    })
+    await waitFor(
+      'fork source idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+    const sourceState = runtime.getState()
+    const source = sourceState.sessions[created.sessionId]
+    let assistant = runtime
+      .getSessionView({ sessionId: created.sessionId, view: 'transcript' })
+      .projection.messages.find(
+        (message) =>
+          message.role === 'assistant' && message.status === 'complete'
+      )
+    assert.ok(assistant)
+    assert.equal(sourceAdapter.startedTurns.length, 1)
+
+    const firstAssistant = assistant
+    await runtime.resumeSession({
+      sessionId: created.sessionId,
+      message: 'newer source turn',
+    })
+    await waitFor(
+      'newer fork source turn idle',
+      () => runtime.getState().sessions[created.sessionId]?.status === 'idle'
+    )
+    assistant = runtime
+      .getSessionView({ sessionId: created.sessionId, view: 'transcript' })
+      .projection.messages.filter(
+        (message) =>
+          message.role === 'assistant' && message.status === 'complete'
+      )
+      .at(-1)
+    assert.ok(assistant)
+    assert.notEqual(assistant.id, firstAssistant.id)
+    await assert.rejects(
+      runtime.dispatchCommand({
+        kind: 'fork_session',
+        actor: { kind: 'human' },
+        input: {
+          sessionId: created.sessionId,
+          messageId: firstAssistant.id,
+        },
+      }),
+      /latest completed assistant message/
+    )
+    assert.equal(sourceAdapter.startedTurns.length, 2)
+
+    const forked = await runtime.dispatchCommand({
+      kind: 'fork_session',
+      actor: { kind: 'human' },
+      input: {
+        sessionId: created.sessionId,
+        messageId: assistant.id,
+      },
+    })
+    assert.equal(
+      sourceAdapter.startedTurns.length,
+      2,
+      'fork creation must not start a provider turn'
+    )
+    const fork = forked.state.sessions[forked.sessionId]
+    assert.equal(fork.status, 'idle')
+    assert.equal(fork.providerSessionId, undefined)
+    assert.equal(
+      fork.providerFork.sourceProviderSessionId,
+      source.providerSessionId
+    )
+    assert.equal(fork.providerFork.sourceTurnId, assistant.providerTurnId)
+    assert.notEqual(assistant.providerTurnId, assistant.runId)
+    assert.equal(fork.forkedFrom.sessionId, created.sessionId)
+    assert.equal(fork.forkedFrom.messageId, assistant.id)
+    assert.equal(fork.messages.at(-1).content, assistant.content)
+    assert.equal(
+      forked.state.edges.some(
+        (edge) =>
+          edge.source === created.sessionId &&
+          edge.target === forked.sessionId &&
+          edge.kind === 'create-session' &&
+          edge.label === 'fork'
+      ),
+      true
+    )
+
+    await runtime.killAll()
+    const resumedAdapter = new DeterministicProviderAdapter({ kind: 'codex' })
+    const restored = new BaseRuntimeSessionManager({
+      storageFile,
+      providerAdapters: new Map([['codex', resumedAdapter]]),
+    })
+    runtimes.push(restored)
+    assert.equal(
+      restored.getState().sessions[forked.sessionId].providerFork.sourceTurnId,
+      assistant.providerTurnId
+    )
+
+    await restored.resumeSession({
+      sessionId: forked.sessionId,
+      message: 'continue independently',
+    })
+    await waitFor(
+      'forked session idle after continuation',
+      () => restored.getState().sessions[forked.sessionId]?.status === 'idle'
+    )
+    assert.equal(resumedAdapter.startedTurns.length, 1)
+    assert.equal(resumedAdapter.startedTurns[0].backendSessionId, undefined)
+    assert.equal(
+      resumedAdapter.startedTurns[0].providerFork.sourceProviderSessionId,
+      source.providerSessionId
+    )
+    assert.equal(
+      resumedAdapter.startedTurns[0].providerFork.sourceTurnId,
+      assistant.providerTurnId
+    )
+    assert.equal(
+      restored.getState().sessions[forked.sessionId].providerFork,
+      undefined
+    )
+    assert.notEqual(
+      restored.getState().sessions[forked.sessionId].providerSessionId,
+      source.providerSessionId
+    )
+  } finally {
+    for (const runtime of runtimes) await runtime.killAll()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('compiled RuntimeSessionManager lists workspace files for a session', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-workspace-files-test-'))
   const projectRoot = path.join(tempRoot, 'project')

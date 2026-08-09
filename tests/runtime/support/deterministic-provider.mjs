@@ -6,7 +6,7 @@ class DeterministicRun extends EventEmitter {
   #closed = false
   #timer
 
-  constructor(input, { killOnStart = false, failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0 } = {}) {
+  constructor(input, { killOnStart = false, failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0, providerKind } = {}) {
     super()
     setImmediate(() => {
       if (!this.#closed) {
@@ -22,13 +22,13 @@ class DeterministicRun extends EventEmitter {
       : input.prompt?.includes('ORRERY_DELAY')
         ? 500
         : 50
-    this.#timer = setTimeout(() => this.#complete(input, { failAfterStart, noOutput, oversizedOutput, permissionRequest, toolActivityCount }), delay)
+    this.#timer = setTimeout(() => this.#complete(input, { failAfterStart, noOutput, oversizedOutput, permissionRequest, toolActivityCount, providerKind }), delay)
     if (killOnStart) {
       setImmediate(() => this.kill())
     }
   }
 
-  #complete(input, { failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0 } = {}) {
+  #complete(input, { failAfterStart = false, noOutput = false, oversizedOutput = false, permissionRequest = false, toolActivityCount = 0, providerKind } = {}) {
     if (this.#closed) return
     if (failAfterStart) {
       this.emit('error', new Error('Deterministic provider failed after start.'))
@@ -98,6 +98,7 @@ class DeterministicRun extends EventEmitter {
       })
     }
     if (!noOutput) {
+      const content = oversizedOutput ? 'x'.repeat(129 * 1024) : `handled: ${input.prompt ?? ''}`
       this.emit('providerEvent', {
         id: `content-${input.turnId}`,
         ts,
@@ -105,8 +106,29 @@ class DeterministicRun extends EventEmitter {
         turnId: input.turnId,
         type: 'content.delta',
         streamKind: 'assistant_text',
-        text: oversizedOutput ? 'x'.repeat(129 * 1024) : `handled: ${input.prompt ?? ''}`,
+        text: content,
       })
+      if (providerKind === 'codex') {
+        const providerItemId = `provider-message-${input.turnId}`
+        this.emit('providerEvent', {
+          id: `message-completed-${input.turnId}`,
+          ts,
+          sessionId: input.sessionId,
+          type: 'message.completed',
+          message: {
+            id: `${input.sessionId}:${providerItemId}:assistant`,
+            sessionId: input.sessionId,
+            role: 'assistant',
+            content,
+            ts,
+            runId: input.turnId,
+            providerTurnId: `provider-turn-${input.turnId}`,
+            providerItemId,
+            phase: 'final_answer',
+            status: 'complete',
+          },
+        })
+      }
       this.emit('result', {
         session_id: providerSessionId,
         result: 'done',
@@ -178,6 +200,7 @@ export class DeterministicProviderAdapter {
       oversizedOutput: this.#oversizedOutputWhen?.(input) === true,
       permissionRequest: this.#permissionWhen?.(input) === true,
       toolActivityCount: Number(this.#toolActivityCount?.(input) ?? 0),
+      providerKind: this.kind,
     })
   }
 
