@@ -324,6 +324,30 @@ function compileRoutes(
     },
     {
       method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/goal$/,
+      handler: async (request) =>
+        humanCommand('set_thread_goal', await readJsonBody(request)),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/goal$/,
+      handler: async (request, params) =>
+        humanCommand('set_thread_goal', {
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/runtime\/sessions\/([^/]+)\/goal\/clear$/,
+      handler: async (request, params) =>
+        humanCommand('clear_thread_goal', {
+          ...(await readJsonBody(request)),
+          sessionId: params.sessionId,
+        }),
+    },
+    {
+      method: 'POST',
       pattern: /^\/api\/runtime\/sessions\/([^/]+)\/fork$/,
       handler: async (request, params) => {
         const body = await readJsonBody(request)

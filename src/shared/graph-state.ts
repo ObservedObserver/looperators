@@ -37,6 +37,7 @@ import type {
   SchedulerBackpressureMetrics,
   WorkspaceLease,
 } from '@shared/resource-governance';
+import type { ThreadGoal } from '@shared/thread-goal';
 
 export const graphStateVersion = 8;
 
@@ -606,6 +607,8 @@ export type AgentSession = {
   runtimePlans: RuntimePlan[];
   runtimeSettings?: ProviderRuntimeSettings;
   effectiveRuntimeConfig?: ProviderEffectiveRuntimeConfig;
+  threadGoal?: ThreadGoal;
+  threadGoalLastAppliedAt?: number;
   archived?: boolean;
   // Runtime-created workflow participants can exist without a provider turn
   // until their first relationship activation. The UI renders these as
@@ -1174,6 +1177,16 @@ export type ResumeRuntimeSessionInput = {
   message: string;
   context?: string;
   attachments?: ChatAttachment[];
+};
+
+export type SetThreadGoalInput = Omit<CreateRuntimeSessionInput, 'prompt' | 'attachments'> & {
+  sessionId?: SessionId;
+  objective?: string;
+  status?: 'active' | 'paused';
+};
+
+export type ClearThreadGoalInput = {
+  sessionId: SessionId;
 };
 
 export type RespondRuntimeRequestInput = {

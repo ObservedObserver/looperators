@@ -6,6 +6,7 @@ import {
   codexRuntimeEventsFromMessage,
   codexRuntimeEventsFromRequest,
 } from './codexRuntimeMapper.js'
+import { normalizeThreadGoal } from '../../../shared/thread-goal.js'
 import {
   cleanupMcpHandoff,
   createMcpHandoff,
@@ -17,6 +18,15 @@ import {
 // (`mcp__orrery_membrane__report`, ...). Including `mcp__` in this name would
 // double-prefix every tool and make the cross-provider membrane prompts lie.
 export const codexMembraneServerName = 'orrery_membrane'
+export const codexGoalRunUnavailableCode = 'ORRERY_CODEX_GOAL_RUN_UNAVAILABLE'
+
+function codexGoalRunUnavailableError() {
+  const error = new Error('The active Codex goal run is no longer available.') as Error & {
+    code: string
+  }
+  error.code = codexGoalRunUnavailableCode
+  return error
+}
 
 type RuntimeSettings = Record<string, any>
 
@@ -424,6 +434,11 @@ export class CodexAppServerRun extends EventEmitter {
   #providerFork
   #mcpHandoff
   #runtimeSettings
+  #providerOperation
+  #goalSettled = false
+  #goalOperationReady = false
+  #goalControlTail = Promise.resolve()
+  #goalPauseObserved = false
 
   constructor({
     prompt,
@@ -436,6 +451,7 @@ export class CodexAppServerRun extends EventEmitter {
     attachments,
     providerInstance,
     membrane,
+    providerOperation,
   }) {
     super()
     this.#threadId = backendSessionId
@@ -444,6 +460,7 @@ export class CodexAppServerRun extends EventEmitter {
     this.#sessionId = sessionId
     this.#providerInstance = providerInstance
     this.#runtimeSettings = runtimeSettings
+    this.#providerOperation = providerOperation
     // keepBootstrap: Codex spawns the MCP server several times per run
     // (discovery, inventory, session), so the credentials file must survive
     // until the handoff dir is cleaned up at run close.
@@ -457,8 +474,15 @@ export class CodexAppServerRun extends EventEmitter {
     if (this.#closed) {
       return false
     }
+    if (this.#killRequested) {
+      return true
+    }
 
     this.#killRequested = true
+    if (this.#isGoalRun() && this.#threadId && this.#client) {
+      void this.#pauseGoalBeforeClose()
+      return true
+    }
     if (this.#threadId && this.#codexTurnId) {
       void this.#client
         ?.request(
@@ -470,6 +494,10 @@ export class CodexAppServerRun extends EventEmitter {
     }
     this.#client?.close()
     return true
+  }
+
+  async controlThreadGoal(providerOperation) {
+    return this.#queueGoalOperation(providerOperation)
   }
 
   respondRuntimeRequest({ requestId, decision }) {
@@ -567,20 +595,33 @@ export class CodexAppServerRun extends EventEmitter {
         this.emit('providerSession', { providerSessionId: this.#threadId })
       }
 
-      const turnResult = await this.#client.request(
-        'turn/start',
-        turnStartParams({
-          threadId: this.#threadId,
-          prompt,
-          attachments,
-          cwd,
-          runtimeSettings,
-        }),
-        { timeoutMs: 30000 }
-      )
-      this.#codexTurnId = turnResult?.turn?.id
+      if (this.#isGoalRun()) {
+        const goal = await this.#queueGoalOperation(this.#providerOperation)
+        if (goal?.status === 'active' && !this.#goalSettled) {
+          await new Promise<void>((resolve, reject) => {
+            this.once('goalSettled', resolve)
+            this.once('error', reject)
+            this.once('clientClosed', () => {
+              if (this.#killRequested || this.#goalSettled) resolve()
+              else reject(new Error('Codex app-server closed before goal settlement.'))
+            })
+          })
+        }
+      } else {
+        const turnResult = await this.#client.request(
+          'turn/start',
+          turnStartParams({
+            threadId: this.#threadId,
+            prompt,
+            attachments,
+            cwd,
+            runtimeSettings,
+          }),
+          { timeoutMs: 30000 }
+        )
+        this.#codexTurnId = turnResult?.turn?.id
 
-      if (!this.#turnCompleted) {
+        if (!this.#turnCompleted) {
         await new Promise<void>((resolve, reject) => {
           const timeout = setTimeout(
             () => reject(new Error('Timed out waiting for Codex turn completion.')),
@@ -607,6 +648,7 @@ export class CodexAppServerRun extends EventEmitter {
             }
           })
         })
+        }
       }
       if (this.#turnError) {
         throw this.#turnError
@@ -667,7 +709,19 @@ export class CodexAppServerRun extends EventEmitter {
       turnId: this.#orreryTurnId,
       message,
     })) {
+      if (event.type === 'thread.goal.updated' && 'goal' in event) {
+        if (event.goal.status === 'paused') this.#goalPauseObserved = true
+      }
       this.emit('providerEvent', event)
+      if (
+        this.#goalOperationReady &&
+        (event.type === 'thread.goal.cleared' ||
+          (event.type === 'thread.goal.updated' &&
+            'goal' in event &&
+            event.goal.status !== 'active'))
+      ) {
+        this.#settleGoal()
+      }
     }
 
     if (message.method === 'turn/completed') {
@@ -680,7 +734,190 @@ export class CodexAppServerRun extends EventEmitter {
         this.#turnError = new Error(detail)
       }
       this.#turnCompleted = true
-      this.emit('turnCompleted')
+      if (this.#isGoalRun()) {
+        if (this.#turnError) this.#settleGoal()
+      } else {
+        this.emit('turnCompleted')
+      }
+    }
+  }
+
+  #isGoalRun() {
+    return this.#providerOperation?.kind === 'thread-goal-control'
+  }
+
+  #settleGoal() {
+    if (this.#goalSettled) return
+    this.#goalSettled = true
+    this.emit('goalSettled')
+  }
+
+  #emitAuthoritativeGoal(goal, authoritative = true) {
+    const normalized = normalizeThreadGoal(goal)
+    if (!normalized) return undefined
+    if (normalized.status === 'paused') this.#goalPauseObserved = true
+    for (const event of codexRuntimeEventsFromMessage({
+      sessionId: this.#sessionId,
+      turnId: this.#orreryTurnId,
+      message: {
+        method: 'thread/goal/updated',
+        params: { threadId: this.#threadId, goal: normalized },
+      },
+      source: 'codex.app-server.request',
+      authoritative,
+    })) {
+      this.emit('providerEvent', event)
+    }
+    return normalized
+  }
+
+  #emitAuthoritativeGoalCleared() {
+    for (const event of codexRuntimeEventsFromMessage({
+      sessionId: this.#sessionId,
+      turnId: this.#orreryTurnId,
+      message: {
+        method: 'thread/goal/cleared',
+        params: { threadId: this.#threadId },
+      },
+      source: 'codex.app-server.request',
+      authoritative: true,
+    })) {
+      this.emit('providerEvent', event)
+    }
+  }
+
+  async #executeGoalOperation(operation) {
+    if (!operation || operation.kind !== 'thread-goal-control') {
+      throw new Error('Codex goal control operation is required.')
+    }
+
+    let currentGoal
+    if (operation.reconcile !== false && this.#threadId) {
+      const response = await this.#client.request(
+        'thread/goal/get',
+        { threadId: this.#threadId },
+        { timeoutMs: 15000 }
+      )
+      if (response?.goal == null) {
+        this.#emitAuthoritativeGoalCleared()
+      } else {
+        currentGoal = this.#emitAuthoritativeGoal(response.goal)
+        if (!currentGoal) {
+          throw new Error('Codex thread/goal/get returned malformed goal state.')
+        }
+      }
+    }
+
+    if (operation.action === 'clear') {
+      const response = await this.#client.request(
+        'thread/goal/clear',
+        { threadId: this.#threadId },
+        { timeoutMs: 15000 }
+      )
+      if (response?.cleared !== false) this.#emitAuthoritativeGoalCleared()
+      this.#goalOperationReady = true
+      this.#settleGoal()
+      return undefined
+    }
+
+    if (operation.action === 'set' && currentGoal?.status === 'active') {
+      if (
+        typeof operation.objective === 'string' &&
+        operation.objective !== currentGoal.objective
+      ) {
+        throw new Error('Pause or clear the active goal before replacing it.')
+      }
+    }
+
+    if (operation.action === 'reconnect') {
+      if (!currentGoal || currentGoal.status === 'complete') {
+        this.#goalOperationReady = true
+        this.#settleGoal()
+        return currentGoal
+      }
+      if (currentGoal.status === 'active') {
+        this.#goalOperationReady = true
+        return currentGoal
+      }
+    }
+
+    const params = {
+      threadId: this.#threadId,
+      ...(typeof operation.objective === 'string'
+        ? { objective: operation.objective }
+        : {}),
+      ...(typeof operation.status === 'string'
+        ? { status: operation.status }
+        : operation.action === 'reconnect'
+          ? { status: 'active' }
+          : {}),
+    }
+    const response = await this.#client.request(
+      'thread/goal/set',
+      params,
+      { timeoutMs: 15000 }
+    )
+    const goal = this.#emitAuthoritativeGoal(response?.goal)
+    if (!goal) {
+      throw new Error('Codex thread/goal/set returned malformed goal state.')
+    }
+    this.#goalOperationReady = true
+    if (goal && goal.status !== 'active') this.#settleGoal()
+    return goal
+  }
+
+  #queueGoalOperation(operation) {
+    const task = this.#goalControlTail.then(() => {
+      if (
+        !this.#isGoalRun() ||
+        this.#closed ||
+        this.#killRequested ||
+        !this.#client ||
+        !this.#threadId
+      ) {
+        throw codexGoalRunUnavailableError()
+      }
+      return this.#executeGoalOperation(operation)
+    })
+    this.#goalControlTail = task.then(
+      () => undefined,
+      () => undefined,
+    )
+    return task
+  }
+
+  async #pauseGoalBeforeClose() {
+    let timer
+    this.#goalPauseObserved = false
+    try {
+      const pauseRequest = this.#goalControlTail.then(() =>
+        this.#client.request(
+          'thread/goal/set',
+          { threadId: this.#threadId, status: 'paused' },
+          { timeoutMs: 2000 }
+        )
+      )
+      this.#goalControlTail = pauseRequest.then(
+        () => undefined,
+        () => undefined,
+      )
+      const response = await Promise.race([
+        pauseRequest,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 2000)
+        }),
+      ])
+      this.#emitAuthoritativeGoal(response?.goal)
+    } catch {
+      // The diagnostic below keeps the cached active goal as a safety gate.
+    } finally {
+      if (timer) clearTimeout(timer)
+      if (!this.#goalPauseObserved) {
+        this.emit('goalPauseFailed', { threadId: this.#threadId })
+      }
+      this.#goalOperationReady = true
+      this.#settleGoal()
+      this.#client?.close()
     }
   }
 

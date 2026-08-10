@@ -27,6 +27,8 @@ export const kernelCommandPolicies = defineKernelCommandPolicies({
   create_session: { automaticallyJournaledWorkflow: true },
   fork_session: { automaticallyJournaledWorkflow: true },
   resume_session: { automaticallyJournaledWorkflow: true },
+  set_thread_goal: {},
+  clear_thread_goal: {},
   deliver: {},
   activate: { automaticallyJournaledWorkflow: true },
   archive_session: {},

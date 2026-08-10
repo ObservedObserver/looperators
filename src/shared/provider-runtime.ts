@@ -1,5 +1,6 @@
 import type { AgentMessage, DiffRange, SessionId, SessionStatus, WorkingTreeDiffFile } from './graph-state';
 import type { ProviderAgentKind, ProviderKind } from '../../shared/provider-metadata';
+import type { ThreadGoal } from '../../shared/thread-goal';
 
 export type { ProviderAgentKind, ProviderKind } from '../../shared/provider-metadata';
 
@@ -35,6 +36,7 @@ export type ProviderCapability = {
   agent: ProviderAgentKind;
   label: string;
   supportsReasoningEffort: boolean;
+  supportsThreadGoals: boolean;
   reasoningEfforts: ProviderReasoningEffort[];
   runtimeModes: ProviderRuntimeModeCapability[];
 };
@@ -82,6 +84,7 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     agent: 'claude-code',
     label: 'Claude Code',
     supportsReasoningEffort: false,
+    supportsThreadGoals: false,
     reasoningEfforts: [],
     runtimeModes: providerRuntimeModeOptions,
   },
@@ -90,6 +93,7 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     agent: 'codex',
     label: 'Codex',
     supportsReasoningEffort: true,
+    supportsThreadGoals: true,
     reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
     runtimeModes: providerRuntimeModeOptions,
   },
@@ -98,6 +102,7 @@ export const providerCapabilities: Record<ProviderKind, ProviderCapability> = {
     agent: 'grok',
     label: 'Grok Build',
     supportsReasoningEffort: true,
+    supportsThreadGoals: false,
     reasoningEfforts: ['low', 'medium', 'high'],
     runtimeModes: providerRuntimeModeOptions,
   },
@@ -117,6 +122,10 @@ export function providerSupportsRuntimeMode(providerKind: ProviderKind, runtimeM
 
 export function providerSupportsReasoningEffort(providerKind: ProviderKind) {
   return providerCapability(providerKind).supportsReasoningEffort;
+}
+
+export function providerSupportsThreadGoals(providerKind: ProviderKind) {
+  return providerCapability(providerKind).supportsThreadGoals;
 }
 
 export function providerReasoningEfforts(providerKind: ProviderKind) {
@@ -299,6 +308,23 @@ export type TurnDiffSummary = {
 };
 
 export type ProviderRuntimeEvent =
+  | {
+      id: string;
+      ts: string;
+      type: 'thread.goal.updated';
+      sessionId: SessionId;
+      goal: ThreadGoal;
+      authoritative?: boolean;
+      raw?: RawEnvelope;
+    }
+  | {
+      id: string;
+      ts: string;
+      type: 'thread.goal.cleared';
+      sessionId: SessionId;
+      authoritative?: boolean;
+      raw?: RawEnvelope;
+    }
   | {
       id: string;
       ts: string;

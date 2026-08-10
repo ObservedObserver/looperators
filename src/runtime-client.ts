@@ -37,6 +37,8 @@ import type {
   SaveTemplateResult,
   RespondRuntimeRequestInput,
   ResumeRuntimeSessionInput,
+  SetThreadGoalInput,
+  ClearThreadGoalInput,
   RuntimeEvent,
   RuntimeTerminalResult,
   RunTerminalCommandInput,
@@ -118,6 +120,8 @@ export type RuntimeApi = {
   createSession: (input: CreateRuntimeSessionInput) => Promise<CreateRuntimeSessionResult>;
   forkSession: (input: ForkRuntimeSessionInput) => Promise<ForkRuntimeSessionResult>;
   resumeSession: (input: ResumeRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
+  setThreadGoal: (input: SetThreadGoalInput) => Promise<{ ok?: boolean; sessionId?: SessionId; state: GraphState }>;
+  clearThreadGoal: (input: ClearThreadGoalInput) => Promise<{ ok: boolean; state: GraphState }>;
   archiveSession: (input: ArchiveRuntimeSessionInput) => Promise<{ ok: boolean; state: GraphState }>;
   killSession: (sessionId: SessionId) => Promise<{ ok: boolean; state: GraphState }>;
   respondRuntimeRequest: (input: RespondRuntimeRequestInput) => Promise<{ ok: boolean; state: GraphState }>;
@@ -360,6 +364,17 @@ class HttpRuntimeApi implements RuntimeApi {
 
   resumeSession(input: ResumeRuntimeSessionInput) {
     return this.#post<{ ok: boolean; state: GraphState }>(`sessions/${encodeURIComponent(input.sessionId)}/resume`, input);
+  }
+
+  setThreadGoal(input: SetThreadGoalInput) {
+    const path = input.sessionId
+      ? `sessions/${encodeURIComponent(input.sessionId)}/goal`
+      : 'sessions/goal';
+    return this.#post<{ ok?: boolean; sessionId?: SessionId; state: GraphState }>(path, input);
+  }
+
+  clearThreadGoal(input: ClearThreadGoalInput) {
+    return this.#post<{ ok: boolean; state: GraphState }>(`sessions/${encodeURIComponent(input.sessionId)}/goal/clear`, input);
   }
 
   archiveSession(input: ArchiveRuntimeSessionInput) {

@@ -78,6 +78,10 @@ contextBridge.exposeInMainWorld('orrery', {
     forkSession: (input) => ipcRenderer.invoke('orrery:fork-session', input),
     resumeSession: (input) =>
       ipcRenderer.invoke('orrery:resume-session', input),
+    setThreadGoal: (input) =>
+      ipcRenderer.invoke('orrery:set-thread-goal', input),
+    clearThreadGoal: (input) =>
+      ipcRenderer.invoke('orrery:clear-thread-goal', input),
     archiveSession: (input) =>
       ipcRenderer.invoke('orrery:archive-session', input),
     killSession: (sessionId) =>

@@ -352,6 +352,8 @@ export class RuntimeSessionManager {
     broadcast: (event) => this.#broadcast(event),
     startRun: (sessionId, request) =>
       this.#sessionRuntime.startRun(sessionId, request),
+    controlActiveThreadGoal: (sessionId, providerOperation) =>
+      this.#sessionRuntime.controlActiveThreadGoal(sessionId, providerOperation),
     firingEntries: (sessionId, reportId) =>
       this.#scheduler.firingEntries(sessionId, reportId),
     isSessionFrozen: (sessionId) => this.#isSessionFrozen(sessionId),
@@ -398,6 +400,10 @@ export class RuntimeSessionManager {
       this.#sessionCommands.cmdForkSession(input, ctx),
     resume_session: (input, ctx) =>
       this.#sessionCommands.cmdResumeSession(input, ctx),
+    set_thread_goal: (input, ctx) =>
+      this.#sessionCommands.cmdSetThreadGoal(input, ctx),
+    clear_thread_goal: (input, ctx) =>
+      this.#sessionCommands.cmdClearThreadGoal(input, ctx),
     deliver: (input, ctx) => this.#sessionCommands.cmdDeliver(input, ctx),
     activate: (input, ctx) => this.#sessionCommands.cmdActivate(input, ctx),
     archive_session: (input, ctx) =>

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { normalizeThreadGoal } from '../../../shared/thread-goal.js'
 
 function isoFromMs(ms) {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : new Date().toISOString()
@@ -344,6 +345,7 @@ export function codexRuntimeEventsFromMessage({
   turnId,
   message,
   source = 'codex.app-server.notification',
+  authoritative = false,
 }) {
   const method = message?.method
   const params = message?.params ?? {}
@@ -352,6 +354,27 @@ export function codexRuntimeEventsFromMessage({
   const base = eventBase({ sessionId, turnId, ts, raw })
 
   switch (method) {
+    case 'thread/goal/updated': {
+      const goal = normalizeThreadGoal(params.goal)
+      return goal
+        ? [
+            {
+              ...base,
+              type: 'thread.goal.updated',
+              goal,
+              ...(authoritative ? { authoritative: true } : {}),
+            },
+          ]
+        : []
+    }
+    case 'thread/goal/cleared':
+      return [
+        {
+          ...base,
+          type: 'thread.goal.cleared',
+          ...(authoritative ? { authoritative: true } : {}),
+        },
+      ]
     case 'turn/started':
       return [
         {

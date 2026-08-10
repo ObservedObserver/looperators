@@ -580,6 +580,8 @@ export const graphStateSchema = {
       runtimeEvents: 'ProviderRuntimeEvent[]',
       runtimeActivities: 'RuntimeActivity[]',
       nativeEvents: 'NativeProviderEvent[]',
+      threadGoal: 'ThreadGoal?',
+      threadGoalLastAppliedAt: 'number?',
     },
     GraphEdge: {
       kind: graphEdgeKinds,

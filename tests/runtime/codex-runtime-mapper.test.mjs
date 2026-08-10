@@ -52,3 +52,36 @@ test('codex mapper keeps reasoning transcript items out of generic activity', ()
 
   assert.deepEqual(events, [])
 })
+
+test('codex mapper projects valid thread goal updates and clears', () => {
+  const goal = {
+    threadId: 'thread-1',
+    objective: 'Finish safely',
+    status: 'paused',
+    tokenBudget: 40000,
+    tokensUsed: 120,
+    timeUsedSeconds: 8,
+    createdAt: 100,
+    updatedAt: 105,
+  }
+  const [updated] = codexRuntimeEventsFromMessage({
+    sessionId: 'session-1',
+    turnId: 'run-1',
+    message: { method: 'thread/goal/updated', params: { threadId: 'thread-1', goal } },
+  })
+  assert.equal(updated.type, 'thread.goal.updated')
+  assert.deepEqual(updated.goal, goal)
+
+  const [cleared] = codexRuntimeEventsFromMessage({
+    sessionId: 'session-1',
+    turnId: 'run-1',
+    message: { method: 'thread/goal/cleared', params: { threadId: 'thread-1' } },
+  })
+  assert.equal(cleared.type, 'thread.goal.cleared')
+
+  assert.deepEqual(codexRuntimeEventsFromMessage({
+    sessionId: 'session-1',
+    turnId: 'run-1',
+    message: { method: 'thread/goal/updated', params: { goal: { ...goal, status: 'bad' } } },
+  }), [])
+})

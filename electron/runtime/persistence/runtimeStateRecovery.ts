@@ -71,6 +71,7 @@ import {
 } from '../providers/providerConfigNormalize.js'
 import { normalizeChatAttachments } from '../sessions/sessionInteraction.js'
 import { providerSetupStatusForSnapshot } from '../../../shared/provider-setup.js'
+import { normalizeThreadGoal } from '../../../shared/thread-goal.js'
 
 const storageBackupSuffix = '.bak'
 function backupFileFor(storageFile) {
@@ -798,6 +799,27 @@ export function normalizeSession(
   const runtimeSettings = normalizeProviderRuntimeSettings(
     value.runtimeSettings,
   )
+  const threadGoal = normalizeThreadGoal(value.threadGoal)
+  if (value.threadGoal !== undefined && !threadGoal) {
+    diagnostics.push(diagnostic(
+      'storage.thread_goal_skipped',
+      'Skipped an invalid persisted thread goal.',
+      { sessionId },
+    ))
+  }
+  const validThreadGoalLastAppliedAt =
+    Number.isSafeInteger(value.threadGoalLastAppliedAt) &&
+    Number(value.threadGoalLastAppliedAt) >= 0
+  if (value.threadGoalLastAppliedAt !== undefined && !validThreadGoalLastAppliedAt) {
+    diagnostics.push(diagnostic(
+      'storage.thread_goal_watermark_repaired',
+      'Repaired an invalid persisted thread-goal event watermark.',
+      { sessionId },
+    ))
+  }
+  const threadGoalLastAppliedAt = validThreadGoalLastAppliedAt
+    ? Number(value.threadGoalLastAppliedAt)
+    : threadGoal?.updatedAt
   const session = {
     ...value,
     sessionId,
@@ -886,8 +908,13 @@ export function normalizeSession(
           runtimeSettings,
         )
       : undefined,
+    ...(threadGoal ? { threadGoal } : {}),
+    ...(threadGoalLastAppliedAt !== undefined
+      ? { threadGoalLastAppliedAt }
+      : {}),
     archived: value.archived === true,
   }
+  if (!threadGoal) delete session.threadGoal
 
   if (value.nodeId !== sessionId) {
     diagnostics.push(

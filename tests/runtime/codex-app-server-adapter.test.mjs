@@ -466,6 +466,454 @@ process.stdin.on('data', (chunk) => {
   return { fakeCodex, requestLog }
 }
 
+function writeFakeGoalAppServer(
+  dir,
+  {
+    initialStatus = 'active',
+    respondToPause = true,
+    autoComplete = true,
+    malformedSetResponse = false,
+  } = {},
+) {
+  const requestLog = path.join(dir, 'goal-requests.jsonl')
+  const fakeCodex = path.join(dir, 'codex-goal')
+  fs.writeFileSync(
+    fakeCodex,
+    `#!/usr/bin/env node
+const fs = require('node:fs')
+const requestLog = ${JSON.stringify(requestLog)}
+const initialStatus = ${JSON.stringify(initialStatus)}
+let currentGoal = initialStatus === null ? null : { threadId: 'thread-goal-1', objective: 'finish', status: initialStatus, tokensUsed: 0, timeUsedSeconds: 0, createdAt: 100, updatedAt: 100 }
+const respondToPause = ${JSON.stringify(respondToPause)}
+const autoComplete = ${JSON.stringify(autoComplete)}
+const malformedSetResponse = ${JSON.stringify(malformedSetResponse)}
+let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let idx
+  while ((idx = buffer.indexOf('\\n')) >= 0) {
+    const line = buffer.slice(0, idx)
+    buffer = buffer.slice(idx + 1)
+    if (!line.trim()) continue
+    const message = JSON.parse(line)
+    fs.appendFileSync(requestLog, JSON.stringify(message) + '\\n')
+    const respond = (result) => process.stdout.write(JSON.stringify({ id: message.id, result }) + '\\n')
+    const notify = (method, params) => process.stdout.write(JSON.stringify({ method, params }) + '\\n')
+    if (message.method === 'initialize') respond({})
+    if (message.method === 'thread/start') respond({ thread: { id: 'thread-goal-1' } })
+    if (message.method === 'thread/resume') respond({ thread: { id: 'thread-goal-1' } })
+    if (message.method === 'thread/goal/get') respond({ goal: currentGoal })
+    if (message.method === 'thread/goal/set') {
+      if (message.params.status === 'paused' && !respondToPause) continue
+      currentGoal = {
+        ...currentGoal,
+        ...(typeof message.params.objective === 'string' ? { objective: message.params.objective } : {}),
+        ...(typeof message.params.status === 'string' ? { status: message.params.status } : {}),
+        updatedAt: currentGoal.updatedAt + 1,
+      }
+      respond({ goal: malformedSetResponse ? { ...currentGoal, status: 'futureStatus' } : currentGoal })
+      if (malformedSetResponse) continue
+      setTimeout(() => notify('thread/goal/updated', { threadId: 'thread-goal-1', goal: currentGoal }), 5)
+      if (currentGoal.status !== 'active' || !autoComplete) continue
+      setTimeout(() => notify('turn/completed', { threadId: 'thread-goal-1', turn: { id: 'auto-1', status: 'completed' } }), 15)
+      setTimeout(() => notify('thread/goal/updated', { threadId: 'thread-goal-1', goal: { ...currentGoal, status: 'complete', tokensUsed: 25, timeUsedSeconds: 1, updatedAt: currentGoal.updatedAt + 1 } }), 80)
+    }
+  }
+})
+`
+  )
+  fs.chmodSync(fakeCodex, 0o755)
+  return { fakeCodex, requestLog }
+}
+
+test('Codex goal run never starts a regular turn and outlives automatic turn completion', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-run-'))
+  const { fakeCodex, requestLog } = writeFakeGoalAppServer(tempRoot)
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    sessionId: 'session-1',
+    turnId: 'orrery-goal-run-1',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'set',
+      objective: 'finish',
+      status: 'active',
+      reconcile: false,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+  run.on('error', () => {})
+
+  try {
+    let closed = false
+    run.once('close', () => { closed = true })
+    await new Promise((resolve) => setTimeout(resolve, 45))
+    assert.equal(closed, false, 'the first automatic turn completion must not settle the goal run')
+
+    const final = await Promise.race([
+      new Promise((resolve) => run.once('close', resolve)),
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error('goal run did not settle')), 5000)),
+    ])
+    assert.equal(final.code, 0)
+    const requests = fs.readFileSync(requestLog, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.ok(requests.some((message) => message.method === 'thread/goal/set'))
+    assert.equal(requests.some((message) => message.method === 'turn/start'), false)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('pausing an active Codex goal settles the local run and projects the paused state', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-pause-'))
+  const { fakeCodex } = writeFakeGoalAppServer(tempRoot)
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    sessionId: 'session-pause',
+    turnId: 'orrery-goal-pause',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'set',
+      objective: 'finish',
+      status: 'active',
+      reconcile: false,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+  run.on('error', () => {})
+
+  try {
+    await new Promise((resolve) => {
+      run.on('providerEvent', (event) => {
+        if (event.type === 'thread.goal.updated' && event.goal.status === 'active') resolve()
+      })
+    })
+    const pausedEvent = new Promise((resolve) => {
+      run.on('providerEvent', (event) => {
+        if (event.type === 'thread.goal.updated' && event.goal.status === 'paused') resolve(event)
+      })
+    })
+    const closed = new Promise((resolve) => run.once('close', resolve))
+    const paused = await run.controlThreadGoal({
+      kind: 'thread-goal-control',
+      action: 'status',
+      status: 'paused',
+      reconcile: true,
+    })
+    assert.equal(paused.status, 'paused')
+    assert.equal((await pausedEvent).goal.status, 'paused')
+    assert.equal((await closed).code, 0)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('reconnecting a limited Codex goal asks the provider to activate it again', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-reconnect-'))
+  const { fakeCodex, requestLog } = writeFakeGoalAppServer(tempRoot, {
+    initialStatus: 'usageLimited',
+  })
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    backendSessionId: 'thread-goal-1',
+    sessionId: 'session-reconnect',
+    turnId: 'orrery-goal-reconnect',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'reconnect',
+      reconcile: true,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+  run.on('error', () => {})
+
+  try {
+    const closed = await Promise.race([
+      new Promise((resolve) => run.once('close', resolve)),
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(new Error('reconnected goal did not settle')), 5000)
+      ),
+    ])
+    assert.equal(closed.code, 0)
+    const requests = fs.readFileSync(requestLog, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.ok(
+      requests.some(
+        (message) =>
+          message.method === 'thread/goal/set' && message.params?.status === 'active',
+      ),
+    )
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('reconnecting complete or cleared Codex goals projects state without setting again', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+
+  for (const initialStatus of ['complete', null]) {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-reconcile-terminal-'))
+    const { fakeCodex, requestLog } = writeFakeGoalAppServer(tempRoot, {
+      initialStatus,
+      autoComplete: false,
+    })
+    const run = new CodexAppServerRun({
+      prompt: '',
+      cwd: tempRoot,
+      backendSessionId: 'thread-goal-1',
+      sessionId: `session-reconcile-${initialStatus ?? 'cleared'}`,
+      turnId: `orrery-goal-reconcile-${initialStatus ?? 'cleared'}`,
+      runtimeSettings: { runtimeMode: 'auto' },
+      providerOperation: {
+        kind: 'thread-goal-control',
+        action: 'reconnect',
+        reconcile: true,
+      },
+      providerInstance: {
+        providerInstanceId: 'default-codex',
+        kind: 'codex',
+        binaryPath: fakeCodex,
+      },
+    })
+    run.on('error', () => {})
+
+    try {
+      const closed = await Promise.race([
+        new Promise((resolve) => run.once('close', resolve)),
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error('terminal reconcile did not settle')), 5000)
+        ),
+      ])
+      assert.equal(closed.code, 0)
+      const requests = fs.readFileSync(requestLog, 'utf8').trim().split('\n').map(JSON.parse)
+      assert.equal(requests.some((message) => message.method === 'thread/goal/set'), false)
+    } finally {
+      run.kill()
+      fs.rmSync(tempRoot, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a malformed reconciled Codex goal fails closed before mutation', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-malformed-get-'))
+  const { fakeCodex, requestLog } = writeFakeGoalAppServer(tempRoot, {
+    initialStatus: 'futureStatus',
+    autoComplete: false,
+  })
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    backendSessionId: 'thread-goal-1',
+    sessionId: 'session-malformed-get',
+    turnId: 'orrery-goal-malformed-get',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'reconnect',
+      reconcile: true,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+
+  try {
+    const failure = new Promise((resolve) => run.once('error', resolve))
+    const closed = new Promise((resolve) => run.once('close', resolve))
+    assert.match((await failure).message, /thread\/goal\/get returned malformed/)
+    assert.equal((await closed).code, 1)
+    const requests = fs.readFileSync(requestLog, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.equal(requests.some((message) => message.method === 'thread/goal/set'), false)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('a malformed Codex goal-set response fails instead of reporting stale success', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-malformed-set-'))
+  const { fakeCodex } = writeFakeGoalAppServer(tempRoot, {
+    malformedSetResponse: true,
+    autoComplete: false,
+  })
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    sessionId: 'session-malformed-set',
+    turnId: 'orrery-goal-malformed-set',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'set',
+      objective: 'finish',
+      status: 'active',
+      reconcile: false,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+
+  try {
+    const failure = new Promise((resolve) => run.once('error', resolve))
+    const closed = new Promise((resolve) => run.once('close', resolve))
+    assert.match((await failure).message, /thread\/goal\/set returned malformed/)
+    assert.equal((await closed).code, 1)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('reconnecting an already-active Codex goal reattaches without setting or starting a turn', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-reconcile-active-'))
+  const { fakeCodex, requestLog } = writeFakeGoalAppServer(tempRoot, {
+    initialStatus: 'active',
+    autoComplete: false,
+  })
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    backendSessionId: 'thread-goal-1',
+    sessionId: 'session-reconcile-active',
+    turnId: 'orrery-goal-reconcile-active',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'reconnect',
+      reconcile: true,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+  run.on('error', () => {})
+
+  try {
+    await new Promise((resolve) => {
+      run.on('providerEvent', (event) => {
+        if (event.type === 'thread.goal.updated' && event.goal.status === 'active') resolve()
+      })
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(run.kill(), true)
+    await new Promise((resolve) => run.once('close', resolve))
+    const requests = fs.readFileSync(requestLog, 'utf8').trim().split('\n').map(JSON.parse)
+    assert.equal(
+      requests.some(
+        (message) =>
+          message.method === 'thread/goal/set' && message.params?.status === 'active',
+      ),
+      false,
+    )
+    assert.equal(requests.some((message) => message.method === 'turn/start'), false)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('killing a Codex goal keeps the active cache and reports recovery when pause times out', async () => {
+  const { CodexAppServerRun } = await import(
+    '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'
+  )
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-goal-kill-'))
+  const { fakeCodex } = writeFakeGoalAppServer(tempRoot, {
+    respondToPause: false,
+    autoComplete: false,
+  })
+  const run = new CodexAppServerRun({
+    prompt: '',
+    cwd: tempRoot,
+    sessionId: 'session-kill',
+    turnId: 'orrery-goal-kill',
+    runtimeSettings: { runtimeMode: 'auto' },
+    providerOperation: {
+      kind: 'thread-goal-control',
+      action: 'set',
+      objective: 'finish',
+      status: 'active',
+      reconcile: false,
+    },
+    providerInstance: {
+      providerInstanceId: 'default-codex',
+      kind: 'codex',
+      binaryPath: fakeCodex,
+    },
+  })
+  run.on('error', () => {})
+
+  try {
+    const statuses = []
+    run.on('providerEvent', (event) => {
+      if (event.type === 'thread.goal.updated') statuses.push(event.goal.status)
+    })
+    await new Promise((resolve) => {
+      run.on('providerEvent', (event) => {
+        if (event.type === 'thread.goal.updated' && event.goal.status === 'active') {
+          resolve()
+        }
+      })
+    })
+    const closed = new Promise((resolve) => run.once('close', resolve))
+    const pauseFailed = new Promise((resolve) => run.once('goalPauseFailed', resolve))
+    assert.equal(run.kill(), true)
+    await pauseFailed
+    assert.equal((await closed).killed, true)
+    assert.ok(statuses.length > 0)
+    assert.equal(statuses.every((status) => status === 'active'), true)
+  } finally {
+    run.kill()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('Codex run mounts the membrane per thread and settles when the app-server dies', async () => {
   const { CodexAppServerRun } = await import(
     '../../dist-electron/electron/runtime/providers/codexAppServerAdapter.js'

@@ -83,6 +83,74 @@ test('lightweight provider deltas patch only the target session', () => {
   assert.equal(next.sessions.alpha.messages[0].status, 'streaming');
 });
 
+test('thread goal projection ignores stale notifications after an authoritative clear', () => {
+  let state = stateWithSessions();
+  const goal = {
+    threadId: 'thread-1',
+    objective: 'Finish safely',
+    status: 'active',
+    tokensUsed: 0,
+    timeUsedSeconds: 0,
+    createdAt: 100,
+    updatedAt: 100,
+  };
+  state = applyProviderRuntimeEventToState(state, 'alpha', {
+    id: 'goal-set',
+    ts: '2026-07-10T10:00:01.000Z',
+    type: 'thread.goal.updated',
+    sessionId: 'alpha',
+    goal,
+    authoritative: true,
+  });
+  assert.equal(state.sessions.alpha.threadGoal.objective, 'Finish safely');
+
+  state = applyProviderRuntimeEventToState(state, 'alpha', {
+    id: 'goal-clear',
+    ts: '2026-07-10T10:00:02.000Z',
+    type: 'thread.goal.cleared',
+    sessionId: 'alpha',
+    authoritative: true,
+  });
+  assert.equal(state.sessions.alpha.threadGoal, undefined);
+
+  state = applyProviderRuntimeEventToState(state, 'alpha', {
+    id: 'goal-stale',
+    ts: '2026-07-10T10:00:03.000Z',
+    type: 'thread.goal.updated',
+    sessionId: 'alpha',
+    goal,
+  });
+  assert.equal(state.sessions.alpha.threadGoal, undefined);
+});
+
+test('thread goal projection accepts ordered status changes within one provider timestamp second', () => {
+  let state = stateWithSessions();
+  const baseGoal = {
+    threadId: 'thread-1',
+    objective: 'Finish safely',
+    tokensUsed: 12,
+    timeUsedSeconds: 1,
+    createdAt: 100,
+    updatedAt: 101,
+  };
+  state = applyProviderRuntimeEventToState(state, 'alpha', {
+    id: 'goal-active',
+    ts: '2026-07-10T10:00:01.000Z',
+    type: 'thread.goal.updated',
+    sessionId: 'alpha',
+    goal: { ...baseGoal, status: 'active' },
+    authoritative: true,
+  });
+  state = applyProviderRuntimeEventToState(state, 'alpha', {
+    id: 'goal-complete',
+    ts: '2026-07-10T10:00:01.500Z',
+    type: 'thread.goal.updated',
+    sessionId: 'alpha',
+    goal: { ...baseGoal, status: 'complete' },
+  });
+  assert.equal(state.sessions.alpha.threadGoal.status, 'complete');
+});
+
 test('snapshot deltas replace until a real delta arrives and completion wins', () => {
   let state = stateWithSessions();
   state = applyProviderRuntimeEventToState(state, 'alpha', delta('1', 'hel', { isSnapshot: true }));

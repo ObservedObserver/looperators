@@ -1,3 +1,5 @@
+import { projectThreadGoalEvent } from './thread-goal.js';
+
 const runtimeEventLimit = 2000;
 const streamChunkLimit = 1000;
 
@@ -198,6 +200,11 @@ export function applyProviderRuntimeEventToState(state: RuntimeRecord, sessionId
   const messages = applyAssistantEvent(session, providerEvent, retainedPreviousEvents);
   const status = providerEvent.type === 'session.state' ? providerEvent.status : session.status;
   const effectiveRuntimeConfig = providerEvent.type === 'runtime.configured' ? providerEvent.effectiveRuntimeConfig : session.effectiveRuntimeConfig;
+  const goalProjection = projectThreadGoalEvent({
+    currentGoal: session.threadGoal,
+    lastAppliedAt: session.threadGoalLastAppliedAt,
+    event: providerEvent,
+  });
   const nextSession = {
     ...session,
     runtimeEvents,
@@ -206,6 +213,17 @@ export function applyProviderRuntimeEventToState(state: RuntimeRecord, sessionId
     updatedAt: laterTimestamp(session.updatedAt, providerEvent.ts),
     effectiveRuntimeConfig,
   };
+  if (
+    goalProjection.applied &&
+    (providerEvent.type === 'thread.goal.updated' || providerEvent.type === 'thread.goal.cleared')
+  ) {
+    if (goalProjection.goal === undefined) {
+      delete nextSession.threadGoal;
+    } else {
+      nextSession.threadGoal = goalProjection.goal;
+    }
+    nextSession.threadGoalLastAppliedAt = goalProjection.lastAppliedAt;
+  }
 
   return {
     ...state,

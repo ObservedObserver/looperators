@@ -182,6 +182,12 @@ app.whenReady().then(async () => {
   ipcMain.handle('orrery:resume-session', (_event, input) =>
     humanCommand('resume_session', input),
   )
+  ipcMain.handle('orrery:set-thread-goal', (_event, input) =>
+    humanCommand('set_thread_goal', input),
+  )
+  ipcMain.handle('orrery:clear-thread-goal', (_event, input) =>
+    humanCommand('clear_thread_goal', input),
+  )
   ipcMain.handle('orrery:archive-session', (_event, input) =>
     humanCommand('archive_session', input),
   )

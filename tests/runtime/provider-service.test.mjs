@@ -112,6 +112,43 @@ test('ProviderService registers the default Grok profile', async () => {
   }
 })
 
+test('ProviderService falls back when a goal run closes during an in-place control request', async () => {
+  const run = new EventEmitter()
+  run.controlThreadGoal = async () => {
+    const error = new Error('The active Codex goal run is no longer available.')
+    error.code = 'ORRERY_CODEX_GOAL_RUN_UNAVAILABLE'
+    throw error
+  }
+  run.kill = () => {
+    run.emit('close', { code: 0, killed: true })
+    return true
+  }
+  const service = new ProviderService({
+    adapters: new Map([
+      ['codex', { startTurn: () => run, closeAll() {} }],
+    ]),
+    providerInstances: [
+      { providerInstanceId: 'codex-test', kind: 'codex', label: 'Codex Test' },
+    ],
+  })
+  try {
+    service.startTurn({
+      providerKind: 'codex',
+      providerInstanceId: 'codex-test',
+      sessionId: 'goal-race',
+      turnId: 'goal-turn',
+      cwd: process.cwd(),
+      prompt: '',
+    })
+    assert.deepEqual(
+      await service.controlActiveThreadGoal('goal-race', { kind: 'thread-goal-control' }),
+      { controlled: false },
+    )
+  } finally {
+    await service.closeAll()
+  }
+})
+
 test('ProviderService waits for a closing run before its final log flush', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-provider-close-'))
   const run = new EventEmitter()

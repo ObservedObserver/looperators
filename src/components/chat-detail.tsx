@@ -26,6 +26,7 @@ import { type DiffPanelState } from '@/hooks/use-diff-panel';
 import { providerSetupProfileFingerprint, selectProviderSetupProfile } from '@shared/provider-setup';
 import { PlanCouncilCard } from '@/components/plan-council-card';
 import { WorkflowProposalCard } from '@/components/workflow-proposal-card';
+import { ThreadGoalProgressRow } from '@/components/thread-goal-progress-row';
 
 const isMacPlatform = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
@@ -220,6 +221,7 @@ export function ChatDetail({
     canOpenSelectedWorkspace,
     startLinkedChat,
     sendChatMessage,
+    controlSelectedThreadGoal,
     killSelectedSession,
     forkSessionFromMessage,
     openSelectedWorkspace,
@@ -567,6 +569,16 @@ export function ChatDetail({
                 onReasoningEffortChange={setNewReasoningEffort}
               />
             </>
+          ) : null}
+          {selectedSession?.threadGoal ? (
+            <ThreadGoalProgressRow
+              goal={selectedSession.threadGoal}
+              sessionRunning={selectedSession.status === 'running' || selectedSession.status === 'pending'}
+              busy={isResuming}
+              onPause={() => void controlSelectedThreadGoal({ kind: 'pause' })}
+              onResume={() => void controlSelectedThreadGoal({ kind: 'resume' })}
+              onClear={() => void controlSelectedThreadGoal({ kind: 'clear' })}
+            />
           ) : null}
           <input
             ref={composerFileInputRef}

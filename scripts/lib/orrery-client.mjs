@@ -413,6 +413,25 @@ export class OrreryClient {
     )
   }
 
+  async setThreadGoal(input = {}) {
+    const requestPath = input.sessionId
+      ? `/api/runtime/sessions/${encodeURIComponent(input.sessionId)}/goal`
+      : '/api/runtime/sessions/goal'
+    return this.#request(
+      'POST',
+      requestPath,
+      input.sessionId ? input : await this.#withModelPreset(input),
+    )
+  }
+
+  clearThreadGoal(sessionId) {
+    return this.#request(
+      'POST',
+      `/api/runtime/sessions/${encodeURIComponent(sessionId)}/goal/clear`,
+      {},
+    )
+  }
+
   resumeSession(sessionId, input = {}) {
     return this.#request(
       'POST',

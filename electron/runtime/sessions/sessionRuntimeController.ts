@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { validateExecutionEnvelope } from '../../../shared/execution-envelope.js'
+import { projectThreadGoalEvent } from '../../../shared/thread-goal.js'
 import {
   budgetExceeded,
   defaultRuntimeResourcePolicy,
@@ -28,6 +29,7 @@ import {
   compactProviderRuntimeEvent,
   compactRuntimeItem,
   compactRuntimePlan,
+  diagnostic,
   isObject,
   nonEmptyString,
   now,
@@ -532,6 +534,7 @@ export class SessionRuntimeController {
       activationEventId,
       channelReadSeqs = [],
       execution = undefined,
+      providerOperation = undefined,
     },
     runId,
     resource,
@@ -670,7 +673,7 @@ export class SessionRuntimeController {
         attachments,
         cwd: session.cwd,
         backendSessionId:
-          runKind === 'resume'
+          runKind === 'resume' || runKind === 'goal-control'
             ? (session.providerSessionId ?? session.backendSessionId)
             : undefined,
         providerFork: session.providerFork
@@ -688,6 +691,7 @@ export class SessionRuntimeController {
           bridgeUrl,
           token: membraneToken,
         },
+        ...(providerOperation ? { providerOperation: clone(providerOperation) } : {}),
       })
     } catch (error) {
       this.bridge.revokeRunToken(membraneToken)
@@ -703,6 +707,16 @@ export class SessionRuntimeController {
     run.on('providerEvent', (event) => this.appendExternalProviderRuntimeEvent(sessionId, event))
     run.on('providerSession', (event) => this.recordProviderSession(sessionId, event))
     run.on('stderr', (data) => this.appendProviderStderr(sessionId, data))
+    run.on('goalPauseFailed', () => {
+      this.state.diagnostics ??= []
+      this.state.diagnostics.push(diagnostic(
+        'runtime.thread_goal_pause_unconfirmed',
+        'Could not confirm that Codex paused this goal. Its active cache was kept so the next action must reconcile with the provider.',
+        { sessionId },
+      ))
+      this.touch()
+      this.broadcast({ type: 'runtime.state', state: this.getState() })
+    })
     run.on('result', (event) => this.recordResult(sessionId, event))
     run.on('error', (error) => {
       if (this.workflowCompensatedRuns.has(sessionId)) return
@@ -736,6 +750,22 @@ export class SessionRuntimeController {
       recordTurnCheckpointDiff(this.checkpointHost(), sessionId, current.finishedAt)
       this.appendTurnCompletedIfMissing(sessionId, current.finishedAt)
       this.cancelOpenRuntimeInteractions(sessionId, current.finishedAt)
+      const killedGoalRun = killed || current.status === 'killed'
+      if (
+        context?.runId &&
+        (context.runKind === 'goal-create' || context.runKind === 'goal-control') &&
+        (current.threadGoal?.status !== 'active' || killedGoalRun)
+      ) {
+        this.finalizeClosedGoalActivities(
+          sessionId,
+          context.runId,
+          current.finishedAt,
+          current.threadGoal?.status,
+          killedGoalRun
+            ? 'Goal run was killed before this activity completed.'
+            : undefined,
+        )
+      }
 
       if (context?.resourceViolation) {
         this.failSession(sessionId, context.resourceViolation.message)
@@ -990,6 +1020,23 @@ export class SessionRuntimeController {
       return compactEvent
     }
 
+    if (
+      compactEvent.type === 'thread.goal.updated' ||
+      compactEvent.type === 'thread.goal.cleared'
+    ) {
+      const projection = projectThreadGoalEvent({
+        currentGoal: session.threadGoal,
+        lastAppliedAt: session.threadGoalLastAppliedAt,
+        event: compactEvent,
+      })
+      if (projection.applied) {
+        if (projection.goal) session.threadGoal = clone(projection.goal)
+        else delete session.threadGoal
+        session.threadGoalLastAppliedAt = projection.lastAppliedAt
+      }
+      return compactEvent
+    }
+
     if (compactEvent.type === 'message.completed') {
       const completed = {
         ...compactEvent.message,
@@ -1116,6 +1163,10 @@ export class SessionRuntimeController {
     return compactEvent
   }
 
+  controlActiveThreadGoal(sessionId: string, providerOperation: JsonRecord) {
+    return this.providerService.controlActiveThreadGoal(sessionId, providerOperation)
+  }
+
   cancelOpenRuntimeInteractions(sessionId, ts) {
     const session = this.state.sessions[sessionId]
     if (!session) {
@@ -1172,6 +1223,60 @@ export class SessionRuntimeController {
       sessionId,
       turnId,
     })
+  }
+
+  private finalizeClosedGoalActivities(
+    sessionId,
+    turnId,
+    completedAt,
+    goalStatus,
+    reasonOverride?: string,
+  ) {
+    const session = this.state.sessions[sessionId]
+    if (!session) return
+    const completedSuccessfully = goalStatus === 'complete' && !reasonOverride
+    const reason = reasonOverride ?? (goalStatus === 'paused'
+      ? 'Goal paused before this activity completed.'
+      : goalStatus === 'blocked'
+        ? 'Goal blocked before this activity completed.'
+        : goalStatus === 'usageLimited'
+          ? 'Goal hit its usage limit before this activity completed.'
+          : goalStatus === 'budgetLimited'
+            ? 'Goal hit its token budget before this activity completed.'
+            : goalStatus === 'complete'
+              ? 'Goal completed before this activity reported completion.'
+              : 'Goal ended before this activity completed.')
+    for (const activity of [...(session.runtimeActivities ?? [])]) {
+      if (
+        activity.turnId !== turnId ||
+        (activity.status !== 'pending' && activity.status !== 'running')
+      ) {
+        continue
+      }
+      const item = {
+        ...activity,
+        status: completedSuccessfully ? 'completed' : 'failed',
+        completedAt,
+        updatedAt: completedAt,
+      }
+      if (completedSuccessfully) delete item.error
+      else item.error = reason
+      if (item.startedAt) {
+        const startedAt = Date.parse(activity.startedAt)
+        const endedAt = Date.parse(completedAt)
+        if (!Number.isNaN(startedAt) && !Number.isNaN(endedAt) && endedAt >= startedAt) {
+          item.durationMs = endedAt - startedAt
+        }
+      }
+      this.appendExternalProviderRuntimeEvent(sessionId, {
+        id: randomUUID(),
+        ts: completedAt,
+        type: 'item.completed',
+        sessionId,
+        turnId,
+        item,
+      })
+    }
   }
 
   private upsertRuntimeActivity(session, item) {
@@ -1865,6 +1970,18 @@ export class SessionRuntimeController {
     recordTurnCheckpointDiff(this.checkpointHost(), sessionId, session.finishedAt)
     this.appendTurnCompletedIfMissing(sessionId, session.finishedAt)
     this.cancelOpenRuntimeInteractions(sessionId, session.finishedAt)
+    if (
+      context?.runId &&
+      (context.runKind === 'goal-create' || context.runKind === 'goal-control')
+    ) {
+      this.finalizeClosedGoalActivities(
+        sessionId,
+        context.runId,
+        session.finishedAt,
+        session.threadGoal?.status,
+        'Goal run failed before this activity completed.',
+      )
+    }
     this.appendProviderRuntimeEvent(sessionId, {
       id: randomUUID(),
       ts: session.finishedAt,

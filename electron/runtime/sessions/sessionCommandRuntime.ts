@@ -46,6 +46,7 @@ import {
 import { planCouncilFailed } from '../workflows/planCouncil.js'
 import type { RuntimeRun } from './sessionRuntimeController.js'
 import { createSessionFork } from './sessionFork.js'
+import { threadGoalObjectiveMaxLength } from '../../../shared/thread-goal.js'
 
 const defaultPrompt =
   'You are running under Orrery P1 live session verification. Reply with one short sentence confirming the provider connection is working, then stop.'
@@ -87,6 +88,7 @@ export interface SessionCommandRuntimeHost {
   touch(): void
   broadcast(event: JsonRecord): void
   startRun(sessionId: string, request: JsonRecord): Promise<string>
+  controlActiveThreadGoal(sessionId: string, providerOperation: JsonRecord): Promise<JsonRecord>
   firingEntries(sessionId: string, reportId?: string): JsonRecord[]
   isSessionFrozen(sessionId: string): boolean
   assertBudgetAvailable(sessionId: string, ctx: JsonRecord): void
@@ -114,6 +116,148 @@ export class SessionCommandRuntime {
   async createSession(input: JsonRecord = {}) {
     this.#host.reviveDirectProviderRuntime()
     return this.cmdCreateSession(input, this.#host.humanCtx())
+  }
+
+  async cmdSetThreadGoal(input: JsonRecord = {}, ctx: JsonRecord) {
+    if (ctx.actor?.kind !== 'human') {
+      throw new Error('Only a human can control a thread goal.')
+    }
+    const sessionId = optionalTrimmedString(input.sessionId)
+    const objective = optionalTrimmedString(input.objective)
+    const status = input.status === 'paused' ? 'paused' : input.status === 'active' ? 'active' : undefined
+    if (objective && objective.length > threadGoalObjectiveMaxLength) {
+      throw new Error(`Goal objectives must be ${threadGoalObjectiveMaxLength} characters or fewer.`)
+    }
+    if (!objective && !status) {
+      throw new Error('A goal objective or status is required.')
+    }
+
+    if (!sessionId) {
+      const provider = providerConfig(input, this.#host.state().providerInstances)
+      if (provider.providerKind !== 'codex') {
+        throw new Error('Thread goals are supported by Codex chats only.')
+      }
+      if (!objective) throw new Error('A goal objective is required for a new chat.')
+      const commandText = `/goal ${objective}`
+      const created = await this.cmdCreateSession(
+        { ...input, prompt: commandText, attachments: [] },
+        ctx,
+        { deferStart: true },
+      )
+      const session = this.#host.state().sessions[created.sessionId]
+      delete session.prepared
+      session.prompt = ''
+      session.status = 'pending'
+      session.updatedAt = now()
+      this.#host.updateNodeStatus(created.sessionId, 'pending')
+      const requested = this.#host.appendKernelEvent(
+        'thread.goal.requested',
+        { sessionId: created.sessionId, objective: truncateForLog(objective, 400) },
+        ctx,
+      )
+      const runId = await this.#host.startRun(created.sessionId, {
+        prompt: '',
+        attachments: [],
+        runKind: 'goal-create',
+        userMessageId: session.messages[0]?.id,
+        activationEventId: requested?.id,
+        providerOperation: {
+          kind: 'thread-goal-control',
+          action: 'set',
+          objective,
+          status: 'active',
+          reconcile: false,
+        },
+      })
+      return { sessionId: created.sessionId, runId, state: this.#host.getState() }
+    }
+
+    const session = this.#host.state().sessions[sessionId]
+    if (!session) throw new Error(`Unknown session: ${sessionId}`)
+    if (session.providerKind !== 'codex') {
+      throw new Error('Thread goals are supported by Codex chats only.')
+    }
+    if (session.status === 'killed') throw new Error('Killed chats cannot control goals.')
+    if (!session.providerSessionId && !session.backendSessionId) {
+      throw new Error('This Codex chat has not materialized a provider thread yet.')
+    }
+    if (objective && session.threadGoal?.status === 'active' && objective !== session.threadGoal.objective) {
+      throw new Error('Pause or clear the active goal before replacing it.')
+    }
+    if (status === 'active' && session.threadGoal?.status === 'complete') {
+      throw new Error('Set a new objective instead of resuming a completed goal.')
+    }
+
+    const providerOperation = {
+      kind: 'thread-goal-control',
+      action: objective ? 'set' : status === 'active' ? 'reconnect' : 'status',
+      ...(objective ? { objective } : {}),
+      ...(status ? { status } : {}),
+      reconcile: true,
+    }
+    const controlled = await this.#host.controlActiveThreadGoal(sessionId, providerOperation)
+    if (controlled.controlled) {
+      return { ok: true, state: this.#host.getState() }
+    }
+
+    session.status = 'pending'
+    session.error = undefined
+    session.updatedAt = now()
+    this.#host.updateNodeStatus(sessionId, 'pending')
+    const requested = this.#host.appendKernelEvent(
+      'thread.goal.requested',
+      { sessionId, ...(objective ? { objective: truncateForLog(objective, 400) } : {}), status },
+      ctx,
+    )
+    const runId = await this.#host.startRun(sessionId, {
+      prompt: '',
+      attachments: [],
+      runKind: 'goal-control',
+      activationEventId: requested?.id,
+      providerOperation,
+    })
+    return { ok: true, runId, state: this.#host.getState() }
+  }
+
+  async cmdClearThreadGoal(input: JsonRecord = {}, ctx: JsonRecord) {
+    if (ctx.actor?.kind !== 'human') {
+      throw new Error('Only a human can control a thread goal.')
+    }
+    const sessionId = optionalTrimmedString(input.sessionId)
+    if (!sessionId) throw new Error('Session id is required to clear a goal.')
+    const session = this.#host.state().sessions[sessionId]
+    if (!session) throw new Error(`Unknown session: ${sessionId}`)
+    if (session.providerKind !== 'codex') {
+      throw new Error('Thread goals are supported by Codex chats only.')
+    }
+    const providerOperation = {
+      kind: 'thread-goal-control',
+      action: 'clear',
+      reconcile: true,
+    }
+    const controlled = await this.#host.controlActiveThreadGoal(sessionId, providerOperation)
+    if (controlled.controlled) return { ok: true, state: this.#host.getState() }
+    if (!session.providerSessionId && !session.backendSessionId) {
+      delete session.threadGoal
+      return { ok: true, state: this.#host.getState() }
+    }
+    session.status = 'pending'
+    session.error = undefined
+    session.updatedAt = now()
+    this.#host.updateNodeStatus(sessionId, 'pending')
+    const requested = this.#host.appendKernelEvent(
+      'thread.goal.clear-requested',
+      { sessionId },
+      ctx,
+    )
+    const runId = await this.#host.startRun(sessionId, {
+      prompt: '',
+      attachments: [],
+      runKind: 'goal-control',
+      activationEventId: requested?.id,
+      providerOperation,
+    })
+    return { ok: true, runId, state: this.#host.getState() }
   }
 
   forkSession(input: JsonRecord = {}) {
@@ -624,6 +768,11 @@ export class SessionCommandRuntime {
     }
     if (session.status === 'killed') {
       throw new Error(`Killed session cannot be resumed: ${sessionId}`)
+    }
+    if (session.providerKind === 'codex' && session.threadGoal?.status === 'active') {
+      throw new Error(
+        'This Codex chat has an active goal. Pause or clear the goal before sending a regular message, or resume the goal to reconnect it.',
+      )
     }
     if (this.#host.isSessionFrozen(sessionId)) {
       throw new Error(`Frozen session cannot be resumed: ${sessionId}`)

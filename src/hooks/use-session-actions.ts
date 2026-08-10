@@ -2,7 +2,9 @@ import { type Dispatch, type RefObject, type SetStateAction, useCallback, useSta
 
 import type { AgentMessage, AgentSession, GraphState, OpenWorkspaceTarget, WorkMode } from '@/shared/graph-state';
 import type { ChatAttachment, ProviderInstance, ProviderKind, ProviderReasoningEffort, ProviderRuntimeMode, RuntimePlan } from '@/shared/provider-runtime';
+import { providerSupportsThreadGoals } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
+import { parseGoalComposerCommand, type GoalComposerCommand } from '@shared/thread-goal';
 import { defaultWorkspaceCwd, latestSessionCwd, validateProjectCwd } from '@/lib/workspace';
 import { providerOption, providerRuntimeSettingsDraft } from '@/lib/provider-catalog';
 import type { RailTab } from '@/lib/layout-prefs';
@@ -233,6 +235,99 @@ export function useSessionActions({
     if (trimmed.length === 0 && composerAttachments.length === 0) {
       return;
     }
+    const goalCommand = parseGoalComposerCommand(trimmed);
+    if (goalCommand) {
+      if (composerAttachments.length > 0) {
+        setRuntimeError('Remove attachments before using /goal.');
+        return;
+      }
+      if (goalCommand.kind === 'invalid') {
+        setRuntimeError(goalCommand.message);
+        return;
+      }
+      if (goalCommand.kind === 'view') {
+        if (!selectedSession?.threadGoal) {
+          setRuntimeError('This chat does not have a goal.');
+        } else {
+          setRuntimeError(undefined);
+          clearComposer();
+        }
+        return;
+      }
+
+      const providerKind = selectedSession?.providerKind ?? newProviderKind;
+      if (!providerSupportsThreadGoals(providerKind)) {
+        setRuntimeError('Thread goals are supported by Codex chats only.');
+        return;
+      }
+
+      if (!selectedSession || !selectedSessionId) {
+        if (goalCommand.kind !== 'set') {
+          setRuntimeError('Set a goal objective before using goal controls.');
+          return;
+        }
+        const cwd = newCwd.trim();
+        const cwdValidation = validateProjectCwd(cwd);
+        if (!cwdValidation.ok) {
+          setRuntimeError(cwdValidation.message);
+          return;
+        }
+        setIsCreating(true);
+        setRuntimeError(undefined);
+        try {
+          const selectedProvider = providerOption(newProviderKind);
+          const result = await runtimeApi.setThreadGoal({
+            objective: goalCommand.objective,
+            status: 'active',
+            cwd,
+            workMode: newWorkMode,
+            ...(newWorkMode === 'worktree' && newBranch.trim().length > 0 ? { branch: newBranch.trim() } : {}),
+            agent: selectedProvider.agent,
+            providerKind: selectedProvider.id,
+            providerInstanceId: newProviderInstance.providerInstanceId,
+            runtimeSettings: providerRuntimeSettingsDraft({
+              runtimeMode: newRuntimeMode,
+              model: newModel,
+              reasoningEffort: newReasoningEffort,
+            }),
+            label: `New Chat ${sessions.length + 1}`,
+            ...(pendingLinkedSourceId
+              ? { sourceSessionId: pendingLinkedSourceId, linkLabel: 'created from chat' }
+              : {}),
+          });
+          setRuntimeState(result.state);
+          if (result.sessionId) setSelectedSessionId(result.sessionId);
+          setPendingLinkedSourceId(null);
+          setActiveTab('chat');
+          clearComposer();
+        } catch (error) {
+          setRuntimeError(error instanceof Error ? error.message : String(error));
+        } finally {
+          setIsCreating(false);
+        }
+        return;
+      }
+
+      setIsResuming(true);
+      setRuntimeError(undefined);
+      try {
+        const result = goalCommand.kind === 'clear'
+          ? await runtimeApi.clearThreadGoal({ sessionId: selectedSessionId })
+          : await runtimeApi.setThreadGoal({
+              sessionId: selectedSessionId,
+              ...(goalCommand.kind === 'set'
+                ? { objective: goalCommand.objective, status: 'active' as const }
+                : { status: goalCommand.kind === 'pause' ? 'paused' as const : 'active' as const }),
+            });
+        setRuntimeState(result.state);
+        clearComposer();
+      } catch (error) {
+        setRuntimeError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsResuming(false);
+      }
+      return;
+    }
     const prompt = trimmed.length > 0 ? trimmed : 'Please review the attached files.';
 
     if (!selectedSession || !selectedSessionId) {
@@ -267,6 +362,14 @@ export function useSessionActions({
     composerAttachments,
     createSessionFromPrompt,
     message,
+    newBranch,
+    newCwd,
+    newModel,
+    newProviderInstance.providerInstanceId,
+    newProviderKind,
+    newReasoningEffort,
+    newRuntimeMode,
+    newWorkMode,
     pendingLinkedSourceId,
     runtimeApi,
     runtimeUnavailableText,
@@ -274,7 +377,29 @@ export function useSessionActions({
     selectedSessionId,
     setRuntimeError,
     setRuntimeState,
+    setSelectedSessionId,
+    setActiveTab,
+    sessions.length,
   ]);
+
+  const controlSelectedThreadGoal = useCallback(async (command: Extract<GoalComposerCommand, { kind: 'pause' | 'resume' | 'clear' }>) => {
+    if (!runtimeApi || !selectedSessionId) return;
+    setIsResuming(true);
+    setRuntimeError(undefined);
+    try {
+      const result = command.kind === 'clear'
+        ? await runtimeApi.clearThreadGoal({ sessionId: selectedSessionId })
+        : await runtimeApi.setThreadGoal({
+            sessionId: selectedSessionId,
+            status: command.kind === 'pause' ? 'paused' : 'active',
+          });
+      setRuntimeState(result.state);
+    } catch (error) {
+      setRuntimeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsResuming(false);
+    }
+  }, [runtimeApi, selectedSessionId, setRuntimeError, setRuntimeState]);
 
   const killSelectedSession = useCallback(async () => {
     if (!runtimeApi || !selectedSessionId) {
@@ -408,6 +533,7 @@ export function useSessionActions({
     startLinkedChat,
     createSessionFromPrompt,
     sendChatMessage,
+    controlSelectedThreadGoal,
     killSelectedSession,
     forkSessionFromMessage,
     openSelectedWorkspace,

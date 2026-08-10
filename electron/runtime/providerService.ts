@@ -7,7 +7,10 @@ import {
   providerKinds,
 } from '../../shared/provider-metadata.js'
 import { ClaudeAgentSdkAdapter } from './providers/claudeAgentSdkAdapter.js'
-import { CodexAppServerAdapter } from './providers/codexAppServerAdapter.js'
+import {
+  CodexAppServerAdapter,
+  codexGoalRunUnavailableCode,
+} from './providers/codexAppServerAdapter.js'
 import { GrokAcpAdapter } from './providers/grokAcpAdapter.js'
 
 type JsonRecord = Record<string, any>
@@ -225,6 +228,22 @@ export class ProviderService extends EventEmitter {
     })
 
     return run
+  }
+
+  async controlActiveThreadGoal(sessionId: string, providerOperation: JsonRecord) {
+    const activeTurn = this.#activeTurns.get(sessionId)
+    if (!activeTurn?.run || typeof activeTurn.run.controlThreadGoal !== 'function') {
+      return { controlled: false }
+    }
+    try {
+      const goal = await activeTurn.run.controlThreadGoal(providerOperation)
+      return { controlled: true, goal }
+    } catch (error) {
+      if ((error as { code?: unknown })?.code === codexGoalRunUnavailableCode) {
+        return { controlled: false }
+      }
+      throw error
+    }
   }
 
   recordNativeEvent(event: JsonRecord) {
