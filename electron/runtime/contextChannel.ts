@@ -405,17 +405,19 @@ export class ContextChannelStore {
 // the loop, which is what makes gate=auto safe (§6.1).
 export function activationPreamble(
   unread: ReturnType<ContextChannelStore['unread']>,
-  { channelDir }: { channelDir: string }
+  { channelDir, inlineDeliveryTopics = [] }: { channelDir: string; inlineDeliveryTopics?: string[] }
 ): string | undefined {
   const { current, superseded } = unread
   if (current.length === 0) {
     return undefined
   }
 
+  const includedTopics = new Set(inlineDeliveryTopics)
+  const needsFileRead = current.some((entry) => !entry.topic || !includedTopics.has(entry.topic))
   const lines = [
     `Your context channel has ${current.length} new ${
       current.length === 1 ? 'delivery' : 'deliveries'
-    } (inbox: ${channelDir}):`,
+    }${needsFileRead ? ` (inbox: ${channelDir})` : ' supplied in full inline'}:`,
   ]
   current.forEach((entry, index) => {
     const parts = [
@@ -424,6 +426,10 @@ export function activationPreamble(
       entry.note ? `note: ${entry.note}` : undefined,
     ].filter(Boolean)
     lines.push(parts.join(', '))
+    if (entry.topic && includedTopics.has(entry.topic)) {
+      lines.push('   Complete content is included inline above; the durable file copy does not need to be read.')
+      return
+    }
     for (const file of entry.files) {
       lines.push(`   - ${file}`)
     }
@@ -435,6 +441,8 @@ export function activationPreamble(
       } superseded by newer ones on the same topic.)`
     )
   }
-  lines.push('Read the delivered files before acting on this activation.')
+  lines.push(needsFileRead
+    ? 'Read only the delivered files explicitly listed above, using those exact paths. Other deliveries are already included inline.'
+    : 'All deliveries are included inline. Use that evidence directly; do not read or search channel files.')
   return lines.join('\n')
 }

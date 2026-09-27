@@ -2022,7 +2022,12 @@ test('compiled RuntimeSessionManager lazily probes Grok ACP and exposes the dyna
       runtime.getProviderSetupStatus({ providerKind: 'grok', cwd: tempRoot }),
       runtime.getProviderSetupStatus({ providerKind: 'grok', cwd: tempRoot }),
     ])
-    assert.deepEqual(right.models, left.models)
+    // Status calls share the ACP probe but stamp their own catalog projection.
+    const { fetchedAt: leftFetchedAt, ...leftModels } = left.models
+    const { fetchedAt: rightFetchedAt, ...rightModels } = right.models
+    assert.deepEqual(rightModels, leftModels)
+    assert.ok(Number.isFinite(Date.parse(leftFetchedAt)))
+    assert.ok(Number.isFinite(Date.parse(rightFetchedAt)))
     assert.equal(left.checks.find((check) => check.id === 'auth')?.status, 'ok')
     assert.equal(left.checks.find((check) => check.id === 'acp-session')?.status, 'ok')
     assert.equal(left.models.currentModelId, 'grok-default')

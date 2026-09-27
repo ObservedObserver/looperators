@@ -742,6 +742,7 @@ export class SessionCommandRuntime {
 
     return this.runActivation(sessionId, {
       note,
+      inlineDeliveryTopics: Array.isArray(input.inlineDeliveryTopics) ? input.inlineDeliveryTopics.filter((topic) => typeof topic === 'string') : [],
       attachments: normalizeChatAttachments(input.attachments),
       edgeSourceSessionId: optionalTrimmedString(input.edgeSourceSessionId),
       edgeInput: input,
@@ -901,6 +902,7 @@ export class SessionCommandRuntime {
     sessionId,
     {
       note,
+      inlineDeliveryTopics = [],
       attachments = [],
       edgeSourceSessionId,
       edgeInput = {},
@@ -913,6 +915,7 @@ export class SessionCommandRuntime {
     const unread = this.#host.channelStore().unread(sessionId)
     const preamble = activationPreamble(unread, {
       channelDir: this.#host.channelStore().channelDir(sessionId),
+      inlineDeliveryTopics,
     })
     const content = [note, preamble].filter(Boolean).join('\n\n')
     const firstPreparedTurn = session.prepared === true

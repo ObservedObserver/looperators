@@ -690,6 +690,9 @@ export class SessionRuntimeController {
         membrane: {
           bridgeUrl,
           token: membraneToken,
+          ...(Object.values(this.state.collaborationSessions ?? {}).some((workspace: JsonRecord) =>
+            workspace.members.some((member: JsonRecord) => member.sessionId === sessionId),
+          ) ? { toolProfile: 'collaboration' } : {}),
         },
         ...(providerOperation ? { providerOperation: clone(providerOperation) } : {}),
       })

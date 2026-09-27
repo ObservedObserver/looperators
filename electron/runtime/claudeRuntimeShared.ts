@@ -23,6 +23,9 @@ export function claudeCommand() {
 }
 
 export const membraneToolNames = [
+  'mcp__orrery_membrane__read_collaboration_updates',
+  'mcp__orrery_membrane__post_collaboration_message',
+  'mcp__orrery_membrane__set_discussion_assessment',
   'mcp__orrery_membrane__create_session',
   'mcp__orrery_membrane__resume_session',
   'mcp__orrery_membrane__deliver',
@@ -46,6 +49,7 @@ export const membraneToolNames = [
 export function membraneSystemPrompt() {
   return [
     'You are running inside Orrery.',
+    'Collaboration members use read_collaboration_updates, post_collaboration_message, and set_discussion_assessment only. Read shared updates first; only explicit posts are public. Do not use graph control tools from a collaboration member session.',
     'Use the orrery_membrane MCP tools when you need to affect the agent graph:',
     '- mcp__orrery_membrane__create_session creates a real downstream session/node.',
     '- mcp__orrery_membrane__resume_session appends a user message to an existing session/node and resumes it.',
@@ -58,7 +62,7 @@ export function membraneSystemPrompt() {
     '- Workflow tools return compact JSON. Read ids and status directly from the tool result; never use shell commands to locate or parse MCP tool-result files.',
     '- mcp__orrery_membrane__report submits typed verdict, relationship, or info data to the graph blackboard.',
     '- mcp__orrery_membrane__link_sessions declares a visible relationship edge to another session/node.',
-    'Sessions have a context channel (an inbox directory outside the repo): deliveries you receive are listed in your activation message with absolute file paths — read those files before acting.',
+    'Sessions have a context channel (an inbox directory outside the repo). Use deliveries marked as included inline directly. For other deliveries, read only the exact file paths listed in your activation message; never reconstruct paths.',
     'Do not invent session ids. Use ids returned by create_session or provided in the user prompt.',
   ].join('\n')
 }
@@ -71,7 +75,7 @@ function writeJson0600(filePath, value) {
   fs.chmodSync(filePath, 0o600)
 }
 
-export function createMcpHandoff(membrane, { keepBootstrap = false } = {}) {
+export function createMcpHandoff(membrane, { keepBootstrap = false, alwaysLoadTools = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orrery-membrane-'))
   fs.chmodSync(dir, 0o700)
 
@@ -81,6 +85,7 @@ export function createMcpHandoff(membrane, { keepBootstrap = false } = {}) {
   writeJson0600(bootstrapPath, {
     bridgeUrl: membrane.bridgeUrl,
     token: membrane.token,
+    ...(membrane.toolProfile === 'collaboration' ? { toolProfile: 'collaboration' } : {}),
   })
 
   writeJson0600(configPath, {
@@ -88,6 +93,7 @@ export function createMcpHandoff(membrane, { keepBootstrap = false } = {}) {
       orrery_membrane: {
         command: process.execPath,
         args: [membraneServerPath],
+        ...(alwaysLoadTools ? { alwaysLoad: true } : {}),
         env: {
           // A packaged Electron executable ignores a JavaScript entrypoint
           // unless it is explicitly launched in Node mode. This remains a

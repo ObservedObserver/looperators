@@ -128,7 +128,9 @@ test('review and synthesis phases consume delivered artifacts without workspace 
   const crossReview = crossReviewPrompt('Crash safety.');
   const synthesis = synthesizerPrompt('Plan a migration.', 'Crash safety.');
   assert.match(crossReview, /Use only the delivered proposal context/);
-  assert.match(crossReview, /Do not inspect the project workspace, run shell commands/);
+  assert.match(crossReview, /Do not inspect the project workspace/);
+  assert.match(crossReview, /exact delivered path/);
   assert.match(synthesis, /Use only the delivered proposal and peer-review context/);
-  assert.match(synthesis, /Do not inspect the project workspace or run shell commands/);
+  assert.match(synthesis, /Do not inspect the project workspace/);
+  assert.match(synthesis, /never construct paths or chain commands/);
 });

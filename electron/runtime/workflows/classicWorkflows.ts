@@ -1139,6 +1139,12 @@ export function advanceWorkflowDeployment(
 }
 
 export function automaticDeploymentExistingSessionIds(m: WorkflowKernel, kind: string, input: JsonRecord) {
+  if (kind === 'dispatch_collaboration_trigger') {
+    const workspace = m.state.collaborationSessions?.[input.sessionId]
+    const trigger = workspace?.triggers?.[input.triggerId]
+    const member = workspace?.members?.find((candidate: JsonRecord) => candidate.memberId === trigger?.memberId)
+    return member?.sessionId ? [member.sessionId] : []
+  }
   if (kind === 'commit_workflow') {
     const proposalId = optionalTrimmedString(input.proposalId)
     const proposal = proposalId ? m.state.workflowProposals?.[proposalId] : undefined
@@ -1405,4 +1411,3 @@ export function getWorkflowDeployments(m: WorkflowKernel, input: JsonRecord = {}
     }),
   }
 }
-

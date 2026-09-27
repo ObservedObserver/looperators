@@ -93,7 +93,9 @@ test('Plan Council prepares all sessions, materializes artifacts, gates phases, 
       /peer reviews must be ready/,
     );
 
-    await runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId });
+    await assert.rejects(runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId, note: 'x'.repeat(8001) }), /8,000/);
+    assert.equal(runtime.getState().planCouncils[started.workflowId].phase, 'ready-for-cross-review');
+    await runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId, note: 'Only one deployment host is required.' });
     const repeatedCrossReview = await runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId });
     assert.ok(
       ['reviewing-peers', 'ready-for-synthesis'].includes(repeatedCrossReview.council.phase),
@@ -115,17 +117,28 @@ test('Plan Council prepares all sessions, materializes artifacts, gates phases, 
         artifactId: reviewArtifact.artifactId,
       }).content;
       assert.match(content, /proposal:/, 'activation includes peer proposal deliveries');
+      assert.match(content, /Only one deployment host is required/, 'every reviewer receives the user update');
+      const activation = runtime.getState().sessions[plannerId].messages.filter((message) => message.role === 'user').at(-1).content;
+      assert.match(activation, /All deliveries are included inline/);
+      assert.doesNotMatch(activation, /Read the delivered files before acting on this activation/);
       for (const peerId of plannerIds.filter((id) => id !== plannerId)) {
         assert.match(content, new RegExp(`proposal:${peerId}`), 'each peer topic remains independently addressable');
       }
     }
 
-    await runtime.startPlanCouncilSynthesis({ workflowId: started.workflowId });
+    await assert.rejects(runtime.startPlanCouncilSynthesis({ workflowId: started.workflowId, note: {} }), /8,000/);
+    assert.equal(runtime.getState().planCouncils[started.workflowId].phase, 'ready-for-synthesis');
+    await runtime.startPlanCouncilSynthesis({ workflowId: started.workflowId, note: 'Retain any unresolved recovery risks.' });
     const completed = await waitFor('synthesis', () => {
       const council = runtime.getState().planCouncils[started.workflowId];
       return council?.phase === 'completed' ? council : undefined;
     });
     assert.equal(completed.artifacts.filter((artifact) => artifact.kind === 'synthesis').length, 1);
+    assert.equal(completed.interventions.length, 2);
+    const finalArtifact = completed.artifacts.find((artifact) => artifact.kind === 'synthesis');
+    const finalContent = runtime.getPlanCouncilArtifact({ workflowId: started.workflowId, artifactId: finalArtifact.artifactId }).content;
+    assert.match(finalContent, /Only one deployment host is required/);
+    assert.match(finalContent, /Retain any unresolved recovery risks/);
     assert.equal(runtime.getState().sessions[completed.synthesizerSessionId].status, 'idle');
     const councilUsage = runtime.getState().usageFacts.filter((fact) => completed.participantOrder.includes(fact.sessionId));
     assert.equal(councilUsage.length, 7, 'each Plan Council provider turn has a durable usage fact');
@@ -205,9 +218,10 @@ test('a hard budget blocks Council without discarding peers and human retry resu
     );
     assert.equal(runtime.getState().planCouncils[started.workflowId].phase, 'blocked');
 
+    await runtime.dispatchCommand({ kind: 'set_resource_policy', actor: { kind: 'human' }, input: { scopeId: 'global', maxToolCallsPerTurn: 3, consumptionEnforcement: 'hard' } });
     await runtime.dispatchCommand({
       commandId: 'retry-budget-participant', kind: 'retry_plan_council_participant', actor: { kind: 'human' },
-      input: { workflowId: started.workflowId, disableConsumptionBudget: true },
+      input: { workflowId: started.workflowId },
     });
     const recovered = await waitFor('retried proposal Barrier release', () => {
       const council = runtime.getState().planCouncils[started.workflowId];
@@ -215,7 +229,7 @@ test('a hard budget blocks Council without discarding peers and human retry resu
     });
     assert.equal(recovered.artifacts.filter((artifact) => artifact.kind === 'proposal').length, 3);
     assert.equal(runtime.getState().barriers[proposalBarrierId].status, 'released', 'retry continues the original generation');
-    assert.equal(runtime.getState().resourcePolicies.global.consumptionEnforcement, 'off');
+    assert.equal(runtime.getState().resourcePolicies.global.consumptionEnforcement, 'hard', 'retry preserves the raised hard limit');
     assert.equal(runtime.getKernelEvents({ type: 'council.participant-retried' }).events.length, 1);
   } finally { cleanup(); }
 });
@@ -367,13 +381,21 @@ test('stopped Plan Council never starts another phase and ignores settling turns
     const started = await runtime.startPlanCouncil(councilInput);
     const stopped = runtime.stopPlanCouncil({ workflowId: started.workflowId });
     assert.equal(stopped.council.phase, 'stopped');
+    const artifactsAtStop = stopped.council.artifacts.length;
+    // Provider close removes the run before its queued terminal projection settles.
+    // A fast participant may also have published before stop was requested.
+    await waitFor('stopped Council participants settled', () => {
+      const state = runtime.getState();
+      return stopped.council.participantOrder.every((id) => !['running', 'pending'].includes(state.sessions[id].status)) &&
+        !(state.runQueue ?? []).some((entry) => stopped.council.participantOrder.includes(entry.sessionId));
+    });
     await assert.rejects(
       runtime.startPlanCouncilCrossReview({ workflowId: started.workflowId }),
       /all proposals must be ready/,
     );
     await delay(650);
     assert.equal(runtime.getState().planCouncils[started.workflowId].phase, 'stopped');
-    assert.equal(runtime.getState().planCouncils[started.workflowId].artifacts.length, 0);
+    assert.equal(runtime.getState().planCouncils[started.workflowId].artifacts.length, artifactsAtStop);
   } finally {
     cleanup();
   }

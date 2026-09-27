@@ -1,3 +1,4 @@
+import type { CollaborationSession } from '@shared/collaboration';
 import type {
   ChatAttachment,
   NativeProviderEvent,
@@ -1025,6 +1026,7 @@ export type GraphState = {
   subscriptions?: Record<string, Subscription>;
   pendingActivations?: Record<string, PendingActivation>;
   planCouncils?: Record<string, PlanCouncil>;
+  collaborationSessions?: Record<string, CollaborationSession>;
   workflowPlans?: Record<string, Record<string, WorkflowPlan>>;
   workflowProposals?: Record<string, WorkflowProposal>;
   workflowCapabilities?: Record<string, ScopeWorkflowCapability>;
@@ -1523,6 +1525,7 @@ export function createEmptyGraphState(): GraphState {
     subscriptions: {},
     pendingActivations: {},
     planCouncils: {},
+    collaborationSessions: {},
     workflowPlans: {},
     workflowProposals: {},
     workflowCapabilities: {},

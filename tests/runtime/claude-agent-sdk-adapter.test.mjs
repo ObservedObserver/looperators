@@ -74,6 +74,8 @@ test('ClaudeAgentSdkTurnRun resolves pending permission requests as canceled on 
 })
 
 test('Claude runtime mode maps to SDK permissionMode options', () => {
+  assert.deepEqual(claudeRuntimeOptions({ runtimeMode: 'approval-required', sandbox: 'read-only' }), { permissionMode: 'plan' })
+  assert.deepEqual(claudeRuntimeOptions({ runtimeMode: 'full-access', sandbox: 'read-only' }), { permissionMode: 'plan' })
   assert.equal(
     claudePermissionModeForRuntime({ runtimeMode: 'approval-required' }),
     'default'
