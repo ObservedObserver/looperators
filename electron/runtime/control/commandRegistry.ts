@@ -24,6 +24,18 @@ function defineKernelCommandPolicies<
 // policy, and post-commit policy must be declared together so adding a command
 // cannot silently skip workflow journaling or version semantics.
 export const kernelCommandPolicies = defineKernelCommandPolicies({
+  create_collaboration_session: { automaticallyJournaledWorkflow: true },
+  post_collaboration_message: {},
+  start_collaboration_discussion: {},
+  update_collaboration_discussion: {},
+  retry_collaboration_member: {},
+  archive_collaboration_session: {},
+  attach_collaboration_council: {},
+  read_collaboration_updates: { affectsControlVersion: false },
+  set_discussion_assessment: {},
+  dispatch_collaboration_trigger: { automaticallyJournaledWorkflow: true },
+  collaboration_member_settled: { affectsControlVersion: false },
+  recover_collaboration_sessions: { affectsControlVersion: false },
   create_session: { automaticallyJournaledWorkflow: true },
   fork_session: { automaticallyJournaledWorkflow: true },
   resume_session: { automaticallyJournaledWorkflow: true },

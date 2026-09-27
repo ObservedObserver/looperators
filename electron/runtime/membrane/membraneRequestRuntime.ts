@@ -16,6 +16,8 @@ import { activeReviewPairRole } from '../workflows/classicWorkflows.js'
 import { nextCouncilBarrierGeneration } from '../workflows/planCouncil.js'
 
 export interface MembraneRequestRuntimeHost {
+  collaborationMember(source: string): boolean
+  handleCollaborationTool(tool: string, source: string, input: JsonRecord): Promise<JsonRecord>
   state(): JsonRecord
   dispatchCommand(command: JsonRecord): Promise<JsonRecord>
   workflowKernel(): WorkflowKernel
@@ -41,6 +43,9 @@ export class MembraneRequestRuntime {
       throw new Error(`Unknown membrane source session: ${source}`)
     }
 
+    const collaborationTools = ['read_collaboration_updates', 'post_collaboration_message', 'set_discussion_assessment']
+    if (collaborationTools.includes(tool)) return this.#host.handleCollaborationTool(tool, source, isObject(input) ? input : {})
+    if (this.#host.collaborationMember(source)) throw new Error('Collaboration members may only read, publish, and assess their shared discussion; session control is owned by the runtime.')
     const actor = this.membraneActor(source)
     const request = isObject(input) ? input : {}
 

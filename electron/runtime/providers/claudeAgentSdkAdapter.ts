@@ -99,6 +99,7 @@ export function claudeSessionContinuationOptions(
  */
 export function claudePermissionModeForRuntime(runtimeSettings) {
   const settings = runtimeSettings ?? {}
+  if (settings.sandbox === 'read-only') return 'plan'
   switch (settings.runtimeMode) {
     case 'full-access':
       return 'bypassPermissions'
@@ -930,6 +931,9 @@ class ClaudeAgentSdkSessionController {
           ? { allowDangerouslySkipPermissions: true }
           : {}),
         includePartialMessages: true,
+        ...(runtimeSettings?.sandbox === 'read-only'
+          ? { disallowedTools: ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task', 'ExitPlanMode'] }
+          : {}),
         strictMcpConfig: false,
         canUseTool: (toolName, toolInput, options) =>
           this.#handleCanUseTool(toolName, toolInput, options),
@@ -1087,7 +1091,9 @@ class ClaudeAgentSdkSessionController {
       throw new Error('Claude Agent SDK does not support dynamic MCP servers.')
     }
 
-    const handoff = createMcpHandoff(membrane)
+    // Collaboration has three required tools. Expose their full definitions
+    // on every turn instead of making the member discover deferred schemas.
+    const handoff = createMcpHandoff(membrane, { alwaysLoadTools: membrane.toolProfile === 'collaboration' })
     try {
       await this.#query.setMcpServers(mcpServersFromHandoff(handoff) ?? {})
     } catch (error) {

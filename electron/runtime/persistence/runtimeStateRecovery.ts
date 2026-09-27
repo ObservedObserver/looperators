@@ -1,3 +1,4 @@
+import { normalizeCollaborationSessions } from '../collaboration/collaborationRecovery.js'
 // Runtime state recovery: durable/legacy snapshot loading, storage-schema
 // normalization of every persisted slice (sessions, nodes, edges, clusters,
 // subscriptions, workflows, councils, barriers...), repair diagnostics, and
@@ -485,6 +486,7 @@ export function normalizeState(
       source.pendingActivations,
       diagnostics,
     ),
+    collaborationSessions: normalizeCollaborationSessions(source.collaborationSessions, diagnostics),
     planCouncils: normalizePlanCouncils(
       source.planCouncils,
       diagnostics,

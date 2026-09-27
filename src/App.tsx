@@ -1,3 +1,4 @@
+import { CollaborationWorkspacePanel } from '@/components/collaboration-workspace-panel';
 import '@xyflow/react/dist/style.css';
 import { type KeyboardEvent as ReactKeyboardEvent, useRef, useState } from 'react';
 import { Activity, PanelRightOpen } from 'lucide-react';
@@ -42,6 +43,9 @@ function App() {
   const [workflowNotice, setWorkflowNotice] = useState<string>();
   const [openLoopId, setOpenLoopId] = useState<string>();
   const [openPlanCouncilId, setOpenPlanCouncilId] = useState<string>();
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>();
+  const [returnToWorkspaceId, setReturnToWorkspaceId] = useState<string>();
+  const [workspaceDraft, setWorkspaceDraft] = useState<{ workspaceId: string; text: string }>();
   const workflowCloseRequestRef = useRef<(() => void) | undefined>(undefined);
 
   const core = useRuntimeCore();
@@ -238,7 +242,7 @@ function App() {
       newProviderInstance,
     },
   });
-  const showGraphSurface = activeTab !== 'agents';
+  const showGraphSurface = activeTab !== 'agents' && activeTab !== 'workspace';
 
   return (
     <TooltipProvider>
@@ -251,6 +255,19 @@ function App() {
           interactions={interactions}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
+          selectedWorkspaceId={selectedWorkspaceId}
+          onNewWorkspace={() => {
+            setOpenPlanCouncilId(undefined);
+            setSelectedWorkspaceId(undefined);
+            setReturnToWorkspaceId(undefined);
+            setActiveTab('workspace');
+          }}
+          onOpenWorkspace={(id) => {
+            setOpenPlanCouncilId(undefined);
+            setSelectedWorkspaceId(id);
+            setReturnToWorkspaceId(undefined);
+            setActiveTab('workspace');
+          }}
           onStartWorkflow={() => {
             setGraphCollapsed(false);
             setIsWorkflowLibraryOpen(true);
@@ -270,6 +287,46 @@ function App() {
           ) : null}
           <RuntimeDiagnosticsToast diagnostics={runtimeDiagnostics} sessions={sessions} />
           <div className="app-region-no-drag flex min-h-0 flex-1 flex-col overflow-hidden">
+            {activeTab === 'chat' &&
+            returnToWorkspaceId &&
+            runtimeState.collaborationSessions?.[returnToWorkspaceId]?.members.some((member) => member.sessionId === selectedSessionId) ? (
+              <div className="border-b border-border px-4 py-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedWorkspaceId(returnToWorkspaceId);
+                    setActiveTab('workspace');
+                    setReturnToWorkspaceId(undefined);
+                  }}
+                >
+                  ← Back to group chat
+                </Button>
+                <span className="ml-2 text-xs text-muted-foreground">Private member chat</span>
+              </div>
+            ) : null}
+            {activeTab === 'workspace' || selectedWorkspaceId ? (
+              <div className={cn('min-h-0 flex-1 flex-col', activeTab === 'workspace' ? 'flex' : 'hidden')}>
+                <CollaborationWorkspacePanel
+                  key={selectedWorkspaceId ?? 'new-workspace'}
+                  runtimeApi={runtimeApi}
+                  runtimeState={runtimeState}
+                  defaultCwd={newCwd}
+                  workspaceId={selectedWorkspaceId}
+                  initialMessage={workspaceDraft && workspaceDraft.workspaceId === selectedWorkspaceId ? workspaceDraft.text : undefined}
+                  onInitialMessageConsumed={() => setWorkspaceDraft((current) => (current?.workspaceId === selectedWorkspaceId ? undefined : current))}
+                  onSelectWorkspace={setSelectedWorkspaceId}
+                  onStateChange={acceptRuntimeState}
+                  onError={setRuntimeError}
+                  onOpenMember={(sessionId) => {
+                    setSelectedSessionId(sessionId);
+                    setReturnToWorkspaceId(selectedWorkspaceId);
+                    setActiveTab('chat');
+                  }}
+                  onOpenCouncil={setOpenPlanCouncilId}
+                />
+              </div>
+            ) : null}
             {activeTab === 'orchestrate' ? (
               <OrchestratePanel
                 core={core}
@@ -409,7 +466,25 @@ function App() {
               onStateChange={acceptRuntimeState}
               onError={setRuntimeError}
               onClose={() => setOpenPlanCouncilId(undefined)}
-              onOpenGraph={() => setOpenPlanCouncilId(undefined)}
+              onOpenGraph={() => {
+                setOpenPlanCouncilId(undefined);
+                setActiveTab('chat');
+                setGraphCollapsed(false);
+              }}
+              onContinueDiscussion={
+                Object.values(runtimeState.collaborationSessions ?? {}).some((workspace) => workspace.councilIds.includes(openPlanCouncil.workflowId))
+                  ? (context) => {
+                      const workspace = Object.values(runtimeState.collaborationSessions ?? {}).find((item) =>
+                        item.councilIds.includes(openPlanCouncil.workflowId),
+                      );
+                      if (!workspace) return;
+                      setSelectedWorkspaceId(workspace.sessionId);
+                      setWorkspaceDraft({ workspaceId: workspace.sessionId, text: context });
+                      setActiveTab('workspace');
+                      setOpenPlanCouncilId(undefined);
+                    }
+                  : undefined
+              }
               onOpenParticipant={(sessionId) => {
                 setSelectedSessionId(sessionId);
                 setActiveTab('chat');

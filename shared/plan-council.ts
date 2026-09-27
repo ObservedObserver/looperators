@@ -1,3 +1,5 @@
+import { councilBriefInstruction } from './council-brief.js'
+
 export const planCouncilPhases = [
   'configured',
   'drafting-plans',
@@ -26,6 +28,7 @@ export type PlanCouncilRuntimeSettings = {
 export type PlanCouncilAgentSpec = {
   key: string
   label: string
+  instructions?: string
   providerKind: 'claude-code' | 'codex' | 'grok'
   providerInstanceId: string
   runtimeSettings: PlanCouncilRuntimeSettings
@@ -94,6 +97,8 @@ export type PlanCouncil = {
   participantOrder: string[]
   participants: Record<string, PlanCouncilParticipant>
   artifacts: PlanCouncilArtifact[]
+  supersededArtifactIds?: string[]
+  interventions?: { id: string; phase: string; text: string; createdAt: string }[]
   history: PlanCouncilHistoryEntry[]
   createdAt: string
   updatedAt: string
@@ -219,7 +224,7 @@ export function validatePlanCouncilStart(
   return { ok: issues.length === 0, issues }
 }
 
-export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel?: string) {
+export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel?: string, instructions?: string) {
   return [
     'You are an independent Planner in an Orrery Plan Council.',
     'This is the independent proposal phase. No peer proposal has been delivered yet; cross-review will happen in a later activation.',
@@ -227,6 +232,7 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
     'Use provider-native file read/search tools when needed. If the provider exposes reads through a shell-backed tool, issue exactly one read-only file read or search command per tool call; never chain commands, use shell control operators, or add formatting commands. Do not edit files, create commits, or start other Agents.',
     `Planning task: ${trimmed(objective)}`,
     trimmed(roleLabel) ? `Your independent perspective: ${trimmed(roleLabel)}. Use that perspective as an emphasis, while still covering the whole task.` : undefined,
+    trimmed(instructions) ? `Your responsibility: ${trimmed(instructions)}` : undefined,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'Produce a concrete implementation plan with architecture, important tradeoffs, risks, staged tasks, and verification. State uncertainties explicitly. Keep the response under 1,400 words, prioritize decisions over boilerplate, then stop.',
   ].filter(Boolean).join('\n\n')
@@ -235,9 +241,20 @@ export function plannerPrompt(objective: string, reviewFocus?: string, roleLabel
 export function crossReviewPrompt(reviewFocus?: string) {
   return [
     'Cross-review the other planners\' proposals delivered in your context channel.',
-    'Use only the delivered proposal context. Do not inspect the project workspace, run shell commands, revise your original proposal, or edit files.',
+    'Use only the delivered proposal context. Do not inspect the project workspace, revise your original proposal, or edit files. Read the complete inline evidence directly. If a source is explicitly deferred to a file, use its exact delivered path with a native read tool or one read-only shell-backed file read; never construct paths or chain commands.',
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'For each peer proposal, cite at least one specific claim or design choice. Identify agreements, conflicts, missing constraints, and recommended changes. Finish with the decisions a synthesizer should make. Keep the response under 900 words, then stop.',
+  ].filter(Boolean).join('\n\n')
+}
+
+export function councilVerificationPrompt(objective: string, focus: string, reviewFocus?: string) {
+  return [
+    'You are a specialist checking one unresolved question in a looperators plan comparison.',
+    `Original task: ${trimmed(objective)}`,
+    `Question to investigate: ${trimmed(focus)}`,
+    trimmed(reviewFocus) ? `Shared constraints and user updates: ${trimmed(reviewFocus)}` : undefined,
+    'Read the delivered proposals and reviews. You may inspect the project workspace with read-only file/search tools to verify the disputed facts. Do not edit files, start other Agents, or inspect other sessions.',
+    'Cite concrete file paths and lines or the exact proposal claim. Explain what the evidence supports, what it contradicts, and what remains uncertain. Do not claim agreement on behalf of other participants. Keep the response under 900 words, then stop.',
   ].filter(Boolean).join('\n\n')
 }
 
@@ -247,7 +264,8 @@ export function synthesizerPrompt(objective: string, reviewFocus?: string) {
     `Original planning task: ${trimmed(objective)}`,
     trimmed(reviewFocus) ? `Review focus: ${trimmed(reviewFocus)}` : undefined,
     'Read every proposal and peer review delivered in your context channel.',
-    'Use only the delivered proposal and peer-review context. Do not inspect the project workspace or run shell commands; all required evidence has already been delivered.',
+    'Use only the delivered proposal and peer-review context. Do not inspect the project workspace. Read the complete inline evidence directly. If a source is explicitly deferred to a file, use its exact delivered path with a native read tool or one read-only shell-backed file read; never construct paths or chain commands.',
     'Produce one final plan with: consensus, material disagreements, explicit choices and reasons, rejected alternatives, staged implementation tasks, risks, and a concrete verification plan. Keep the response under 1,800 words. Do not edit files, then stop.',
+    councilBriefInstruction,
   ].filter(Boolean).join('\n\n')
 }

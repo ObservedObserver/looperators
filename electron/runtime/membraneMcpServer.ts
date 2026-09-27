@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
+const collaborationTransportId = randomUUID()
 
 function loadBridgeCredentials() {
   const bootstrapFile = process.env.ORRERY_MEMBRANE_BOOTSTRAP_FILE
@@ -17,15 +19,32 @@ function loadBridgeCredentials() {
     return {
       bridgeUrl: parsed.bridgeUrl,
       bearerToken: parsed.token,
+      toolProfile: parsed.toolProfile,
     }
   }
 
-  return { bridgeUrl: undefined, bearerToken: undefined }
+  return { bridgeUrl: undefined, bearerToken: undefined, toolProfile: undefined }
 }
 
-const { bridgeUrl, bearerToken } = loadBridgeCredentials()
+const { bridgeUrl, bearerToken, toolProfile } = loadBridgeCredentials()
+const collaborationTools = new Set(['read_collaboration_updates', 'post_collaboration_message', 'set_discussion_assessment'])
 
 const tools = [
+  {
+    name: 'read_collaboration_updates',
+    description: 'Collaboration members only. Read shared updates for the current room, reply thread, or goal discussion. The runtime selects the scope of this turn. Returns paged events, current goal/cohort revisions, latestSubstantiveSeq, and open issues. Read all pages before assessing; never use shell commands to read private sessions.',
+    inputSchema: { type: 'object', properties: { afterSeq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false },
+  },
+  {
+    name: 'post_collaboration_message',
+    description: 'Collaboration members only. Explicitly publish a shared reply in the current room, reply thread, or goal discussion. The runtime keeps it in the scope of this turn. Private final assistant text is not shared. To resolve an objection, attach its stable issueId and status resolved with supporting explanation.',
+    inputSchema: { type: 'object', properties: { content: { type: 'string' }, issue: { type: 'object', properties: { issueId: { type: 'string' }, summary: { type: 'string' }, status: { type: 'string', enum: ['open', 'resolved'] } }, required: ['issueId', 'summary', 'status'], additionalProperties: false } }, required: ['content'], additionalProperties: false },
+  },
+  {
+    name: 'set_discussion_assessment',
+    description: 'Collaboration goal discussion only. Assess the latest read goal/cohort/substantive revision. satisfied must not introduce new facts. not_satisfied/blocked requires a stable issueId; a new objection is shared automatically. Repeated identical issue+reason does not wake peers. A turn must finish before its assessment can complete a discussion.',
+    inputSchema: { type: 'object', properties: { verdict: { type: 'string', enum: ['satisfied', 'not_satisfied', 'blocked'] }, reason: { type: 'string' }, issueId: { type: 'string' }, goalRevision: { type: 'integer' }, cohortRevision: { type: 'integer' }, basedOnSeq: { type: 'integer' } }, required: ['verdict', 'reason', 'goalRevision', 'cohortRevision', 'basedOnSeq'], additionalProperties: false },
+  },
   {
     name: 'create_session',
     description:
@@ -586,19 +605,22 @@ async function handleMessage(message) {
   }
 
   if (message.method === 'tools/list') {
-    respond(message.id, { tools })
+    respond(message.id, { tools: toolProfile === 'collaboration' ? tools.filter((tool) => collaborationTools.has(tool.name)) : tools })
     return
   }
 
   if (message.method === 'tools/call') {
     const toolName = message.params?.name
-    if (!tools.some((tool) => tool.name === toolName)) {
+    if (!tools.some((tool) => tool.name === toolName) || (toolProfile === 'collaboration' && !collaborationTools.has(toolName))) {
       fail(message.id, -32602, `Unknown tool: ${toolName}`)
       return
     }
 
     try {
-      const result = await callBridge(toolName, message.params?.arguments)
+      const argumentsWithIdentity = ['read_collaboration_updates', 'post_collaboration_message', 'set_discussion_assessment'].includes(toolName)
+        ? { ...message.params?.arguments, __collaborationCallId: `${collaborationTransportId}:${message.id}` }
+        : message.params?.arguments
+      const result = await callBridge(toolName, argumentsWithIdentity)
       respond(message.id, {
         content: [
           {

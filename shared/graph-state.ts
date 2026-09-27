@@ -618,6 +618,7 @@ export function createEmptyGraphState() {
     reports: [],
     subscriptions: {},
     pendingActivations: {},
+    collaborationSessions: {},
     planCouncils: {},
     workflowPlans: {},
     workflowProposals: {},

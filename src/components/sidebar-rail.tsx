@@ -1,4 +1,19 @@
-import { Archive, Bot, MessagesSquare, Orbit, type LucideIcon, ArchiveRestore, FileText, GitBranch, MessageSquarePlus, Search, Workflow, X } from 'lucide-react';
+import { workspaceMatchesSearch } from '@/lib/collaboration-display';
+import {
+  Users,
+  Archive,
+  Bot,
+  MessagesSquare,
+  Orbit,
+  type LucideIcon,
+  ArchiveRestore,
+  FileText,
+  GitBranch,
+  MessageSquarePlus,
+  Search,
+  Workflow,
+  X,
+} from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
@@ -34,6 +49,9 @@ type SidebarRailProps = {
   activeTab: RailTab;
   setActiveTab: Dispatch<SetStateAction<RailTab>>;
   onStartWorkflow: () => void;
+  onNewWorkspace: () => void;
+  onOpenWorkspace: (id: string) => void;
+  selectedWorkspaceId?: string;
 };
 
 type SessionTier = 'attention' | 'running' | 'recent';
@@ -61,7 +79,18 @@ function SectionHeader({ label, count, toneCls }: { label: string; count?: numbe
   );
 }
 
-export function SidebarRail({ core, sessionList, actions, interactions, activeTab, setActiveTab, onStartWorkflow }: SidebarRailProps) {
+export function SidebarRail({
+  core,
+  sessionList,
+  actions,
+  interactions,
+  activeTab,
+  setActiveTab,
+  onStartWorkflow,
+  onNewWorkspace,
+  onOpenWorkspace,
+  selectedWorkspaceId,
+}: SidebarRailProps) {
   const {
     runtimeClient,
     isRuntimeAvailable,
@@ -92,6 +121,10 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
     setSelectedSessionId(sessionId);
     setActiveTab('chat');
   };
+
+  const workspaceEntries = Object.values(runtimeState.collaborationSessions ?? {})
+    .filter((workspace) => (showArchivedSessions || !workspace.archived) && workspaceMatchesSearch(workspace, sessionSearch))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   const entries: SessionEntry[] = filteredSessions.map((session) => {
     const node = runtimeState.nodes.find((candidate) => candidate.sessionId === session.sessionId);
@@ -356,6 +389,10 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
           <MessageSquarePlus className="size-4" />
           New Chat
         </Button>
+        <Button className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]" variant="outline" onClick={onNewWorkspace}>
+          <Users className="size-4" />
+          New group chat
+        </Button>
         <Button className="h-9 w-full justify-center font-mono text-[12px] uppercase tracking-[0.08em]" variant="outline" onClick={onStartWorkflow}>
           <Workflow className="size-4" />
           New Workflow
@@ -404,7 +441,7 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
                   value={sessionSearch}
                   spellCheck={false}
                   placeholder="Search chats"
-                  title="Search by label, id, provider, cwd, status, or messages"
+                  title="Search chats, group names, members, threads, or shared messages"
                   onChange={(event) => setSessionSearch(event.target.value)}
                 />
                 {sessionSearch.trim().length > 0 ? (
@@ -430,20 +467,56 @@ export function SidebarRail({ core, sessionList, actions, interactions, activeTa
                 )}
                 onClick={() => setShowArchivedSessions((current) => !current)}
               >
-                {showArchivedSessions ? 'All' : `Hidden ${archivedSessionCount}`}
+                {showArchivedSessions
+                  ? 'All'
+                  : `Hidden ${archivedSessionCount + Object.values(runtimeState.collaborationSessions ?? {}).filter((workspace) => workspace.archived).length}`}
               </button>
             </div>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-            {sessions.length === 0 ? (
+            {sessions.length === 0 && workspaceEntries.length === 0 ? (
               <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">No chats yet.</div>
             ) : null}
 
-            {sessions.length > 0 && filteredSessions.length === 0 ? (
+            {sessions.length > 0 && filteredSessions.length === 0 && workspaceEntries.length === 0 ? (
               <div className="rounded-lg border border-dashed border-ink-line bg-ink p-5 text-center font-mono text-sm text-term-dim2">
                 No chats match the current search.
               </div>
+            ) : null}
+
+            {workspaceEntries.length > 0 ? (
+              <>
+                <SectionHeader label="Group chats" count={workspaceEntries.length} toneCls="text-term-cyan" />
+                <div className="space-y-1.5">
+                  {workspaceEntries.map((workspace) => {
+                    const discussion = workspace.activeDiscussionId ? workspace.discussions[workspace.activeDiscussionId] : undefined;
+                    const attention = workspace.members.some((member) => member.attention);
+                    return (
+                      <button
+                        key={workspace.sessionId}
+                        type="button"
+                        onClick={() => onOpenWorkspace(workspace.sessionId)}
+                        className={cn(
+                          'w-full rounded-lg border p-3 text-left transition hover:bg-accent',
+                          activeTab === 'workspace' && selectedWorkspaceId === workspace.sessionId ? 'border-accent-ink/40 bg-accent-ink/10' : 'border-border',
+                          workspace.archived && 'opacity-60',
+                        )}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Users className="size-4 shrink-0 text-term-cyan" />
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.title}</span>
+                        </span>
+                        <span className="mt-1 block truncate text-xs text-muted-foreground">{workspace.members.map((member) => member.label).join(', ')}</span>
+                        <span className={cn('mt-2 block text-xs', attention ? 'text-destructive' : 'text-muted-foreground')}>
+                          {workspace.archived ? 'Archived' : attention ? 'Needs attention' : discussion ? `Together · ${discussion.status}` : 'Group chat'} ·{' '}
+                          {compactTime(workspace.updatedAt)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
             ) : null}
 
             {attentionEntries.length > 0 ? (

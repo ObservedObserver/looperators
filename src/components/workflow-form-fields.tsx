@@ -20,7 +20,13 @@ export function AgentRuntimeFields({
   modelCatalogs,
   idPrefix,
   onChange,
+  hideRuntime = false,
+  comfortable = false,
+  allowedProviderKinds,
 }: {
+  allowedProviderKinds?: ProviderKind[];
+  hideRuntime?: boolean;
+  comfortable?: boolean;
   value: AgentRuntimeConfigValue;
   instances: ProviderInstance[];
   modelCatalogs?: GraphState['providerModelCatalogs'];
@@ -36,22 +42,32 @@ export function AgentRuntimeFields({
       model: '',
       reasoningEffort: reasoningEfforts.includes(value.reasoningEffort)
         ? value.reasoningEffort
-        : (reasoningEfforts.includes('medium') ? 'medium' : (reasoningEfforts[0] ?? value.reasoningEffort)),
+        : reasoningEfforts.includes('medium')
+          ? 'medium'
+          : (reasoningEfforts[0] ?? value.reasoningEffort),
       runtimeMode: providerCapability(providerKind).runtimeModes[0]?.id ?? defaultProviderRuntimeSettings.runtimeMode,
     });
   };
 
   return (
-    <div className="space-y-2">
+    <div
+      className={
+        comfortable
+          ? 'space-y-3 [&_input]:h-10 [&_input]:text-sm [&_select]:h-10 [&_select]:text-sm [&_span]:text-xs [&_span]:normal-case [&_span]:tracking-normal'
+          : 'space-y-2'
+      }
+    >
       <div className="grid grid-cols-2 gap-2">
         <label className="space-y-1">
           <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Provider</span>
           <select className={fieldClass} value={value.providerKind} onChange={(event) => updateProvider(event.target.value as ProviderKind)}>
-            {providerOptions.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
+            {providerOptions
+              .filter((option) => !allowedProviderKinds || allowedProviderKinds.includes(option.id))
+              .map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
           </select>
         </label>
         <label className="space-y-1">
@@ -88,24 +104,26 @@ export function AgentRuntimeFields({
             ))}
           </datalist>
         </label>
-        <label className="space-y-1">
-          <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Runtime</span>
-          <select
-            className={fieldClass}
-            value={value.runtimeMode}
-            onChange={(event) => onChange({ ...value, runtimeMode: event.target.value as ProviderRuntimeMode })}
-          >
-            {providerCapability(value.providerKind).runtimeModes.length > 0 ? (
-              providerCapability(value.providerKind).runtimeModes.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))
-            ) : (
-              <option value="approval-required">CLI default</option>
-            )}
-          </select>
-        </label>
+        {hideRuntime ? null : (
+          <label className="space-y-1">
+            <span className="text-[9.5px] uppercase tracking-[0.1em] text-muted-foreground">Runtime</span>
+            <select
+              className={fieldClass}
+              value={value.runtimeMode}
+              onChange={(event) => onChange({ ...value, runtimeMode: event.target.value as ProviderRuntimeMode })}
+            >
+              {providerCapability(value.providerKind).runtimeModes.length > 0 ? (
+                providerCapability(value.providerKind).runtimeModes.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))
+              ) : (
+                <option value="approval-required">CLI default</option>
+              )}
+            </select>
+          </label>
+        )}
       </div>
       {providerSupportsReasoningEffort(value.providerKind) ? (
         <label className="block space-y-1">

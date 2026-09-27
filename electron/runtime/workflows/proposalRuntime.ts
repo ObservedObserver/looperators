@@ -207,6 +207,7 @@ export class WorkflowProposalRuntime {
             ...providerFor(planner, { readOnly: true }),
             key: optionalTrimmedString(planner?.key) ?? `planner-${index + 1}`,
             label: optionalTrimmedString(planner?.label) ?? `Planner ${index + 1}`,
+            ...(optionalTrimmedString(planner?.instructions) ? { instructions: planner.instructions.trim() } : {}),
             runtimeSettings: {
               ...providerFor(planner, { readOnly: true }).runtimeSettings,
               interactionMode: 'plan',

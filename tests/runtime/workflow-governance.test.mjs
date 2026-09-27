@@ -822,12 +822,15 @@ test('Council patch adds a specialist reviewer, resynthesizes, and continues int
       kind: 'abort_workflow_proposal', actor: { kind: 'master', ref: fixture.masterSessionId },
       input: { proposalId: 'patch-council-unsupported', reason: 'Use a supported Council Patch.' },
     })
+    await runtime.startPlanCouncilCrossReview({ workflowId: fixture.councilWorkflowId })
+    await waitFor('peer reviews ready before specialist patch', () =>
+      runtime.getState().planCouncils[fixture.councilWorkflowId]?.phase === 'ready-for-synthesis')
     await runtime.dispatchCommand({
       commandId: 'patch-council-db-reviewer', idempotencyKey: 'patch-council-db-reviewer',
       kind: 'propose_workflow_patch', actor: { kind: 'master', ref: fixture.masterSessionId },
       input: {
         proposalId: 'patch-council-db-reviewer', workflowId: fixture.workflowId, baseVersion: 1,
-        reason: 'Add a database specialist before peer review.',
+        reason: 'Add a database specialist before synthesis.',
         operations: [{
           op: 'add-verifier', observes: ['planner:a'],
           verifier: {
@@ -852,8 +855,12 @@ test('Council patch adds a specialist reviewer, resynthesizes, and continues int
     const specialistId = patched.executionMapping.participantSessionIds['database-reviewer']
     assert.ok(specialistId)
     assert.equal(runtime.getState().planCouncils[fixture.councilWorkflowId].participants[specialistId].role, 'reviewer')
+    const specialistActivation = await waitFor('specialist activation', () =>
+      runtime.getState().sessions[specialistId].messages.filter((message) => message.role === 'user').at(-1)?.content)
+    assert.match(specialistActivation, /All deliveries are included inline/)
+    assert.doesNotMatch(specialistActivation, /Read the delivered files before acting on this activation/)
+    assert.doesNotMatch(specialistActivation, /Inbox directory:/)
 
-    await runtime.startPlanCouncilCrossReview({ workflowId: fixture.councilWorkflowId })
     await waitFor('specialist and peer reviews ready', () =>
       runtime.getState().planCouncils[fixture.councilWorkflowId]?.phase === 'ready-for-synthesis')
     assert.ok(runtime.getState().planCouncils[fixture.councilWorkflowId].artifacts.some(

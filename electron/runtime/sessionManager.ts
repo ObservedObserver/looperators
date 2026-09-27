@@ -1,3 +1,4 @@
+import { CollaborationRuntime, type CollaborationContext } from './collaboration/collaborationRuntime.js'
 // RuntimeSessionManager: the runtime kernel's stateful orchestration core.
 // This file is deliberately large because it holds one causal chain --
 // command dispatch -> transaction -> scheduler -> run execution -> commit --
@@ -375,9 +376,25 @@ export class RuntimeSessionManager {
       this.#sessionRuntime.settleDynamicSpawnChild(sessionId, outcome, error),
     emitRuntimeEvent: (event) => this.#emitRuntimeEvent(event),
   })
+  #collaboration = new CollaborationRuntime({
+    state: () => this.#state,
+    getState: () => this.getState(),
+    createSession: (input, ctx) => this.#sessionCommands.cmdCreateSession(input, ctx, { deferStart: true }),
+    activate: (input, ctx) => this.#sessionCommands.cmdActivate(input, ctx),
+    dispatch: (command) => this.dispatchCommand(command),
+    stageEffect: (label, run) => this.#commandExecutor.stagePostCommitEffect({ label, run }),
+    touch: () => this.#touch(),
+    broadcast: (event) => this.#broadcast(event),
+    appendEvent: (type, payload, ctx) => this.#appendKernelEvent(type, payload, ctx),
+    runId: (sessionId) => this.#runContext.get(sessionId)?.runId,
+    isBusy: (sessionId) => this.#runs.has(sessionId) ||
+      (this.#state.runQueue ?? []).some((run) => run.sessionId === sessionId),
+  })
   #membraneRequests = new MembraneRequestRuntime({
     state: () => this.#state,
     dispatchCommand: (command) => this.dispatchCommand(command),
+    collaborationMember: (source) => Boolean(this.#collaboration.memberForSession(source)),
+    handleCollaborationTool: (tool, source, input) => this.#collaboration.handleTool(tool, source, input),
     workflowKernel: () => this.#wf(),
     workflowActorScopeId: (ctx, requestedScopeId) =>
       this.#workflowActorScopeId(ctx, requestedScopeId),
@@ -394,6 +411,18 @@ export class RuntimeSessionManager {
     masterClusterId: (sessionId) => this.#masterClusterId(sessionId),
   })
   #commandRegistry = createKernelCommandRegistry({
+    create_collaboration_session: (input, ctx) => this.#collaboration.create(input, ctx as CollaborationContext),
+    post_collaboration_message: (input, ctx) => this.#collaboration.post(input, ctx as CollaborationContext),
+    start_collaboration_discussion: (input, ctx) => this.#collaboration.start(input, ctx as CollaborationContext),
+    update_collaboration_discussion: (input, ctx) => this.#collaboration.update(input, ctx as CollaborationContext),
+    retry_collaboration_member: (input, ctx) => this.#collaboration.retry(input, ctx as CollaborationContext),
+    archive_collaboration_session: (input, ctx) => this.#collaboration.archive(input, ctx as CollaborationContext),
+    attach_collaboration_council: (input, ctx) => this.#collaboration.attachCouncil(input, ctx as CollaborationContext),
+    read_collaboration_updates: (input, ctx) => this.#collaboration.read(input, ctx as CollaborationContext),
+    set_discussion_assessment: (input, ctx) => this.#collaboration.assess(input, ctx as CollaborationContext),
+    dispatch_collaboration_trigger: (input, ctx) => this.#collaboration.dispatchTrigger(input, ctx as CollaborationContext),
+    collaboration_member_settled: (input, ctx) => this.#collaboration.settled(input, ctx as CollaborationContext),
+    recover_collaboration_sessions: (input, ctx) => this.#collaboration.recover(input, ctx as CollaborationContext),
     create_session: (input, ctx) =>
       this.#sessionCommands.cmdCreateSession(input, ctx),
     fork_session: (input, ctx) =>
@@ -584,6 +613,7 @@ export class RuntimeSessionManager {
           this.#workflowDeploymentCrashAfterStage,
         reviveAutonomousDrains: () => {
           this.#governance.resumeWakeupDrain()
+          this.#collaboration.resume()
           return {
             runQueue: this.#sessionRuntime.lifecycleEpoch(),
             externalAdapters: this.#externalIngestion.adapterLifecycleEpoch(),
@@ -602,9 +632,13 @@ export class RuntimeSessionManager {
         },
         onControlKernelEvent: (event) => {
           this.#scheduler.enqueueSchedulerEvent(event)
+          if (this.#providerService) this.#collaboration.onKernelEvent(event)
           this.#governance.queueWorkflowWakeupsForKernelEvent(event)
         },
-        onEffectKernelEvent: (event) => this.#scheduler.enqueueSchedulerEvent(event),
+        onEffectKernelEvent: (event) => {
+          this.#scheduler.enqueueSchedulerEvent(event)
+          if (this.#providerService) this.#collaboration.onKernelEvent(event)
+        },
         drainWorkflowWakeups: () => this.#governance.drainWorkflowWakeups(),
         drainApprovedSlots: () => this.#scheduler.drainApprovedSlots(),
         emitRuntimeEvent: emitRuntimeEventToHost,
@@ -674,6 +708,19 @@ export class RuntimeSessionManager {
     this.#externalIngestion.recoverSourceAnchors()
     this.#governance.recoverWorkflowWakeupsFromKernelLog()
     this.#governance.recoverBarrierTimers()
+    // Reconcile interrupted collaboration turns before construction returns.
+    // A deferred no-op recovery command could commit dirty in-memory state
+    // after another command deliberately simulates a deployment crash.
+    if (this.#collaboration.hasInterruptedTurns()) {
+      const recoveryId = `collaboration-recovery:${randomUUID()}`
+      this.#dispatchRecoveryCommandSync({
+        commandId: recoveryId,
+        idempotencyKey: recoveryId,
+        kind: 'recover_collaboration_sessions',
+        execute: (ctx) => this.#collaboration.recover({}, ctx as CollaborationContext),
+      })
+    }
+    this.#collaboration.resume()
     queueMicrotask(() => this.#governance.drainWorkflowWakeups())
     queueMicrotask(() => void this.#sessionRuntime.drainRunQueue())
   }
@@ -971,6 +1018,7 @@ export class RuntimeSessionManager {
     // durable facts, but they must not launch a fresh Governor turn after
     // every provider has been closed. A later command from any non-runtime
     // control plane revives draining on this reusable manager instance.
+    this.#collaboration.suspend()
     this.#governance.suspendWakeupDrain()
     this.#sessionRuntime.suspendQueueDrain()
     this.#persistState()
