@@ -298,7 +298,9 @@ function WorkspaceDetail({
               >
                 <MessageSquare className="size-3.5 shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{event.content}</span>
-                <span className="text-xs text-muted-foreground">{replyCounts[event.eventId]} replies</span>
+                <span className="text-xs text-muted-foreground">
+                  {replyCounts[event.eventId]} {replyCounts[event.eventId] === 1 ? 'reply' : 'replies'}
+                </span>
               </button>
             ))}
           {Object.values(workspace.discussions).map((discussion) => (

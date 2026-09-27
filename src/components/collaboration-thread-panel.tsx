@@ -149,6 +149,7 @@ export function CollaborationThreadPanel({
     (item) => ['active', 'paused'].includes(item.status) && item.discussionId !== discussion?.discussionId,
   );
   const events = threadId ? threadEvents(workspace, threadId) : workspace.events.filter((event) => event.discussionId === legacyDiscussionId);
+  const replyCount = events.filter((event) => event.kind === 'message').length;
   const members = discussion ? workspace.members.filter((member) => discussion.requiredMemberIds.includes(member.memberId)) : workspace.members;
   const agreed =
     discussion?.requiredMemberIds.filter(
@@ -365,7 +366,9 @@ export function CollaborationThreadPanel({
         ) : null}
         {events.length ? (
           <>
-            <div className="px-5 pb-1 pt-4 text-xs text-muted-foreground">{events.filter((event) => event.kind === 'message').length} replies</div>
+            <div className="px-5 pb-1 pt-4 text-xs text-muted-foreground">
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </div>
             <CollaborationTimeline events={events} members={workspace.members} />
           </>
         ) : (
