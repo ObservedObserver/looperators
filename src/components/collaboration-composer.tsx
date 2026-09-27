@@ -132,7 +132,9 @@ export function CollaborationComposer({
               <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold">{member.label.slice(0, 1)}</div>
               <div className="min-w-0 flex-1">
                 <p className="font-medium">{member.label}</p>
-                <p className="text-xs text-muted-foreground">{member.model || 'Provider default'}</p>
+                <p className="text-xs text-muted-foreground">
+                  {providerName(member.providerKind)} · {member.model || 'Provider default'}
+                </p>
               </div>
               <Button
                 type="button"

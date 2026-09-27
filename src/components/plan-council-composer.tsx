@@ -6,8 +6,8 @@ import type { GraphState, StartPlanCouncilInput, StartPlanCouncilResult } from '
 import { providerReasoningEfforts, providerSupportsReasoningEffort, type ProviderKind } from '@/shared/provider-runtime';
 import type { RuntimeApi } from '@/runtime-client';
 import { providerInstanceForKind } from '@/lib/provider-catalog';
-import { validatePlanCouncilStart, type PlanCouncilAgentSpec } from '@shared/plan-council';
-import { authorAndCommitWorkflow } from '@/lib/workflow-authoring';
+import { type PlanCouncilAgentSpec } from '@shared/plan-council';
+import { authorAndCommitWorkflow, previewPlanCouncilWorkflow } from '@/lib/workflow-authoring';
 
 const fieldClass = 'h-9 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring';
 const textAreaClass =
@@ -114,13 +114,9 @@ export function PlanCouncilComposer({
     }),
     [cwd, objective, planners, reviewFocus, synthesizer, advancement],
   );
-  const validation = useMemo(
-    () =>
-      validatePlanCouncilStart(payload, {
-        providerInstanceIds: runtimeState.providerInstances.map((instance) => instance.providerInstanceId),
-      }),
-    [payload, runtimeState.providerInstances],
-  );
+  const preview = useMemo(() => previewPlanCouncilWorkflow(runtimeState, payload), [payload, runtimeState]);
+  const validation = preview.validation;
+  const canRun = validation.errors.length === 0;
 
   useEffect(() => {
     const serialized = JSON.stringify(payload);
@@ -134,7 +130,7 @@ export function PlanCouncilComposer({
   };
 
   const start = async () => {
-    if (!runtimeApi || !validation.ok || isStarting) return;
+    if (!runtimeApi || !canRun || isStarting) return;
     setIsStarting(true);
     try {
       const committed = await authorAndCommitWorkflow<StartPlanCouncilResult>(runtimeApi, {
@@ -274,19 +270,41 @@ export function PlanCouncilComposer({
           {2 * planners.length + 1} Agent turns before follow-up. Fresh, read-only sessions.{' '}
           {advancement === 'human' ? 'You can add constraints at each stage gate.' : 'Stages advance automatically.'} Nothing runs until you start.
         </p>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Global scope: {preview.existingSessionCount} existing + {preview.newSessionCount} new = {validation.estimatedSessionCount} sessions · limit{' '}
+          {preview.sessionLimit}.
+        </p>
+        {validation.errors.length ? (
+          <div className="mt-3 space-y-2 text-sm text-term-amber" role="alert">
+            <p className="font-medium">Resolve these issues before running</p>
+            <ul className="list-disc space-y-1 pl-4">
+              {validation.errors.map((issue) => (
+                <li key={`${issue.field}:${issue.message}`}>{issue.message}</li>
+              ))}
+            </ul>
+            {validation.errors.some((issue) => issue.code === 'session-limit') ? (
+              <p>
+                {preview.sessionLimit - preview.existingSessionCount >= 3
+                  ? 'Reduce the number of planners to fit the available capacity.'
+                  : 'A comparison needs at least 3 new sessions. The global scope needs more capacity before this comparison can run.'}{' '}
+                Scope capacity cannot be changed in this composer. Archived sessions still count toward the limit.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {validation.warnings.length ? (
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+            {validation.warnings.map((issue) => (
+              <li key={`${issue.field}:${issue.message}`}>{issue.message}</li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
-      {validation.issues.length ? (
-        <ul className="space-y-1 text-[10.5px] text-term-amber">
-          {validation.issues.map((issue) => (
-            <li key={`${issue.field}:${issue.message}`}>• {issue.message}</li>
-          ))}
-        </ul>
-      ) : null}
       <Button
         className="h-8 w-full font-mono text-[10.5px] uppercase tracking-[0.06em]"
         size="sm"
-        disabled={!runtimeApi || !validation.ok || isStarting}
+        disabled={!runtimeApi || !canRun || isStarting}
         onClick={() => void start()}
       >
         <Play className="size-3" /> {isStarting ? 'Starting comparison…' : 'Run comparison'}
